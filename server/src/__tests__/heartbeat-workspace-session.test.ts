@@ -22,7 +22,9 @@ import {
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   preflightLowTrustWorkspaceIsolation,
+  probeAmbientHostPushCredential,
   prioritizeProjectWorkspaceCandidatesForRun,
+  resolveAmbientHostCredentialCheckout,
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
@@ -36,6 +38,7 @@ import {
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
   shouldDeferFollowupWakeForSameIssue,
+  shouldProbeAmbientHostPushCredential,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
@@ -969,6 +972,130 @@ describe("assertPushCapabilityCheckoutValid", () => {
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe("probeAmbientHostPushCredential", () => {
+  it("uses the host gh auth store without passing an injected environment", async () => {
+    const execFileMock = vi.fn().mockResolvedValue({ stdout: "gho_ambient\n", stderr: "" });
+
+    await expect(probeAmbientHostPushCredential("/checkout", {
+      execFile: execFileMock as unknown as typeof execFile,
+    })).resolves.toBe("gh_cli");
+
+    expect(execFileMock).toHaveBeenCalledOnce();
+    expect(execFileMock).toHaveBeenCalledWith(
+      "gh",
+      ["auth", "token", "--hostname", "github.com"],
+      expect.objectContaining({ timeout: 2_000 }),
+    );
+    expect(execFileMock.mock.calls[0]?.[2]).not.toHaveProperty("env");
+  });
+
+  it.each([
+    "ssh://git@github.com/example/repo.git",
+    "git@github.com:example/repo.git",
+  ])("accepts SSH push remote %s after the gh probe misses", async (pushUrl) => {
+    const execFileMock = vi.fn(async (command: string, args: string[]) => {
+      if (command === "gh") throw Object.assign(new Error("not logged in"), { code: 1 });
+      if (args[0] === "remote" && args.length === 1) return { stdout: "origin\n", stderr: "" };
+      return { stdout: `${pushUrl}\n`, stderr: "" };
+    });
+
+    await expect(probeAmbientHostPushCredential("/checkout", {
+      execFile: execFileMock as unknown as typeof execFile,
+    })).resolves.toBe("ssh_push_remote");
+    expect(execFileMock.mock.calls[0]?.[0]).toBe("gh");
+    expect(execFileMock.mock.calls[2]?.[1]).toEqual(["remote", "get-url", "--push", "origin"]);
+  });
+
+  it("treats gh and git probe failures as a tier miss", async () => {
+    const execFileMock = vi.fn().mockRejectedValue(Object.assign(new Error("timed out"), {
+      code: "ETIMEDOUT",
+    }));
+
+    await expect(probeAmbientHostPushCredential("/checkout", {
+      execFile: execFileMock as unknown as typeof execFile,
+    })).resolves.toBeNull();
+  });
+
+  it("accepts the selected fresh workspace SSH URL before its checkout exists", async () => {
+    const execFileMock = vi.fn(async (command: string) => {
+      if (command === "gh") throw Object.assign(new Error("not logged in"), { code: 1 });
+      throw Object.assign(new Error("checkout not realized"), { code: "ENOENT" });
+    });
+
+    await expect(probeAmbientHostPushCredential("/future/checkout", {
+      execFile: execFileMock as unknown as typeof execFile,
+      configuredPushUrls: ["git@github.com:example/repo.git"],
+    })).resolves.toBe("ssh_push_remote");
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("resolveAmbientHostCredentialCheckout", () => {
+  it("uses the preferred fresh project workspace instead of the static adapter cwd", () => {
+    expect(resolveAmbientHostCredentialCheckout({
+      adapterCwd: "/static/adapter",
+      preferredProjectWorkspaceId: "workspace-2",
+      projectWorkspaces: [
+        { id: "workspace-1", cwd: "/checkout/one", repoUrl: "https://github.com/example/one.git" },
+        { id: "workspace-2", cwd: "/__paperclip_repo_only__", repoUrl: "git@github.com:example/two.git" },
+      ],
+    })).toEqual({
+      checkoutCwd: "/static/adapter",
+      configuredPushUrls: ["git@github.com:example/two.git"],
+    });
+  });
+
+  it("prefers a reusable realized checkout over project and adapter paths", () => {
+    expect(resolveAmbientHostCredentialCheckout({
+      adapterCwd: "/static/adapter",
+      preferredProjectWorkspaceId: "workspace-1",
+      projectWorkspaces: [
+        { id: "workspace-1", cwd: "/project/checkout", repoUrl: "git@github.com:example/project.git" },
+      ],
+      reusableExecutionWorkspace: {
+        cwd: "/reused/checkout",
+        repoUrl: "ssh://git@github.com/example/reused.git",
+      },
+    })).toEqual({
+      checkoutCwd: "/reused/checkout",
+      configuredPushUrls: ["ssh://git@github.com/example/reused.git"],
+    });
+  });
+});
+
+describe("shouldProbeAmbientHostPushCredential", () => {
+  it.each(["ssh", "sandbox", "plugin"])("skips the ambient host tier for %s execution", (driver) => {
+    expect(shouldProbeAmbientHostPushCredential({
+      pushCapabilityPreflightRequired: true,
+      environmentDriver: driver,
+    })).toBe(false);
+  });
+
+  it("enables the ambient host tier for a standard local execution target", () => {
+    expect(shouldProbeAmbientHostPushCredential({
+      pushCapabilityPreflightRequired: true,
+      environmentDriver: "local",
+    })).toBe(true);
+  });
+
+  it("skips the host tier when low-trust preflight will redirect local selection to a sandbox", () => {
+    expect(shouldProbeAmbientHostPushCredential({
+      pushCapabilityPreflightRequired: true,
+      environmentDriver: "local",
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: "low_trust_review",
+        boundary: {
+          mode: "low_trust_review",
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+        },
+        sourcePresets: {},
+      },
+    })).toBe(false);
   });
 });
 

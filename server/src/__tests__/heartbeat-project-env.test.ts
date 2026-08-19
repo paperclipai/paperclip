@@ -442,6 +442,168 @@ describe("resolveExecutionRunAdapterConfig", () => {
     ]);
   });
 
+  it("passes with an ambient gh credential without injecting a token into the run env", async () => {
+    const probe = vi.fn().mockResolvedValue("gh_cli");
+    const getByNameInsensitive = vi.fn();
+    const resolveInjectedEnvBindingForRuntime = vi.fn();
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: { AGENT_ONLY: "agent-only" } },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+        ambientHostCredential: {
+          enabled: true,
+          checkoutCwd: "/checkout",
+          probe,
+        },
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: { AGENT_ONLY: "agent-only" } },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive,
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(probe).toHaveBeenCalledWith("/checkout", { configuredPushUrls: undefined });
+    expect(result.resolvedConfig.env).toEqual({ AGENT_ONLY: "agent-only" });
+    expect(result.secretKeys).toEqual(new Set());
+    expect(getByNameInsensitive).not.toHaveBeenCalled();
+    expect(resolveInjectedEnvBindingForRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["timeout", Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })],
+    ["non-zero exit", Object.assign(new Error("exited 1"), { code: 1 })],
+  ])("falls through to the company-secret tier after an ambient gh probe %s", async (_case, probeError) => {
+    const probe = vi.fn().mockRejectedValue(probeError);
+    const resolveInjectedEnvBindingForRuntime = vi.fn().mockResolvedValue({
+      env: { GH_TOKEN: "resolved-token" },
+      secretKeys: new Set(["GH_TOKEN"]),
+      manifest: [],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+        ambientHostCredential: { enabled: true, checkoutCwd: "/checkout", probe },
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive: vi.fn().mockResolvedValue({ id: "secret-1", name: "GH_TOKEN" }),
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(probe).toHaveBeenCalledOnce();
+    expect(result.resolvedConfig.env).toEqual({ GH_TOKEN: "resolved-token" });
+    expect(resolveInjectedEnvBindingForRuntime).toHaveBeenCalledOnce();
+  });
+
+  it("passes with an SSH-style push remote and no injected token", async () => {
+    const probe = vi.fn().mockResolvedValue("ssh_push_remote");
+    const resolveInjectedEnvBindingForRuntime = vi.fn();
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+        ambientHostCredential: { enabled: true, checkoutCwd: "/checkout", probe },
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive: vi.fn(),
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({});
+    expect(resolveInjectedEnvBindingForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("skips the ambient tier for a remote execution target", async () => {
+    const probe = vi.fn();
+    const resolveInjectedEnvBindingForRuntime = vi.fn().mockResolvedValue({
+      env: { GH_TOKEN: "resolved-token" },
+      secretKeys: new Set(["GH_TOKEN"]),
+      manifest: [],
+    });
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+        ambientHostCredential: { enabled: false, checkoutCwd: "/checkout", probe },
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive: vi.fn().mockResolvedValue({ id: "secret-1", name: "GH_TOKEN" }),
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(result.resolvedConfig.env).toEqual({ GH_TOKEN: "resolved-token" });
+  });
+
   it("does not accept a lowercase GitHub credential binding key", async () => {
     await expect(resolveExecutionRunAdapterConfig({
       companyId: "company-1",
