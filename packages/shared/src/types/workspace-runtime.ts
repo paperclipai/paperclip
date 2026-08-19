@@ -279,6 +279,9 @@ export interface ExecutionWorkspace {
   closedAt: Date | null;
   cleanupEligibleAt: Date | null;
   cleanupReason: string | null;
+  // Populated by the archive route after a close cleanup completes.
+  cleaned?: boolean;
+  cleanupSucceeded?: boolean;
   config: ExecutionWorkspaceConfig | null;
   metadata: Record<string, unknown> | null;
   runtimeServices?: WorkspaceRuntimeService[];

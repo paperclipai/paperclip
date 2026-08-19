@@ -34,6 +34,11 @@ import type {
   IssueRecoveryAction,
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+import {
+  isRecordOnlyArchiveWorkspace,
+  resolveIsProjectPrimaryWorkspace,
+  SHARED_WORKSPACE_RECORD_ONLY_ARCHIVE_REASON,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -89,6 +94,16 @@ function issueTerminalTimestamp(issue: {
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+
+export { SHARED_WORKSPACE_RECORD_ONLY_ARCHIVE_REASON };
+
+export function formatIsolatedArchiveCleanupFailureReason(warnings: string[]): string {
+  const joined = warnings.map((value) => value.trim()).filter(Boolean).join(" | ");
+  if (joined.length > 0) {
+    return `worktree_remove_failed: ${joined.slice(0, 500)}`;
+  }
+  return "worktree_remove_failed: unknown";
+}
 
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
@@ -1656,6 +1671,41 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     });
   }
 
+  async function resolveRecordOnlyArchiveForWorkspace(workspace: ExecutionWorkspaceRow): Promise<boolean> {
+    if (workspace.mode === "shared_workspace") return true;
+    const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+    if (!workspacePath || !workspace.projectWorkspaceId || !workspace.projectId) return false;
+
+    const [projectWorkspace, primaryProjectWorkspace] = await Promise.all([
+      db
+        .select({ id: projectWorkspaces.id, cwd: projectWorkspaces.cwd })
+        .from(projectWorkspaces)
+        .where(and(
+          eq(projectWorkspaces.companyId, workspace.companyId),
+          eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+        ))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: projectWorkspaces.id })
+        .from(projectWorkspaces)
+        .where(and(
+          eq(projectWorkspaces.companyId, workspace.companyId),
+          eq(projectWorkspaces.projectId, workspace.projectId),
+          eq(projectWorkspaces.isPrimary, true),
+        ))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    const resolvedWorkspacePath = path.resolve(workspacePath);
+    const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
+    return resolveIsProjectPrimaryWorkspace({
+      projectWorkspaceId: workspace.projectWorkspaceId,
+      primaryProjectWorkspaceId: primaryProjectWorkspace?.id ?? null,
+      workspacePath: resolvedWorkspacePath,
+      projectWorkspacePath: resolvedProjectWorkspacePath,
+    });
+  }
+
   async function cleanupTerminalWorkspace(
     workspace: ExecutionWorkspaceRow,
     expectedHeadSha: string | null,
@@ -1705,6 +1755,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       teardownCommand?: string | null;
       recorder?: WorkspaceOperationRecorder | null;
       runCleanupCommands?: boolean;
+      preserveWorkspacePath?: boolean;
     },
   ) {
     const [
@@ -1741,7 +1792,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // the branch. The git-state fence guards destruction, so it does not apply
     // here either — it would otherwise refuse every close of a shared session,
     // because the project's primary worktree is dirty almost all of the time.
-    const preserveWorkspacePath = workspace.mode === "shared_workspace";
+    // Reaper callers omit preserveWorkspacePath, so they keep the historical
+    // shared-mode-only guard. The API archive path passes the full record-only
+    // predicate, which also covers project-primary workspaces.
+    const preserveWorkspacePath = input.preserveWorkspacePath ?? workspace.mode === "shared_workspace";
     const assertSafeToCleanup = preserveWorkspacePath
       ? null
       : () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
@@ -2382,13 +2436,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
-      const resolvedPrimaryWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
-      const isProjectPrimaryWorkspace =
-        workspace.projectWorkspaceId != null
-        && workspace.projectWorkspaceId === primaryProjectWorkspace?.id
-        && resolvedWorkspacePath != null
-        && resolvedPrimaryWorkspacePath != null
-        && resolvedWorkspacePath === resolvedPrimaryWorkspacePath;
+      const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
+      const isProjectPrimaryWorkspace = resolveIsProjectPrimaryWorkspace({
+        projectWorkspaceId: workspace.projectWorkspaceId,
+        primaryProjectWorkspaceId: primaryProjectWorkspace?.id ?? null,
+        workspacePath: resolvedWorkspacePath,
+        projectWorkspacePath: resolvedProjectWorkspacePath,
+      });
+      const isRecordOnlyArchive = isRecordOnlyArchiveWorkspace({
+        mode: executionWorkspace.mode,
+        isProjectPrimaryWorkspace,
+      });
 
       const linkedIssueSummaries = linkedIssues.map((issue) => ({
         ...issue,
@@ -2534,7 +2592,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // own runtime services go away. Listing the destructive steps anyway would
       // make the confirmation payload describe work that will never run, which is
       // the opposite of what a close preview is for.
-      if (!isSharedWorkspace) {
+      if (!isRecordOnlyArchive) {
         const configuredCleanupCommands = [
           {
             kind: "cleanup_command" as const,
@@ -3500,12 +3558,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       teardownCommand?: string | null;
       recorder?: WorkspaceOperationRecorder | null;
     }) => {
+      const preserveWorkspacePath = await resolveRecordOnlyArchiveForWorkspace(input.workspace);
       return runClosedWorkspaceArtifactCleanup(input.workspace, input.expectedHeadSha, {
         projectWorkspace: input.projectWorkspace,
         cleanupCommand: input.cleanupCommand,
         teardownCommand: input.teardownCommand,
         recorder: input.recorder,
         runCleanupCommands: true,
+        preserveWorkspacePath,
       });
     },
 

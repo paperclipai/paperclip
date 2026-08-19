@@ -7,8 +7,10 @@ import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
+  isRecordOnlyArchiveWorkspace,
   matchWorkspaceRuntimeServiceToCommand,
   reconcileExecutionWorkspaceBranchSchema,
+  SHARED_WORKSPACE_RECORD_ONLY_ARCHIVE_REASON,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -29,7 +31,11 @@ import {
   LEASED_WORKSPACE_RUNTIME_ACTIONS,
   type WorkspaceRuntimeLeaseClaim,
 } from "../services/index.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  mergeExecutionWorkspaceConfig,
+  readExecutionWorkspaceConfig,
+  formatIsolatedArchiveCleanupFailureReason,
+} from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -1154,6 +1160,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
+    let archiveCleanupOutcome: { cleaned: boolean; cleanupSucceeded: boolean } | null = null;
     const configForCleanup = readExecutionWorkspaceConfig(
       ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
     );
@@ -1201,12 +1208,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
       workspace = archiveResult.workspace;
       const capturedGeneration = archiveResult.capturedGeneration;
+      const isRecordOnlyArchive = isRecordOnlyArchiveWorkspace({
+        mode: existing.mode,
+        isProjectPrimaryWorkspace: readiness.isProjectPrimaryWorkspace,
+      });
 
       // Closing the workspace ends the lane, so the runtime-control lease is released
       // outright rather than waiting for owner-eligibility or TTL recovery.
       await runtimeLeases.release({ executionWorkspaceId: existing.id, force: true });
 
-      if (existing.mode === "shared_workspace") {
+      if (isRecordOnlyArchive) {
         await db
           .update(issues)
           .set({
@@ -1266,10 +1277,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             await stopRuntimeServicesForExecutionWorkspace({
               db,
               executionWorkspaceId: existing.id,
-              // A shared session shares its path with other live sessions, so
+              // A record-only archive shares its path with other live sessions, so
               // the cwd-prefix fallback would stop their services too. Match on
               // the closing record only.
-              workspaceCwd: existing.mode === "shared_workspace" ? null : existing.cwd,
+              workspaceCwd: isRecordOnlyArchive ? null : existing.cwd,
             });
             return svc.runManualArchiveArtifactCleanup({
               workspace: existing,
@@ -1292,35 +1303,57 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         } else {
           const cleanupResult = fenced.result;
           cleanupWarnings = cleanupResult.warnings;
-          if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-            // Record the cleanup outcome under the lifecycle lock at the captured
-            // generation. If a resume reopened the workspace after the destruction
-            // fence returned, the guarded write skips the row, so a stale patch
-            // never overwrites the rebuilt worktree's active state.
+          if (isRecordOnlyArchive && cleanupResult.cleaned) {
             const applied = await svc.applyClosedWorkspaceCleanupOutcome({
               id,
               closedAt,
               capturedGeneration,
-              cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-              markCleanupFailed: !cleanupResult.cleaned,
+              cleanupReason: SHARED_WORKSPACE_RECORD_ONLY_ARCHIVE_REASON,
+              markCleanupFailed: false,
             });
             if (applied) {
               workspace = applied;
             } else {
-              // A resume reopened the workspace. Return the current (active) row.
               workspace = (await svc.getById(id)) ?? workspace;
             }
+            archiveCleanupOutcome = { cleaned: true, cleanupSucceeded: true };
+          } else if (!cleanupResult.cleaned) {
+            const cleanupReason = formatIsolatedArchiveCleanupFailureReason(cleanupResult.warnings);
+            const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+              id,
+              closedAt,
+              capturedGeneration,
+              cleanupReason,
+              markCleanupFailed: true,
+            });
+            if (applied) {
+              workspace = applied;
+            } else {
+              workspace = (await svc.getById(id)) ?? workspace;
+            }
+            archiveCleanupOutcome = { cleaned: false, cleanupSucceeded: false };
+          } else if (cleanupResult.warnings.length > 0) {
+            const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+              id,
+              closedAt,
+              capturedGeneration,
+              cleanupReason: cleanupWarnings.join(" | "),
+              markCleanupFailed: false,
+            });
+            if (applied) {
+              workspace = applied;
+            } else {
+              workspace = (await svc.getById(id)) ?? workspace;
+            }
+            archiveCleanupOutcome = { cleaned: true, cleanupSucceeded: true };
+          } else {
+            archiveCleanupOutcome = { cleaned: true, cleanupSucceeded: true };
           }
         }
       } catch (error) {
-        const failureReason = error instanceof Error ? error.message : String(error);
-        // Mark cleanup_failed only while the row is still closed at the captured
-        // generation. If a resume reopened the workspace after the cleanup threw,
-        // the row is active again and, after a fresh archive, carries a higher
-        // generation. The generation-fenced write skips the row in both cases, so
-        // a stale cleanup_failed write never overwrites the newer active lifecycle
-        // state, and never buries a newer archive under the first archive's
-        // failure.
+        const failureReason = formatIsolatedArchiveCleanupFailureReason([
+          error instanceof Error ? error.message : String(error),
+        ]);
         const marked = await svc.applyClosedWorkspaceCleanupOutcome({
           id,
           closedAt,
@@ -1329,10 +1362,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           markCleanupFailed: true,
         });
         if (marked) workspace = marked;
-        res.status(500).json({
-          error: `Failed to archive execution workspace: ${failureReason}`,
-        });
-        return;
+        archiveCleanupOutcome = { cleaned: false, cleanupSucceeded: false };
       }
     } else {
       const updatedWorkspace = await svc.update(id, patch);
@@ -1358,7 +1388,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         ...(cleanupWarnings.length > 0 ? { cleanupWarnings } : {}),
       },
     });
-    res.json(workspace);
+    res.json(archiveCleanupOutcome ? { ...workspace, ...archiveCleanupOutcome } : workspace);
   });
 
   return router;

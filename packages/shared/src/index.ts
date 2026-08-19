@@ -2521,3 +2521,8 @@ export {
   isPaperclipDevRunnerCommand,
   rewriteUrlHostToLoopback,
 } from "./runtime-exposure/loopback-bind.js";
+export {
+  SHARED_WORKSPACE_RECORD_ONLY_ARCHIVE_REASON,
+  isRecordOnlyArchiveWorkspace,
+  resolveIsProjectPrimaryWorkspace,
+} from "./workspace-cleanup.js";

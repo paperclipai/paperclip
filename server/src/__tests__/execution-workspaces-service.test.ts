@@ -33,6 +33,7 @@ import {
   EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY,
   executionWorkspaceService,
   deriveExecutionWorkspaceDeliveryState,
+  formatIsolatedArchiveCleanupFailureReason,
   mergeExecutionWorkspaceConfig,
   metadataHasReopenPendingConsumption,
   readExecutionWorkspaceConfig,
@@ -4810,6 +4811,69 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     // them run for a shared session.
     expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
   }, 20_000);
+
+  it("keeps destructive close preview steps off a project-primary workspace", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Primary workspace",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+      cleanupCommand: "rm -rf dist",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      name: "Primary checkout",
+      status: "active",
+      providerType: "local_fs",
+      cwd: repoRoot,
+      providerRef: repoRoot,
+      metadata: {
+        config: {
+          cleanupCommand: "rm -rf dist",
+        },
+      },
+    });
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness?.isProjectPrimaryWorkspace).toBe(true);
+    expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
+  }, 20_000);
+
+  it("formats isolated archive cleanup failures with a stable prefix", () => {
+    expect(formatIsolatedArchiveCleanupFailureReason([])).toBe("worktree_remove_failed: unknown");
+    expect(formatIsolatedArchiveCleanupFailureReason(["fatal: not a git repository"])).toBe(
+      "worktree_remove_failed: fatal: not a git repository",
+    );
+  });
 
   it("surfaces the readiness HEAD sha so the close route can anchor cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
