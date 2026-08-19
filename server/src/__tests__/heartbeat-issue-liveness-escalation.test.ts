@@ -533,39 +533,54 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(events[0]).toMatchObject({ entityId: blockedIssueId });
   });
 
-  it("reconciles a resolved blocked dependency after the assignee-null window closes", async () => {
-    const { agentId, blockedIssueId, blockerIssueId } =
+  it("returns an unassigned resolved blocked dependency to todo instead of pinning it", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none", assignee: null });
     const heartbeat = heartbeatService(db);
 
-    const beforeAssignment = await heartbeat.reconcileIssueGraphLiveness();
+    const firstPass = await heartbeat.reconcileIssueGraphLiveness();
 
-    expect(beforeAssignment.dependencyWakesHealed).toBe(0);
-    expect(beforeAssignment.dependencyWakeBackstopChecked).toBe(0);
+    expect(firstPass.dependencyWakeBackstopChecked).toBe(1);
+    expect(firstPass.dependencyUnassignedPromoted).toBe(1);
+    expect(firstPass.dependencyWakesHealed).toBe(1);
+    expect(firstPass.dependencyWakeIssueIds).toEqual([blockedIssueId]);
 
-    await db
-      .update(issues)
-      .set({ assigneeAgentId: agentId, updatedAt: new Date() })
-      .where(eq(issues.id, blockedIssueId));
-
-    const afterAssignment = await heartbeat.reconcileIssueGraphLiveness();
-
-    expect(afterAssignment.dependencyWakesHealed).toBe(1);
-    expect(afterAssignment.dependencyWakeIssueIds).toEqual([blockedIssueId]);
-
-    const wake = await db
-      .select({
-        reason: agentWakeupRequests.reason,
-        idempotencyKey: agentWakeupRequests.idempotencyKey,
-      })
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, agentId))
-      .orderBy(agentWakeupRequests.requestedAt)
+    const promoted = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
       .then((rows) => rows[0] ?? null);
-    expect(wake).toMatchObject({
-      reason: "issue_blockers_resolved",
-      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`,
+    expect(promoted).toMatchObject({ status: "todo", assigneeAgentId: null });
+
+    // Promotion is not a wake: a wake row needs an agent_id, and there is no
+    // assignee to wake. Returning the issue to the assignable pool is the whole fix.
+    const wakes = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(0);
+
+    const events = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, blockedIssueId),
+        eq(activityLog.action, "issue.updated"),
+      ));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.details).toMatchObject({
+      status: "todo",
+      previousStatus: "blocked",
+      resolvedBlockerIssueId: blockerIssueId,
     });
+
+    // Idempotent: the row is no longer blocked, so the next sweep leaves it alone.
+    const secondPass = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(secondPass.dependencyWakeBackstopChecked).toBe(0);
+    expect(secondPass.dependencyUnassignedPromoted).toBe(0);
+    expect(secondPass.dependencyWakesHealed).toBe(0);
   });
 
   it("retries a resolved dependency wake when the prior wake was skipped as stale", async () => {
