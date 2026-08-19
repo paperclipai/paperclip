@@ -148,6 +148,137 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it("declares the duplex-command-stream capability and the four channel handlers", () => {
+    // Daytona carries the callback bridge on one duplex channel, so it declares
+    // the opt-in capability. The host resolves it `true` only when the worker also
+    // verifies the `duplexChannelOpen` handler, which the four handlers provide.
+    expect(manifest.environmentDrivers?.[0]?.sandboxCapabilities).toMatchObject({
+      duplexCommandStream: true,
+    });
+    expect(plugin.definition.onDuplexChannelOpen).toBeTypeOf("function");
+    expect(plugin.definition.onDuplexChannelWrite).toBeTypeOf("function");
+    expect(plugin.definition.onDuplexChannelStop).toBeTypeOf("function");
+    expect(plugin.definition.onDuplexChannelClose).toBeTypeOf("function");
+  });
+
+  it("bumps the plugin version so the server reconciles the stored manifest", () => {
+    // The bundled-plugin boot reconcile refreshes the stored manifest for an
+    // existing install only when the version changes. The duplex capability needs
+    // the bump to reach an existing install.
+    expect(manifest.version).toBe("0.1.5");
+  });
+
+  it("opens a duplex channel, forwards a host write, and closes it on lease release", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    // A fake PTY handle records each host write, drives the data stream on demand,
+    // and records the kill and the disconnect.
+    const inputs: string[] = [];
+    let killed = 0;
+    let disconnected = 0;
+    let ptyOnData: ((data: Uint8Array) => void) | null = null;
+    const handle = {
+      async waitForConnection() {},
+      async sendInput(data: string | Uint8Array) {
+        inputs.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+      },
+      wait() {
+        return new Promise<{ exitCode?: number }>(() => {});
+      },
+      async kill() {
+        killed += 1;
+      },
+      async disconnect() {
+        disconnected += 1;
+      },
+    };
+    const sandbox = createMockSandbox();
+    (sandbox.process as Record<string, unknown>).createPty = vi.fn(
+      async (options: { onData: (data: Uint8Array) => void }) => {
+        ptyOnData = options.onData;
+        return handle;
+      },
+    );
+    mockCreate.mockResolvedValue(sandbox);
+
+    // Capture the data and the exit the worker forwards through `ctx.duplexChannel`.
+    const dataChunks: Array<{ workerSessionId: string; chunk: string }> = [];
+    const restore = __setDaytonaPluginContextForTest({
+      duplexChannel: {
+        data: (workerSessionId: string, chunk: string) =>
+          dataChunks.push({ workerSessionId, chunk }),
+        exit: () => {},
+      },
+    } as unknown as PluginContext);
+
+    try {
+      await plugin.definition.onEnvironmentAcquireLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        runId: "run-1",
+        agentId: "agent-1",
+        executionWorkspaceId: "workspace-1",
+        adapterType: "codex_local",
+        config: { image: "node:20", timeoutMs: 300000, reuseLease: true },
+      });
+
+      const open = await plugin.definition.onDuplexChannelOpen?.({
+        hostRouteId: "route-1",
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-123",
+        command: "node /paperclip/gateway.mjs",
+      });
+      expect(open?.workerSessionId).toMatch(/^duplex-/);
+      const workerSessionId = open?.workerSessionId ?? "";
+
+      // The launch wrapper sets raw mode with echo off and redirects diagnostics.
+      expect(inputs[0]).toContain("stty raw -echo");
+      expect(inputs[0]).toMatch(/2>\/tmp\/paperclip-duplex-.+\.log/);
+
+      // A host write reaches the process on the same channel.
+      await plugin.definition.onDuplexChannelWrite?.({
+        workerSessionId,
+        data: '{"version":1,"type":"heartbeat"}\n',
+      });
+      expect(inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
+
+      // Process output reaches the host as a data notification bound to the
+      // worker session id.
+      ptyOnData?.(new TextEncoder().encode('{"version":1,"type":"ready","address":"127.0.0.1:1"}\n'));
+      expect(dataChunks).toEqual([
+        {
+          workerSessionId,
+          chunk: '{"version":1,"type":"ready","address":"127.0.0.1:1"}\n',
+        },
+      ]);
+
+      // Lease release closes the channel: it kills the child and releases the
+      // pseudo-terminal socket.
+      await plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-123",
+        config: { image: "node:20", timeoutMs: 300000, reuseLease: true },
+      });
+      expect(killed).toBeGreaterThanOrEqual(1);
+      expect(disconnected).toBe(1);
+
+      // The channel entry is gone, so a later write is a no-op and reaches no
+      // process.
+      const inputsBefore = inputs.length;
+      await plugin.definition.onDuplexChannelWrite?.({
+        workerSessionId,
+        data: "late\n",
+      });
+      expect(inputs.length).toBe(inputsBefore);
+    } finally {
+      restore();
+    }
+  });
+
   it("normalizes config and validates the API key fallback", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
 

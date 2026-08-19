@@ -10,7 +10,8 @@ const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
 // 0.1.3 renamed the login transport flag from `supportsSetupTokenLogin` to the
 // neutral `supportsLoginPty`.
 // 0.1.4 adds the `concurrentSyncOperations` sandbox capability to the driver.
-const PLUGIN_VERSION = "0.1.4";
+// 0.1.5 adds the `duplexCommandStream` sandbox capability to the driver.
+const PLUGIN_VERSION = "0.1.5";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -44,9 +45,15 @@ const manifest: PaperclipPluginManifestV1 = {
       // waits for all active calls. Declare the opt-in capability so the host may
       // schedule sync operations concurrently. The host resolves it `true` only
       // when the worker also verifies both sync verbs.
+      //
+      // Daytona carries the sandbox callback bridge on one live duplex channel
+      // over a raw pseudo-terminal. Declare the opt-in capability so the host may
+      // select the duplex transport. The host resolves it `true` only when the
+      // worker also verifies the `duplexChannelOpen` handler.
       sandboxCapabilities: {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,
+        duplexCommandStream: true,
       },
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
