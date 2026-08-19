@@ -1351,6 +1351,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           return run?.status === "succeeded" && session?.lastRunId === firstWake!.id;
         }, 30_000),
       ).toBe(true);
+      // The atomic finalization writes the task session before the issue
+      // execution is released; wait for the release explicitly so the next
+      // wake is not suppressed by the still-held execution lock.
+      expect(
+        await waitForCondition(async () => {
+          const issue = await db
+            .select({ executionRunId: issues.executionRunId })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0]);
+          return issue?.executionRunId == null;
+        }, 30_000),
+      ).toBe(true);
 
       mockAdapterExecute.mockImplementationOnce(async () => {
         throw new Error("synthetic adapter failure after resume");
