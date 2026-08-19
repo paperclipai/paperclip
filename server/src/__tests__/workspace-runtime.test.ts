@@ -3965,11 +3965,11 @@ describe("ensureRuntimeServicesForRun", () => {
       expect(operations).toEqual([
         expect.objectContaining({
           phase: "workspace_runtime_provision",
+          metadata: expect.objectContaining({
+            provisionKind: "runtime_dependencies",
+          }),
           result: expect.objectContaining({
             status: "succeeded",
-            metadata: expect.objectContaining({
-              provisionKind: "runtime_dependencies",
-            }),
           }),
         }),
       ]);
