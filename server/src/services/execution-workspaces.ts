@@ -1438,13 +1438,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     };
   }
 
+  async function workspaceDirectoryExists(workspacePath: string) {
+    return fs
+      .stat(workspacePath)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+  }
+
   async function assertTerminalCleanupGitStateUnchanged(
     workspace: ExecutionWorkspaceRow,
     expectedHeadSha: string | null,
   ) {
     if (workspace.providerType !== "git_worktree") return;
     const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-    if (!workspacePath || !expectedHeadSha) {
+    // The fence protects work that still exists on disk. A workspace whose path
+    // is already gone has nothing left to protect, and it reports no HEAD sha
+    // for the same reason, so close readiness deliberately clears it. Refusing
+    // here would turn that allowed close into a failed cleanup and a
+    // cleanup_failed record over a directory that is not there.
+    if (!workspacePath || !(await workspaceDirectoryExists(workspacePath))) return;
+    if (!expectedHeadSha) {
       throw new Error("Refusing terminal workspace cleanup because the expected git HEAD is unknown");
     }
 
@@ -1733,8 +1746,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ? null
       : () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
 
-    const cleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
-      ? await acquireGitWorktreeCleanupLock(workspace.providerRef ?? workspace.cwd!)
+    // The lock runs git inside the worktree to resolve the index, HEAD, and
+    // branch lock paths, so a path that is already gone makes the spawn fail
+    // with ENOENT and turns an allowed close into a failed cleanup. There is
+    // nothing left to lock in that case.
+    const cleanupLockPath = workspace.providerType === "git_worktree"
+      ? readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd)
+      : null;
+    const cleanupLock = cleanupLockPath && await workspaceDirectoryExists(cleanupLockPath)
+      ? await acquireGitWorktreeCleanupLock(cleanupLockPath)
       : null;
     try {
       await assertSafeToCleanup?.();

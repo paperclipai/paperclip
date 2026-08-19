@@ -4911,6 +4911,36 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
   }, 20_000);
 
+  it("cleans up a workspace whose path is already gone instead of refusing on the unknown HEAD", async () => {
+    // Readiness clears this close on purpose: there is nothing left to protect.
+    // It also reports a null workspaceHeadSha, and the route forwards that to
+    // cleanup, so refusing on the unknown HEAD would fail the close the
+    // readiness check just allowed and strand the record in cleanup_failed.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const missingPath = path.join(path.dirname(seeded.repoRoot), `paperclip-gone-${randomUUID()}`);
+    await db
+      .update(executionWorkspaces)
+      .set({ cwd: missingPath, providerRef: missingPath })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]!);
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(readiness?.state).not.toBe("blocked");
+    expect(readiness?.workspaceHeadSha).toBeNull();
+
+    const cleanup = await svc.runManualArchiveArtifactCleanup({
+      workspace,
+      expectedHeadSha: readiness?.workspaceHeadSha ?? null,
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+  }, 20_000);
+
   it("refuses manual archive cleanup when HEAD moved after readiness cleared the close", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     const workspace = await db
