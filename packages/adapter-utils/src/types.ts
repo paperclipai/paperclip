@@ -73,6 +73,21 @@ export type AdapterExecutionErrorFamily =
   | "refresh_token_expired"
   | "refresh_token_invalidated";
 
+/**
+ * A configured agent instructions file that could not be read for this run.
+ * Adapters fall back to the generic prompt template so a transient FS error does
+ * not take an agent down, but they must report the failure here so the server can
+ * surface it on the run and the agent record instead of degrading silently.
+ */
+export interface AdapterInstructionsReadFailure {
+  /** Absolute path the adapter attempted to read. */
+  path: string;
+  /** Underlying error message, e.g. "ENOENT: no such file or directory, open …". */
+  reason: string;
+  /** Node errno code when available, e.g. "ENOENT" or "EACCES". */
+  code?: string | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -117,6 +132,13 @@ export interface AdapterExecutionResult {
    * referenced project succeeded.
    */
   referencedProjectStagingFailures?: Array<{ projectId: string }>;
+  /**
+   * Set when the agent has an `instructionsFilePath` configured but the adapter
+   * could not read it for this run. The run still completes on the generic prompt
+   * template; the server merges this onto the run's `resultJson` so the failure is
+   * visible on the run record instead of only a stdout warning line.
+   */
+  instructionsReadFailure?: AdapterInstructionsReadFailure | null;
   summary?: string | null;
   clearSession?: boolean;
   question?: {

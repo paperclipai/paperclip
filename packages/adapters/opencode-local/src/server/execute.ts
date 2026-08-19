@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  readAdapterInstructionsFile,
+  instructionsReadFailureCommandNote,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -500,27 +506,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
-    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const resolvedInstructionsFilePath = instructionsFilePath
-      ? path.resolve(cwd, instructionsFilePath)
-      : "";
-    const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
-    let instructionsPrefix = "";
-    if (resolvedInstructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
-        instructionsPrefix =
-          `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        await onLog(
-          "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
-        );
-      }
-    }
+    const instructionsFile = await readAdapterInstructionsFile({
+      instructionsFilePath: config.instructionsFilePath,
+      cwd,
+      onLog,
+    });
+    const resolvedInstructionsFilePath = instructionsFile.resolvedPath;
+    const instructionsDir = instructionsFile.directory;
+    const instructionsReadFailure = instructionsFile.failure;
+    const instructionsPrefix = instructionsFile.contents === null
+      ? ""
+      : `${instructionsFile.contents}\n\n` +
+        `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.\n\n`;
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
@@ -532,9 +530,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         );
         return notes;
       }
-      notes.push(
-        `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-      );
+      notes.push(instructionsReadFailureCommandNote(instructionsReadFailure ?? {
+        path: resolvedInstructionsFilePath,
+        reason: "unknown error",
+      }));
       return notes;
     })();
 
@@ -641,6 +640,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
+          instructionsReadFailure,
         };
       }
 
@@ -696,6 +696,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
+        instructionsReadFailure,
       };
     };
 

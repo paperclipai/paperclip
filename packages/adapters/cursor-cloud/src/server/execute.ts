@@ -9,7 +9,16 @@ import {
   type SDKAgent,
   type SDKMessage,
 } from "@cursor/sdk";
-import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  AdapterInstructionsReadFailure,
+  AdapterInvocationMeta,
+} from "@paperclipai/adapter-utils";
+import {
+  readAdapterInstructionsFile,
+  instructionsReadFailureCommandNote,
+} from "@paperclipai/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   asBoolean,
@@ -172,38 +181,42 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
 async function buildInstructionsPrefix(
   config: Record<string, unknown>,
   onLog: AdapterExecutionContext["onLog"],
-): Promise<{ prefix: string; notes: string[]; chars: number }> {
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  if (!instructionsFilePath) {
-    return { prefix: "", notes: [], chars: 0 };
+): Promise<{
+  prefix: string;
+  notes: string[];
+  chars: number;
+  readFailure: AdapterInstructionsReadFailure | null;
+}> {
+  const instructionsFile = await readAdapterInstructionsFile({
+    instructionsFilePath: config.instructionsFilePath,
+    onLog,
+    logStream: "stderr",
+  });
+  if (!instructionsFile.resolvedPath) {
+    return { prefix: "", notes: [], chars: 0, readFailure: null };
   }
 
-  try {
-    const contents = await fs.readFile(instructionsFilePath, "utf8");
-    const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
-    const prefix = `${contents.trim()}\n\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.\n`;
-    return {
-      prefix,
-      chars: prefix.length,
-      notes: [
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
-      ],
-    };
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    await onLog(
-      "stderr",
-      `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-    );
+  if (instructionsFile.failure) {
     return {
       prefix: "",
       chars: 0,
-      notes: [
-        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-      ],
+      notes: [instructionsReadFailureCommandNote(instructionsFile.failure)],
+      readFailure: instructionsFile.failure,
     };
   }
+
+  const instructionsFilePath = instructionsFile.resolvedPath;
+  const instructionsDir = instructionsFile.directory;
+  const prefix = `${(instructionsFile.contents ?? "").trim()}\n\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.\n`;
+  return {
+    prefix,
+    chars: prefix.length,
+    readFailure: null,
+    notes: [
+      `Loaded agent instructions from ${instructionsFilePath}`,
+      `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+    ],
+  };
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -570,6 +583,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: modelId,
       costUsd: null,
       summary: toSummary(result),
+      instructionsReadFailure: instructions.readFailure,
       resultJson: {
         status: result.status,
         cursorAgentId: run.agentId,
@@ -606,6 +620,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType: "api",
       costUsd: null,
       clearSession: false,
+      instructionsReadFailure: instructions.readFailure,
       resultJson: {
         status: "error",
         ...(run ? { cursorRunId: run.id } : {}),

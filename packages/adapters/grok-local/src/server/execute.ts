@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  AdapterInstructionsReadFailure,
+} from "@paperclipai/adapter-utils";
+import { readAdapterInstructionsFile } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -93,6 +98,7 @@ type StagedGrokAssets = {
   stagedSkillsCount: number;
   stagedInstructionsPath: string | null;
   rulesFilePath: string | null;
+  instructionsReadFailure: AdapterInstructionsReadFailure | null;
 };
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -117,10 +123,23 @@ async function stageGrokProjectAssets(input: {
   let stagedInstructionsPath: string | null = null;
   let rulesFilePath: string | null = null;
   let stagedSkillsCount = 0;
+  let instructionsReadFailure: AdapterInstructionsReadFailure | null = null;
 
   const instructionsTarget = path.join(input.cwd, "Agents.md");
   if (input.instructionsFilePath) {
-    if (!await pathExists(instructionsTarget)) {
+    // Probe the configured file first. Staging used to throw on a missing file
+    // (or hand Grok a `--rules` path that does not exist), so a mistyped or moved
+    // instructions path either killed the run with an opaque copy error or
+    // degraded silently. Report it instead so the server can surface it.
+    const probe = await readAdapterInstructionsFile({
+      instructionsFilePath: input.instructionsFilePath,
+      onLog: input.onLog,
+    });
+    instructionsReadFailure = probe.failure;
+    if (instructionsReadFailure) {
+      // Fall through without staging instructions; the run continues on the
+      // generic prompt template exactly like the other local adapters.
+    } else if (!await pathExists(instructionsTarget)) {
       await fs.copyFile(input.instructionsFilePath, instructionsTarget);
       ensureCleanupFile(instructionsTarget);
       stagedInstructionsPath = instructionsTarget;
@@ -173,6 +192,7 @@ async function stageGrokProjectAssets(input: {
     stagedSkillsCount,
     stagedInstructionsPath,
     rulesFilePath,
+    instructionsReadFailure,
     cleanup: async () => {
       for (const entry of [...cleanup].reverse()) {
         if (entry.kind === "file") {
@@ -506,6 +526,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
+          instructionsReadFailure: stagedAssets.instructionsReadFailure,
         };
       }
 
@@ -566,6 +587,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+        instructionsReadFailure: stagedAssets.instructionsReadFailure,
       };
     };
 
