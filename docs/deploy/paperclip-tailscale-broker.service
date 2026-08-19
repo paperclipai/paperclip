@@ -1,0 +1,54 @@
+# systemd unit for the Paperclip Tailscale HTTPS broker.
+#
+# Install to /etc/systemd/system/paperclip-tailscale-broker.service and edit the
+# marked values. The broker runs as a DEDICATED account that is the Tailscale
+# operator; the Paperclip app/agent account must NOT be the operator.
+#
+# One-time host setup (see docs/deploy/tailscale-https-branch-runtimes.md):
+#   sudo useradd --system --home /var/lib/paperclip-tailscale-broker --shell /usr/sbin/nologin pcts-broker
+#   sudo tailscale set --operator=pcts-broker
+#   sudo install -d -o pcts-broker -g pcts-broker -m 0700 /var/lib/paperclip-tailscale-broker
+#   sudo install -d -o pcts-broker -g pcts-broker -m 0750 /var/log/paperclip-tailscale-broker
+
+[Unit]
+Description=Paperclip Tailscale HTTPS broker
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+User=pcts-broker
+Group=paperclip
+# systemd creates this directory as pcts-broker:paperclip with mode 0750. The
+# broker can create the socket as the owner. Paperclip clients can traverse the
+# directory as group members, but they cannot replace the socket.
+RuntimeDirectory=paperclip-tailscale-broker
+RuntimeDirectoryMode=0750
+Environment=PAPERCLIP_TS_BROKER_SOCKET=/run/paperclip-tailscale-broker/broker.sock
+Environment=PAPERCLIP_TS_BROKER_REGISTRY=/var/lib/paperclip-tailscale-broker/registry.json
+Environment=PAPERCLIP_TS_BROKER_AUDIT=/var/log/paperclip-tailscale-broker/audit.jsonl
+Environment=PAPERCLIP_TS_BROKER_TAILSCALE=/usr/bin/tailscale
+# REQUIRED: uid(s) of the Paperclip server/agent account permitted to call the broker.
+Environment=PAPERCLIP_TS_BROKER_ALLOWED_UIDS=999
+# Optional: the uid that must own the exposed backend loopback listeners.
+Environment=PAPERCLIP_TS_BROKER_RUNTIME_UID=999
+Environment=PAPERCLIP_TS_BROKER_PORT_MIN=39000
+Environment=PAPERCLIP_TS_BROKER_PORT_MAX=49999
+# Adjust to the deployed checkout. The broker entry is server/dist after `pnpm --filter @paperclipai/server build`.
+WorkingDirectory=/srv/paperclip/home/paperclipai/paperclip
+ExecStart=/usr/bin/node /srv/paperclip/home/paperclipai/paperclip/server/dist/tailscale-broker/main.js
+
+# Hardening: the broker needs only the tailscale socket, its own state dirs, and
+# the runtime socket dir. It must never gain broad filesystem or network powers.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/paperclip-tailscale-broker /var/lib/paperclip-tailscale-broker /var/log/paperclip-tailscale-broker
+RestrictAddressFamilies=AF_UNIX
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
