@@ -1288,6 +1288,31 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
     expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
   });
 
+  it("returns no row for a cross-company consume and leaves the claim unconsumed", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    // A claim from another company does not match the stored row. The predicate
+    // scopes on company_id, so the consume returns no row and leaves bound_at null.
+    const otherCompanyId = await seedCompany();
+    const foreign = await store.consumeStoredClaim({ ...identity, companyId: otherCompanyId });
+    expect(foreign).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
+  it("returns no row for a cross-adapter consume and leaves the claim unconsumed", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    // A claim for a different adapter does not match the stored row. The predicate
+    // scopes on adapter_type, so the consume returns no row and leaves bound_at null.
+    const foreign = await store.consumeStoredClaim({ ...identity, adapterType: "codex_local" });
+    expect(foreign).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
   it("returns no row for an expired claim", async () => {
     const identity = await seedScope();
     await insertRecord(identity, "stored", Date.now() - 1_000);
