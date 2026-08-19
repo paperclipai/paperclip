@@ -86,6 +86,12 @@ import { logger } from "../middleware/logger.js";
 // this constant and the plain provider identifiers only.
 const SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND = "sandbox_orphan_cleanup_write_failed";
 
+// The fixed non-secret refusal a duplex channel open returns when the lease does
+// not grant the opt-in `duplexCommandStream` capability. The service resolves the
+// exact lease capability snapshot and throws this before it reaches any driver.
+const DUPLEX_CHANNEL_CAPABILITY_DENIED =
+  "Sandbox lease does not grant the duplex command stream capability.";
+
 // ---------------------------------------------------------------------------
 // Sandbox capability contract — one normalizer for both branches
 // ---------------------------------------------------------------------------
@@ -271,9 +277,9 @@ export function resolveEffectiveSandboxCapabilities(input: {
  *   which falls back for a `job` backend or a `nativeFileSyncUnsupported` lease).
  * - `configResolutionFailed` marks that the runtime could not resolve the
  *   provider config. A provider whose config cannot be resolved is untrusted, so
- *   the runtime fails closed and narrows `persistentProcessSessions` and
- *   `incrementalSessionOutput` to false. An empty config alone does not fail
- *   closed; only a resolution error does.
+ *   the runtime fails closed and narrows `persistentProcessSessions`,
+ *   `incrementalSessionOutput`, and `duplexCommandStream` to false. An empty
+ *   config alone does not fail closed; only a resolution error does.
  */
 export function buildSandboxCapabilityNarrowing(input: {
   leasePolicy?: EnvironmentLease["leasePolicy"] | null;
@@ -292,11 +298,15 @@ export function buildSandboxCapabilityNarrowing(input: {
 
   if (input.configResolutionFailed === true) {
     // The runtime could not resolve the provider config, so it fails closed and
-    // denies persistent process sessions and incremental session output. The
-    // session-output streaming gate reads `incrementalSessionOutput`, so it must
-    // narrow with the persistent-session gate to keep the fail-closed behavior.
+    // denies persistent process sessions, incremental session output, and the
+    // duplex command stream. The session-output streaming gate reads
+    // `incrementalSessionOutput`, so it must narrow with the persistent-session
+    // gate to keep the fail-closed behavior. The duplex command stream opens a
+    // host-owned bidirectional channel, so an untrusted provider must not keep
+    // it either.
     narrowing.persistentProcessSessions = false;
     narrowing.incrementalSessionOutput = false;
+    narrowing.duplexCommandStream = false;
   }
 
   return narrowing;
@@ -3422,6 +3432,17 @@ export function environmentRuntimeService(
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.openDuplexChannel) {
         throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);
+      }
+      // Centralize the duplex channel authorization here. Resolve the exact lease
+      // capability snapshot and refuse unless the effective snapshot grants the
+      // opt-in `duplexCommandStream` capability. This gate runs before the driver
+      // call, so an unauthorized lease never reaches the worker. The
+      // execution-target member gate stays as defense in depth. A driver that
+      // cannot resolve the snapshot fails closed with the fixed refusal.
+      const effective =
+        (await driver.effectiveSandboxCapabilities?.(input)) ?? null;
+      if (effective?.duplexCommandStream !== true) {
+        throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
       }
       return await driver.openDuplexChannel(input);
     },
