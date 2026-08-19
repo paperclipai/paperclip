@@ -4777,6 +4777,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       sourceType: "git_repo",
       isPrimary: true,
       cwd: repoRoot,
+      cleanupCommand: "rm -rf dist",
     });
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
@@ -4804,6 +4805,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "The workspace has 1 untracked file.",
       "This workspace is 1 commit ahead of main and is not merged.",
     ]));
+    // The close preserves the workspace path, so the preview must not advertise
+    // the cleanup command, the worktree removal, or the branch delete: none of
+    // them run for a shared session.
+    expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
   }, 20_000);
 
   it("surfaces the readiness HEAD sha so the close route can anchor cleanup", async () => {

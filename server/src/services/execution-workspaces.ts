@@ -2507,71 +2507,82 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
 
-      const configuredCleanupCommands = [
-        {
-          kind: "cleanup_command" as const,
-          label: "Run workspace cleanup command",
-          description: "Workspace-specific cleanup runs before teardown.",
-          command: config?.cleanupCommand ?? null,
-        },
-        {
-          kind: "cleanup_command" as const,
-          label: "Run project workspace cleanup command",
-          description: "Project workspace cleanup runs before execution workspace teardown.",
-          command: projectWorkspace?.cleanupCommand ?? null,
-        },
-      ];
-      for (const action of configuredCleanupCommands) {
-        if (!action.command) continue;
-        plannedActions.push(action);
-      }
+      // Closing a shared session preserves the workspace path, so the cleanup and
+      // teardown commands, the worktree removal, the branch delete, and the
+      // directory removal are all skipped (see `preserveWorkspacePath` in
+      // `cleanupExecutionWorkspaceArtifacts`). Only the record and this session's
+      // own runtime services go away. Listing the destructive steps anyway would
+      // make the confirmation payload describe work that will never run, which is
+      // the opposite of what a close preview is for.
+      if (!isSharedWorkspace) {
+        const configuredCleanupCommands = [
+          {
+            kind: "cleanup_command" as const,
+            label: "Run workspace cleanup command",
+            description: "Workspace-specific cleanup runs before teardown.",
+            command: config?.cleanupCommand ?? null,
+          },
+          {
+            kind: "cleanup_command" as const,
+            label: "Run project workspace cleanup command",
+            description: "Project workspace cleanup runs before execution workspace teardown.",
+            command: projectWorkspace?.cleanupCommand ?? null,
+          },
+        ];
+        for (const action of configuredCleanupCommands) {
+          if (!action.command) continue;
+          plannedActions.push(action);
+        }
 
-      const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
-      if (teardownCommand) {
-        plannedActions.push({
-          kind: "teardown_command",
-          label: "Run teardown command",
-          description: "Teardown runs after cleanup commands during workspace close.",
-          command: teardownCommand,
-        });
-      }
-
-      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
-        plannedActions.push({
-          kind: "git_worktree_remove",
-          label: "Remove git worktree",
-          description: `Paperclip will run git worktree cleanup for ${workspacePath}.`,
-          command: `git worktree remove --force ${workspacePath}`,
-        });
-      }
-
-      if (git?.createdByRuntime && executionWorkspace.branchName) {
-        plannedActions.push({
-          kind: "git_branch_delete",
-          label: "Delete runtime-created branch",
-          description: "Paperclip will try to delete the runtime-created branch after removing the worktree.",
-          command: `git branch -d ${executionWorkspace.branchName}`,
-        });
-      }
-
-      if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
-        const resolvedWorkspacePath = path.resolve(workspacePath);
-        const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
-        const containsProjectWorkspace = resolvedProjectWorkspacePath
-          ? (
-              resolvedWorkspacePath === resolvedProjectWorkspacePath ||
-              resolvedProjectWorkspacePath.startsWith(`${resolvedWorkspacePath}${path.sep}`)
-            )
-          : false;
-        if (containsProjectWorkspace) {
-          warnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
-        } else {
+        const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+        if (teardownCommand) {
           plannedActions.push({
-            kind: "remove_local_directory",
-            label: "Remove runtime-created directory",
-            description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
-            command: `rm -rf ${workspacePath}`,
+            kind: "teardown_command",
+            label: "Run teardown command",
+            description: "Teardown runs after cleanup commands during workspace close.",
+            command: teardownCommand,
           });
+        }
+
+        if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
+          plannedActions.push({
+            kind: "git_worktree_remove",
+            label: "Remove git worktree",
+            description: `Paperclip will run git worktree cleanup for ${workspacePath}.`,
+            // The close path removes the worktree without --force and refuses
+            // when the git state moved, matching the reaper.
+            command: `git worktree remove ${workspacePath}`,
+          });
+        }
+
+        if (git?.createdByRuntime && executionWorkspace.branchName) {
+          plannedActions.push({
+            kind: "git_branch_delete",
+            label: "Delete runtime-created branch",
+            description: "Paperclip will try to delete the runtime-created branch after removing the worktree.",
+            command: `git branch -d ${executionWorkspace.branchName}`,
+          });
+        }
+
+        if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
+          const resolvedLocalWorkspacePath = path.resolve(workspacePath);
+          const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
+          const containsProjectWorkspace = resolvedProjectWorkspacePath
+            ? (
+                resolvedLocalWorkspacePath === resolvedProjectWorkspacePath ||
+                resolvedProjectWorkspacePath.startsWith(`${resolvedLocalWorkspacePath}${path.sep}`)
+              )
+            : false;
+          if (containsProjectWorkspace) {
+            warnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
+          } else {
+            plannedActions.push({
+              kind: "remove_local_directory",
+              label: "Remove runtime-created directory",
+              description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
+              command: `rm -rf ${workspacePath}`,
+            });
+          }
         }
       }
 
