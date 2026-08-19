@@ -109,11 +109,27 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // A generic heartbeat run has no source issue: it was woken by the schedule
+    // rather than by an issue, so its context snapshot carries no issueId/taskId.
+    // That is NOT a missing run context — the run row was just found above, is
+    // live, and is owned by this agent and company — so it must not raise
+    // `cross_issue_influence_run_context_required`. Doing so made every generic
+    // heartbeat read-only board-wide: an agent could not even close its own
+    // finished task, and the 403 it got back advised sending an
+    // `X-Paperclip-Run-Id` header that the request already carried and that
+    // cannot help, because the run was never the problem.
+    //
+    // Instead, treat "no source issue" as "nothing to be exempt from". The
+    // self-write exemption below needs a source issue to compare against, so it
+    // simply does not apply, and every write from such a run counts against the
+    // same 20-write cap — exactly the containment the cap exists to provide.
+    // Spray stays bounded; ordinary work is no longer refused.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier &&
+          sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
     }
