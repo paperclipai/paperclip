@@ -179,6 +179,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { collectRunSecretValues, createSecretValueRedactor } from "../secret-value-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -8987,6 +8988,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
+    // Redact resolved secret plaintext by identity, not by shape: pattern matching
+    // alone missed fine-grained GitHub PATs until the prefix was added by hand.
+    const redactRunSecretValues = createSecretValueRedactor(
+      collectRunSecretValues(parseObject(resolvedConfig.env), secretKeys),
+    );
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
@@ -9531,7 +9537,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
+          redactRunSecretValues(redactCurrentUserText(chunk, currentUserRedactionOptions)),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
