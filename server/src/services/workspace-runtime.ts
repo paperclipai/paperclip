@@ -5057,6 +5057,7 @@ type StartLocalRuntimeServiceInput = {
   service: Record<string, unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   runtimeProvisionCommand?: string | null;
+  runtimeProvisionKind?: RuntimeProvisionKind | null;
   recorder?: WorkspaceOperationRecorder | null;
   provisionCoordinator?: RuntimeProvisionCoordinator;
   preparedProvisioningRecord?: RuntimeServiceRecord | null;
@@ -5086,9 +5087,7 @@ function readRuntimeProvisionCommand(config: Record<string, unknown>) {
 
 const BUILTIN_WORKSPACE_SEED_COMMAND = "bash ./scripts/provision-worktree-runtime.sh";
 
-function isBuiltinWorkspaceSeedCommand(command: string) {
-  return command.trim() === BUILTIN_WORKSPACE_SEED_COMMAND;
-}
+type RuntimeProvisionKind = "workspace_seed" | "runtime_dependencies";
 
 function readWorkspaceSeedOperationEvidence(worktreePath: string): {
   verified: boolean;
@@ -5158,6 +5157,20 @@ export function resolveRuntimeProvisionCommand(input: {
   return BUILTIN_WORKSPACE_SEED_COMMAND;
 }
 
+function resolveRuntimeProvision(input: {
+  config: Record<string, unknown>;
+  workspace: RealizedExecutionWorkspace;
+}): { command: string; kind: RuntimeProvisionKind | null } {
+  const command = resolveRuntimeProvisionCommand(input);
+  if (!command) return { command, kind: null };
+  return {
+    command,
+    kind: readRuntimeProvisionCommand(input.config)
+      ? "runtime_dependencies"
+      : "workspace_seed",
+  };
+}
+
 function runtimeProvisionWorkspaceKey(input: StartLocalRuntimeServiceInput) {
   return input.executionWorkspaceId
     ? `execution-workspace:${input.executionWorkspaceId}`
@@ -5186,7 +5199,7 @@ async function runRuntimeProvisionWithWorkspaceMutex(input: StartLocalRuntimeSer
       })
     : null);
   const resolvedCommand = resolveRepoManagedWorkspaceCommand(command, input.workspace.baseCwd);
-  const workspaceSeed = isBuiltinWorkspaceSeedCommand(command);
+  const workspaceSeed = input.runtimeProvisionKind === "workspace_seed";
   const promise = recordWorkspaceCommandOperation(recorder, {
     phase: workspaceSeed ? "workspace_seed" : "workspace_runtime_provision",
     command,
@@ -6521,7 +6534,8 @@ async function ensureRuntimeServicesForRunInvocation(
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
-  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
+  const runtimeProvision = resolveRuntimeProvision(input);
+  const runtimeProvisionCommand = runtimeProvision.command;
   const provisionCoordinator = createRuntimeProvisionCoordinator();
   const allowFixedPortFallback = await isPersistedIsolatedExecutionWorkspace({
     db: input.db,
@@ -6579,6 +6593,7 @@ async function ensureRuntimeServicesForRunInvocation(
         service,
         onLog: input.onLog,
         runtimeProvisionCommand,
+        runtimeProvisionKind: runtimeProvision.kind,
         recorder: input.recorder,
         provisionCoordinator,
         allowFixedPortFallback,
@@ -6749,6 +6764,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     deferReadiness?: boolean;
     allowFixedPortFallback?: boolean;
     runtimeProvisionCommand?: string;
+    runtimeProvisionKind?: RuntimeProvisionKind | null;
     provisionCoordinator?: RuntimeProvisionCoordinator;
     preparedProvisioning?: {
       service: Record<string, unknown>;
@@ -6815,6 +6831,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       service,
       onLog: input.onLog,
       runtimeProvisionCommand: options?.runtimeProvisionCommand,
+      runtimeProvisionKind: options?.runtimeProvisionKind,
       recorder: input.recorder,
       provisionCoordinator: options?.provisionCoordinator,
       preparedProvisioningRecord:
@@ -6917,7 +6934,8 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const invocationId = input.invocationId ?? randomUUID();
-  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
+  const runtimeProvision = resolveRuntimeProvision(input);
+  const runtimeProvisionCommand = runtimeProvision.command;
   const provisionCoordinator = createRuntimeProvisionCoordinator();
   const hasHttpsExposure = await anyRuntimeServiceUsesHttpsExposure(rawServices);
 
@@ -6936,7 +6954,11 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
       invocationId,
       input.db,
       input.db,
-      { runtimeProvisionCommand, provisionCoordinator },
+      {
+        runtimeProvisionCommand,
+        runtimeProvisionKind: runtimeProvision.kind,
+        provisionCoordinator,
+      },
     );
     return batch.refs;
   }
@@ -6987,6 +7009,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
           service,
           onLog: input.onLog,
           runtimeProvisionCommand,
+          runtimeProvisionKind: runtimeProvision.kind,
           recorder: input.recorder,
           provisionCoordinator,
           reuseKey,
@@ -7015,6 +7038,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
           deferReadiness: true,
           allowFixedPortFallback,
           runtimeProvisionCommand,
+          runtimeProvisionKind: runtimeProvision.kind,
           provisionCoordinator,
           preparedProvisioning,
         },

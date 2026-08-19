@@ -3889,6 +3889,7 @@ describe("ensureRuntimeServicesForRun", () => {
     const markerDir = path.join(workspaceRoot, ".paperclip");
     await fs.mkdir(scriptsDir, { recursive: true });
     await fs.mkdir(markerDir, { recursive: true });
+    await fs.writeFile(path.join(markerDir, "seed-pending"), "{}\n", "utf8");
     await fs.writeFile(
       path.join(scriptsDir, "provision-worktree-runtime.sh"),
       [
@@ -3898,10 +3899,13 @@ describe("ensureRuntimeServicesForRun", () => {
       ].join("\n"),
       "utf8",
     );
-    const config = runtimeProvisionTestConfig({
-      provisionCommand: "bash ./scripts/provision-worktree-runtime.sh",
-    });
-    const workspace = buildWorkspace(workspaceRoot);
+    const config = runtimeProvisionTestConfig({});
+    const workspace = {
+      ...buildWorkspace(workspaceRoot),
+      source: "task_session" as const,
+      strategy: "git_worktree" as const,
+      worktreePath: workspaceRoot,
+    };
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     try {
@@ -3922,6 +3926,49 @@ describe("ensureRuntimeServicesForRun", () => {
               seedState: "failed",
               seedPhase: "source_validation",
               seedFailurePhase: "source_validation",
+            }),
+          }),
+        }),
+      ]);
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-1",
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      restorePaperclipEnv();
+    }
+  });
+
+  it("keeps an explicit command matching the built-in seed command as runtime provisioning", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-explicit-runtime-provision-"));
+    const restorePaperclipEnv = configureRuntimeProvisionTestHome(workspaceRoot, "explicit-runtime-provision");
+    const scriptsDir = path.join(workspaceRoot, "scripts");
+    await fs.mkdir(scriptsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(scriptsDir, "provision-worktree-runtime.sh"),
+      "#!/usr/bin/env bash\nset -euo pipefail\n",
+      "utf8",
+    );
+    const config = runtimeProvisionTestConfig({
+      provisionCommand: "bash ./scripts/provision-worktree-runtime.sh",
+    });
+    const workspace = buildWorkspace(workspaceRoot);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    try {
+      const services = await startRuntimeServicesForWorkspaceControl(
+        runtimeProvisionStartInput({ workspace, config, recorder }),
+      );
+
+      expect(services).toHaveLength(1);
+      expect(operations).toEqual([
+        expect.objectContaining({
+          phase: "workspace_runtime_provision",
+          result: expect.objectContaining({
+            status: "succeeded",
+            metadata: expect.objectContaining({
+              provisionKind: "runtime_dependencies",
             }),
           }),
         }),
