@@ -8,8 +8,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const BASE_MIGRATION_FILE = "0218_agent_execution_fence.sql";
-const FORWARD_MIGRATION_FILE = "0219_agent_execution_fence_hardening.sql";
+const BASE_MIGRATION_FILE = "0224_agent_execution_fence.sql";
+const FORWARD_MIGRATION_FILE = "0225_agent_execution_fence_hardening.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -39,7 +39,7 @@ describe("agent execution fence migration", () => {
     expect(preconditionIndex).toBeGreaterThan(pendingFinalizerIndex);
   });
 
-  it("preserves the already-published 0218 migration and applies hardening through 0219", async () => {
+  it("preserves the already-published 0224 migration and applies hardening through 0225", async () => {
     const base = await fs.readFile(new URL(`./migrations/${BASE_MIGRATION_FILE}`, import.meta.url), "utf8");
     const forward = await fs.readFile(new URL(`./migrations/${FORWARD_MIGRATION_FILE}`, import.meta.url), "utf8");
 
@@ -48,10 +48,24 @@ describe("agent execution fence migration", () => {
     expect(forward).toContain('ALTER TABLE "heartbeat_runs" ADD COLUMN IF NOT EXISTS "execution_finalization_required"');
     expect(forward).toContain('ALTER TABLE "heartbeat_runs" ADD COLUMN IF NOT EXISTS "process_ownership_released_at"');
   });
+
+  it("scopes leftover process metadata to non-terminal heartbeat runs", async () => {
+    const sql = await fs.readFile(new URL(`./migrations/${FORWARD_MIGRATION_FILE}`, import.meta.url), "utf8");
+    const preconditionBlock = sql.slice(sql.indexOf("DO $$"), sql.indexOf("END;\n$$;"));
+
+    expect(preconditionBlock).not.toMatch(/OR "process_pid" is not null\s*$/m);
+    expect(preconditionBlock).not.toMatch(/OR "process_group_id" is not null\s*$/m);
+    expect(preconditionBlock).toContain(
+      `"status" NOT IN ('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out')`,
+    );
+    expect(preconditionBlock).toContain(
+      `AND ("process_pid" is not null OR "process_group_id" is not null)`,
+    );
+  });
 });
 
 describeEmbeddedPostgres("agent execution fence forward migration", () => {
-  it("upgrades an existing 0218 database without relabeling legacy runs as finalized", async () => {
+  it("upgrades an existing 0224 database without relabeling legacy runs as finalized", async () => {
     const database = await startEmbeddedPostgresTestDatabase("paperclip-execution-fence-forward-");
     cleanups.push(database.cleanup);
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
@@ -115,22 +129,6 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
       )
     `;
 
-    await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
-      /requires zero admitted executions/i,
-    );
-    await sql`
-      UPDATE "heartbeat_runs"
-      SET "process_pid" = null
-      WHERE "id" = ${resourceOwningRunId}
-    `;
-    await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
-      /requires zero admitted executions/i,
-    );
-    await sql`
-      UPDATE "heartbeat_runs"
-      SET "process_pid" = null
-      WHERE "id" = ${unstartedResourceRunId}
-    `;
     await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
 
     const [legacy] = await sql<{
@@ -194,5 +192,175 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
       WHERE "id" = ${newRunId}
     `;
     expect(postCutover?.execution_finalization_required).toBe(true);
+  }, 30_000);
+
+  it("upgrades an existing 0224 database whose only run is succeeded with process_pid residue", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-execution-fence-forward-");
+    cleanups.push(database.cleanup);
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+
+    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash(FORWARD_MIGRATION_FILE)}`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_finalization_requirement_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_finalized_process_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_fence_guard" ON "heartbeat_runs"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "execution_finalization_required"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "process_ownership_released_at"`;
+    await sql`
+      CREATE TRIGGER "heartbeat_runs_execution_fence_guard"
+      BEFORE INSERT OR UPDATE OF "agent_id", "status", "context_snapshot", "execution_finalizer_completed_at", "execution_finalized_at"
+      ON "heartbeat_runs"
+      FOR EACH ROW
+      EXECUTE FUNCTION "guard_agent_heartbeat_execution_fence"()
+    `;
+
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const succeededRunId = randomUUID();
+    await sql`
+      INSERT INTO "companies" ("id", "name", "issue_prefix")
+      VALUES (${companyId}, 'Fence Migration', 'FNC')
+    `;
+    await sql`
+      INSERT INTO "agents" ("id", "company_id", "name", "status")
+      VALUES (${agentId}, ${companyId}, 'Legacy Executor', 'idle')
+    `;
+    await sql`
+      INSERT INTO "heartbeat_runs" (
+        "id", "company_id", "agent_id", "status", "started_at", "finished_at", "process_pid"
+      ) VALUES (
+        ${succeededRunId}, ${companyId}, ${agentId}, 'succeeded', now() - interval '1 minute', now(), 424242
+      )
+    `;
+
+    await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
+  }, 30_000);
+
+  it("upgrades an existing 0224 database whose only run is succeeded with process_group_id residue", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-execution-fence-forward-");
+    cleanups.push(database.cleanup);
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+
+    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash(FORWARD_MIGRATION_FILE)}`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_finalization_requirement_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_finalized_process_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_fence_guard" ON "heartbeat_runs"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "execution_finalization_required"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "process_ownership_released_at"`;
+    await sql`
+      CREATE TRIGGER "heartbeat_runs_execution_fence_guard"
+      BEFORE INSERT OR UPDATE OF "agent_id", "status", "context_snapshot", "execution_finalizer_completed_at", "execution_finalized_at"
+      ON "heartbeat_runs"
+      FOR EACH ROW
+      EXECUTE FUNCTION "guard_agent_heartbeat_execution_fence"()
+    `;
+
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const succeededRunId = randomUUID();
+    await sql`
+      INSERT INTO "companies" ("id", "name", "issue_prefix")
+      VALUES (${companyId}, 'Fence Migration', 'FNC')
+    `;
+    await sql`
+      INSERT INTO "agents" ("id", "company_id", "name", "status")
+      VALUES (${agentId}, ${companyId}, 'Legacy Executor', 'idle')
+    `;
+    await sql`
+      INSERT INTO "heartbeat_runs" (
+        "id", "company_id", "agent_id", "status", "started_at", "finished_at", "process_group_id"
+      ) VALUES (
+        ${succeededRunId}, ${companyId}, ${agentId}, 'succeeded', now() - interval '1 minute', now(), 424242
+      )
+    `;
+
+    await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
+  }, 30_000);
+
+  it("upgrades an existing 0224 database whose only run is interrupted with both process identifiers", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-execution-fence-forward-");
+    cleanups.push(database.cleanup);
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+
+    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash(FORWARD_MIGRATION_FILE)}`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_finalization_requirement_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_finalized_process_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_fence_guard" ON "heartbeat_runs"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "execution_finalization_required"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "process_ownership_released_at"`;
+    await sql`
+      CREATE TRIGGER "heartbeat_runs_execution_fence_guard"
+      BEFORE INSERT OR UPDATE OF "agent_id", "status", "context_snapshot", "execution_finalizer_completed_at", "execution_finalized_at"
+      ON "heartbeat_runs"
+      FOR EACH ROW
+      EXECUTE FUNCTION "guard_agent_heartbeat_execution_fence"()
+    `;
+
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const interruptedRunId = randomUUID();
+    await sql`
+      INSERT INTO "companies" ("id", "name", "issue_prefix")
+      VALUES (${companyId}, 'Fence Migration', 'FNC')
+    `;
+    await sql`
+      INSERT INTO "agents" ("id", "company_id", "name", "status")
+      VALUES (${agentId}, ${companyId}, 'Legacy Executor', 'idle')
+    `;
+    await sql`
+      INSERT INTO "heartbeat_runs" (
+        "id", "company_id", "agent_id", "status", "started_at", "finished_at", "process_pid", "process_group_id"
+      ) VALUES (
+        ${interruptedRunId}, ${companyId}, ${agentId}, 'interrupted', now() - interval '1 minute', now(), 424242, 424243
+      )
+    `;
+
+    await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
+  }, 30_000);
+
+  it("still aborts 0225 when a running run carries process_pid", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-execution-fence-forward-");
+    cleanups.push(database.cleanup);
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+
+    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash(FORWARD_MIGRATION_FILE)}`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_finalization_requirement_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_finalized_process_guard" ON "heartbeat_runs"`;
+    await sql`DROP TRIGGER IF EXISTS "heartbeat_runs_execution_fence_guard" ON "heartbeat_runs"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "execution_finalization_required"`;
+    await sql`ALTER TABLE "heartbeat_runs" DROP COLUMN "process_ownership_released_at"`;
+    await sql`
+      CREATE TRIGGER "heartbeat_runs_execution_fence_guard"
+      BEFORE INSERT OR UPDATE OF "agent_id", "status", "context_snapshot", "execution_finalizer_completed_at", "execution_finalized_at"
+      ON "heartbeat_runs"
+      FOR EACH ROW
+      EXECUTE FUNCTION "guard_agent_heartbeat_execution_fence"()
+    `;
+
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runningRunId = randomUUID();
+    await sql`
+      INSERT INTO "companies" ("id", "name", "issue_prefix")
+      VALUES (${companyId}, 'Fence Migration', 'FNC')
+    `;
+    await sql`
+      INSERT INTO "agents" ("id", "company_id", "name", "status")
+      VALUES (${agentId}, ${companyId}, 'Legacy Executor', 'idle')
+    `;
+    await sql`
+      INSERT INTO "heartbeat_runs" (
+        "id", "company_id", "agent_id", "status", "started_at", "process_pid"
+      ) VALUES (
+        ${runningRunId}, ${companyId}, ${agentId}, 'running', now() - interval '1 minute', 424242
+      )
+    `;
+
+    await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
+      /requires zero admitted executions/i,
+    );
   }, 30_000);
 });

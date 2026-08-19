@@ -13,8 +13,10 @@ BEGIN
         AND "started_at" is not null
         AND "execution_finalized_at" is null
       )
-      OR "process_pid" is not null
-      OR "process_group_id" is not null
+      OR (
+        "status" NOT IN ('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out')
+        AND ("process_pid" is not null OR "process_group_id" is not null)
+      )
       OR EXISTS (
         SELECT 1
         FROM "issues" issue
