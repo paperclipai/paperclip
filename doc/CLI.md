@@ -508,11 +508,28 @@ npx paperclipai token agent list --company-id <company-id> --agent <agent-id-or-
 npx paperclipai token agent revoke --company-id <company-id> --agent <agent-id-or-name> <key-id>
 ```
 
-Named board API keys use the board authorization model, support revocation and expiration metadata, and are audited server-side.
+Named board API keys use the board authorization model. Each new key requires a
+strict scope and pins at least one company. The default preset is
+`company_automation`. Select `read_only` or `full_instance_admin` with
+`--scope-preset`. Add more company pins by repeating `--scope-company-id`.
+
+Use `--scope-config-json` for a custom scope. The JSON must pass the same strict
+shared validator as the REST API. It cannot be combined with a preset or an
+additional company flag, and it must include the `--company-id` value.
+
+Keys expire after 30 days by default. Use `--ttl-days` or `--expires-at` for a
+different finite expiry. Use `--never-expires` only when a non-expiring key is
+required. These three expiry options are mutually exclusive. The service returns
+the plaintext token only from the successful create response. List output contains
+safe metadata only, and revoke targets only a key owned by the current board user.
 
 ```sh
 npx paperclipai token board create --company-id <company-id> --name external-admin
-npx paperclipai token board create --name short-lived --ttl-days 7
+npx paperclipai token board create --company-id <company-id> --name reader --scope-preset read_only
+npx paperclipai token board create --company-id <company-id> --name multi-company --scope-company-id <second-company-id>
+npx paperclipai token board create --company-id <company-id> --name short-lived --ttl-days 7
+npx paperclipai token board create --company-id <company-id> --name long-lived --never-expires
+npx paperclipai token board create --company-id <company-id> --name custom --scope-config-json '<scope-json>'
 npx paperclipai token board list
 npx paperclipai token board revoke <key-id>
 ```

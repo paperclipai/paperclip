@@ -384,6 +384,27 @@ describe.sequential("cli auth routes", () => {
     );
   });
 
+  it.sequential("rejects omitted and null board API key scopes before creation", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [COMPANY_ID],
+    });
+
+    const omitted = await request(app)
+      .post("/api/board-api-keys")
+      .send({ name: "missing-scope" });
+    const explicitNull = await request(app)
+      .post("/api/board-api-keys")
+      .send({ name: "null-scope", scopeConfig: null });
+
+    expect(omitted.status).toBe(400);
+    expect(explicitNull.status).toBe(400);
+    expect(mockBoardAuthService.createNamedBoardApiKey).not.toHaveBeenCalled();
+  });
+
   it.sequential("lists and revokes named board API keys for the current board user", async () => {
     const keyId = "55555555-5555-4555-8555-555555555555";
     mockBoardAuthService.listBoardApiKeys.mockResolvedValue([
@@ -424,6 +445,13 @@ describe.sequential("cli auth routes", () => {
       { includeInactive: false },
     );
 
+    const inactiveListRes = await request(app).get("/api/board-api-keys?includeInactive=true");
+    expect(inactiveListRes.status).toBe(200);
+    expect(mockBoardAuthService.listBoardApiKeys).toHaveBeenLastCalledWith(
+      "user-1",
+      { includeInactive: true },
+    );
+
     const revokeRes = await request(app).delete(`/api/board-api-keys/${keyId}`);
     expect(revokeRes.status).toBe(200);
     expect(revokeRes.body).toEqual({ ok: true, keyId });
@@ -434,6 +462,48 @@ describe.sequential("cli auth routes", () => {
         action: "board_api_key.revoked",
       }),
     );
+  });
+
+  it.sequential("conceals a non-owned board API key during revoke", async () => {
+    const keyId = "55555555-5555-4555-8555-555555555555";
+    mockBoardAuthService.getBoardApiKeyForUser.mockResolvedValue(null);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [COMPANY_ID],
+    });
+
+    const res = await request(app).delete(`/api/board-api-keys/${keyId}`);
+
+    expect(res.status).toBe(404);
+    expect(mockBoardAuthService.getBoardApiKeyForUser).toHaveBeenCalledWith(keyId, "user-1");
+    expect(mockBoardAuthService.revokeBoardApiKey).not.toHaveBeenCalled();
+  });
+
+  it.sequential("treats re-revoking an owned inactive key as idempotent", async () => {
+    const keyId = "55555555-5555-4555-8555-555555555555";
+    mockBoardAuthService.getBoardApiKeyForUser.mockResolvedValue({
+      id: keyId,
+      userId: "user-1",
+      name: "external-admin",
+      revokedAt: new Date("2026-08-15T12:00:00.000Z"),
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [COMPANY_ID],
+    });
+
+    const res = await request(app).delete(`/api/board-api-keys/${keyId}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, keyId });
+    expect(mockBoardAuthService.revokeBoardApiKey).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it.sequential("rejects malformed board API key IDs before database lookup", async () => {

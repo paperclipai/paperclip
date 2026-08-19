@@ -1,9 +1,13 @@
 import { Command } from "commander";
 import {
   BOARD_API_KEY_SCOPE_PRESETS,
+  boardApiKeyScopeConfigSchema,
   createAgentKeySchema,
   createBoardApiKeySchema,
   type Agent,
+  type BoardApiKeyScopeConfig,
+  type BoardApiKeyScopePreset,
+  type BoardApiKeyStatus,
 } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
@@ -27,6 +31,9 @@ interface BoardTokenOptions extends BaseClientOptions {
   expiresAt?: string;
   ttlDays?: string;
   neverExpires?: boolean;
+  scopePreset?: string;
+  scopeCompanyId?: string[];
+  scopeConfigJson?: string;
 }
 
 interface CreatedAgentKey {
@@ -57,6 +64,10 @@ interface CreatedBoardKey {
 interface BoardKeyRow {
   id: string;
   name: string;
+  tokenPrefix: string | null;
+  scopeConfig: BoardApiKeyScopeConfig | null;
+  legacyUnrestricted: boolean;
+  status: BoardApiKeyStatus;
   createdAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -154,21 +165,29 @@ export function registerTokenCommands(program: Command): void {
       .option("--expires-at <iso8601>", "Expiration timestamp")
       .option("--ttl-days <days>", "Expiration in days from now")
       .option("--never-expires", "Create a non-expiring key")
+      .option(
+        "--scope-preset <preset>",
+        "Scope preset (read_only|company_automation|full_instance_admin)",
+      )
+      .option(
+        "--scope-company-id <id>",
+        "Additional company ID to pin; may be repeated",
+        collectOptionValue,
+        [] as string[],
+      )
+      .option(
+        "--scope-config-json <json>",
+        "Custom strict BoardApiKeyScopeConfig JSON (cannot be combined with preset/additional company flags)",
+      )
       .action(async (opts: BoardTokenOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const expiresAt = resolveBoardKeyExpiresAt(opts);
-          const preset = BOARD_API_KEY_SCOPE_PRESETS.company_automation;
+          const scopeConfig = resolveBoardKeyScopeConfig(opts, ctx.companyId as string);
           const payload = createBoardApiKeySchema.parse({
             name: opts.name,
             expiresAt,
-            scopeConfig: {
-              version: 1,
-              kind: "scoped",
-              companyIds: [ctx.companyId as string],
-              permissions: [...preset.permissions],
-              instanceCapabilities: [...preset.instanceCapabilities],
-            },
+            scopeConfig,
           });
           const key = await ctx.api.post<CreatedBoardKey>("/api/board-api-keys", payload);
           if (!key) throw new Error("Failed to create board API key");
@@ -196,6 +215,10 @@ export function registerTokenCommands(program: Command): void {
             console.log(formatInlineRecord({
               id: key.id,
               name: key.name,
+              tokenPrefix: key.tokenPrefix,
+              status: key.status,
+              legacyUnrestricted: key.legacyUnrestricted,
+              scope: summarizeBoardKeyScope(key.scopeConfig),
               createdAt: key.createdAt,
               lastUsedAt: key.lastUsedAt,
               expiresAt: key.expiresAt,
@@ -241,6 +264,14 @@ async function resolveAgent(api: { get<T>(path: string): Promise<T | null> }, co
 }
 
 function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): string | null | undefined {
+  const selectedExpiryOptions = [
+    Boolean(opts.neverExpires),
+    Boolean(opts.expiresAt?.trim()),
+    Boolean(opts.ttlDays?.trim()),
+  ].filter(Boolean).length;
+  if (selectedExpiryOptions > 1) {
+    throw new Error("Choose only one of --expires-at, --ttl-days, or --never-expires");
+  }
   if (opts.neverExpires) return null;
   if (opts.expiresAt?.trim()) {
     const date = new Date(opts.expiresAt.trim());
@@ -252,5 +283,72 @@ function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): string | null | unde
     if (!Number.isFinite(days) || days <= 0) throw new Error(`Invalid --ttl-days value: ${opts.ttlDays}`);
     return new Date(Date.now() + Math.floor(days * 24 * 60 * 60 * 1000)).toISOString();
   }
-  return undefined;
+  return new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+}
+
+const BOARD_SCOPE_PRESET_ALIASES: Record<string, BoardApiKeyScopePreset> = {
+  read_only: "read_only",
+  "read-only": "read_only",
+  company_automation: "company_automation",
+  "company-automation": "company_automation",
+  full_instance_admin: "full_instance_admin",
+  "full-instance-admin": "full_instance_admin",
+};
+
+function resolveBoardKeyScopeConfig(
+  opts: BoardTokenOptions,
+  contextCompanyId: string,
+): BoardApiKeyScopeConfig {
+  const additionalCompanyIds = opts.scopeCompanyId ?? [];
+  if (opts.scopeConfigJson?.trim()) {
+    if (opts.scopePreset?.trim() || additionalCompanyIds.length > 0) {
+      throw new Error("--scope-config-json cannot be combined with --scope-preset or --scope-company-id");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(opts.scopeConfigJson);
+    } catch {
+      throw new Error("Invalid --scope-config-json value: expected JSON");
+    }
+    const scopeConfig = boardApiKeyScopeConfigSchema.parse(parsed);
+    if (!scopeConfig.companyIds.includes(contextCompanyId)) {
+      throw new Error("--scope-config-json must include --company-id in companyIds");
+    }
+    return scopeConfig;
+  }
+
+  const requestedPreset = opts.scopePreset?.trim() || "company_automation";
+  const presetKey = BOARD_SCOPE_PRESET_ALIASES[requestedPreset];
+  if (!presetKey) {
+    throw new Error(
+      `Invalid --scope-preset value: ${requestedPreset}. Expected read_only, company_automation, or full_instance_admin`,
+    );
+  }
+  const preset = BOARD_API_KEY_SCOPE_PRESETS[presetKey];
+  return boardApiKeyScopeConfigSchema.parse({
+    version: 1,
+    kind: "scoped",
+    companyIds: [contextCompanyId, ...additionalCompanyIds],
+    permissions: [...preset.permissions],
+    instanceCapabilities: [...preset.instanceCapabilities],
+  });
+}
+
+function summarizeBoardKeyScope(scopeConfig: BoardApiKeyScopeConfig | null): string {
+  if (!scopeConfig) return "legacy_unrestricted";
+  const matchingPreset = (Object.entries(BOARD_API_KEY_SCOPE_PRESETS) as Array<
+    [BoardApiKeyScopePreset, (typeof BOARD_API_KEY_SCOPE_PRESETS)[BoardApiKeyScopePreset]]
+  >).find(([, preset]) =>
+    preset.permissions.length === scopeConfig.permissions.length
+    && preset.permissions.every((permission) => scopeConfig.permissions.includes(permission))
+    && preset.instanceCapabilities.length === scopeConfig.instanceCapabilities.length
+    && preset.instanceCapabilities.every(
+      (capability) => scopeConfig.instanceCapabilities.includes(capability),
+    ));
+  const label = matchingPreset?.[0] ?? "custom";
+  return `${label}:${scopeConfig.companyIds.length}_companies`;
+}
+
+function collectOptionValue(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }

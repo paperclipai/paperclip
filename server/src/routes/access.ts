@@ -2942,27 +2942,34 @@ export function accessRoutes(
     }
     const key = await boardAuth.getBoardApiKeyForUser(keyId, req.actor.userId);
     if (!key) throw notFound("Board API key not found");
-    const revoked = await boardAuth.revokeBoardApiKey(key.id);
-    if (!revoked) throw notFound("Board API key not found");
+    const revoked = key.revokedAt ? key : await boardAuth.revokeBoardApiKey(key.id);
+    if (!revoked) {
+      // A concurrent owned revoke is still success. Re-read through the same
+      // owner-scoped projection so deletion and non-ownership stay concealed.
+      const concurrentlyRevoked = await boardAuth.getBoardApiKeyForUser(keyId, req.actor.userId);
+      if (!concurrentlyRevoked?.revokedAt) throw notFound("Board API key not found");
+    }
 
-    const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
-      userId: req.actor.userId,
-      boardApiKeyId: key.id,
-    });
-    for (const companyId of companyIds) {
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId: req.actor.userId,
-        action: "board_api_key.revoked",
-        entityType: "user",
-        entityId: req.actor.userId,
-        details: {
-          boardApiKeyId: key.id,
-          name: key.name,
-          revokedVia: "board_api_key_lifecycle",
-        },
+    if (!key.revokedAt && revoked) {
+      const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+        userId: req.actor.userId,
+        boardApiKeyId: key.id,
       });
+      for (const companyId of companyIds) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId,
+          action: "board_api_key.revoked",
+          entityType: "user",
+          entityId: req.actor.userId,
+          details: {
+            boardApiKeyId: key.id,
+            name: key.name,
+            revokedVia: "board_api_key_lifecycle",
+          },
+        });
+      }
     }
 
     res.json({ ok: true, keyId: key.id });

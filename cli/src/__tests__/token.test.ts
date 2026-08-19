@@ -1,8 +1,10 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
 import { registerTokenCommands } from "../commands/client/token.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
+const SECOND_COMPANY_ID = "33333333-3333-4333-8333-333333333333";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
 function createProgram(): Command {
@@ -222,6 +224,77 @@ describe("token commands", () => {
     });
   });
 
+  it("uses the finite 30-day default and the selected shared scope preset", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-23T00:00:00.000Z"));
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: "board-key-1",
+      name: "reader",
+      token: "pcp_board_plaintext",
+      createdAt: "2026-05-23T00:00:00.000Z",
+      lastUsedAt: null,
+      revokedAt: null,
+      expiresAt: "2026-06-22T00:00:00.000Z",
+    }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "token", "board", "create",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
+      "--scope-company-id", SECOND_COMPANY_ID,
+      "--scope-preset", "read_only",
+      "--name", "reader",
+      "--json",
+    ], { from: "user" });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      name: "reader",
+      expiresAt: "2026-06-22T00:00:00.000Z",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [COMPANY_ID, SECOND_COMPANY_ID],
+        instanceCapabilities: [],
+      },
+    });
+  });
+
+  it("accepts a custom scope only through the shared strict validator", async () => {
+    const customScope = {
+      version: 1,
+      kind: "scoped",
+      companyIds: [COMPANY_ID],
+      permissions: ["issues:read", "issues:write"],
+      instanceCapabilities: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      id: "board-key-1",
+      name: "issue-bot",
+      token: "pcp_board_plaintext",
+      createdAt: "2026-05-23T00:00:00.000Z",
+      lastUsedAt: null,
+      revokedAt: null,
+      expiresAt: "2026-06-22T00:00:00.000Z",
+    }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "token", "board", "create",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
+      "--scope-config-json", JSON.stringify(customScope),
+      "--name", "issue-bot",
+      "--json",
+    ], { from: "user" });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).scopeConfig).toEqual(customScope);
+  });
+
   it("lists and revokes board tokens", async () => {
     const fetchMock = vi
       .fn()
@@ -253,5 +326,37 @@ describe("token commands", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:3100/api/board-api-keys");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("http://localhost:3100/api/board-api-keys/board-key-1");
     expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("DELETE");
+  });
+
+  it("recognizes a preset scope when its valid permissions use a different order", async () => {
+    const permissions = [...BOARD_API_KEY_SCOPE_PRESETS.read_only.permissions].reverse();
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify([{
+      id: "board-key-1",
+      name: "reader",
+      tokenPrefix: "pcp_board_123456789abc",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [COMPANY_ID],
+        permissions,
+        instanceCapabilities: [],
+      },
+      legacyUnrestricted: false,
+      status: "active",
+      createdAt: "2026-05-23T00:00:00.000Z",
+      lastUsedAt: null,
+      expiresAt: "2026-06-22T00:00:00.000Z",
+      revokedAt: null,
+    }]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "token", "board", "list",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+    ], { from: "user" });
+
+    expect(String(log.mock.calls[0]?.[0])).toContain("scope=read_only:1_companies");
   });
 });
