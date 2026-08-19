@@ -1111,8 +1111,12 @@ export interface PluginDuplexChannelOpenParams {
   environmentId: string;
   /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
   providerLeaseId: string;
-  /** The command the worker runs on the channel. */
-  command: string;
+  /**
+   * The command argument vector the worker runs on the channel. Element 0 is the
+   * program and the rest are its arguments. The worker quotes each element for the
+   * shell, so a shell metacharacter in an element cannot inject a shell command.
+   */
+  command: readonly string[];
 }
 
 /** The open reply. It returns the worker session identifier for data binding only. */

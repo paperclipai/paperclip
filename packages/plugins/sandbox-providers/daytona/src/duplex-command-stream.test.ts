@@ -11,10 +11,15 @@ import {
 // The carriage return that submits the launch wrapper line to the terminal.
 const ENTER = "\r";
 
-// The gateway command the tests run on the channel. The real command is the
-// generated duplex gateway; the tests use a placeholder, because the fake PTY
-// runs no process.
-const GATEWAY = "node /paperclip/gateway.mjs";
+// The gateway command the tests run on the channel. The command is an argument
+// vector: element 0 is the program and the rest are its arguments. The real
+// command is the generated duplex gateway; the tests use a placeholder, because
+// the fake PTY runs no process.
+const GATEWAY = ["node", "/paperclip/gateway.mjs"];
+
+// The gateway argument vector after the wrapper quotes each element. The wrapper
+// quotes every argument as a single-quoted shell word.
+const GATEWAY_QUOTED = "'node' '/paperclip/gateway.mjs'";
 
 /**
  * A fake Daytona PTY handle. It records each input write, drives the output
@@ -176,15 +181,54 @@ describe("buildDuplexChannelLaunchWrapper", () => {
     // Raw mode with echo off stops the terminal echoing host input as data and
     // stops newline translation, so the newline-delimited frames stay intact.
     expect(wrapper).toContain("stty raw -echo");
-    // The diagnostics go to the file, never to the stdout frame stream.
-    expect(wrapper).toContain("2>/tmp/diag.log");
+    // The diagnostics go to the file, never to the stdout frame stream. The
+    // wrapper quotes the path as a single-quoted shell word.
+    expect(wrapper).toContain("2>'/tmp/diag.log'");
     // The gateway starts with `exec`, so the PTY runs it directly and its exit
     // code becomes the PTY exit code.
-    expect(wrapper).toContain(`exec ${GATEWAY}`);
+    expect(wrapper).toContain(`exec ${GATEWAY_QUOTED}`);
     // The line ends with the Enter byte, so the shell runs it.
     expect(wrapper.endsWith(ENTER)).toBe(true);
     // Raw mode is set before the gateway starts.
-    expect(wrapper.indexOf("stty raw -echo")).toBeLessThan(wrapper.indexOf(`exec ${GATEWAY}`));
+    expect(wrapper.indexOf("stty raw -echo")).toBeLessThan(
+      wrapper.indexOf(`exec ${GATEWAY_QUOTED}`),
+    );
+  });
+
+  it("quotes a diagnostics path that holds shell metacharacters, so it cannot inject a command", () => {
+    const wrapper = buildDuplexChannelLaunchWrapper(GATEWAY, "/tmp/x; rm -rf ~");
+
+    // The path is one single-quoted word, so the shell reads the metacharacters as
+    // literal text. The dangerous `rm` never becomes its own command.
+    expect(wrapper).toContain("2>'/tmp/x; rm -rf ~'");
+    expect(wrapper).not.toContain("2>/tmp/x; rm -rf ~");
+  });
+
+  it("quotes a single quote in the diagnostics path", () => {
+    const wrapper = buildDuplexChannelLaunchWrapper(GATEWAY, "/tmp/o'clock.log");
+
+    // A single quote closes the word, adds an escaped quote, and reopens the word.
+    expect(wrapper).toContain(`2>'/tmp/o'"'"'clock.log'`);
+  });
+
+  it("quotes each command argument that holds shell metacharacters", () => {
+    const wrapper = buildDuplexChannelLaunchWrapper(
+      ["node", "/paperclip/gateway.mjs", "; rm -rf ~"],
+      "/tmp/diag.log",
+    );
+
+    // Each argument is one single-quoted word, so the metacharacters stay literal
+    // text. The dangerous `rm` argument never becomes its own command.
+    expect(wrapper).toContain(`exec 'node' '/paperclip/gateway.mjs' '; rm -rf ~'`);
+    expect(wrapper).not.toContain("; rm -rf ~;");
+    expect(wrapper).not.toContain("exec node /paperclip/gateway.mjs ; rm -rf ~");
+  });
+
+  it("rejects an empty command argument vector", () => {
+    // An empty vector has no program to exec, so the wrapper fails loudly.
+    expect(() => buildDuplexChannelLaunchWrapper([], "/tmp/diag.log")).toThrow(
+      /at least one argument/,
+    );
   });
 });
 
@@ -198,7 +242,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     expect(process.createOptions?.rows).toBe(30);
     const launch = process.handle?.inputs[0] ?? "";
     expect(launch).toContain("stty raw -echo");
-    expect(launch).toContain(`exec ${GATEWAY}`);
+    expect(launch).toContain(`exec ${GATEWAY_QUOTED}`);
     expect(launch.endsWith(ENTER)).toBe(true);
   });
 
@@ -209,7 +253,7 @@ describe("openDaytonaDuplexChannelSession", () => {
       diagnosticsPath: "/tmp/paperclip-duplex-fixed.log",
     });
 
-    expect(process.handle?.inputs[0]).toContain("2>/tmp/paperclip-duplex-fixed.log");
+    expect(process.handle?.inputs[0]).toContain("2>'/tmp/paperclip-duplex-fixed.log'");
   });
 
   it("defaults the diagnostics path under /tmp when the caller gives none", async () => {
@@ -217,7 +261,7 @@ describe("openDaytonaDuplexChannelSession", () => {
 
     await openDaytonaDuplexChannelSession(process, GATEWAY);
 
-    expect(process.handle?.inputs[0]).toMatch(/2>\/tmp\/paperclip-duplex-[0-9a-f-]+\.log/);
+    expect(process.handle?.inputs[0]).toMatch(/2>'\/tmp\/paperclip-duplex-[0-9a-f-]+\.log'/);
   });
 
   it("delivers a host write to the process and does not echo it back as data", async () => {
@@ -362,7 +406,7 @@ describe("createDaytonaDuplexChannelSessionOpener", () => {
     const session = await opener(GATEWAY);
 
     expect(process.createOptions?.cwd).toBe("/paperclip-workspace");
-    expect(process.handle?.inputs[0]).toContain(`exec ${GATEWAY}`);
+    expect(process.handle?.inputs[0]).toContain(`exec ${GATEWAY_QUOTED}`);
     expect(typeof session.onData).toBe("function");
     expect(typeof session.write).toBe("function");
     expect(typeof session.wait).toBe("function");

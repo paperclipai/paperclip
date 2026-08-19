@@ -19,13 +19,14 @@ import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 
 /**
- * Input for a duplex channel open. The caller supplies only the command line
- * the sandbox runs as the channel child process. The runner adds the lease
- * scope from its own closure. This type is separate from the worker manager's
+ * Input for a duplex channel open. The caller supplies only the command argument
+ * vector the sandbox runs as the channel child process. Element 0 is the program
+ * and the rest are its arguments. The runner adds the lease scope from its own
+ * closure. This type is separate from the worker manager's
  * `DuplexChannelOpenInput`, which also carries the lease scope fields.
  */
 export interface DuplexChannelOpenInput {
-  command: string;
+  command: readonly string[];
 }
 
 /**

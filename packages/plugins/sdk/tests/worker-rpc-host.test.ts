@@ -925,7 +925,7 @@ describe("worker duplex channel dispatch", () => {
       async setup() {},
       async onDuplexChannelOpen(params) {
         expect(params.hostRouteId).toBe("route-1");
-        expect(params.command).toBe("paperclip-bridge");
+        expect(params.command).toEqual(["paperclip-bridge"]);
         expect(params.providerLeaseId).toBe("lease-1");
         return { workerSessionId: "ws-1" };
       },
@@ -1004,7 +1004,7 @@ describe("worker duplex channel dispatch", () => {
           companyId: "company-1",
           environmentId: "env-1",
           providerLeaseId: "lease-1",
-          command: "paperclip-bridge",
+          command: ["paperclip-bridge"],
         }),
       ).resolves.toEqual({ workerSessionId: "ws-1" });
 

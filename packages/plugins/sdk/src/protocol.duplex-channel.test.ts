@@ -33,7 +33,7 @@ describe("duplex channel request schemas", () => {
       companyId: "company-1",
       environmentId: "env-1",
       providerLeaseId: "lease-1",
-      command: "paperclip-bridge",
+      command: ["paperclip-bridge"],
     };
     const reply: PluginDuplexChannelOpenResult = { workerSessionId: "ws-1" };
     expect(open.hostRouteId).toBe("route-1");
@@ -47,20 +47,20 @@ describe("duplex channel request schemas", () => {
       companyId: "company-1",
       environmentId: "env-1",
       providerLeaseId: "lease-1",
-      command: "paperclip-bridge",
+      command: ["paperclip-bridge"],
     };
     expect(open).toBeDefined();
   });
 
-  it("rejects an open request with a non-string command", () => {
+  it("rejects an open request whose command is not a string array", () => {
     const open: PluginDuplexChannelOpenParams = {
       hostRouteId: "route-1",
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
       providerLeaseId: "lease-1",
-      // @ts-expect-error — command must be a string.
-      command: 42,
+      // @ts-expect-error — command must be a string array.
+      command: "paperclip-bridge",
     };
     expect(open).toBeDefined();
   });

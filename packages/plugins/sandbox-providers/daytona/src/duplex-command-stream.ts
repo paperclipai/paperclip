@@ -64,8 +64,15 @@ export interface DuplexChannelSession {
   close(): Promise<void>;
 }
 
-/** Opens a {@link DuplexChannelSession} for `command`. The transport calls it one time. */
-export type DuplexChannelSessionOpener = (command: string) => Promise<DuplexChannelSession>;
+/**
+ * Opens a {@link DuplexChannelSession} for `command`. The transport calls it one
+ * time. `command` is an argument vector: element 0 is the program and the rest
+ * are its arguments. The session quotes each element, so a shell metacharacter in
+ * an element cannot inject a shell command.
+ */
+export type DuplexChannelSessionOpener = (
+  command: readonly string[],
+) => Promise<DuplexChannelSession>;
 
 /** The options for the Daytona duplex channel session. */
 export interface DaytonaDuplexChannelOptions {
@@ -92,19 +99,45 @@ const DUPLEX_CHANNEL_PTY_ROWS = 30;
 const PTY_COMMAND_TERMINATOR = "\r";
 
 /**
- * Builds the launch wrapper input line for the duplex channel.
+ * Quotes one value for a POSIX shell. The result is one single-quoted word, so
+ * the shell reads it as literal text and never expands or splits it. The function
+ * closes the quote, adds an escaped single quote, and reopens the quote for each
+ * single quote in the value.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/**
+ * Builds the launch wrapper input line for the duplex channel. `command` is an
+ * argument vector: element 0 is the program and the rest are its arguments.
  *
  * The wrapper does three steps in order:
- *   1. `exec 2>${diagnosticsPath}` redirects the shell's stderr to the file. The
+ *   1. `exec 2>'<diagnosticsPath>'` redirects the shell's stderr to the file. The
  *      later `exec` inherits it, so the gateway diagnostics land in the file and
  *      never on the stdout frame stream.
  *   2. `stty raw -echo` sets the terminal to raw mode with echo off, so the
  *      terminal neither echoes host input as data nor translates newlines.
- *   3. `exec ${command}` replaces the shell with the gateway, so the PTY runs the
- *      gateway directly and the gateway exit code becomes the PTY exit code.
+ *   3. `exec '<program>' '<arg>'...` replaces the shell with the gateway, so the
+ *      PTY runs the gateway directly and the gateway exit code becomes the PTY
+ *      exit code.
+ *
+ * The wrapper quotes the diagnostics path and every command argument as a
+ * single-quoted shell word. So a shell metacharacter in a path or an argument
+ * stays literal text and cannot inject a shell command.
  */
-export function buildDuplexChannelLaunchWrapper(command: string, diagnosticsPath: string): string {
-  return `exec 2>${diagnosticsPath}; stty raw -echo; exec ${command}${PTY_COMMAND_TERMINATOR}`;
+export function buildDuplexChannelLaunchWrapper(
+  command: readonly string[],
+  diagnosticsPath: string,
+): string {
+  if (command.length === 0) {
+    throw new Error("The duplex channel launch command needs at least one argument.");
+  }
+  const quotedCommand = command.map(shellQuote).join(" ");
+  return (
+    `exec 2>${shellQuote(diagnosticsPath)}; stty raw -echo; ` +
+    `exec ${quotedCommand}${PTY_COMMAND_TERMINATOR}`
+  );
 }
 
 /**
@@ -118,7 +151,7 @@ export function buildDuplexChannelLaunchWrapper(command: string, diagnosticsPath
  */
 export async function openDaytonaDuplexChannelSession(
   process: DaytonaPtyProcess,
-  command: string,
+  command: readonly string[],
   options?: DaytonaDuplexChannelOptions,
 ): Promise<DuplexChannelSession> {
   const decoder = new TextDecoder("utf-8");
@@ -191,5 +224,6 @@ export function createDaytonaDuplexChannelSessionOpener(
   process: DaytonaPtyProcess,
   options?: DaytonaDuplexChannelOptions,
 ): DuplexChannelSessionOpener {
-  return (command: string) => openDaytonaDuplexChannelSession(process, command, options);
+  return (command: readonly string[]) =>
+    openDaytonaDuplexChannelSession(process, command, options);
 }

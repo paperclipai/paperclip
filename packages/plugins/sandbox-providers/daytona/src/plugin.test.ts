@@ -228,14 +228,16 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        command: "node /paperclip/gateway.mjs",
+        command: ["node", "/paperclip/gateway.mjs"],
       });
       expect(open?.workerSessionId).toMatch(/^duplex-/);
       const workerSessionId = open?.workerSessionId ?? "";
 
       // The launch wrapper sets raw mode with echo off and redirects diagnostics.
+      // It quotes each command argument and the diagnostics path as a shell word.
       expect(inputs[0]).toContain("stty raw -echo");
-      expect(inputs[0]).toMatch(/2>\/tmp\/paperclip-duplex-.+\.log/);
+      expect(inputs[0]).toContain("exec 'node' '/paperclip/gateway.mjs'");
+      expect(inputs[0]).toMatch(/2>'\/tmp\/paperclip-duplex-.+\.log'/);
 
       // A host write reaches the process on the same channel.
       await plugin.definition.onDuplexChannelWrite?.({
