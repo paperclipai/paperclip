@@ -2970,7 +2970,7 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+  it("uses native context management by default for Codex without a known model", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
@@ -2981,6 +2981,20 @@ describe("parseSessionCompactionPolicy", () => {
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
+      maxSessionAgeHours: 0,
+    });
+  });
+
+  it("rotates gpt-5.3-codex-spark before its context window is exhausted", () => {
+    expect(
+      parseSessionCompactionPolicy(
+        buildAgent("codex_local"),
+        { model: "gpt-5.3-codex-spark" },
+      ),
+    ).toEqual({
+      enabled: true,
+      maxSessionRuns: 0,
+      maxRawInputTokens: 91_750,
       maxSessionAgeHours: 0,
     });
   });

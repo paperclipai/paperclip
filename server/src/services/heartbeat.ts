@@ -280,6 +280,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { getCodexModelCompactionPolicy } from "@paperclipai/adapter-codex-local";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -4012,8 +4013,21 @@ function formatCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
-export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
-  return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
+export function parseSessionCompactionPolicy(
+  agent: typeof agents.$inferSelect,
+  effectiveAdapterConfig?: Record<string, unknown>,
+): SessionCompactionPolicy {
+  const modelCompactionPolicy =
+    agent.adapterType === "codex_local"
+      ? getCodexModelCompactionPolicy(
+          readConfiguredModelFromAdapterConfig(effectiveAdapterConfig ?? parseObject(agent.adapterConfig)),
+        )
+      : null;
+  return resolveSessionCompactionPolicy(
+    agent.adapterType,
+    agent.runtimeConfig,
+    modelCompactionPolicy,
+  ).policy;
 }
 
 export function resolveRuntimeSessionParamsForWorkspace(input: {
@@ -8356,6 +8370,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function evaluateSessionCompaction(input: {
     agent: typeof agents.$inferSelect;
+    effectiveAdapterConfig: Record<string, unknown>;
     sessionId: string | null;
     issueId: string | null;
     continuationSummaryBody?: string | null;
@@ -8370,7 +8385,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    const policy = parseSessionCompactionPolicy(agent);
+    const policy = parseSessionCompactionPolicy(agent, input.effectiveAdapterConfig);
     if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
       return {
         rotate: false,
@@ -15457,6 +15472,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
+      effectiveAdapterConfig: runtimeConfig,
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
       issueId,
       continuationSummaryBody: continuationSummary?.body ?? null,
