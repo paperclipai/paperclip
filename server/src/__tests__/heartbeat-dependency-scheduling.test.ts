@@ -535,6 +535,119 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .where(eq(heartbeatRuns.id, activeRunId));
   });
 
+  it("suppresses coordination-comment runs on an in-review parent while an external-owner child remains unresolved", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentIssueId = randomUUID();
+    const ownerGateChildIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CTO",
+      role: "cto",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Technical review parent",
+        status: "in_review",
+        priority: "critical",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: ownerGateChildIssueId,
+        companyId,
+        parentId: parentIssueId,
+        title: "External owner approval",
+        status: "blocked",
+        priority: "critical",
+        assigneeUserId: "external-owner",
+      },
+    ]);
+
+    const coordinationWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: parentIssueId, commentId: randomUUID() },
+      contextSnapshot: {
+        issueId: parentIssueId,
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(coordinationWake).toBeNull();
+    const suppressedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${parentIssueId}`)
+      .then((rows) => rows[0] ?? null);
+    expect(suppressedWake).toMatchObject({
+      status: "skipped",
+      reason: "issue_dependencies_blocked",
+      payload: expect.objectContaining({
+        unresolvedChildOwnerIssueIds: [ownerGateChildIssueId],
+      }),
+    });
+
+    const runsBeforeOwnerResolution = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${parentIssueId}`)
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(runsBeforeOwnerResolution).toBe(0);
+
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, ownerGateChildIssueId));
+
+    const resolvedOwnerWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: parentIssueId, resolvedBlockerIssueId: ownerGateChildIssueId },
+      contextSnapshot: {
+        issueId: parentIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: ownerGateChildIssueId,
+      },
+    });
+
+    expect(resolvedOwnerWake).not.toBeNull();
+    const runSucceeded = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, resolvedOwnerWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    expect(runSucceeded).toBe(true);
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

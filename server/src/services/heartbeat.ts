@@ -4157,35 +4157,23 @@ function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
-async function listUnresolvedBlockerSummaries(
+async function listUnresolvedExternalOwnerChildIssueIds(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
-  issueId: string,
-  unresolvedBlockerIssueIds: string[],
+  parentIssueId: string,
 ) {
-  const ids = [...new Set(unresolvedBlockerIssueIds.filter(Boolean))];
-  if (ids.length === 0) return [];
   return dbOrTx
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      status: issues.status,
-      priority: issues.priority,
-      assigneeAgentId: issues.assigneeAgentId,
-      assigneeUserId: issues.assigneeUserId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+    .select({ id: issues.id })
+    .from(issues)
     .where(
       and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        eq(issueRelations.relatedIssueId, issueId),
-        inArray(issues.id, ids),
+        eq(issues.companyId, companyId),
+        eq(issues.parentId, parentIssueId),
+        notInArray(issues.status, ["done", "cancelled"]),
+        sql`${issues.assigneeUserId} is not null`,
       ),
     )
-    .orderBy(asc(issues.title));
+    .then((rows) => rows.map((row) => row.id));
 }
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
@@ -12544,9 +12532,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
-        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
+      const queuedIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      const unresolvedExternalOwnerChildIssueIds = queuedIssue?.status === "in_review"
+        ? await listUnresolvedExternalOwnerChildIssueIds(db, run.companyId, issueId)
+        : [];
+      if (unresolvedBlockerCount > 0 || unresolvedExternalOwnerChildIssueIds.length > 0) {
+        await cancelQueuedRunForBlockedDependencies(run, issueId, [
+          ...(readiness?.unresolvedBlockerIssueIds ?? []),
+          ...unresolvedExternalOwnerChildIssueIds,
+        ]);
+        logger.info(
+          {
+            runId: run.id,
+            issueId,
+            unresolvedBlockerCount,
+            unresolvedExternalOwnerChildCount: unresolvedExternalOwnerChildIssueIds.length,
+          },
+          "claimQueuedRun: cancelled blocked queued run",
+        );
         return null;
       }
 
@@ -18117,28 +18124,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           [issue.id],
           tx,
         ).then((rows) => rows.get(issue.id) ?? null);
+        const unresolvedExternalOwnerChildIssueIds = issue.status === "in_review"
+          ? await listUnresolvedExternalOwnerChildIssueIds(tx, issue.companyId, issue.id)
+          : [];
 
-        // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
-        const blockedInteractionWake =
-          dependencyReadiness &&
-          !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
-
-        if (blockedInteractionWake) {
-          enrichedContextSnapshot.dependencyBlockedInteraction = true;
-          enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
-          enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
-          enrichedContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
-            tx,
-            issue.companyId,
-            issue.id,
-            dependencyReadiness.unresolvedBlockerIssueIds,
-          );
-        }
-
-        if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+        if (
+          !activeExecutionRun &&
+          (
+            (dependencyReadiness && !dependencyReadiness.isDependencyReady) ||
+            unresolvedExternalOwnerChildIssueIds.length > 0
+          )
+        ) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
@@ -18148,7 +18144,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             payload: {
               ...(payload ?? {}),
               issueId,
-              unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+              unresolvedBlockerIssueIds: dependencyReadiness?.unresolvedBlockerIssueIds ?? [],
+              unresolvedChildOwnerIssueIds: unresolvedExternalOwnerChildIssueIds,
             },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
