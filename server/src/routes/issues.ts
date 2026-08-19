@@ -5819,6 +5819,7 @@ export function issueRoutes(
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const rawStaleHours = req.query.staleHours as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -5889,6 +5890,15 @@ export function issueRoutes(
       res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
       return;
     }
+    let staleHours: number | undefined;
+    if (rawStaleHours !== undefined) {
+      const parsedStaleHours = Number(rawStaleHours);
+      if (!Number.isFinite(parsedStaleHours) || parsedStaleHours <= 0) {
+        res.status(400).json({ error: "staleHours must be a positive number when provided" });
+        return;
+      }
+      staleHours = parsedStaleHours;
+    }
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
@@ -5926,6 +5936,7 @@ export function issueRoutes(
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      staleHours,
     };
     const requestKey = issueListRequestKey({
       req,
