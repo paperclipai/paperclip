@@ -4328,6 +4328,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         monitorAttemptCount: issues.monitorAttemptCount,
+        startedAt: issues.startedAt,
+        executorRoutingStartedAt: issues.executorRoutingStartedAt,
       })
       .from(issues)
       .where(

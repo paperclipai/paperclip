@@ -627,4 +627,91 @@ describe("issue graph liveness classifier", () => {
       recoveryIssueId: reviewIssueId,
     });
   });
+
+  it("reports a stale executor routing clock when comments and only an old executor run remain", () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: blockerId,
+          identifier: "PAP-2281",
+          title: "Executor routing stalled",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+          // Imported work can have no durable work-start timestamp.
+          startedAt: null,
+          executorRoutingStartedAt: new Date(now.getTime() - 16 * 60 * 1000),
+          // A comment or other unrelated edit must not postpone recovery.
+          updatedAt: now,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      // This is a run from an old, no-longer-matching executor.
+      activeRuns: [{ companyId, issueId: blockerId, agentId: managerId, status: "running" }],
+      now,
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockerId,
+      state: "in_progress_without_execution_path",
+      recoveryIssueId: blockerId,
+      recommendedOwnerAgentId: coderId,
+    });
+  });
+
+  it("keeps matching executor runs and scheduled retries as live routing paths", () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const staleIssue = issue({
+      id: blockerId,
+      identifier: "PAP-2283",
+      title: "Executor routing retry",
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      startedAt: null,
+      executorRoutingStartedAt: new Date(now.getTime() - 16 * 60 * 1000),
+    });
+    const baseInput = {
+      issues: [staleIssue],
+      relations: [],
+      agents: [agent(), manager],
+      now,
+    };
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      activeRuns: [{ companyId, issueId: blockerId, agentId: coderId, status: "running" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      queuedWakeRequests: [{ companyId, issueId: blockerId, agentId: coderId, status: "scheduled_retry" }],
+    })).toEqual([]);
+  });
+
+  it("gives a reassigned executor a fresh routing grace period despite an old executor run", () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: blockerId,
+          identifier: "PAP-2282",
+          title: "Reassigned executor routing",
+          status: "in_progress",
+          // This is the original work start, before reassignment.
+          startedAt: new Date(now.getTime() - 16 * 60 * 1000),
+          // Reassignment starts a distinct executor-routing grace period.
+          executorRoutingStartedAt: now,
+          assigneeAgentId: managerId,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      // The old executor's still-visible run must not count for the new executor.
+      activeRuns: [{ companyId, issueId: blockerId, agentId: coderId, status: "running" }],
+      now,
+    });
+
+    expect(findings).toEqual([]);
+  });
 });

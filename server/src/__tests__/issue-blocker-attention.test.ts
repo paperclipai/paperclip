@@ -744,6 +744,51 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(await svc.list(companyId, { attention: "blocked" })).toEqual([]);
   });
 
+  it("surfaces imported in-progress work with a stale routing clock in the blocked inbox", async () => {
+    const { companyId, agentId } = await createCompany("BIR");
+    const importedIssueId = randomUUID();
+    await svc.importIssues(companyId, [{
+      id: importedIssueId,
+      ref: "imported-routing-stall",
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Imported executor routing stall",
+      description: null,
+      assigneeAgentId: agentId,
+      status: "in_progress",
+      priority: "medium",
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    }]);
+    const routingStartedAt = new Date(Date.now() - 16 * 60 * 1000);
+    const freshUpdatedAt = new Date();
+    await db
+      .update(issues)
+      .set({
+        executorRoutingStartedAt: routingStartedAt,
+        // Comments update issue recency, not the executor-routing grace clock.
+        updatedAt: freshUpdatedAt,
+      })
+      .where(eq(issues.id, importedIssueId));
+
+    const row = (await svc.list(companyId, { attention: "blocked" })).find((issue) => issue.id === importedIssueId);
+
+    expect(row?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "in_progress_without_execution_path",
+      severity: "high",
+      stoppedSinceAt: routingStartedAt.toISOString(),
+      owner: { type: "agent", agentId },
+      action: { label: "Resume executor routing" },
+      recoveryIssue: { id: importedIssueId },
+    });
+    expect(row?.blockedInboxAttention?.stoppedSinceAt).not.toBe(freshUpdatedAt.toISOString());
+  });
+
   it("classifies assigned backlog and invalid review leaves for blocked inbox attention", async () => {
     const { companyId, agentId, pausedAgentId } = await createCompany("BIC");
     const backlogParentId = await insertIssue({ companyId, identifier: "BIC-1", title: "Blocked by parked work", status: "blocked" });
