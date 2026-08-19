@@ -80,10 +80,31 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.description).not.toContain("attempt");
   });
 
-  it("gives the run-context denial a copy-pasteable fix", () => {
+  it("gives the run-context denial a copy-pasteable fix for missing or invalid runs", () => {
     const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
     expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
+    expect(copy.description).toContain("without a run header");
+  });
+
+  it("states the unbound-run comment-only boundary without blaming a present header", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_unbound_run_comment_only", {
+      actorLabel: "Fable",
+      issueIdentifier: "TASK-482",
+    });
+    expect(copy.description).toContain("no source task binding");
+    expect(copy.sanctionedPath).toContain("plain comment");
+    expect(copy.sanctionedPath).not.toContain("resend");
+  });
+
+  it("names the same-assignee requirement for unbound cross-target comments", () => {
+    const copy = describeIssueWriteDenial("cross_issue_influence_unbound_run_same_assignee_required", {
+      actorLabel: "Fable",
+      assigneeLabel: "CodexCoder",
+      issueIdentifier: "TASK-482",
+    });
+    expect(copy.description).toContain("assigned to CodexCoder");
+    expect(copy.whoCanAct).toContain("Fable");
   });
 
   it("tells a spoof attempt that the write itself was fine", () => {

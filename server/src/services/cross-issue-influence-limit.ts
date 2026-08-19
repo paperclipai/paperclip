@@ -34,7 +34,17 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-function readRunSourceIssueId(contextSnapshot: unknown) {
+export function crossIssueInfluenceUnboundRunCommentOnlyError() {
+  const { body } = issueWriteDenialResponse("cross_issue_influence_unbound_run_comment_only");
+  return forbidden(body.error, body.details);
+}
+
+export function crossIssueInfluenceUnboundRunSameAssigneeRequiredError() {
+  const { body } = issueWriteDenialResponse("cross_issue_influence_unbound_run_same_assignee_required");
+  return forbidden(body.error, body.details);
+}
+
+export function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
   for (const candidate of [context.issueId, context.taskId]) {
@@ -76,6 +86,7 @@ export async function observeCrossIssueInfluence(
     responsibleUserId?: string | null;
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
+    targetAssigneeAgentId?: string | null;
     kind: CrossIssueInfluenceKind;
     now?: Date;
   },
@@ -110,7 +121,15 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      if (input.kind === "comment" && input.targetAssigneeAgentId === input.agentId) {
+        return null;
+      }
+      if (input.kind === "comment") {
+        throw crossIssueInfluenceUnboundRunSameAssigneeRequiredError();
+      }
+      throw crossIssueInfluenceUnboundRunCommentOnlyError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

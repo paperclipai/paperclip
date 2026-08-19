@@ -246,6 +246,7 @@ import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
+  readRunSourceIssueId,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 
@@ -2904,7 +2905,12 @@ export function issueRoutes(
   async function assertCrossIssueInfluenceWithinRunCap(
     req: Request,
     res: Response,
-    issue: { id: string; identifier?: string | null; companyId: string },
+    issue: {
+      id: string;
+      identifier?: string | null;
+      companyId: string;
+      assigneeAgentId?: string | null;
+    },
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
@@ -2919,6 +2925,7 @@ export function issueRoutes(
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
+      targetAssigneeAgentId: issue.assigneeAgentId ?? null,
       kind,
     });
     if (!decision || decision.allowed) return true;
@@ -4851,6 +4858,23 @@ export function issueRoutes(
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
+  }
+
+  async function assertIssueBoundRunForAgentMutation(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      identifier?: string | null;
+      assigneeAgentId?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run) return true;
+    if (readRunSourceIssueId(run.contextSnapshot)) return true;
+    return denyIssueWrite(req, res, issue, "cross_issue_influence_unbound_run_comment_only");
   }
 
   function readObject(value: unknown): Record<string, unknown> {
@@ -7182,6 +7206,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+    if (!(await assertIssueBoundRunForAgentMutation(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -10855,6 +10880,7 @@ export function issueRoutes(
     if (!issue) return;
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
+      if (!(await assertIssueBoundRunForAgentMutation(req, res, issue))) return;
       if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     } else {
       assertBoard(req);
@@ -11797,6 +11823,13 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
+    if (req.actor.type === "agent" && (reopenRequested || resumeRequested)) {
+      const run = await loadActorRunContext(req, issue.companyId);
+      if (run && !readRunSourceIssueId(run.contextSnapshot)) {
+        await denyIssueWrite(req, res, issue, "cross_issue_influence_unbound_run_comment_only");
+        return;
+      }
+    }
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const crossIssueCommentOnlyGrant =

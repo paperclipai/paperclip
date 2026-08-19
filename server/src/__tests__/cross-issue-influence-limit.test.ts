@@ -198,7 +198,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("fails closed when the persisted run has no source issue for non-comment kinds", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -206,10 +206,53 @@ describe("cross-issue influence limit rollout", () => {
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetAssigneeAgentId: "33333333-3333-4333-8333-333333333333",
       kind: "update",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_unbound_run_comment_only" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("allows same-agent comment self-report for a valid unbound run", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetAssigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      kind: "comment",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("denies unbound-run comments on cross-agent or unassigned targets", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} });
+    const base = {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment" as const,
+    };
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...base,
+      targetAssigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_unbound_run_same_assignee_required" },
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...base,
+      targetAssigneeAgentId: null,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_unbound_run_same_assignee_required" },
     });
     expect(fake.inserted).toEqual([]);
   });

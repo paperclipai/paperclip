@@ -31,6 +31,8 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_influence_unbound_run_comment_only",
+  "cross_issue_influence_unbound_run_same_assignee_required",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -250,16 +252,54 @@ export function describeIssueWriteDenial(
         status: 403,
         tone: "boundary",
         boundary: "Heartbeat run context",
-        title: "Cross-issue writes need a run to attribute them to",
+        title: "Cross-issue writes need a valid run to attribute them to",
         description:
-          `Every agent comment and task update is attributed to a heartbeat run so the ` +
+          `Every agent comment and task update is attributed to a persisted heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
+          `This request arrived without a run header, with a malformed run id, or with a run row ` +
+          `that does not match the authenticated agent and company.`,
+        whoCanAct: `${actor}, once the request carries a valid \`X-Paperclip-Run-Id\` for the current heartbeat.`,
         sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
+          `Send \`X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\` with your current run and retry. If the ` +
+          `header is already present, start a fresh heartbeat run instead of reusing a stale id.`,
+      };
 
+    case "cross_issue_influence_unbound_run_comment_only":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Issue-bound run requirement",
+        title: "This heartbeat run is not bound to a task",
+        description:
+          `The run header is valid, but its persisted context has no source task binding. Unbound ` +
+          `runs may post a comment-only self-report on a task still assigned to ${actor} at write ` +
+          `time — they cannot mutate ${issue}, change status or blockers, edit documents, create ` +
+          `interactions, or use resume/reopen flags.`,
+        whoCanAct:
+          `${actor} on its own assigned tasks via \`POST .../comments\` only, or any agent once ` +
+          `the run is bound to a source task.`,
+        sanctionedPath:
+          `Post a plain comment on a task you still own, or checkout a task so the run binds to ` +
+          `a source issue before any other write.`,
+      };
+
+    case "cross_issue_influence_unbound_run_same_assignee_required":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Same-assignee self-report",
+        title: "Unbound runs may comment only on tasks you own",
+        description:
+          `The run header is valid but unbound: it has no source task in its persisted context. ` +
+          `That path is limited to comment-only self-report on tasks assigned to ${actor} at write ` +
+          `time. ${issue} is assigned to ${assignee}, so this comment is outside the permitted path.`,
+        whoCanAct:
+          `${assignee} on ${issue}, or ${actor} on a task still assigned to itself.`,
+        sanctionedPath:
+          `Comment only on a task you still own, checkout a task you can work so the run binds to ` +
+          `a source issue, or ${CHILD_ISSUE_PATH}.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

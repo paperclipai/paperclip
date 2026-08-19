@@ -177,7 +177,8 @@ vi.mock("../services/external-objects.js", () => ({
   externalObjectService: () => mockExternalObjectService,
 }));
 
-vi.mock("../services/cross-issue-influence-limit.js", () => ({
+vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/cross-issue-influence-limit.js")>(),
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,

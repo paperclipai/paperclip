@@ -178,7 +178,8 @@ function registerRouteMocks() {
     logActivity: mockLogActivity,
   }));
 
-  vi.doMock("../services/cross-issue-influence-limit.js", () => ({
+  vi.doMock("../services/cross-issue-influence-limit.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/cross-issue-influence-limit.js")>(),
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
     crossIssueInfluenceLimitError: vi.fn(),
     crossIssueInfluenceRunContextError: () => new HttpError(
@@ -2172,6 +2173,108 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");
       expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("unbound run same-agent self-report authorization matrix", () => {
+    function unboundDb() {
+      return createRunContextDb({});
+    }
+
+    it("allows comment on own assigned blocked issue from a valid unbound run", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      mockObserveCrossIssueInfluence.mockResolvedValue(null);
+      const app = await createApp(ownerActor(), unboundDb());
+      const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Blocked inbox note" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          kind: "comment",
+          targetAssigneeAgentId: ownerAgentId,
+        }),
+      );
+      expect(mockIssueService.addComment).toHaveBeenCalled();
+    });
+
+    it("denies PATCH from a valid unbound run on own assigned issue", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      mockObserveCrossIssueInfluence.mockRejectedValue(new HttpError(
+        403,
+        "This heartbeat run is not bound to a task (Issue-bound run requirement).",
+        { code: "cross_issue_influence_unbound_run_comment_only" },
+      ));
+      const app = await createApp(ownerActor(), unboundDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Should not apply" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toEqual(expect.objectContaining({
+        code: "cross_issue_influence_unbound_run_comment_only",
+      }));
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("denies document upsert from a valid unbound run", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      const app = await createApp(ownerActor(), unboundDb());
+      const res = await request(app)
+        .put(`/api/issues/${issueId}/documents/plan`)
+        .send({ format: "markdown", body: "# Plan" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toEqual(expect.objectContaining({
+        code: "cross_issue_influence_unbound_run_comment_only",
+      }));
+      expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+    });
+
+    it("denies interaction create from a valid unbound run", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      const app = await createApp(ownerActor(), unboundDb());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/interactions`)
+        .send({
+          kind: "request_confirmation",
+          title: "Confirm",
+          payload: { version: 1, prompt: "Yes?" },
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toEqual(expect.objectContaining({
+        code: "cross_issue_influence_unbound_run_comment_only",
+      }));
+    });
+
+    it("denies resume flag on unbound self-report comments", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      const app = await createApp(ownerActor(), unboundDb());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Trying to resume", resume: true });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toEqual(expect.objectContaining({
+        code: "cross_issue_influence_unbound_run_comment_only",
+      }));
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("denies comment on peer-assigned issue from an unbound run", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: peerAgentId }));
+      mockObserveCrossIssueInfluence.mockRejectedValue(new HttpError(
+        403,
+        "Unbound runs may comment only on tasks you own (Same-assignee self-report).",
+        { code: "cross_issue_influence_unbound_run_same_assignee_required" },
+      ));
+      const app = await createApp(ownerActor(), unboundDb());
+      const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Cross-agent attempt" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toEqual(expect.objectContaining({
+        code: "cross_issue_influence_unbound_run_same_assignee_required",
+      }));
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
     });
   });
 });
