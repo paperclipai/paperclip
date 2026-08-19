@@ -40,6 +40,7 @@ import { hasVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   buildManagedWorkspaceGuestEnv,
   logManagedWorkspaceReadinessRejection,
+  probeManagedWorkspaceHandoffSubjects,
   probeManagedWorkspaceReadiness,
   resolveManagedWorkspaceIdentity,
   shouldBlockPublicationOnReadiness,
@@ -4738,6 +4739,7 @@ function resolveRuntimeServiceHealthUrl(
 }
 
 type RuntimeServiceHealthProbeInput = {
+  db?: Db;
   serviceName?: string | null;
   command?: string | null;
   provider?: string | null;
@@ -4780,15 +4782,25 @@ async function probeManagedWorkspaceRuntimeReadiness(
   if (!identity) return null;
 
   const result = await probeManagedWorkspaceReadiness({ healthUrl, identity });
-  if (result.ok) return true;
+  const verified = !result.ok
+    ? result
+    : input.db
+      ? await probeManagedWorkspaceHandoffSubjects({ db: input.db, healthUrl, identity })
+      : {
+          ok: false as const,
+          reason: "not_ready" as const,
+          readiness: result.readiness,
+          detail: "control-plane database is unavailable for board identity verification",
+        };
+  if (verified.ok) return true;
   logManagedWorkspaceReadinessRejection({
     executionWorkspaceId: identity.executionWorkspaceId,
     healthUrl,
-    result,
+    result: verified,
   });
   // A guest that does not implement the readiness contract yet is not evidence of
   // an unhealthy clone; it is only evidence that the contract cannot be checked.
-  return !shouldBlockPublicationOnReadiness(result);
+  return !shouldBlockPublicationOnReadiness(verified);
 }
 
 async function isRuntimeServiceUrlHealthy(
@@ -5505,6 +5517,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   if (adoptedRecord) {
     const adoptedUrl = adoptedRecord.url ?? backendUrl;
     if (!(await isRuntimeServiceUrlHealthy(adoptedUrl, {
+      db: input.db,
       serviceName,
       command,
       cwd: input.workspace.cwd,
@@ -5794,10 +5807,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       if (!publishHealthUrl) {
         throw new Error("Managed workspace readiness gate could not resolve a health URL");
       }
-      const gate = await waitForManagedWorkspaceReadiness({
+      let gate = await waitForManagedWorkspaceReadiness({
         healthUrl: publishHealthUrl,
         identity: managedWorkspaceIdentity,
       });
+      if (gate.ok) {
+        if (!record.db) {
+          throw new Error("Managed workspace readiness gate could not resolve the control-plane database");
+        }
+        gate = await probeManagedWorkspaceHandoffSubjects({
+          db: record.db,
+          healthUrl: publishHealthUrl,
+          identity: managedWorkspaceIdentity,
+        });
+      }
       if (!gate.ok) {
         logManagedWorkspaceReadinessRejection({
           executionWorkspaceId: managedWorkspaceIdentity.executionWorkspaceId,
@@ -6065,6 +6088,7 @@ async function findHealthyRunningRuntimeService(reuseKey: string | null) {
   const existing = existingId ? runtimeServicesById.get(existingId) : null;
   if (!existing || existing.status !== "running") return null;
   const healthInput = {
+    db: existing.db,
     serviceName: existing.serviceName,
     command: existing.command,
     provider: existing.provider,
@@ -7360,7 +7384,9 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
     ));
   const results = await Promise.all(rows.map(async (row) => ({
     row,
-    healthStatus: await isRuntimeServiceUrlHealthy(row.url, row) ? "healthy" as const : "unhealthy" as const,
+    healthStatus: await isRuntimeServiceUrlHealthy(row.url, { ...row, db: input.db })
+      ? "healthy" as const
+      : "unhealthy" as const,
   })));
   await Promise.all(results.map(async ({ row, healthStatus }) => {
     const liveRecord = runtimeServicesById.get(row.id);
@@ -7561,6 +7587,7 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
         backfillDecision.action === "reprovision"
         || !exposureHealthMatches
         || !(await isRuntimeServiceUrlHealthy(adoptedUrl, {
+          db,
           serviceName: row.serviceName,
           command: row.command,
           provider: "local_process",

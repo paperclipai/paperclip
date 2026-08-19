@@ -13,6 +13,8 @@ import {
 } from "../services/workspace-readiness.js";
 import {
   buildManagedWorkspaceGuestEnv,
+  listManagedWorkspaceHandoffSubjects,
+  probeManagedWorkspaceHandoffSubjects,
   probeManagedWorkspaceReadiness,
   resolveManagedWorkspaceIdentity,
   resolveWorkspaceReadinessGateMode,
@@ -67,6 +69,19 @@ function readyDb() {
         where: vi.fn(() => chain),
         limit: vi.fn(() => Promise.resolve(result)),
         then: (resolve: (rows: unknown) => unknown) => Promise.resolve(result).then(resolve),
+      };
+      return chain;
+    }),
+  } as unknown as Db;
+}
+
+function handoffSubjectDb(rows: Array<{ userId: string; email: string | null }>) {
+  return {
+    select: vi.fn(() => {
+      const chain = {
+        from: vi.fn(() => chain),
+        innerJoin: vi.fn(() => chain),
+        then: (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve),
       };
       return chain;
     }),
@@ -352,6 +367,46 @@ describe("probeManagedWorkspaceReadiness", () => {
         }),
       }),
     ).toMatchObject({ ok: false, reason: "identity_mismatch" });
+  });
+
+  it("proves every active control-plane board identity before publication", async () => {
+    const db = handoffSubjectDb([
+      { userId: "user-1", email: "one@example.com" },
+      { userId: "user-2", email: "two@example.com" },
+    ]);
+    await expect(listManagedWorkspaceHandoffSubjects(db, "company-1")).resolves.toEqual([
+      { userId: "user-1", email: "one@example.com" },
+      { userId: "user-2", email: "two@example.com" },
+    ]);
+
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      return new Response(JSON.stringify({
+        ...readyPayload,
+        workspace: {
+          ...readyPayload.workspace,
+          authHandoffUserId: headers[WORKSPACE_READINESS_USER_ID_HEADER],
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    await expect(probeManagedWorkspaceHandoffSubjects({
+      db,
+      healthUrl: "http://127.0.0.1:42013/api/health",
+      identity,
+      fetchImpl,
+    })).resolves.toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks publication when no current board identity can use the handoff", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(probeManagedWorkspaceHandoffSubjects({
+      db: handoffSubjectDb([]),
+      healthUrl: "http://127.0.0.1:42013/api/health",
+      identity,
+      fetchImpl,
+    })).resolves.toMatchObject({ ok: false, reason: "not_ready" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("rejects a workspace serving another instance, workspace, or company", async () => {

@@ -12,6 +12,8 @@
  */
 
 import path from "node:path";
+import { and, eq } from "drizzle-orm";
+import { authUsers, companyMemberships, type Db } from "@paperclipai/db";
 import type { WorkspaceReadiness, WorkspaceReadinessProbeResult } from "@paperclipai/shared";
 import {
   deriveWorkspaceHandoffKey,
@@ -229,6 +231,55 @@ export async function probeManagedWorkspaceReadiness(input: {
   }
 
   return { ok: true, readiness };
+}
+
+/** Current board identities that must survive the clone for it to publish ready. */
+export async function listManagedWorkspaceHandoffSubjects(
+  db: Db,
+  companyId: string,
+): Promise<Array<{ userId: string; email: string }>> {
+  const rows = await db
+    .select({ userId: authUsers.id, email: authUsers.email })
+    .from(authUsers)
+    .innerJoin(
+      companyMemberships,
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, authUsers.id),
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
+  return rows.flatMap((row) => {
+    const userId = row.userId?.trim();
+    const email = row.email?.trim();
+    return userId && email ? [{ userId, email }] : [];
+  });
+}
+
+/** Prove that every current board member can use the advertised handoff. */
+export async function probeManagedWorkspaceHandoffSubjects(input: {
+  db: Db;
+  healthUrl: string;
+  identity: ManagedWorkspaceIdentity;
+  fetchImpl?: typeof fetch;
+}): Promise<WorkspaceReadinessProbeResult> {
+  const subjects = await listManagedWorkspaceHandoffSubjects(input.db, input.identity.companyId);
+  if (subjects.length === 0) {
+    return {
+      ok: false,
+      reason: "not_ready",
+      readiness: null,
+      detail: "no active board user is eligible for workspace login handoff",
+    };
+  }
+  const results = await Promise.all(subjects.map((handoffSubject) => probeManagedWorkspaceReadiness({
+    healthUrl: input.healthUrl,
+    identity: input.identity,
+    fetchImpl: input.fetchImpl,
+    handoffSubject,
+  })));
+  return results.find((result) => !result.ok) ?? results[0]!;
 }
 
 /**
