@@ -668,3 +668,46 @@ describe("MarkdownBody", () => {
   });
 
 });
+
+describe("code block syntax highlighting", () => {
+  it("tokenizes a fenced block that declares its language", () => {
+    const html = renderMarkdown(['```typescript', 'const status = "blocked";', '```'].join("\n"));
+
+    // rehype-highlight marks the code element and wraps each token.
+    expect(html).toContain("hljs");
+    expect(html).toContain("hljs-keyword");
+    expect(html).toContain("hljs-string");
+  });
+
+  it("tokenizes an untagged fence, because most agent-authored fences carry no language", () => {
+    const html = renderMarkdown(
+      ['```', 'export function run() {', '  return "ok";', '}', '```'].join("\n"),
+    );
+
+    expect(html).toContain("hljs-");
+  });
+
+  it("marks added and removed lines in a diff fence", () => {
+    const html = renderMarkdown(
+      ['```diff', '-  const a = 1;', '+  const a = 2;', '```'].join("\n"),
+    );
+
+    expect(html).toContain("hljs-deletion");
+    expect(html).toContain("hljs-addition");
+  });
+
+  it("does not throw on a fence whose language is unknown", () => {
+    expect(() =>
+      renderMarkdown(['```notalanguage', 'some text', '```'].join("\n")),
+    ).not.toThrow();
+  });
+
+  it("leaves inline code untokenized", () => {
+    // rehype-highlight only visits `pre > code`. Inline code keeps the
+    // chip treatment and must not pick up a syntax colour.
+    const html = renderMarkdown("Set `status` to blocked.");
+
+    expect(html).toContain(">status</code>");
+    expect(html).not.toContain("hljs");
+  });
+});

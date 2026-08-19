@@ -28,7 +28,7 @@ describe("markdown code block styles", () => {
   it("rides theme tokens for the rendered code block surface", () => {
     const block = cssBlock(".paperclip-markdown pre");
 
-    expect(block).toContain("background-color: var(--muted)");
+    expect(block).toContain("background-color: var(--code-surface)");
     expect(block).toContain("color: var(--foreground)");
     expect(block).toContain("border: 1px solid var(--border)");
     expect(block).toContain("border-radius: var(--radius-lg)");
@@ -37,7 +37,7 @@ describe("markdown code block styles", () => {
   it("rides theme tokens for the editor content code block surface", () => {
     const block = cssBlock(".paperclip-mdxeditor-content pre");
 
-    expect(block).toContain("background: var(--muted)");
+    expect(block).toContain("background: var(--code-surface)");
     expect(block).toContain("color: var(--foreground)");
     expect(block).toContain("border: 1px solid var(--border)");
     expect(block).toContain("border-radius: var(--radius-lg)");
@@ -46,9 +46,9 @@ describe("markdown code block styles", () => {
   it("points the normal and inverted prose variables at the same tokens", () => {
     const block = cssBlock(".paperclip-markdown");
 
-    expect(block).toContain("--tw-prose-pre-bg: var(--muted)");
+    expect(block).toContain("--tw-prose-pre-bg: var(--code-surface)");
     expect(block).toContain("--tw-prose-pre-code: var(--foreground)");
-    expect(block).toContain("--tw-prose-invert-pre-bg: var(--muted)");
+    expect(block).toContain("--tw-prose-invert-pre-bg: var(--code-surface)");
     expect(block).toContain("--tw-prose-invert-pre-code: var(--foreground)");
   });
 
@@ -66,5 +66,66 @@ describe("markdown code block styles", () => {
     // fill, so the controls must not use it or they disappear against it.
     expect(codeBlockActionStyle.backgroundColor).toBe("var(--background)");
     expect(codeBlockActionStyle.backgroundColor).not.toContain("--muted");
+  });
+});
+
+describe("code syntax palette", () => {
+  const aliases = [
+    "--code-syntax-keyword",
+    "--code-syntax-string",
+    "--code-syntax-number",
+    "--code-syntax-identifier",
+    "--code-syntax-punctuation",
+    "--code-syntax-comment",
+    "--code-syntax-added",
+    "--code-syntax-removed",
+  ];
+
+  it("defines every syntax role as an alias of an existing token", () => {
+    for (const alias of aliases) {
+      const declaration = new RegExp(`${alias}:\\s*var\\(--[a-z0-9_-]+\\)`, "i");
+      expect(stylesheet, `${alias} must be defined as var(--existing-token)`).toMatch(declaration);
+    }
+  });
+
+  it("holds the borrowed-token coupling in the alias layer only", () => {
+    // The syntax rules must reference the aliases, never the borrowed tokens
+    // directly. That keeps repointing to a real palette a one-block edit.
+    const syntaxRules = stylesheet.slice(stylesheet.indexOf(".paperclip-markdown :is(pre, code)"));
+
+    expect(syntaxRules).not.toContain("--status-task-icon-");
+    expect(syntaxRules).not.toContain("--chip-match-title-fg");
+  });
+
+  it("maps the highlight.js token classes the renderer emits", () => {
+    for (const cls of [
+      ".hljs-keyword",
+      ".hljs-string",
+      ".hljs-number",
+      ".hljs-comment",
+      ".hljs-addition",
+      ".hljs-deletion",
+    ]) {
+      expect(stylesheet, `${cls} must be mapped`).toContain(cls);
+    }
+  });
+});
+
+describe("code block surface separation", () => {
+  it("defines the surface as a translucent tint in both modes", () => {
+    // A fixed token cannot work: --bubble-agent is oklch(0.97 0 0) in light,
+    // identical to --muted, and its "hairline" variant is var(--background).
+    // A tint shifts whatever is beneath it, so it separates everywhere.
+    expect(stylesheet).toMatch(/--code-surface:\s*color-mix\(in oklab, var\(--foreground\) \d+%, transparent\)/);
+
+    const darkBlock = stylesheet.slice(stylesheet.indexOf(".dark {"));
+    expect(darkBlock).toContain("--code-surface:");
+  });
+
+  it("never pins the code surface to the agent bubble fill", () => {
+    const preBlock = cssBlock(".paperclip-markdown pre");
+
+    expect(preBlock).not.toContain("var(--muted)");
+    expect(preBlock).not.toContain("var(--bubble-agent)");
   });
 });

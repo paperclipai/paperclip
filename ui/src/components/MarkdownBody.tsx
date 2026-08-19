@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { cn } from "../lib/utils";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
@@ -221,6 +222,37 @@ const scrollableBlockStyle: React.CSSProperties = {
   maxWidth: "100%",
   overflowX: "auto",
 };
+
+/* Syntax highlighting for fenced code blocks.
+
+   `subset` is deliberate. highlight.js auto-detection is unreliable on the
+   short snippets that appear in task chat, and a wrong guess colours the
+   whole block wrongly. Restricting detection to the languages agents
+   actually post makes the guess reliable. `detect` stays on because most
+   agent-authored fences carry no language tag, and without it those blocks
+   would never highlight.
+
+   Defined at module scope so the array identity is stable. react-markdown
+   remounts the rendered tree when its plugin array changes identity, which
+   discards scroll position and selection — the same hazard the
+   `remarkPlugins` memo below guards against. */
+const HIGHLIGHT_LANGUAGE_SUBSET = [
+  "bash",
+  "diff",
+  "json",
+  "typescript",
+  "javascript",
+  "yaml",
+  "sql",
+  "python",
+  "css",
+  "xml",
+  "markdown",
+];
+
+const rehypePlugins: NonNullable<Options["rehypePlugins"]> = [
+  [rehypeHighlight, { detect: true, subset: HIGHLIGHT_LANGUAGE_SUBSET, ignoreMissing: true }],
+];
 
 const codeBlockActionsStyle: React.CSSProperties = {
   position: "absolute",
@@ -942,6 +974,7 @@ function MarkdownBodyImpl({
     >
       <Markdown
         remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
         components={components}
         urlTransform={safeMarkdownUrlTransform}
       >

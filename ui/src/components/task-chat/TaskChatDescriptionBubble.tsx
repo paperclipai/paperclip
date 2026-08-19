@@ -135,11 +135,17 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
         )}
       >
         <div
+          // PAP-501 put agent prose on the page surface: no card fill, no
+          // rounding, full width. TaskChatBubble already does this for agent
+          // messages. The description is agent prose too when an agent opened
+          // the task, so it follows the same rule rather than keeping a
+          // --bubble-agent card that no other agent text still uses. The human
+          // side keeps its accent bubble.
           className={cn(
-            "max-w-(--pct-85) break-words px-3.5 py-2 text-sm",
+            "break-words py-2 text-sm",
             isHuman
-              ? "rounded-2xl rounded-br-sm bg-(--liveness-blue) text-white"
-              : "rounded-2xl rounded-bl-sm bg-(--bubble-agent) text-foreground",
+              ? "max-w-(--pct-85) rounded-2xl rounded-br-sm bg-(--liveness-blue) px-3.5 text-white"
+              : "w-full bg-transparent px-1 text-foreground",
           )}
         >
           <FoldCurtain

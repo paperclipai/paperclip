@@ -95,8 +95,16 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(bubble?.className).toContain("items-start");
     expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).not.toBeNull();
     expect(bubble?.textContent).toContain("CEO");
-    expect(bubble?.querySelector(".bg-\\(--bubble-agent\\)")).not.toBeNull();
+    // PAP-501: agent prose sits on the page surface. The description is agent
+    // prose when an agent opened the task, so it carries no card fill, no
+    // rounding and no width cap — matching TaskChatBubble's agent branch.
+    expect(bubble?.querySelector(".bg-\\(--bubble-agent\\)")).toBeNull();
     expect(bubble?.querySelector(".bg-\\(--liveness-blue\\)")).toBeNull();
+    const agentBody = bubble?.querySelector(".bg-transparent");
+    expect(agentBody).not.toBeNull();
+    expect(agentBody?.className).toContain("w-full");
+    expect(agentBody?.className).not.toContain("rounded-2xl");
+    expect(agentBody?.className).not.toContain("max-w-(--pct-85)");
   });
 
   it("renders the live description — a new value shows without remount", () => {

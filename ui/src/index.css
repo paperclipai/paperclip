@@ -1408,7 +1408,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--muted);
+  background: var(--code-surface);
   color: var(--foreground);
   overflow-x: auto;
 }
@@ -1487,16 +1487,16 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
    both modes. Override prose CSS variables so prose-invert can't revert to
    defaults. */
 .paperclip-markdown {
-  --tw-prose-pre-bg: var(--muted);
+  --tw-prose-pre-bg: var(--code-surface);
   --tw-prose-pre-code: var(--foreground);
-  --tw-prose-invert-pre-bg: var(--muted);
+  --tw-prose-invert-pre-bg: var(--code-surface);
   --tw-prose-invert-pre-code: var(--foreground);
 }
 
 .paperclip-markdown pre {
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-lg) !important;
-  background-color: var(--muted) !important;
+  background-color: var(--code-surface) !important;
   color: var(--foreground) !important;
   padding: 0.5rem 0.65rem !important;
   margin: 0.4rem 0 !important;
@@ -1508,6 +1508,92 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown code {
   font-family: var(--font-mono);
   font-size: 1em;
+}
+
+/* ── Code block surface ──
+   The block must separate from whatever it sits on, and that is not always
+   the page. It also renders inside agent bubbles, whose fill --bubble-agent
+   is oklch(0.97 0 0) in light — the same value as --muted, which made the
+   block vanish into the bubble and read as one flat slab. The bubble fill
+   also changes per variant, and the "hairline" variant IS var(--background),
+   so no fixed token separates in every case.
+
+   A translucent tint shifts whatever is beneath it instead of replacing it,
+   so one value holds on the page and in every bubble variant, in both modes.
+   Light darkens toward the ink; dark lifts toward it. */
+:root {
+  --code-surface: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+
+.dark {
+  --code-surface: color-mix(in oklab, var(--foreground) 9%, transparent);
+}
+
+/* ── Code syntax roles ──
+   Each alias points at a token that already exists and already carries a
+   `.dark` override, so one definition covers both modes. A custom property
+   resolves at its use site, so `.dark` swaps these automatically.
+
+   The mapping is BORROWED. `--status-task-icon-*` and `--chip-match-title-fg`
+   name task-status and search-chip concerns, not syntax roles. Paperclip has
+   no syntax palette, and these were the only hues carrying a real per-mode
+   value: the fixed `--status-task-*` hues go dim on the dark code surface.
+   The coupling is deliberate and confined to this one block. To mint a real
+   palette later, repoint these eight aliases — no rule below changes. */
+:root {
+  --code-syntax-keyword: var(--status-task-icon-in_review);
+  --code-syntax-string: var(--status-task-icon-done);
+  --code-syntax-number: var(--chip-match-title-fg);
+  --code-syntax-identifier: var(--foreground);
+  --code-syntax-punctuation: var(--muted-foreground);
+  --code-syntax-comment: var(--muted-foreground);
+  --code-syntax-added: var(--status-task-icon-done);
+  --code-syntax-removed: var(--destructive);
+}
+
+/* highlight.js token classes, emitted by rehype-highlight. No highlight.js
+   stylesheet is imported, so these rules are the only source of colour. */
+.paperclip-markdown :is(pre, code) :is(.hljs-keyword, .hljs-built_in, .hljs-literal, .hljs-type, .hljs-meta, .hljs-selector-tag) {
+  color: var(--code-syntax-keyword);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-string, .hljs-regexp, .hljs-symbol, .hljs-char, .hljs-quote) {
+  color: var(--code-syntax-string);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-number, .hljs-title, .hljs-name, .hljs-section, .hljs-link, .hljs-attr, .hljs-attribute, .hljs-selector-id, .hljs-selector-class) {
+  color: var(--code-syntax-number);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-variable, .hljs-params, .hljs-property, .hljs-subst, .hljs-template-variable) {
+  color: var(--code-syntax-identifier);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-operator, .hljs-punctuation, .hljs-tag, .hljs-bullet) {
+  color: var(--code-syntax-punctuation);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-comment, .hljs-doctag) {
+  color: var(--code-syntax-comment);
+  font-style: italic;
+}
+
+/* ```diff fences. The row tinting from the design is not implemented, so
+   the +/- lines are carried by colour alone here. */
+.paperclip-markdown :is(pre, code) .hljs-addition {
+  color: var(--code-syntax-added);
+}
+
+.paperclip-markdown :is(pre, code) .hljs-deletion {
+  color: var(--code-syntax-removed);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-emphasis) {
+  font-style: italic;
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-strong) {
+  font-weight: 600;
 }
 
 .paperclip-markdown pre code {
