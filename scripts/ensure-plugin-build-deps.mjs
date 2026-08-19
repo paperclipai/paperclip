@@ -25,6 +25,12 @@ const buildTargets = [
     sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
   },
+  {
+    name: "@paperclipai/paperclip-runner",
+    output: path.join(rootDir, "packages/paperclip-runner/dist/index.js"),
+    sourceDir: path.join(rootDir, "packages/paperclip-runner/src"),
+    tsconfig: path.join(rootDir, "packages/paperclip-runner/tsconfig.json"),
+  },
 ];
 
 if (!fs.existsSync(tscCliPath)) {

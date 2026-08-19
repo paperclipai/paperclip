@@ -1,4 +1,10 @@
 export { decisionEffectTargetIssueIds } from "./decision.js";
+export {
+  NATIVE_FINALIZATION_SCHEMA,
+  type NativeFinalizationResult,
+  type NativeReportedWorkDisposition,
+  type NativeRunTerminalState,
+} from "./native-finalization.js";
 export type {
   Company,
   InteractionResolverGovernance,

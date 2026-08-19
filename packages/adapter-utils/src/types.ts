@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -128,6 +129,8 @@ export interface AdapterExecutionResult {
       description?: string;
     }>;
   } | null;
+  /** Present only for a persisted native-mode run; legacy adapters omit it. */
+  nativeFinalization?: NativeFinalizationResult;
 }
 
 export interface AdapterSessionCodec {

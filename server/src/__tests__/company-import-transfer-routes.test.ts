@@ -108,6 +108,18 @@ function boardActor(userId: string) {
   };
 }
 
+async function waitForImportJob(app: express.Express, statusUrl: string) {
+  const deadline = Date.now() + 5_000;
+  let job: Record<string, any> | undefined;
+  do {
+    const polled = await request(app).get(statusUrl);
+    job = polled.body.job;
+    if (job?.status === "succeeded" || job?.status === "failed") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } while (Date.now() < deadline);
+  return job;
+}
+
 // A minimal STORE-only zip writer (same layout as the portability routes test)
 // so apply can be exercised end-to-end through the real readZipArchive path.
 function crc32(bytes: Uint8Array) {
@@ -520,13 +532,7 @@ describeEmbeddedPostgres("company import transfer routes", () => {
       .send(importMeta);
     expect(accepted.status).toBe(202);
     const statusUrl = accepted.body.statusUrl as string;
-    let job: Record<string, any> | undefined;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      const polled = await request(app).get(statusUrl);
-      job = polled.body.job;
-      if (job?.status === "succeeded" || job?.status === "failed") break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    const job = await waitForImportJob(app, statusUrl);
     expect(job?.status).toBe("succeeded");
     expect(job?.result?.companyId).toBe(companyId);
 
@@ -581,13 +587,7 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     expect((await companyTransferRunService.getRun(db, secondId))!.status).toBe("failed");
 
     releaseImport!();
-    let job: Record<string, any> | undefined;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      const polled = await request(app).get(accepted.body.statusUrl as string);
-      job = polled.body.job;
-      if (job?.status === "succeeded" || job?.status === "failed") break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    const job = await waitForImportJob(app, accepted.body.statusUrl as string);
     expect(job?.status).toBe("succeeded");
     expect((await companyTransferRunService.getRun(db, firstId))!.status).toBe("completed");
 

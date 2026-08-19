@@ -1,0 +1,55 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Budget cost stop reason",
+  "description": "A terminal budget hard stop carries a safe usage aggregate, decision id, and stable stop receipt.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1", "companyId": "company_budget_stop", "issueId": "issue_budget_stop", "runId": "run_budget_stop",
+    "environmentLeaseId": "lease_budget_stop", "runnerInstanceId": "runner_budget_stop", "normalizedSessionId": "session_budget_stop", "driverSessionId": "driver_budget_stop"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run", "driver": { "kind": "provider-neutral", "version": "1.0.0" },
+    "steer": false, "interrupt": true, "resume": true, "runtimeRequests": false, "structuredResult": true, "typedEvents": true, "unsupported": []
+  },
+  "commands": [],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "budget_stop_01", "sourceSeq": 1, "sourceInstanceId": "runner_budget_stop",
+      "sourceKind": "runner", "runId": "run_budget_stop", "normalizedSessionId": "session_budget_stop", "turnId": "turn_budget_stop",
+      "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:40:00.000Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "blocked", "summary": "The actor budget reached its hard limit.",
+        "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "The budget owner must raise the limit or wait for reset.", "blocksCompletion": true }] },
+        "evidence": [{ "decisionId": "budget_decision_stop" }],
+        "verification": [{ "commandOrCheck": "budget aggregate receipt", "status": "passed" }],
+        "blocker": { "reasonCode": "budget_hard_stop", "owner": { "kind": "budget_owner" }, "unblockAction": "Raise the actor budget or wait for the monthly reset.", "scope": "task_wide" },
+        "attentionRequests": [], "artifacts": []
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "budget_stop_02", "sourceSeq": 2, "sourceInstanceId": "runner_budget_stop",
+      "sourceKind": "runner", "runId": "run_budget_stop", "normalizedSessionId": "session_budget_stop", "turnId": "turn_budget_stop",
+      "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:40:00.010Z",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "cancelled", "runTerminalState": "cancelled", "reportedWorkDisposition": "blocked",
+        "workAssessmentId": "assessment_budget_stop", "statusDecisionId": "decision_budget_stop",
+        "stopReason": {
+          "schema": "paperclip.prp.stop_reason.v1", "schemaVersion": 1, "receiptId": "stop_receipt_budget", "kind": "budget",
+          "code": "budget_hard_stop", "retryable": true, "decisionId": "budget_decision_stop", "limitClass": "actor_monthly",
+          "aggregate": { "unit": "cents", "observed": 10000, "limit": 10000, "window": "monthly_utc" },
+          "relatedReceiptIds": []
+        }
+      }
+    }
+  ],
+  "requests": [],
+  "result": {
+    "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "blocked", "summary": "The actor budget reached its hard limit.",
+    "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "The budget owner must raise the limit or wait for reset.", "blocksCompletion": true }] },
+    "evidence": [{ "decisionId": "budget_decision_stop" }],
+    "verification": [{ "commandOrCheck": "budget aggregate receipt", "status": "passed" }],
+    "blocker": { "reasonCode": "budget_hard_stop", "owner": { "kind": "budget_owner" }, "unblockAction": "Raise the actor budget or wait for the monthly reset.", "scope": "task_wide" },
+    "attentionRequests": [], "artifacts": []
+  }
+}

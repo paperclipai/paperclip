@@ -103,6 +103,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
+  persistHeartbeatRunProcessMetadata,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
@@ -572,6 +573,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("persists native app-server ownership for restart-time cancellation", async () => {
+    const { runId } = await seedRunFixture({ includeIssue: false });
+    const startedAt = "2026-08-18T18:00:00.000Z";
+
+    await persistHeartbeatRunProcessMetadata(db, runId, {
+      pid: 81_001,
+      processGroupId: 81_001,
+      startedAt,
+    });
+
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toEqual([
+      expect.objectContaining({
+        processPid: 81_001,
+        processGroupId: 81_001,
+        processStartedAt: new Date(startedAt),
+      }),
+    ]);
+  });
 
   async function seedEnvironmentLeaseFixture(input: {
     companyId: string;

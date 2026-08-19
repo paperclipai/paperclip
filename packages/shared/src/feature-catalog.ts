@@ -42,6 +42,14 @@ export interface FeatureCatalogEntry {
 }
 
 export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalogEntry> = {
+  enableNativeRunner: {
+    title: "Native Runner",
+    description:
+      "Allow explicitly opted-in local Codex agents to use the Phase 6 native session contract. Disable this kill switch to keep all new runs on legacy execution.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableEnvironments: {
     title: "Environments",
     description:

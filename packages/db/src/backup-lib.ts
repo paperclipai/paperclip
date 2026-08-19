@@ -883,6 +883,33 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    // JavaScript backups are used when a worktree seed filters or transforms
+    // table data. Preserve user-defined routines so a restored schema retains
+    // behavior implemented by triggers as well as its tables and indexes.
+    const routines = await sql<{ definition: string }[]>`
+      SELECT pg_get_functiondef(p.oid) AS definition
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        AND p.prokind IN ('f', 'p')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_depend d
+          WHERE d.classid = 'pg_proc'::regclass
+            AND d.objid = p.oid
+            AND d.deptype = 'e'
+        )
+      ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
+    `;
+    if (routines.length > 0) {
+      emit("-- Functions and procedures");
+      for (const routine of routines) {
+        const definition = routine.definition.trimEnd();
+        emitStatement(definition.endsWith(";") ? definition : `${definition};`);
+      }
+      emit("");
+    }
+
     // Dump data for each table
     for (const { schema_name, tablename } of tables) {
       const currentTableKey = tableKey(schema_name, tablename);
@@ -934,6 +961,33 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
         await writer.drain();
+      }
+      emit("");
+    }
+
+    const allTriggers = await sql<{
+      schema_name: string;
+      tablename: string;
+      definition: string;
+    }[]>`
+      SELECT
+        n.nspname AS schema_name,
+        c.relname AS tablename,
+        pg_get_triggerdef(t.oid, true) AS definition
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE NOT t.tgisinternal
+        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, c.relname, t.tgname
+    `;
+    const triggers = allTriggers.filter((entry) => (
+      includedTableNames.has(tableKey(entry.schema_name, entry.tablename))
+    ));
+    if (triggers.length > 0) {
+      emit("-- Triggers");
+      for (const trigger of triggers) {
+        emitStatement(`${trigger.definition};`);
       }
       emit("");
     }

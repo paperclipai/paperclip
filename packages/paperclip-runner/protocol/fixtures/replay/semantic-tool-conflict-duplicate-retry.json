@@ -1,0 +1,120 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Semantic tool conflict and duplicate retry",
+  "description": "A stale document write conflicts, a fresh retry succeeds, and an exact idempotent retry returns the original operation receipt.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1", "companyId": "company_semantic_retry", "issueId": "issue_semantic_retry",
+    "runId": "run_semantic_retry", "environmentLeaseId": "lease_semantic_retry", "runnerInstanceId": "runner_semantic_retry",
+    "normalizedSessionId": "session_semantic_retry", "driverSessionId": "driver_semantic_retry"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run",
+    "driver": { "kind": "provider-neutral", "version": "1.0.0" },
+    "steer": false, "interrupt": true, "resume": true, "runtimeRequests": true, "structuredResult": true, "typedEvents": true,
+    "semanticTools": { "schema": "paperclip.prp.semantic_tools.v1", "schemaVersion": 1, "operations": [{
+      "operationId": "write_document", "version": 1, "availability": "available", "redactionDisposition": "digest_only", "requiredClaims": []
+    }] },
+    "unsupported": []
+  },
+  "commands": [],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_01", "sourceSeq": 1, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "itemId": "item_semantic_conflict", "eventType": "mcp_app.tool_input", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:20:00.000Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "input", "operationId": "write_document", "callId": "call_semantic_conflict",
+        "correlation": { "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry", "itemId": "item_semantic_conflict" },
+        "idempotencyKey": "write_plan_stale",
+        "content": { "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "redactionDisposition": "digest_only", "references": [{ "kind": "document_revision", "id": "revision_plan_stale" }] }
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_02", "sourceSeq": 2, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "itemId": "item_semantic_conflict", "eventType": "mcp_app.tool_result", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:20:00.010Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "result", "operationId": "write_document", "callId": "call_semantic_conflict",
+        "correlation": { "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry", "itemId": "item_semantic_conflict" },
+        "idempotencyKey": "write_plan_stale",
+        "content": { "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "redactionDisposition": "allowlisted_references", "references": [{ "kind": "document_revision", "id": "revision_plan_2" }] },
+        "outcome": "conflict", "code": "document_revision_conflict", "retryable": true, "authorizationBoundary": "revision",
+        "operationReceiptId": "receipt_semantic_conflict", "auditReceiptId": "audit_semantic_conflict", "currentRevision": "revision_plan_2"
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_03", "sourceSeq": 3, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "itemId": "item_semantic_fresh", "eventType": "mcp_app.tool_input", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:20:00.020Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "input", "operationId": "write_document", "callId": "call_semantic_fresh",
+        "correlation": { "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry", "itemId": "item_semantic_fresh" },
+        "idempotencyKey": "write_plan_retry",
+        "content": { "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "redactionDisposition": "digest_only", "references": [{ "kind": "document_revision", "id": "revision_plan_2" }] }
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_04", "sourceSeq": 4, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "itemId": "item_semantic_fresh", "eventType": "mcp_app.tool_result", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:20:00.030Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "result", "operationId": "write_document", "callId": "call_semantic_fresh",
+        "correlation": { "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry", "itemId": "item_semantic_fresh" },
+        "idempotencyKey": "write_plan_retry",
+        "content": { "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "redactionDisposition": "allowlisted_references", "references": [{ "kind": "document_revision", "id": "revision_plan_3" }] },
+        "outcome": "succeeded", "code": "ok", "retryable": false, "authorizationBoundary": "revision",
+        "operationReceiptId": "receipt_semantic_document_commit", "auditReceiptId": "audit_semantic_document_commit", "currentRevision": "revision_plan_3"
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_05", "sourceSeq": 5, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "itemId": "item_semantic_duplicate", "eventType": "mcp_app.tool_input", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:20:00.040Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "input", "operationId": "write_document", "callId": "call_semantic_duplicate",
+        "correlation": { "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry", "itemId": "item_semantic_duplicate" },
+        "idempotencyKey": "write_plan_retry",
+        "content": { "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "redactionDisposition": "digest_only", "references": [{ "kind": "document_revision", "id": "revision_plan_2" }] }
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_06", "sourceSeq": 6, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "itemId": "item_semantic_duplicate", "eventType": "mcp_app.tool_result", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-11T10:20:00.050Z",
+      "payload": { "semantic_tool": {
+        "schema": "paperclip.prp.semantic_tool.v1", "schemaVersion": 1, "phase": "result", "operationId": "write_document", "callId": "call_semantic_duplicate",
+        "correlation": { "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry", "itemId": "item_semantic_duplicate" },
+        "idempotencyKey": "write_plan_retry",
+        "content": { "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "redactionDisposition": "allowlisted_references", "references": [{ "kind": "document_revision", "id": "revision_plan_3" }] },
+        "outcome": "duplicate", "code": "duplicate", "retryable": false, "authorizationBoundary": "revision",
+        "operationReceiptId": "receipt_semantic_document_commit", "duplicateOfReceiptId": "receipt_semantic_document_commit", "currentRevision": "revision_plan_3"
+      } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_07", "sourceSeq": 7, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:20:00.060Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "The revision-safe retry committed once.",
+        "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] },
+        "evidence": [{ "receiptId": "receipt_semantic_conflict" }, { "receiptId": "receipt_semantic_document_commit" }],
+        "verification": [{ "commandOrCheck": "conflict then exact duplicate retry", "status": "passed" }], "attentionRequests": [], "artifacts": []
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "semantic_retry_08", "sourceSeq": 8, "sourceInstanceId": "runner_semantic_retry",
+      "sourceKind": "runner", "runId": "run_semantic_retry", "normalizedSessionId": "session_semantic_retry", "turnId": "turn_semantic_retry",
+      "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-11T10:20:00.070Z",
+      "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "workAssessmentId": "assessment_semantic_retry", "statusDecisionId": "decision_semantic_retry" }
+    }
+  ],
+  "requests": [],
+  "result": {
+    "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "The revision-safe retry committed once.",
+    "completionClaim": { "contractRevision": "semantic-receipts-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] },
+    "evidence": [{ "receiptId": "receipt_semantic_conflict" }, { "receiptId": "receipt_semantic_document_commit" }],
+    "verification": [{ "commandOrCheck": "conflict then exact duplicate retry", "status": "passed" }], "attentionRequests": [], "artifacts": []
+  }
+}

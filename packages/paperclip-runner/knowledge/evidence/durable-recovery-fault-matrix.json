@@ -1,0 +1,423 @@
+{
+  "schema": "paperclip.runner.durable.evidence.v1",
+  "traces": [
+    {
+      "fault": "none",
+      "outcome": "recovered",
+      "connectionCount": 1,
+      "replayDeliveries": 8,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 5315,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 5,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "socket-drop",
+      "outcome": "recovered",
+      "connectionCount": 2,
+      "replayDeliveries": 8,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 5314,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 5,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "lost-ack",
+      "outcome": "recovered",
+      "connectionCount": 2,
+      "replayDeliveries": 9,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 1
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 6023,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 5,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "duplicate-command",
+      "outcome": "recovered",
+      "connectionCount": 2,
+      "replayDeliveries": 8,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 1
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 5314,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 5,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "runner-restart",
+      "outcome": "recovered",
+      "connectionCount": 2,
+      "replayDeliveries": 10,
+      "runnerRestarts": 1,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 1
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 6883,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 6,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "harness-restart",
+      "outcome": "recovered",
+      "connectionCount": 1,
+      "replayDeliveries": 11,
+      "runnerRestarts": 0,
+      "harnessRestarts": 1,
+      "commands": {
+        "issued": 5,
+        "completed": 5,
+        "rejected": 0,
+        "logicalEffects": 5,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 6827,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 8,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "malformed-input",
+      "outcome": "recovered",
+      "connectionCount": 2,
+      "replayDeliveries": 8,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 5314,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 5,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "lease-expiry",
+      "outcome": "recovered",
+      "connectionCount": 2,
+      "replayDeliveries": 9,
+      "runnerRestarts": 1,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 4,
+        "rejected": 0,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 5314,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 6,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "storage-pressure",
+      "outcome": "recovered",
+      "connectionCount": 1,
+      "replayDeliveries": 4,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 5,
+        "completed": 4,
+        "rejected": 1,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 2326,
+        "maxBytes": 16384,
+        "backpressure": true,
+        "p0Committed": 3,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "drain",
+      "outcome": "drained",
+      "connectionCount": 1,
+      "replayDeliveries": 3,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 5,
+        "completed": 4,
+        "rejected": 1,
+        "logicalEffects": 4,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 1478,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 3,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    },
+    {
+      "fault": "revoke",
+      "outcome": "revoked",
+      "connectionCount": 1,
+      "replayDeliveries": 4,
+      "runnerRestarts": 0,
+      "harnessRestarts": 0,
+      "commands": {
+        "issued": 4,
+        "completed": 3,
+        "rejected": 1,
+        "logicalEffects": 3,
+        "duplicateDeliveries": 0
+      },
+      "outbox": {
+        "events": 0,
+        "bytes": 0,
+        "peakBytes": 5315,
+        "maxBytes": 65536,
+        "backpressure": false,
+        "p0Committed": 4,
+        "p0Lost": 0
+      },
+      "security": {
+        "bootstrapTicketPersisted": false,
+        "connectionLeaseTokenPersisted": false,
+        "secretLeakCount": 0
+      },
+      "assertions": {
+        "stableIdentity": true,
+        "sourceCursorContinuous": true,
+        "oneLogicalEffectPerAcceptedCommand": true,
+        "noDuplicateLogicalEvents": true,
+        "p0Preserved": true,
+        "boundedStorage": true,
+        "secretsRedacted": true
+      }
+    }
+  ]
+}

@@ -35,8 +35,8 @@
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "tsc && mkdir -p dist/onboarding-assets dist/built-ins && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/",
-    "prepack": "pnpm run prepare:ui-dist",
+    "build": "pnpm --filter @paperclipai/paperclip-runner build:typescript && tsc && mkdir -p dist/onboarding-assets dist/built-ins && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && node scripts/vendor-paperclip-runner.mjs",
+    "prepack": "pnpm run prepare:ui-dist && node scripts/vendor-paperclip-runner.mjs",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
@@ -82,6 +82,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@paperclipai/paperclip-runner": "workspace:*",
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.1.3",
     "@types/jsdom": "^28.0.0",

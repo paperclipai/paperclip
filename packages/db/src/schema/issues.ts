@@ -9,6 +9,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -31,6 +32,8 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
+    lastStatusDecisionId: uuid("last_status_decision_id"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),

@@ -199,7 +199,15 @@ After the fixed server is live, perform another ordinary hot restart. Require
 `adoptedRunIds` or `finalizedWhileDownRunIds`; an ACP-backed original should be
 finalized and have a queued retry rather than be adopted.
 
-Tailscale/private-auth dev mode:
+First-time private-auth dev mode:
+
+> If the target host already has Paperclip and Tailscale running, reuse the
+> existing managed service and advertised URL. Issue work and package-preview
+> deployment must not repeat onboarding, change Tailscale Serve, request a
+> Tailscale operator grant, or issue a new certificate unless the task
+> explicitly authorizes a network-topology change. Check the current runtime
+> and listener first; the bind commands below are setup commands for a fresh
+> local instance, not prerequisites for every preview.
 
 ```sh
 pnpm dev --bind lan

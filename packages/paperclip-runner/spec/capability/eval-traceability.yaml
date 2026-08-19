@@ -1,0 +1,3847 @@
+# GENERATED FILE — DO NOT EDIT. Run pnpm generate:capability-inventory.
+{
+  "schemaVersion": 2,
+  "inventoryRole": "normative",
+  "generatedFrom": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases",
+  "rows": [
+    {
+      "id": "ap-approval-deny-01",
+      "title": "A denied approval leaves the issue open with an explanatory comment",
+      "group": "ap",
+      "legacyGroup": 10,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-approval-deny-01.yaml",
+      "fixture": "approval-denied",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 2 — Approval follow-up (issue remains open)",
+          "lines": "40-43"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/approvals/apr-0002",
+        "POST \"^/api/issues/(i-0102|MCK-102)/comments$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "approval:read"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ap-approval-deny-01",
+        "mcp:paperclipListApprovalComments",
+        "mcp:paperclipAddApprovalComment"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListApprovalComments",
+        "mcp:paperclipAddApprovalComment"
+      ]
+    },
+    {
+      "id": "ap-approval-wake-01",
+      "title": "Approval wake reviews the approval, its issues, and closes what it resolves",
+      "group": "ap",
+      "legacyGroup": 10,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-approval-wake-01.yaml",
+      "fixture": "approval-approved",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 2 — Approval follow-up",
+          "lines": "36-43"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/approvals/apr-0001",
+        "GET /api/approvals/apr-0001/issues",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "PATCH \"^/api/issues/(i-0103|MCK-103)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "approval:read"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ap-approval-wake-01",
+        "mcp:paperclipListApprovals",
+        "mcp:paperclipGetApproval",
+        "mcp:paperclipGetApprovalIssues",
+        "mcp:paperclipApprovalDecision"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListApprovals",
+        "mcp:paperclipGetApproval",
+        "mcp:paperclipGetApprovalIssues",
+        "mcp:paperclipApprovalDecision"
+      ]
+    },
+    {
+      "id": "ap-board-approval-01",
+      "title": "Spend needs a request_board_approval linked to the issue, then a waiting posture",
+      "group": "ap",
+      "legacyGroup": 10,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-board-approval-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Requesting Board Approval",
+          "lines": "178-197"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/approvals",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "approval:read"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ap-board-approval-01",
+        "mcp:paperclipListIssueApprovals",
+        "mcp:paperclipCreateApproval",
+        "mcp:paperclipLinkIssueApproval",
+        "mcp:paperclipUnlinkIssueApproval"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListIssueApprovals",
+        "mcp:paperclipCreateApproval",
+        "mcp:paperclipLinkIssueApproval",
+        "mcp:paperclipUnlinkIssueApproval"
+      ]
+    },
+    {
+      "id": "ap-mcp-expiry-01",
+      "title": "An expired MCP approval means one fresh idempotent re-call, then in_review again",
+      "group": "ap",
+      "legacyGroup": 10,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-mcp-expiry-01.yaml",
+      "fixture": "mcp-approval-gate",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "MCP Tool Approval Gates (60-minute expiry, idempotent re-call)",
+          "lines": "270"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/tool-gateway/tools/call",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "POST \"^/api/tool-gateway/action-requests/.+/approve$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "approval:read"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ap-mcp-expiry-01"
+      ]
+    },
+    {
+      "id": "ap-mcp-gate-01",
+      "title": "Pending MCP tool approval means in_review posture, no retry, no done",
+      "group": "ap",
+      "legacyGroup": 10,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-mcp-gate-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## MCP Tool Approval Gates",
+          "lines": "261-272"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 7 (pending interaction/approval means explicit waiting posture)",
+          "lines": "95"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "approval:read"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ap-mcp-gate-01"
+      ]
+    },
+    {
+      "id": "ap-mcp-pathmissing-01",
+      "title": "approval_path_missing means stop and reroute, not retry loops or fake dispositions",
+      "group": "ap",
+      "legacyGroup": 10,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ap-mcp-pathmissing-01.yaml",
+      "fixture": "mcp-approval-path-missing",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "MCP Tool Approval Gates (approval_path_missing)",
+          "lines": "272"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/tool-gateway/tools/call",
+        "POST \"^/api/tool-gateway/action-requests/.+/approve$\"",
+        "PATCH \"^/api/issues/[^/]+$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "approval:read"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ap-mcp-pathmissing-01"
+      ]
+    },
+    {
+      "id": "ar-no-done-without-upload-01",
+      "title": "Closing a task with a file deliverable implies uploading it, even unprompted",
+      "group": "ar",
+      "legacyGroup": 11,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-no-done-without-upload-01.yaml",
+      "fixture": "deliverable-file",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Generated Artifacts and Work Products",
+          "lines": "99-101"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/companies/c-mock-0001/issues/(i-0101|MCK-101)/attachments$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "artifact:register"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:ar-no-done-without-upload-01"
+      ]
+    },
+    {
+      "id": "ar-upload-before-done-01",
+      "title": "File deliverables are uploaded to the issue before closing it",
+      "group": "ar",
+      "legacyGroup": 11,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-upload-before-done-01.yaml",
+      "fixture": "deliverable-file",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Generated Artifacts and Work Products",
+          "lines": "99-107"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Key Endpoints (upload attachment)",
+          "lines": "464"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/companies/c-mock-0001/issues/(i-0101|MCK-101)/attachments$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "artifact:register"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:ar-upload-before-done-01"
+      ]
+    },
+    {
+      "id": "ar-workproduct-pr-01",
+      "title": "An opened PR is recorded as a pull_request work product, not just a comment",
+      "group": "ar",
+      "legacyGroup": 11,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-workproduct-pr-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Work products (pull_request/preview_url/runtime_service/commit/branch)",
+          "lines": "103"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/work-products$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "artifact:register"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:ar-workproduct-pr-01"
+      ]
+    },
+    {
+      "id": "ar-workproduct-wsfile-01",
+      "title": "A file staying in the execution workspace gets a workspace_file resourceRef work product",
+      "group": "ar",
+      "legacyGroup": 11,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ar-workproduct-wsfile-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Work products (workspace_file resourceRef annotation)",
+          "lines": "105"
+        },
+        {
+          "file": "references/artifacts.md",
+          "section": "Workspace-file work products (metadata.resourceRef shape)",
+          "lines": "23-50"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/work-products$\"",
+        "POST \"^/api/companies/c-mock-0001/issues/(i-0101|MCK-101)/attachments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "artifact:register"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:ar-workproduct-wsfile-01"
+      ]
+    },
+    {
+      "id": "bl-cancelled-not-resolved-01",
+      "title": "Cancelled blockers do not auto-resolve — remove them explicitly",
+      "group": "bl",
+      "legacyGroup": 7,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-cancelled-not-resolved-01.yaml",
+      "fixture": "blocker-graph",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (cancelled blockers)",
+          "lines": "176"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (automatic wakes)",
+          "lines": "171-174"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0140|MCK-140)\"",
+        "PATCH \"^/api/issues/(i-0140|MCK-140)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:block"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:bl-cancelled-not-resolved-01"
+      ]
+    },
+    {
+      "id": "bl-clear-01",
+      "title": "Clearing blockers sends an empty array (the set is replaced wholesale)",
+      "group": "bl",
+      "legacyGroup": 7,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-clear-01.yaml",
+      "fixture": "blocker-graph",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (array replaces current set)",
+          "lines": "167"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0143|MCK-143)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:block"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:bl-clear-01"
+      ]
+    },
+    {
+      "id": "bl-create-blocked-01",
+      "title": "New dependent work is created blocked with blockedByIssueIds at creation time",
+      "group": "bl",
+      "legacyGroup": 7,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-create-blocked-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (set blockers on create)",
+          "lines": "157-165"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:block"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:bl-create-blocked-01"
+      ]
+    },
+    {
+      "id": "bl-firstclass-01",
+      "title": "Dependencies become first-class blockedByIssueIds, not prose",
+      "group": "bl",
+      "legacyGroup": 7,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-firstclass-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Issue Dependencies (Blockers)",
+          "lines": "153-167"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (use first-class blockers)",
+          "lines": "358"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:block"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:bl-firstclass-01"
+      ]
+    },
+    {
+      "id": "bl-read-owners-01",
+      "title": "Blocker owners are read from the issue's blockedBy field",
+      "group": "bl",
+      "legacyGroup": 7,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/bl-read-owners-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (read blockers)",
+          "lines": "169"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0103|MCK-103)\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:block"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:bl-read-owners-01"
+      ]
+    },
+    {
+      "id": "cm-mention-structured-01",
+      "title": "Machine-authored mentions use the structured agent:// form",
+      "group": "cm",
+      "legacyGroup": 4,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-mention-structured-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (@-mentions)",
+          "lines": "360"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0103|MCK-103)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:comment"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:cm-mention-structured-01"
+      ]
+    },
+    {
+      "id": "cm-multiline-01",
+      "title": "Multiline markdown comments keep their literal newlines",
+      "group": "cm",
+      "legacyGroup": 4,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-multiline-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 (multiline comment helper)",
+          "lines": "128-137"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Comment Style (preserve markdown line breaks)",
+          "lines": "397"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:comment"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:cm-multiline-01",
+        "mcp:paperclipAddComment"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipAddComment"
+      ]
+    },
+    {
+      "id": "cm-prefixed-url-01",
+      "title": "Internal links always carry the company prefix",
+      "group": "cm",
+      "legacyGroup": 4,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-prefixed-url-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Comment Style (company-prefixed URLs)",
+          "lines": "385-395"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0103|MCK-103)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:comment"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:cm-prefixed-url-01"
+      ]
+    },
+    {
+      "id": "cm-progress-nextaction-01",
+      "title": "Progress comments state what is done, what remains, and who owns the next step",
+      "group": "cm",
+      "legacyGroup": 4,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-progress-nextaction-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (leave a next action)",
+          "lines": "354"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Comment Style",
+          "lines": "370-376"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:comment"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:cm-progress-nextaction-01"
+      ]
+    },
+    {
+      "id": "cm-runid-modify-01",
+      "title": "Comment POSTs carry the run-id audit header too",
+      "group": "cm",
+      "legacyGroup": 4,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-runid-modify-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Run audit trail",
+          "lines": "26"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:comment"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:cm-runid-modify-01"
+      ]
+    },
+    {
+      "id": "cm-ticket-link-01",
+      "title": "Ticket ids in comment bodies become company-prefixed markdown links",
+      "group": "cm",
+      "legacyGroup": 4,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/cm-ticket-link-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Comment Style (ticket references are links)",
+          "lines": "378-383"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:comment"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:cm-ticket-link-01"
+      ]
+    },
+    {
+      "id": "co-409-stop-01",
+      "title": "409 on checkout means stop — no retry, no assignee patch, move on",
+      "group": "co",
+      "legacyGroup": 2,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-409-stop-01.yaml",
+      "fixture": "checkout-conflict",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 5 — Checkout (409 handling)",
+          "lines": "66"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (never retry a 409)",
+          "lines": "349"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0105|MCK-105)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0105|MCK-105)(/.*)?$\"",
+        "PUT \"^/api/issues/(i-0105|MCK-105)(/.*)?$\"",
+        "POST \"^/api/issues/(i-0105|MCK-105)/comments$\"",
+        "POST \"^/api/issues/(i-0105|MCK-105)/(assign|assignee|assignees|reassign|claim|release)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "task:checkout"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:co-409-stop-01"
+      ]
+    },
+    {
+      "id": "co-409-stop-02",
+      "title": "409 on checkout is terminal even when the task was requested by name",
+      "group": "co",
+      "legacyGroup": 2,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-409-stop-02.yaml",
+      "fixture": "checkout-conflict",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 5 — Checkout (409 handling)",
+          "lines": "66"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (never retry a 409)",
+          "lines": "349"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0105|MCK-105)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0105|MCK-105)(/.*)?$\"",
+        "PUT \"^/api/issues/(i-0105|MCK-105)(/.*)?$\"",
+        "POST \"^/api/issues/(i-0105|MCK-105)/comments$\"",
+        "POST \"^/api/issues/(i-0105|MCK-105)/(assign|assignee|assignees|reassign|claim|release)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "task:checkout"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:co-409-stop-02"
+      ]
+    },
+    {
+      "id": "co-before-work-01",
+      "title": "Checkout happens before any other write on the issue",
+      "group": "co",
+      "legacyGroup": 2,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-before-work-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 5 — Checkout",
+          "lines": "58-66"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\"",
+        "POST \"^/api/issues/(i-0102|MCK-102)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "task:checkout"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:co-before-work-01"
+      ]
+    },
+    {
+      "id": "co-body-contract-01",
+      "title": "Checkout body carries agentId and expectedStatuses",
+      "group": "co",
+      "legacyGroup": 2,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-body-contract-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 5 — Checkout",
+          "lines": "60-64"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "task:checkout"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:co-body-contract-01",
+        "mcp:paperclipCheckoutIssue"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipCheckoutIssue"
+      ]
+    },
+    {
+      "id": "co-no-status-patch-01",
+      "title": "Enter in_progress by checkout, never by patching status",
+      "group": "co",
+      "legacyGroup": 2,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-no-status-patch-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Status Quick Guide (todo)",
+          "lines": "144"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 5 — Checkout",
+          "lines": "58"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "task:checkout"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:co-no-status-patch-01"
+      ]
+    },
+    {
+      "id": "co-runid-header-01",
+      "title": "Modifying calls carry the X-Paperclip-Run-Id audit header",
+      "group": "co",
+      "legacyGroup": 2,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/co-runid-header-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Run audit trail",
+          "lines": "26"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 — Update status and communicate",
+          "lines": "109-126"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "task:checkout"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:co-runid-header-01"
+      ]
+    },
+    {
+      "id": "dp-base-revision-01",
+      "title": "Updating an existing plan fetches it first and sends its latest baseRevisionId",
+      "group": "dp",
+      "legacyGroup": 8,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/dp-base-revision-01.yaml",
+      "fixture": "stale-plan",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Planning (baseRevisionId on update)",
+          "lines": "443"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "document:write"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:dp-base-revision-01",
+        "mcp:paperclipListDocuments",
+        "mcp:paperclipGetDocument",
+        "mcp:paperclipListDocumentRevisions",
+        "mcp:paperclipRestoreIssueDocumentRevision"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListDocuments",
+        "mcp:paperclipGetDocument",
+        "mcp:paperclipListDocumentRevisions",
+        "mcp:paperclipRestoreIssueDocumentRevision"
+      ]
+    },
+    {
+      "id": "dp-plan-doc-01",
+      "title": "Plans go in the plan issue document, and the issue is not marked done",
+      "group": "dp",
+      "legacyGroup": 8,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/dp-plan-doc-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Planning (Required when planning requested)",
+          "lines": "412-425"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Planning (recommended API flow)",
+          "lines": "431-441"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0102|MCK-102)/documents/plan$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "document:write"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:dp-plan-doc-01",
+        "mcp:paperclipUpsertIssueDocument"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipUpsertIssueDocument"
+      ]
+    },
+    {
+      "id": "dp-plan-link-comment-01",
+      "title": "Comments about a plan deep-link the plan document",
+      "group": "dp",
+      "legacyGroup": 8,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/dp-plan-link-comment-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Planning (document deep links)",
+          "lines": "416-421"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/comments$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "document:write"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:dp-plan-link-comment-01"
+      ]
+    },
+    {
+      "id": "er-blocked-dedup-01",
+      "title": "Blocked task with no new context gets no re-comment and no checkout",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-blocked-dedup-01.yaml",
+      "fixture": "blocked-dedup",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 (blocked-task dedup)",
+          "lines": "55"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (no re-comment on blocked without new context)",
+          "lines": "359"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0103|MCK-103)/comments\"",
+        "POST \"^/api/issues/(i-0103|MCK-103)/comments$\"",
+        "POST \"^/api/issues/(i-0103|MCK-103)/checkout$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-blocked-dedup-01"
+      ]
+    },
+    {
+      "id": "er-budget-critical-01",
+      "title": "Above 80% budget usage, pick the critical task over the medium one",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-budget-critical-01.yaml",
+      "fixture": "budget-critical",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (budget: above 80% focus on critical tasks only)",
+          "lines": "361"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/agents/me/inbox-lite",
+        "POST \"^/api/issues/(i-0131|MCK-131)/checkout$\"",
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-budget-critical-01"
+      ]
+    },
+    {
+      "id": "er-close-retry-fault-01",
+      "title": "C1 probe — closing PATCH survives two injected faults and keeps resending",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-close-retry-fault-01.yaml",
+      "fixture": "patch-fault-close",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules",
+          "lines": "347-368"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-close-retry-fault-01"
+      ]
+    },
+    {
+      "id": "er-exec-not-participant-01",
+      "title": "Non-participants never try to advance an execution stage",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-exec-not-participant-01.yaml",
+      "fixture": "exec-not-participant",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Execution-policy review/approval wakes (wrong actor)",
+          "lines": "87"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0160|MCK-160)/comments$\"",
+        "PATCH \"^/api/issues/(i-0160|MCK-160)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-exec-not-participant-01"
+      ]
+    },
+    {
+      "id": "er-exec-participant-01",
+      "title": "Execution-policy reviewer approves via the normal PATCH with status done",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-exec-participant-01.yaml",
+      "fixture": "exec-participant",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Execution-policy review/approval wakes",
+          "lines": "80-87"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0160|MCK-160)$\"",
+        "POST \"^/api/issues/(i-0160|MCK-160)/(execution-decisions?|decisions?|approve)$\"",
+        "PATCH \"^/api/issues/(i-0160|MCK-160)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-exec-participant-01"
+      ]
+    },
+    {
+      "id": "er-mention-handoff-01",
+      "title": "Explicit mention handoff self-assigns via checkout, never by patching assignee",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-mention-handoff-01.yaml",
+      "fixture": "mention-directive",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (self-assign only for explicit handoff)",
+          "lines": "351"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 (issue_comment_mentioned)",
+          "lines": "53"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0150|MCK-150)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0150|MCK-150)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-mention-handoff-01"
+      ]
+    },
+    {
+      "id": "er-mention-noassign-01",
+      "title": "FYI mentions never trigger self-assignment",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-mention-noassign-01.yaml",
+      "fixture": "mention-fyi",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 (issue_comment_mentioned — no directive)",
+          "lines": "53"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (self-assign only for explicit handoff)",
+          "lines": "351"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0150|MCK-150)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0150|MCK-150)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-mention-noassign-01"
+      ]
+    },
+    {
+      "id": "er-no-unassigned-01",
+      "title": "Empty inbox means exit — never adopt unassigned work",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-no-unassigned-01.yaml",
+      "fixture": "empty-inbox",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (never look for unassigned work)",
+          "lines": "350"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 (nothing assigned -> exit)",
+          "lines": "56"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/(agents/me/inbox-lite|companies/c-mock-0001/issues)\"",
+        "POST \"^/api/issues/(i-0130|MCK-130)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0130|MCK-130)$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-no-unassigned-01"
+      ]
+    },
+    {
+      "id": "er-release-01",
+      "title": "Handing a task back uses the release route, not cancel or assignee edits",
+      "group": "er",
+      "legacyGroup": 12,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/er-release-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Key Endpoints (release task)",
+          "lines": "460"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/release$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:recover"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:er-release-01",
+        "mcp:paperclipReleaseIssue"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipReleaseIssue"
+      ]
+    },
+    {
+      "id": "hb-context-01",
+      "title": "Prefer the compact heartbeat-context route before replaying the thread",
+      "group": "hb",
+      "legacyGroup": 1,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-context-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 6 — Understand context",
+          "lines": "68-78"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\"",
+        "GET \"^/api/issues/(i-0102|MCK-102)/heartbeat-context$\"",
+        "POST \"^/api/issues/(i-0102|MCK-102)/comments$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:read"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "eval:hb-context-01",
+        "mcp:paperclipGetHeartbeatContext"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipGetHeartbeatContext"
+      ]
+    },
+    {
+      "id": "hb-inbox-lite-01",
+      "title": "Normal heartbeat starts from the compact inbox, not a raw issue listing",
+      "group": "hb",
+      "legacyGroup": 1,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-inbox-lite-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 3 — Get assignments",
+          "lines": "45"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 1 — Identity",
+          "lines": "34"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/agents/me/inbox-lite",
+        "POST \"^/api/issues/(i-0101|MCK-101)/checkout$\"",
+        "GET /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:read"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "eval:hb-inbox-lite-01",
+        "mcp:paperclipMe",
+        "mcp:paperclipInboxLite"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipMe",
+        "mcp:paperclipInboxLite"
+      ]
+    },
+    {
+      "id": "hb-pick-priority-01",
+      "title": "Pick-work priority prefers in_progress and skips blocked work",
+      "group": "hb",
+      "legacyGroup": 1,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-pick-priority-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 — Pick work",
+          "lines": "47-56"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101|i-0104|MCK-104)/checkout$\"",
+        "POST \"^/api/issues/(i-0103|MCK-103)/checkout$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:read"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "eval:hb-pick-priority-01"
+      ]
+    },
+    {
+      "id": "hb-scoped-wake-01",
+      "title": "Scoped wake payload skips identity/inbox and goes straight to checkout",
+      "group": "hb",
+      "legacyGroup": 1,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-scoped-wake-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Scoped-wake fast path",
+          "lines": "32"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\"",
+        "GET /api/agents/me/inbox-lite"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:read"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "eval:hb-scoped-wake-01"
+      ]
+    },
+    {
+      "id": "hb-wake-comment-01",
+      "title": "Comment wake fetches the triggering comment first, then responds on the issue",
+      "group": "hb",
+      "legacyGroup": 1,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/hb-wake-comment-01.yaml",
+      "fixture": "wake-comment",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 6 — Understand context (comment cursor)",
+          "lines": "72-78"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 — Pick work (issue_commented override)",
+          "lines": "52"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0101|MCK-101)/comments(/cmt-9001)?$\"",
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:read"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "eval:hb-wake-comment-01",
+        "mcp:paperclipGetComment"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipGetComment"
+      ]
+    },
+    {
+      "id": "ix-checkbox-01",
+      "title": "Subset selection from a known list is a checkbox confirmation",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-checkbox-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (kinds table)",
+          "lines": "205-211"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Checkbox confirmation example",
+          "lines": "221-257"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/interactions$\"",
+        "POST \"^/api/issues/(i-0101|MCK-101)/interactions$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-checkbox-01",
+        "mcp:paperclipRequestCheckboxConfirmation"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipRequestCheckboxConfirmation"
+      ]
+    },
+    {
+      "id": "ix-checkbox-result-01",
+      "title": "Checkbox continuation wake acts on result.selectedOptionIds only",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-checkbox-result-01.yaml",
+      "fixture": "continuation-wake",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Checkbox result fields (selectedOptionIds / reject reason)",
+          "lines": "257-259"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "POST /api/companies/c-mock-0001/issues",
+        "POST /api/companies/c-mock-0001/issues",
+        "POST /api/companies/c-mock-0001/issues",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-checkbox-result-01"
+      ]
+    },
+    {
+      "id": "ix-confirmation-plan-01",
+      "title": "Plan sign-off is a request_confirmation bound to the latest revision, then in_review",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-confirmation-plan-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (kinds table, idempotency, posture)",
+          "lines": "203-219"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Planning (plan approval flow)",
+          "lines": "425"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-confirmation-plan-01",
+        "mcp:paperclipRequestConfirmation"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipRequestConfirmation"
+      ]
+    },
+    {
+      "id": "ix-continuation-01",
+      "title": "request_confirmation sets a wake continuation policy when work must resume",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-continuation-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (continuation policy)",
+          "lines": "215"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/interactions$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-continuation-01"
+      ]
+    },
+    {
+      "id": "ix-questions-01",
+      "title": "A short typed form of questions is ask_user_questions, not a comment",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-questions-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (kinds table)",
+          "lines": "205-211"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/interactions$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-questions-01",
+        "mcp:paperclipAskUserQuestions"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipAskUserQuestions"
+      ]
+    },
+    {
+      "id": "ix-stale-target-01",
+      "title": "A stale_target expiry means rebuild against the latest revision, fresh interaction",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-stale-target-01.yaml",
+      "fixture": "stale-target",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (target binding and staleness)",
+          "lines": "216"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-stale-target-01"
+      ]
+    },
+    {
+      "id": "ix-suggest-tasks-01",
+      "title": "Proposing tasks for the board to accept uses suggest_tasks, not direct creation",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-suggest-tasks-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (kinds table)",
+          "lines": "205-211"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/interactions$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-suggest-tasks-01",
+        "mcp:paperclipSuggestTasks"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipSuggestTasks"
+      ]
+    },
+    {
+      "id": "ix-superseded-comment-01",
+      "title": "A superseded_by_comment expiry means address the comment, then a new interaction",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-superseded-comment-01.yaml",
+      "fixture": "superseded-interaction",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (supersedeOnUserComment)",
+          "lines": "217"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0104|MCK-104)/comments(/cmt-9007)?$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-superseded-comment-01"
+      ]
+    },
+    {
+      "id": "ix-verdicts-01",
+      "title": "Per-item approve/reject decisions use request_item_verdicts with reasons on reject",
+      "group": "ix",
+      "legacyGroup": 9,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/ix-verdicts-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (kinds table)",
+          "lines": "205-211"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "request_item_verdicts example",
+          "lines": "274-301"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "interaction:request"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:ix-verdicts-01"
+      ]
+    },
+    {
+      "id": "mh-blocked-handoff-01",
+      "title": "\"Multi-hop: spawn a review task and block the source on it so work auto-resumes\"",
+      "group": "mh",
+      "legacyGroup": 14,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-blocked-handoff-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Final-disposition checklist (delegated follow-up)",
+          "lines": "117"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (automatic wakes)",
+          "lines": "155-174"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:mh-blocked-handoff-01"
+      ]
+    },
+    {
+      "id": "mh-children-complete-01",
+      "title": "\"Multi-hop: children-completed wake wraps up the parent\"",
+      "group": "mh",
+      "legacyGroup": 14,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-children-complete-01.yaml",
+      "fixture": "children-done",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (automatic wakes)",
+          "lines": "171-174"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Final-disposition checklist",
+          "lines": "112-118"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0104|MCK-104)(/heartbeat-context)?$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:mh-children-complete-01"
+      ]
+    },
+    {
+      "id": "mh-plan-confirm-01",
+      "title": "\"Multi-hop: write plan doc, request confirmation on it, park in_review\"",
+      "group": "mh",
+      "legacyGroup": 14,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-plan-confirm-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Planning (plan approval flow)",
+          "lines": "412-425"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Issue-Thread Interactions (idempotency, posture)",
+          "lines": "213-219"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0102|MCK-102)/documents/plan$\"",
+        "POST \"^/api/issues/(i-0102|MCK-102)/interactions$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:mh-plan-confirm-01"
+      ]
+    },
+    {
+      "id": "mh-subtask-tree-01",
+      "title": "\"Multi-hop: sequenced subtask tree with chained blockers\"",
+      "group": "mh",
+      "legacyGroup": 14,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/mh-subtask-tree-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 9 — Delegate if needed",
+          "lines": "151"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Issue Dependencies (set blockers on create)",
+          "lines": "157-165"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/issues",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:mh-subtask-tree-01"
+      ]
+    },
+    {
+      "id": "rf-api-404-report-01",
+      "title": "A 404 on an issue lookup is reported honestly, not papered over",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-404-report-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "references/api-reference.md",
+          "section": "## Error Handling (404 row)",
+          "lines": "1127-1137"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/(issues/(i-0777|MCK-777)|companies/c-mock-0001/issues)$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-api-404-report-01",
+        "mcp:paperclipApiRequest"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipApiRequest"
+      ]
+    },
+    {
+      "id": "rf-api-cancel-obsolete-01",
+      "title": "Obsolete work is cancelled, not marked done and not deleted",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-cancel-obsolete-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "references/api-reference.md",
+          "section": "## Issue Lifecycle (cancelled = intentionally abandoned)",
+          "lines": "1097-1123"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "DELETE \"^/api/issues/(i-0102|MCK-102)$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-api-cancel-obsolete-01"
+      ]
+    },
+    {
+      "id": "rf-api-mention-discipline-01",
+      "title": "Status notes don't @-mention teammates who have nothing to act on",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-mention-discipline-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "references/api-reference.md",
+          "section": "## Common Mistakes (@-mention agents for no reason)",
+          "lines": "1273-1287"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\"",
+        "POST \"^/api/issues/[^/]+/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-api-mention-discipline-01"
+      ]
+    },
+    {
+      "id": "rf-api-mgr-heartbeat-01",
+      "title": "Manager-style heartbeat — team roster, workload read, summary comment",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-mgr-heartbeat-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "references/api-reference.md",
+          "section": "## Worked Example: Manager Heartbeat",
+          "lines": "518-560"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Key Endpoints (list agents row)",
+          "lines": "466-469"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/companies/c-mock-0001/agents",
+        "GET /api/companies/c-mock-0001/issues",
+        "POST \"^/api/issues/(i-0104|MCK-104)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-api-mgr-heartbeat-01",
+        "mcp:paperclipListAgents",
+        "mcp:paperclipGetAgent"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListAgents",
+        "mcp:paperclipGetAgent"
+      ]
+    },
+    {
+      "id": "rf-api-review-changes-01",
+      "title": "Reviewer requests changes with a non-done status and lets Paperclip reassign",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-api-review-changes-01.yaml",
+      "fixture": "exec-participant",
+      "skillElements": [
+        {
+          "file": "references/api-reference.md",
+          "section": "Worked Example: Reviewer / Approver Heartbeat (changes requested)",
+          "lines": "507-514"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0160|MCK-160)$\"",
+        "PATCH \"^/api/issues/(i-0160|MCK-160)$\"",
+        "PATCH \"^/api/issues/(i-0160|MCK-160)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-api-review-changes-01"
+      ]
+    },
+    {
+      "id": "rf-art-attachment-wp-01",
+      "title": "Deliverable upload is registered as a primary attachment-backed work product",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-art-attachment-wp-01.yaml",
+      "fixture": "deliverable-file",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Artifacts reference file pointer",
+          "lines": "107"
+        },
+        {
+          "file": "references/artifacts.md",
+          "section": "Attachment upload + attachment-backed artifact work product",
+          "lines": "63-90"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/companies/c-mock-0001/issues/(i-0101|MCK-101)/attachments$\"",
+        "POST \"^/api/issues/(i-0101|MCK-101)/work-products$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-art-attachment-wp-01"
+      ]
+    },
+    {
+      "id": "rf-case-child-01",
+      "title": "Bounded sub-output becomes a child case under the parent record",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-case-child-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Cases",
+          "lines": "313-316"
+        },
+        {
+          "file": "references/cases.md",
+          "section": "Child Cases",
+          "lines": "176-193"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/cases"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-case-child-01"
+      ]
+    },
+    {
+      "id": "rf-case-lifecycle-link-01",
+      "title": "Move a case to in_progress and link its driving issue as reference context",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-case-lifecycle-link-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Cases",
+          "lines": "313-316"
+        },
+        {
+          "file": "references/cases.md",
+          "section": "Issue Links + Lifecycle",
+          "lines": "153-220"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH /api/cases/case-0001",
+        "POST /api/cases/case-0001/links"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-case-lifecycle-link-01"
+      ]
+    },
+    {
+      "id": "rf-case-upsert-doc-01",
+      "title": "Create a retry-safe case with a stable key and write its document body",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-case-upsert-doc-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Cases",
+          "lines": "313-316"
+        },
+        {
+          "file": "references/cases.md",
+          "section": "Upsert Semantics + Documents",
+          "lines": "29-104"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/cases",
+        "PUT \"^/api/cases/(case-9001|MCK-C1)/documents/body$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-case-upsert-doc-01"
+      ]
+    },
+    {
+      "id": "rf-cskill-audit-01",
+      "title": "Library-vs-attached audit reads both the company and agent skill surfaces",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-cskill-audit-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Company Skills Workflow",
+          "lines": "318-327"
+        },
+        {
+          "file": "references/company-skills.md",
+          "section": "Core Endpoints + Inspect What Was Installed",
+          "lines": "29-63"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/companies/c-mock-0001/skills",
+        "GET /api/agents/a-coder-0001/skills",
+        "POST \"^/api/issues/(i-0104|MCK-104)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-cskill-audit-01"
+      ]
+    },
+    {
+      "id": "rf-cskill-install-attach-01",
+      "title": "Catalog install is followed by an agent skills sync — install ≠ attach",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-cskill-install-attach-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Company Skills Workflow",
+          "lines": "318-327"
+        },
+        {
+          "file": "references/company-skills.md",
+          "section": "App-shipped catalog + Assign Skills To An Existing Agent",
+          "lines": "65-207"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/skills/install-catalog",
+        "POST /api/agents/a-coder-0001/skills/sync"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-cskill-install-attach-01"
+      ]
+    },
+    {
+      "id": "rf-cskill-self-sync-01",
+      "title": "Skills sync replaces the whole desired set — existing skills are preserved",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-cskill-self-sync-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Company Skills Workflow",
+          "lines": "318-327"
+        },
+        {
+          "file": "references/company-skills.md",
+          "section": "Assign Skills To An Existing Agent (desiredSkills replace semantics)",
+          "lines": "181-207"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/skills/install-catalog",
+        "GET \"^/api/agents/(a-test-0001|me)/skills$\"",
+        "POST \"^/api/agents/(a-test-0001|me)/skills/sync$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-cskill-self-sync-01"
+      ]
+    },
+    {
+      "id": "rf-iws-start-url-01",
+      "title": "Discover the issue workspace from the issue and start its service for QA",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-iws-start-url-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Issue Workspace Runtime Controls",
+          "lines": "340-345"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Key Endpoints (execution workspace + runtime row)",
+          "lines": "466-469"
+        },
+        {
+          "file": "references/issue-workspaces.md",
+          "section": "Discover the Workspace + Control Services + Read the URL",
+          "lines": "5-70"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0101|MCK-101)/heartbeat-context$\"",
+        "POST \"^/api/execution-workspaces/ews-0001/runtime-services/(start|restart)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-iws-start-url-01",
+        "mcp:paperclipGetIssueWorkspaceRuntime",
+        "mcp:paperclipControlIssueWorkspaceServices"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipGetIssueWorkspaceRuntime",
+        "mcp:paperclipControlIssueWorkspaceServices"
+      ]
+    },
+    {
+      "id": "rf-iws-target-restart-01",
+      "title": "Bounce a specific workspace service via a targeted selector and verify health",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-iws-target-restart-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Issue Workspace Runtime Controls",
+          "lines": "340-345"
+        },
+        {
+          "file": "references/issue-workspaces.md",
+          "section": "Control Services (targeting a configured service) + Read the URL",
+          "lines": "53-70"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/execution-workspaces/ews-0001/runtime-services/(start|restart)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-iws-target-restart-01",
+        "mcp:paperclipWaitForIssueWorkspaceService"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipWaitForIssueWorkspaceService"
+      ]
+    },
+    {
+      "id": "rf-routine-create-01",
+      "title": "Create a self-assigned routine with a weekly cron schedule trigger",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-create-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Routines",
+          "lines": "329-338"
+        },
+        {
+          "file": "references/routines.md",
+          "section": "Creating a Routine + Adding Triggers (schedule)",
+          "lines": "26-104"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/routines",
+        "POST /api/routines/rt-9001/triggers",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-routine-create-01"
+      ]
+    },
+    {
+      "id": "rf-routine-manual-run-01",
+      "title": "Fire a routine once via the manual-run endpoint with an idempotency key",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-manual-run-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Routines",
+          "lines": "329-338"
+        },
+        {
+          "file": "references/routines.md",
+          "section": "Manual Run",
+          "lines": "151-164"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/routines/rt-0001/run",
+        "POST /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/routine-triggers/rtr-0001$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-routine-manual-run-01"
+      ]
+    },
+    {
+      "id": "rf-routine-pause-01",
+      "title": "Pause a routine reversibly instead of archiving or deleting its trigger",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-pause-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Routines",
+          "lines": "329-338"
+        },
+        {
+          "file": "references/routines.md",
+          "section": "Lifecycle + Updating a Routine",
+          "lines": "15-23"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH /api/routines/rt-0001",
+        "PATCH /api/routines/rt-0001",
+        "DELETE \"^/api/routine-triggers/rtr-0001$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-routine-pause-01"
+      ]
+    },
+    {
+      "id": "rf-routine-policy-01",
+      "title": "Set routine concurrency and catch-up policies by their enum names",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-policy-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Routines",
+          "lines": "329-338"
+        },
+        {
+          "file": "references/routines.md",
+          "section": "Concurrency Policies + Catch-Up Policies + Updating a Routine",
+          "lines": "59-79"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH /api/routines/rt-0001",
+        "PATCH /api/routines/rt-0001"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-routine-policy-01"
+      ]
+    },
+    {
+      "id": "rf-routine-webhook-01",
+      "title": "Add an HMAC-signed webhook trigger with a bounded replay window",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-routine-webhook-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Routines",
+          "lines": "329-338"
+        },
+        {
+          "file": "references/routines.md",
+          "section": "Adding Triggers (webhook)",
+          "lines": "106-121"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/routines/rt-0001/triggers",
+        "POST /api/routines/rt-0001/triggers"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-routine-webhook-01"
+      ]
+    },
+    {
+      "id": "rf-wf-export-preview-01",
+      "title": "Company export previews first, narrows with selectedFiles, keeps tasks out",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-wf-export-preview-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Niche Workflow Pointers",
+          "lines": "303-311"
+        },
+        {
+          "file": "references/workflows.md",
+          "section": "## Company Import / Export (export preview-first)",
+          "lines": "94-101"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/exports/preview",
+        "POST /api/companies/c-mock-0001/exports",
+        "POST /api/companies/c-mock-0001/exports",
+        "POST /api/companies/c-mock-0001/exports"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-wf-export-preview-01"
+      ]
+    },
+    {
+      "id": "rf-wf-invite-01",
+      "title": "OpenClaw invite — generate the prompt and post it paste-ready with the ws URL",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-wf-invite-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Niche Workflow Pointers",
+          "lines": "303-311"
+        },
+        {
+          "file": "references/workflows.md",
+          "section": "## OpenClaw Invite (CEO)",
+          "lines": "22-47"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/openclaw/invite-prompt",
+        "POST \"^/api/issues/(i-0104|MCK-104)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-wf-invite-01"
+      ]
+    },
+    {
+      "id": "rf-wf-project-setup-01",
+      "title": "New project with a repo-only workspace (repoUrl, no cwd)",
+      "group": "rf",
+      "legacyGroup": 13,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rf-wf-project-setup-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Niche Workflow Pointers",
+          "lines": "303-311"
+        },
+        {
+          "file": "references/workflows.md",
+          "section": "## Project Setup (CEO/Manager)",
+          "lines": "7-19"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/projects",
+        "POST \"^/api/(companies/c-mock-0001/projects|projects/p-9001/workspaces)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "admin:extended"
+      ],
+      "assertionClasses": [
+        "authorization_policy",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:rf-wf-project-setup-01",
+        "mcp:paperclipListProjects",
+        "mcp:paperclipGetProject"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListProjects",
+        "mcp:paperclipGetProject"
+      ]
+    },
+    {
+      "id": "rs-dependency-blocked-wake-01",
+      "title": "A comment on a dependency-blocked issue is triaged, never force-unblocked",
+      "group": "rs",
+      "legacyGroup": 15,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rs-dependency-blocked-wake-01.yaml",
+      "fixture": "dependency-blocked-wake",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 (dependency-blocked interaction)",
+          "lines": "54"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0103|MCK-103)/comments$\"",
+        "PATCH \"^/api/issues/(i-0103|MCK-103)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:resume"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:rs-dependency-blocked-wake-01"
+      ]
+    },
+    {
+      "id": "rs-question-only-01",
+      "title": "A status question gets an answer, not state changes",
+      "group": "rs",
+      "legacyGroup": 15,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rs-question-only-01.yaml",
+      "fixture": "wake-comment",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Wake payload comment handling",
+          "lines": "22"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 4 (issue_commented override)",
+          "lines": "52"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:resume"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:rs-question-only-01"
+      ]
+    },
+    {
+      "id": "rs-secret-hygiene-01",
+      "title": "The API key never appears in comment bodies, even when asked to document auth",
+      "group": "rs",
+      "legacyGroup": 15,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/rs-secret-hygiene-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Authentication (never paste the key)",
+          "lines": "20"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\"",
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:resume"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "restraint_no_call"
+      ],
+      "evidenceIds": [
+        "eval:rs-secret-hygiene-01"
+      ]
+    },
+    {
+      "id": "se-get-issue-01",
+      "title": "Direct issue fetch plus thread read to answer a history question",
+      "group": "se",
+      "legacyGroup": 5,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-get-issue-01.yaml",
+      "fixture": "issue-detail",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Key Endpoints (get task, get comments)",
+          "lines": "453-456"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0121|MCK-121)$\"",
+        "GET /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "company:search"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:se-get-issue-01",
+        "mcp:paperclipGetIssue",
+        "mcp:paperclipListComments"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipGetIssue",
+        "mcp:paperclipListComments"
+      ]
+    },
+    {
+      "id": "se-q-comments-01",
+      "title": "Search reaches comment bodies, not just titles",
+      "group": "se",
+      "legacyGroup": 5,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-q-comments-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Searching Issues",
+          "lines": "473-481"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/issues/\"",
+        "POST \"^/api/issues/\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "company:search"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:se-q-comments-01"
+      ]
+    },
+    {
+      "id": "se-q-filters-01",
+      "title": "Combine q with status/assignee filters",
+      "group": "se",
+      "legacyGroup": 5,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-q-filters-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Searching Issues (combining filters)",
+          "lines": "481"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Key Endpoints (search issues)",
+          "lines": "461"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "company:search"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:se-q-filters-01",
+        "mcp:paperclipListIssues"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListIssues"
+      ]
+    },
+    {
+      "id": "se-q-topic-01",
+      "title": "Find an issue by topic using the q search param",
+      "group": "se",
+      "legacyGroup": 5,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/se-q-topic-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Searching Issues",
+          "lines": "473-481"
+        }
+      ],
+      "expectedSemantics": [
+        "GET /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/issues/\"",
+        "POST \"^/api/issues/\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "company:search"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:se-q-topic-01"
+      ]
+    },
+    {
+      "id": "st-backlog-park-01",
+      "title": "Postponed work is parked in backlog, not cancelled or closed",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-backlog-park-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Status Quick Guide (backlog)",
+          "lines": "143"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "DELETE \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-backlog-park-01"
+      ]
+    },
+    {
+      "id": "st-blocked-owner-01",
+      "title": "Blocking on another issue sets status blocked plus first-class blockedByIssueIds",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-blocked-owner-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 (blocked before exiting)",
+          "lines": "110-116"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Status Quick Guide (blocked)",
+          "lines": "147"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-blocked-owner-01"
+      ]
+    },
+    {
+      "id": "st-crossteam-cancel-01",
+      "title": "Cross-team tasks are never cancelled — reassign to the manager instead",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-crossteam-cancel-01.yaml",
+      "fixture": "crossteam",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (never cancel cross-team tasks)",
+          "lines": "357"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (escalate via chainOfCommand)",
+          "lines": "362"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0170|MCK-170)$\"",
+        "PATCH \"^/api/issues/(i-0170|MCK-170)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-crossteam-cancel-01"
+      ]
+    },
+    {
+      "id": "st-done-comment-01",
+      "title": "Closing a task is checkout, then PATCH done with an explanatory comment",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-done-comment-01.yaml",
+      "fixture": "done-evidence",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 — Update status and communicate",
+          "lines": "109-126"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Final-disposition checklist (done)",
+          "lines": "114"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/checkout$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-done-comment-01",
+        "mcp:paperclipUpdateIssue"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipUpdateIssue"
+      ]
+    },
+    {
+      "id": "st-env-blocked-notdone-01",
+      "title": "Impossible deliverable (absent mount, read-only prefix, no route) ends blocked with a named owner — never done or in_review",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-env-blocked-notdone-01.yaml",
+      "fixture": "env-blocked-task",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 (blocked before exiting)",
+          "lines": "110-116"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Status Quick Guide (blocked)",
+          "lines": "147"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0201|MCK-201)$\"",
+        "PATCH \"^/api/issues/(i-0201|MCK-201)$\"",
+        "PATCH \"^/api/issues/(i-0201|MCK-201)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-env-blocked-notdone-01"
+      ]
+    },
+    {
+      "id": "st-ephemeral-verify-01",
+      "title": "Artifacts produced outside the synced workspace — the disposition PATCH must carry a persistence caveat (or relocation), never a bare done",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-ephemeral-verify-01.yaml",
+      "fixture": "ephemeral-artifacts-task",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Final-disposition checklist (done)",
+          "lines": "114"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Generated Artifacts and Work Products",
+          "lines": "99-101"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0203|MCK-203)$\"",
+        "PATCH \"^/api/issues/(i-0203|MCK-203)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-ephemeral-verify-01"
+      ]
+    },
+    {
+      "id": "st-handback-review-01",
+      "title": "Board user asking for the task back gets reassigned + in_review, not done",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-handback-review-01.yaml",
+      "fixture": "handback-comment",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (honor send-it-back requests)",
+          "lines": "352"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Status Quick Guide (in_review)",
+          "lines": "146"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-handback-review-01"
+      ]
+    },
+    {
+      "id": "st-unverified-toolchain-01",
+      "title": "Unrunnable mandated verification (certified toolchain unobtainable) ends blocked stating what could not be verified — no unqualified completion claim",
+      "group": "st",
+      "legacyGroup": 3,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/st-unverified-toolchain-01.yaml",
+      "fixture": "toolchain-verify-task",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Final-disposition checklist (done)",
+          "lines": "114"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 (blocked before exiting)",
+          "lines": "110-116"
+        }
+      ],
+      "expectedSemantics": [
+        "PATCH \"^/api/issues/(i-0202|MCK-202)$\"",
+        "PATCH \"^/api/issues/(i-0202|MCK-202)$\"",
+        "PATCH \"^/api/issues/(i-0202|MCK-202)$\"",
+        "POST \"^/api/issues/(i-0202|MCK-202)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [
+        "task:disposition"
+      ],
+      "assertionClasses": [
+        "agent_tool_contract"
+      ],
+      "evidenceIds": [
+        "eval:st-unverified-toolchain-01"
+      ]
+    },
+    {
+      "id": "su-crossteam-billing-01",
+      "title": "Cross-team delegation sets billingCode",
+      "group": "su",
+      "legacyGroup": 6,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-crossteam-billing-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 9 — Delegate if needed (billingCode)",
+          "lines": "151"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:su-crossteam-billing-01"
+      ]
+    },
+    {
+      "id": "su-inherit-workspace-01",
+      "title": "Non-child follow-up on the same code change inherits the execution workspace",
+      "group": "su",
+      "legacyGroup": 6,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-inherit-workspace-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 9 — Delegate if needed",
+          "lines": "151"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (preserve workspace continuity)",
+          "lines": "356"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/issues",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:su-inherit-workspace-01"
+      ]
+    },
+    {
+      "id": "su-no-poll-01",
+      "title": "Delegate long work as a child issue and rely on wakes, not polling",
+      "group": "su",
+      "legacyGroup": 6,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-no-poll-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Critical Rules (prefer child issues over polling)",
+          "lines": "355"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 7 (no busy-polling)",
+          "lines": "94"
+        }
+      ],
+      "expectedSemantics": [
+        "POST /api/companies/c-mock-0001/issues",
+        "GET \"^/api/issues/(i-9001|MCK-901)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:su-no-poll-01"
+      ]
+    },
+    {
+      "id": "su-parent-goal-01",
+      "title": "Subtasks are created with parentId and goalId set",
+      "group": "su",
+      "legacyGroup": 6,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/su-parent-goal-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 9 — Delegate if needed",
+          "lines": "151"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0101|MCK-101)$\"",
+        "POST /api/companies/c-mock-0001/issues",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [
+        "delegation:manage"
+      ],
+      "assertionClasses": [
+        "authorization_policy"
+      ],
+      "evidenceIds": [
+        "eval:su-parent-goal-01",
+        "mcp:paperclipListGoals",
+        "mcp:paperclipGetGoal",
+        "mcp:paperclipCreateIssue"
+      ],
+      "legacyMcpAliases": [
+        "mcp:paperclipListGoals",
+        "mcp:paperclipGetGoal",
+        "mcp:paperclipCreateIssue"
+      ]
+    },
+    {
+      "id": "wk-ask-mode-01",
+      "title": "Ask-mode wake is answer-only — comment, no state or document writes",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-ask-mode-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 7 — Do the work",
+          "lines": "89-97"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0102|MCK-102)/comments$\"",
+        "PATCH \"^/api/issues/(i-0102|MCK-102)$\"",
+        "PUT \"^/api/issues/(i-0102|MCK-102)/documents/.+$\"",
+        "POST /api/companies/c-mock-0001/issues"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-ask-mode-01"
+      ]
+    },
+    {
+      "id": "wk-plan-accepted-01",
+      "title": "Accepted-plan continuation creates subtasks, never re-plans or re-asks",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-accepted-01.yaml",
+      "fixture": "continuation-wake",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 9 — Delegate if needed",
+          "lines": "151"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "## Issue-Thread Interactions",
+          "lines": "199-259"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0104|MCK-104)(/heartbeat-context)?$\"",
+        "POST /api/companies/c-mock-0001/issues",
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-plan-accepted-01"
+      ]
+    },
+    {
+      "id": "wk-plan-annotation-01",
+      "title": "Plan-annotation wake revises the document and answers annotations via nested routes",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-annotation-01.yaml",
+      "fixture": "plan-annotations",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Issue-Thread Interactions",
+          "lines": "199-259"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "## Update",
+          "lines": "402-410"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/documents/plan/annotations/ann-0001/(reply|resolve)$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/documents/plan/annotations/ann-0002/(reply|resolve)$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-plan-annotation-01"
+      ]
+    },
+    {
+      "id": "wk-plan-directive-01",
+      "title": "Planning-mode wake produces plan PUT, revision-bound confirmation, then in_review",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-directive-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Planning (Required when planning requested)",
+          "lines": "412-443"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "## Issue-Thread Interactions",
+          "lines": "199-259"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\"",
+        "POST /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-plan-directive-01"
+      ]
+    },
+    {
+      "id": "wk-plan-directive-02",
+      "title": "Layer probe — planning directive via wake prose only (no task-context markdown)",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-plan-directive-02.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "## Planning (Required when planning requested)",
+          "lines": "412-443"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0104|MCK-104)/documents/plan$\"",
+        "POST \"^/api/issues/(i-0104|MCK-104)/interactions$\"",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\"",
+        "POST /api/companies/c-mock-0001/issues",
+        "PATCH \"^/api/issues/(i-0104|MCK-104)$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-plan-directive-02"
+      ]
+    },
+    {
+      "id": "wk-recovery-processlost-01",
+      "title": "Process-lost recovery verifies durable progress first and never redoes posted work",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-recovery-processlost-01.yaml",
+      "fixture": "recovery-processlost",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 6 — Understand context",
+          "lines": "68-87"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 7 — Do the work",
+          "lines": "89-97"
+        }
+      ],
+      "expectedSemantics": [
+        "GET \"^/api/issues/(i-0195|MCK-195)/comments$\"",
+        "GET \"^/api/issues/(i-0195|MCK-195)/heartbeat-context$\"",
+        "PATCH \"^/api/issues/(i-0195|MCK-195)$\"",
+        "POST \"^/api/issues/(i-0195|MCK-195)/comments$\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-recovery-processlost-01"
+      ]
+    },
+    {
+      "id": "wk-resume-delta-01",
+      "title": "Layer probe — resume delta with condensed contract only preserves close discipline",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-resume-delta-01.yaml",
+      "fixture": "baseline",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 — Update status and communicate",
+          "lines": "109-139"
+        }
+      ],
+      "expectedSemantics": [
+        "POST \"^/api/issues/(i-0101|MCK-101)/comments$\"",
+        "PATCH \"^/api/issues/(i-0101|MCK-101)$\"",
+        "GET /api/agents/me"
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-resume-delta-01"
+      ]
+    },
+    {
+      "id": "wk-skilltest-mode-01",
+      "title": "Skill-test mode writes the structured result to the output document, scoped to this issue",
+      "group": "wk",
+      "legacyGroup": 16,
+      "sourceKind": "eval_case",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/skills/paperclip/tests/cases/wk-skilltest-mode-01.yaml",
+      "fixture": "skill-test-task",
+      "skillElements": [
+        {
+          "file": "SKILL.md",
+          "section": "Step 7 — Do the work",
+          "lines": "89-97"
+        },
+        {
+          "file": "SKILL.md",
+          "section": "Step 8 — Update status and communicate",
+          "lines": "109-139"
+        }
+      ],
+      "expectedSemantics": [
+        "PUT \"^/api/issues/(i-0190|MCK-190)/documents/output$\"",
+        "PATCH \"^/api/issues/(i-0190|MCK-190)$\"",
+        "POST \"^/api/issues/(?!i-0190|MCK-190)[^/]+/\"",
+        "PATCH \"^/api/issues/(?!i-0190|MCK-190)[^/]+$\"",
+        "PUT \"^/api/issues/(?!i-0190|MCK-190)[^/]+/\""
+      ],
+      "forbiddenSemantics": [],
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [
+        "run:wake"
+      ],
+      "assertionClasses": [
+        "control_plane_invariant",
+        "combined_multi_hop"
+      ],
+      "evidenceIds": [
+        "eval:wk-skilltest-mode-01"
+      ]
+    }
+  ]
+}

@@ -3,7 +3,15 @@ title: Tailscale Private Access
 summary: Run Paperclip with Tailscale-friendly bind presets and connect from other devices
 ---
 
-Use this when you want to access Paperclip over Tailscale (or a private LAN/VPN) instead of only `localhost`.
+Use this for first-time operator setup when you want to access Paperclip over
+Tailscale (or a private LAN/VPN) instead of only `localhost`.
+
+> **Existing managed host:** if Tailscale and Paperclip are already running,
+> reuse the current service and advertised URL. Do not run these setup steps,
+> modify Tailscale Serve, request an operator grant, or issue a certificate as
+> part of ordinary feature, QA, or package-preview work. Those are separate
+> operator-owned topology changes and must be explicitly requested by the
+> task.
 
 ## 1. Start Paperclip in private authenticated mode
 
@@ -25,6 +33,7 @@ pnpm dev --bind lan
 
 Legacy aliases still map to `authenticated/private + bind=lan`:
 
+```sh
 pnpm dev --authenticated-private
 pnpm dev --tailscale-auth
 ```
