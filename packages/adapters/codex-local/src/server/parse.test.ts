@@ -242,11 +242,11 @@ describe("isCodexTransientUpstreamError", () => {
     expect(classifyCodexUnsupportedModelError({ errorMessage })).not.toBeNull();
   });
 
-  // We route through a local 9router gateway, which wraps the provider message
-  // in its own JSON envelope. The first quoted token is then the JSON key
-  // ("detail"), so naive quote-extraction reports "detail" as the offending
+  // An OpenAI-compatible proxy in front of the provider wraps the upstream
+  // message in its own JSON envelope. The first quoted token is then the JSON
+  // key ("detail"), so naive quote-extraction reports "detail" as the offending
   // model and the blocked-issue notice tells the operator to fix a field that
-  // does not exist. Captured verbatim from the live gateway on 2026-08-17.
+  // does not exist. Captured verbatim from a live proxy.
   it("names the model id when the provider message is wrapped by the gateway", () => {
     const errorMessage =
       '[codex/gpt-5.3-codex-spark] [400]: {"detail":"The \'gpt-5.3-codex-spark\' model is not supported when using Codex with a ChatGPT account."} (reset after 30s)';

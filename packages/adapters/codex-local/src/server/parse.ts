@@ -22,9 +22,10 @@ const CODEX_UNSUPPORTED_MODEL_RE =
   /(?:model_not_found|\bmodel\b[^\n]{0,120}?\bis not supported\b|\bis not supported\b[^\n]{0,120}?\bmodel\b|(?:requested |the )?model\s+[^\n]{0,120}?(?:does not exist|not found|is invalid|is unknown)|unknown model|invalid model|unsupported model|model\s+[^\n]{0,80}?\bis not available\b)/i;
 // Pull the offending id out of the provider message so the blocked-issue notice
 // can name the exact adapterConfig.model value an operator has to change.
-// Ordered most-specific-first. A gateway (9router) wraps the provider message in
-// its own JSON envelope, so the *first* quoted token in the sentence is the JSON
-// key ("detail", "message"), not the model. Anchor on the id's position relative
+// Ordered most-specific-first. An OpenAI-compatible proxy in front of the
+// provider wraps the upstream message in its own JSON envelope, so the *first*
+// quoted token in the sentence is the JSON key ("detail", "message"), not the
+// model id. Anchor on the id's position relative
 // to the word "model", and only fall back to a bare quoted token that is not a
 // JSON key (i.e. not followed by a colon).
 const CODEX_UNSUPPORTED_MODEL_ID_PATTERNS: readonly RegExp[] = [
