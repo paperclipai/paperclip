@@ -6874,6 +6874,25 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       if (!port) throw new Error("Failed to reserve runtime reconciliation test port");
       return port;
     };
+    const isLoopbackPortFree = async (port: number) => {
+      const probe = net.createServer();
+      return await new Promise<boolean>((resolve) => {
+        probe.once("error", () => resolve(false));
+        probe.listen(port, "127.0.0.1", () => {
+          probe.close(() => resolve(true));
+        });
+      });
+    };
+    // The stopped service must fully release its port before reconciliation.
+    // A lingering process on the port lets `reconcilePersistedRuntimeServicesOnStartup`
+    // adopt it (reconciled/adopted) instead of the desired-state restart (restarted).
+    const waitForLoopbackPortFree = async (port: number) => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (await isLoopbackPortFree(port)) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error(`Port ${port} did not become free in time`);
+    };
     const stoppedPort = await reservePort();
     const livePort = await reservePort();
     const companyId = randomUUID();
@@ -6976,6 +6995,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
         workspaceCwd: workspaceRoot,
         runtimeServiceId: stoppedServiceId,
       });
+      // Wait for the stopped subprocess to release its port. Otherwise the
+      // reconcile below can adopt the lingering process instead of restarting it.
+      await waitForLoopbackPortFree(stoppedPort);
 
       const registryOnly = await startRuntimeServicesForWorkspaceControl({
         actor,
