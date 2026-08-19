@@ -662,55 +662,67 @@ async function syncInDirectoryMapping(input: {
         }),
     });
     guardRoundTrips += 1;
-    // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
-    await withProviderSpan({
-      name: "transfer",
-      wallMsAttr: SPAN_ATTR.transferWallMs,
-      attributes: {
-        [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
-        [SPAN_ATTR.transferDirection]: "inbound",
-      },
-      run: () =>
-        sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds),
-    });
-    // Bind validation and extraction into ONE sandbox invocation, then extract into
-    // an OPEN directory inode rather than a path string. `exec 9<"$_pc_real"` itself
-    // walks every ancestor of `$_pc_real` during the `open()` syscall, so a sandbox
-    // process that swaps an ancestor component for a symlink AFTER `_pc_resolve`
-    // returns but BEFORE the `open()` resolves would leave fd 9 pointing at a
-    // directory outside the workspace — the earlier `case` check on the resolved
-    // string cannot see that. Close the gap with open-then-verify: open fd 9 (which
-    // PINS whatever inode `open()` landed on), then re-canonicalize `/proc/self/fd/9`
-    // — the pinned inode's own path — and confirm it is still inside `$_pc_root`
-    // before extracting. If an ancestor swap redirected the open, the pinned inode
-    // resolves outside the root and the verify fails closed (exit 42); once the
-    // verify passes, the inode is fixed and `tar -C /proc/self/fd/9` chdir's through
-    // the magic symlink to that exact inode, so a post-open ancestor swap cannot
-    // redirect the write. (The initial `case` on `$_pc_real` still fails fast on a
-    // pre-open escape; the fd re-verify is what makes the guarantee race-free.)
-    const extractScript = [
-      ...canonicalizerPreamble(shellQuote(remoteDir)),
-      `_pc_real=$(_pc_resolve ${shellQuote(mapping.targetPath)}) || { echo "ESCAPE"; exit 42; };`,
-      `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-      `exec 9<"$_pc_real" || { echo "open failed"; exit 46; };`,
-      `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE"; exit 42; };`,
-      `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-      `tar -xf ${shellQuote(remoteTar)} -C /proc/self/fd/9 || { echo "extract failed"; exit 43; };`,
-      `exec 9>&-;`,
-      `rm -f ${shellQuote(remoteTar)};`,
-    ].join("\n");
-    // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
-    // remove the scratch tarball.
-    await withProviderSpan({
-      name: "extractTarball",
-      run: () =>
-        assertSandboxCommandOk(
-          sandbox,
-          `sh -c ${shellQuote(extractScript)}`,
-          timeoutSeconds,
-          "syncIn extract",
-        ),
-    });
+    // The uploaded scratch tar lands at the workspace root as a reserved
+    // `.paperclip-upload-*` entry. The extract script below removes it only on
+    // success. On an upload or extract failure the scratch tar can remain, and the
+    // runtime workspace wipe preserves every `.paperclip-upload-*` entry, so a
+    // stale tar would surface in the agent workspace. Sweep the scratch on any
+    // failure — symmetric with the file-mapping path — so a failed sync (for
+    // example a referenced-project extraction) leaves no residue.
+    try {
+      // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
+      await withProviderSpan({
+        name: "transfer",
+        wallMsAttr: SPAN_ATTR.transferWallMs,
+        attributes: {
+          [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+          [SPAN_ATTR.transferDirection]: "inbound",
+        },
+        run: () =>
+          sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds),
+      });
+      // Bind validation and extraction into ONE sandbox invocation, then extract into
+      // an OPEN directory inode rather than a path string. `exec 9<"$_pc_real"` itself
+      // walks every ancestor of `$_pc_real` during the `open()` syscall, so a sandbox
+      // process that swaps an ancestor component for a symlink AFTER `_pc_resolve`
+      // returns but BEFORE the `open()` resolves would leave fd 9 pointing at a
+      // directory outside the workspace — the earlier `case` check on the resolved
+      // string cannot see that. Close the gap with open-then-verify: open fd 9 (which
+      // PINS whatever inode `open()` landed on), then re-canonicalize `/proc/self/fd/9`
+      // — the pinned inode's own path — and confirm it is still inside `$_pc_root`
+      // before extracting. If an ancestor swap redirected the open, the pinned inode
+      // resolves outside the root and the verify fails closed (exit 42); once the
+      // verify passes, the inode is fixed and `tar -C /proc/self/fd/9` chdir's through
+      // the magic symlink to that exact inode, so a post-open ancestor swap cannot
+      // redirect the write. (The initial `case` on `$_pc_real` still fails fast on a
+      // pre-open escape; the fd re-verify is what makes the guarantee race-free.)
+      const extractScript = [
+        ...canonicalizerPreamble(shellQuote(remoteDir)),
+        `_pc_real=$(_pc_resolve ${shellQuote(mapping.targetPath)}) || { echo "ESCAPE"; exit 42; };`,
+        `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
+        `exec 9<"$_pc_real" || { echo "open failed"; exit 46; };`,
+        `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE"; exit 42; };`,
+        `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
+        `tar -xf ${shellQuote(remoteTar)} -C /proc/self/fd/9 || { echo "extract failed"; exit 43; };`,
+        `exec 9>&-;`,
+        `rm -f ${shellQuote(remoteTar)};`,
+      ].join("\n");
+      // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
+      // remove the scratch tarball.
+      await withProviderSpan({
+        name: "extractTarball",
+        run: () =>
+          assertSandboxCommandOk(
+            sandbox,
+            `sh -c ${shellQuote(extractScript)}`,
+            timeoutSeconds,
+            "syncIn extract",
+          ),
+      });
+    } catch (error) {
+      await removeSandboxScratch(sandbox, [remoteTar], timeoutSeconds);
+      throw error;
+    }
     const filesTransferred = await countHostFiles(mapping.sourcePath, mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
