@@ -1266,7 +1266,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             await stopRuntimeServicesForExecutionWorkspace({
               db,
               executionWorkspaceId: existing.id,
-              workspaceCwd: existing.cwd,
+              // A shared session shares its path with other live sessions, so
+              // the cwd-prefix fallback would stop their services too. Match on
+              // the closing record only.
+              workspaceCwd: existing.mode === "shared_workspace" ? null : existing.cwd,
             });
             return svc.runManualArchiveArtifactCleanup({
               workspace: existing,

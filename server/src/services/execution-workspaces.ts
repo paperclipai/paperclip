@@ -1743,7 +1743,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: workspace.id,
-        workspaceCwd: workspace.cwd,
+        // The cwd fallback sweeps every in-process service running under the
+        // path, which is a safety net for a workspace being destroyed. On a
+        // preserved path that same sweep reaches services owned by other live
+        // sessions on the shared worktree, so match on the closing record only.
+        workspaceCwd: preserveWorkspacePath ? null : workspace.cwd,
       });
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,

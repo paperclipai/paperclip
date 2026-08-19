@@ -534,6 +534,59 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.runManualArchiveArtifactCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ expectedHeadSha: "readiness-head-sha" }),
     );
+    // An isolated workspace is destroyed, so the cwd sweep is a useful safety
+    // net for a service that lost its execution-workspace link.
+    expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ executionWorkspaceId: "workspace-1", workspaceCwd: "/tmp/worktree" }),
+    );
+  });
+
+  it("stops only this session's runtime services when a shared workspace is archived", async () => {
+    // A shared session shares its path with other live sessions. The cwd-prefix
+    // fallback in stopRuntimeServicesForExecutionWorkspace would reach their
+    // services, so the archive must match on the closing record only.
+    const archivedWorkspace = {
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "archived",
+      mode: "shared_workspace",
+      projectWorkspaceId: null,
+      projectId: null,
+      cwd: "/tmp/shared-primary",
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      ...archivedWorkspace,
+      status: "active",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "ready_with_warnings",
+      blockingReasons: [],
+      workspaceHeadSha: "readiness-head-sha",
+    });
+    mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+      outcome: "archived",
+      workspace: archivedWorkspace,
+      capturedGeneration: 3,
+    });
+    mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction.mockImplementation(
+      async ({ destroy }: { destroy: () => Promise<unknown> }) => ({
+        skippedReopened: false,
+        result: await destroy(),
+      }),
+    );
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(200);
+    expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ executionWorkspaceId: "workspace-1", workspaceCwd: null }),
+    );
+    expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceCwd: "/tmp/shared-primary" }),
+    );
   });
 
   it("keeps the reusable sandbox leases when a reopen makes the fence skip the archive teardown", async () => {
