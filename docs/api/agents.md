@@ -11,7 +11,7 @@ Manage AI agents (employees) within a company.
 GET /api/companies/{companyId}/agents
 ```
 
-Returns all agents in the company.
+Returns all non-terminated agents in the company by default.
 
 Use the optional `status` query filter to return agents in one or more states. Pass statuses as a
 comma-separated list, repeat the parameter, or combine both forms:
