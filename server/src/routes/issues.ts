@@ -142,6 +142,10 @@ import {
 } from "../services/index.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
+import {
+  evaluatePriorOwnerTerminalCloseGrant,
+  isPriorOwnerTerminalClosePatch,
+} from "../services/prior-owner-close.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -4019,6 +4023,33 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+
+  async function priorOwnerTerminalCloseGranted(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeAgentId: string | null;
+      checkoutRunId?: string | null;
+    },
+    body: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    if (!isPriorOwnerTerminalClosePatch(body)) return false;
+    const recovery = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    const checkoutRunId = issue.checkoutRunId ?? null;
+    const checkoutRun = checkoutRunId ? await heartbeat.getRun(checkoutRunId) : null;
+    const comments = await svc.listComments(issue.id, { order: "desc", limit: 100 });
+    return evaluatePriorOwnerTerminalCloseGrant({
+      actorAgentId: req.actor.agentId,
+      currentAssigneeAgentId: issue.assigneeAgentId,
+      previousOwnerAgentId: recovery?.previousOwnerAgentId ?? null,
+      recoveryCreatedAt: recovery?.createdAt ?? null,
+      checkoutRunAgentId: checkoutRun?.agentId ?? null,
+      comments,
+    }).allowed;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -4034,7 +4065,7 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: { allowVisibleIssueWrite?: boolean; priorOwnerTerminalClose?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -4077,6 +4108,7 @@ export function issueRoutes(
         return true;
       }
       if (issue.status === "in_progress") {
+        if (options.priorOwnerTerminalClose) return true;
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
         return denyIssueWrite(req, res, issue, "issue_write_assignee_run_lock", {
@@ -5132,8 +5164,9 @@ export function issueRoutes(
     req: Request,
     issue: { id: string; companyId: string; assigneeAgentId: string | null },
     activeRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>,
-    input: { source: "issue_update" | "recovery_action_resolution" },
+    input: { source: "issue_update" | "recovery_action_resolution"; priorOwnerTerminalClose?: boolean },
   ) {
+    if (input.priorOwnerTerminalClose) return true;
     if (req.actor.type !== "agent") return true;
     if (!activeRecoveryAction) return true;
 
@@ -9373,11 +9406,16 @@ export function issueRoutes(
       await denyIssueWrite(req, res, existing, "issue_write_attribution_spoof_rejected");
       return;
     }
+    const priorOwnerTerminalClose = await priorOwnerTerminalCloseGranted(
+      req,
+      existing,
+      req.body as Record<string, unknown>,
+    );
     const issueMutationAccess = await assertAgentIssueMutationAllowed(
       req,
       res,
       existing,
-      { allowVisibleIssueWrite: true },
+      { allowVisibleIssueWrite: true, priorOwnerTerminalClose },
     );
     if (!issueMutationAccess) return;
     const issueMutationAuthorizationReason = req.actor.type === "agent"
@@ -9475,7 +9513,7 @@ export function issueRoutes(
         req,
         existing,
         activeRecoveryActionBeforeUpdate,
-        { source: "issue_update" },
+        { source: "issue_update", priorOwnerTerminalClose },
       );
       const recoveryRestrictedSourceMutationRequested =
         activeRecoveryActionBeforeUpdate != null &&
@@ -9490,13 +9528,14 @@ export function issueRoutes(
             updateFields.status !== existing.status
           )
         );
-      if (recoveryRestrictedSourceMutationRequested) {
+      if (recoveryRestrictedSourceMutationRequested && !priorOwnerTerminalClose) {
         await requireRecoverySourceMutationAuthority(req, existing);
       }
     }
     if (
       resumeRequested !== true &&
       agentStatusTransitionRequiresResumeAuthority &&
+      !priorOwnerTerminalClose &&
       !(await assertExplicitResumeIntentAllowed(req, res, existing))
     ) {
       return;
