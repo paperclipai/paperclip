@@ -20,6 +20,7 @@ const mockPluginLoader = vi.hoisted(() => ({
   getUiParserSource: vi.fn(),
   getOrExtractUiParserSource: vi.fn(),
   reloadExternalAdapter: vi.fn(),
+  getMultiFileReloadWarning: vi.fn(),
 }));
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
@@ -102,6 +103,7 @@ describe("adapter routes", () => {
     mockPluginLoader.getUiParserSource.mockResolvedValue(null);
     mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
     mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
+    mockPluginLoader.getMultiFileReloadWarning.mockReturnValue(undefined);
     const [registry, routes, middleware] = await Promise.all([
       vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
       import("../routes/adapters.js"),
@@ -470,6 +472,68 @@ describe("adapter routes", () => {
     expect(registered?.sessionManagement).toEqual(declaredSessionManagement);
 
     unregisterServerAdapter(HOT_INSTALL_TYPE);
+  });
+
+  it("POST /api/adapters/:type/reload includes a warning when the adapter has multi-file local imports", async () => {
+    const reloadedModule: ServerAdapterModule = {
+      type: "multi_file_adapter",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "multi_file_adapter",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    };
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue({
+      type: "multi_file_adapter",
+      packageName: "multi-file-adapter-pkg",
+      localPath: "/tmp/fake-multi-file-adapter",
+    });
+    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(reloadedModule);
+    mockPluginLoader.getMultiFileReloadWarning.mockReturnValue(
+      "This adapter's entry point imports other local files (e.g. ./server/execute.ts). " +
+      "Reload only re-imports the entry point — edits to those other files are not " +
+      "picked up until the server process is fully restarted.",
+    );
+
+    const app = createApp({ isInstanceAdmin: true });
+    const res = await request(app).post("/api/adapters/multi_file_adapter/reload");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.reloaded).toBe(true);
+    expect(res.body.warning).toMatch(/fully restarted/);
+
+    unregisterServerAdapter("multi_file_adapter");
+  });
+
+  it("POST /api/adapters/:type/reload omits the warning for single-file adapters", async () => {
+    const reloadedModule: ServerAdapterModule = {
+      type: "single_file_adapter",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "single_file_adapter",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    };
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue({
+      type: "single_file_adapter",
+      packageName: "single-file-adapter-pkg",
+      localPath: "/tmp/fake-single-file-adapter",
+    });
+    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(reloadedModule);
+    mockPluginLoader.getMultiFileReloadWarning.mockReturnValue(undefined);
+
+    const app = createApp({ isInstanceAdmin: true });
+    const res = await request(app).post("/api/adapters/single_file_adapter/reload");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.reloaded).toBe(true);
+    expect(res.body.warning).toBeUndefined();
+
+    unregisterServerAdapter("single_file_adapter");
   });
 
   it("POST /api/adapters/install allows an external adapter to override a builtin type", async () => {

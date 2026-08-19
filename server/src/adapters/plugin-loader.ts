@@ -76,6 +76,38 @@ function resolvePackageEntryPoint(packageDir: string): string {
   return pkg.main ?? "index.js";
 }
 
+// Matches relative-specifier imports/requires, e.g. `from './helper.ts'`,
+// `import './setup.ts'` (side-effect), or `import('./x.ts')` (dynamic).
+const LOCAL_IMPORT_RE = /(?:from\s*|import\s*(?:\(\s*)?|require\s*\(\s*)['"](\.\.?\/[^'"]+)['"]/;
+
+function entryPointHasLocalImports(packageDir: string): boolean {
+  const entryPoint = resolvePackageEntryPoint(packageDir);
+  const modulePath = path.resolve(packageDir, entryPoint);
+  let source: string;
+  try {
+    source = fs.readFileSync(modulePath, "utf-8");
+  } catch {
+    return false;
+  }
+  return LOCAL_IMPORT_RE.test(source);
+}
+
+// Reload only cache-busts the entry point (see reloadExternalAdapter below),
+// so multi-file adapters need this warning — undefined means reload is accurate.
+export function getMultiFileReloadWarning(type: string): string | undefined {
+  const record = getAdapterPluginByType(type);
+  if (!record) return undefined;
+
+  const packageDir = resolvePackageDir(record);
+  if (!entryPointHasLocalImports(packageDir)) return undefined;
+
+  return (
+    "This adapter's entry point imports other local files (e.g. ./server/execute.ts). " +
+    "Reload only re-imports the entry point — edits to those other files are not " +
+    "picked up until the server process is fully restarted."
+  );
+}
+
 // ---------------------------------------------------------------------------
 // UI parser extraction
 // ---------------------------------------------------------------------------
@@ -202,7 +234,7 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
 
 /**
  * Reload an external adapter at runtime (dev iteration without server restart).
- * Busts the ESM module cache via a cache-busting query string.
+ * Busts the ESM module cache via a cache-busting query string — entry point only.
  */
 export async function reloadExternalAdapter(
   type: string,

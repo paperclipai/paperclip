@@ -41,7 +41,7 @@ import {
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
-import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
+import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter, getMultiFileReloadWarning } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -531,6 +531,7 @@ export function adapterRoutes() {
    *
    * Reload an external adapter at runtime (for dev iteration without server restart).
    * Busts the ESM module cache, re-imports the adapter, and re-registers it.
+   * Multi-file adapters get a `warning` field — see getMultiFileReloadWarning().
    *
    * Cannot be used on built-in adapter types.
    */
@@ -572,7 +573,12 @@ export function adapterRoutes() {
 
       logger.info({ type, version: newVersion }, "External adapter reloaded at runtime");
 
-      res.json({ type, version: newVersion, reloaded: true });
+      const warning = getMultiFileReloadWarning(type);
+      if (warning) {
+        logger.warn({ type }, "Reloaded adapter has local sub-module imports that reload cannot refresh");
+      }
+
+      res.json({ type, version: newVersion, reloaded: true, ...(warning ? { warning } : {}) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err, type }, "Failed to reload external adapter");
