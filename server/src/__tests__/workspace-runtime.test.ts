@@ -8672,6 +8672,52 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
     expect(runtimeOwned?.branchCreatedByRuntime).toBe(true);
   });
 
+  it("fails closed instead of recreating a missing operator-owned branch", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "feature/missing-operator-owned";
+    await createBranchWithCommit(repoRoot, branchName, "operator-owned.txt");
+    const first = await realizeExistingBranch(repoRoot, branchName);
+
+    await runGit(repoRoot, ["worktree", "remove", "--force", first.cwd]);
+    await runGit(repoRoot, ["branch", "-D", branchName]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: first.cwd,
+        providerRef: first.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+        metadata: { createdByRuntime: false },
+      },
+      issue: {
+        id: "issue-pr-prep",
+        identifier: "PAP-9004",
+        title: "Restore a missing operator-owned branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toThrow(`operator-owned branch "${branchName}" no longer exists`);
+
+    await expect(fs.stat(first.cwd)).rejects.toThrow();
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", branchName])).rejects.toThrow();
+  });
+
   it("fails closed when an existing branch is pinned on a non-worktree strategy", async () => {
     const repoRoot = await createTempRepo();
     await createBranchWithCommit(repoRoot, "feature/wrong-mode", "wrong-mode.txt");
