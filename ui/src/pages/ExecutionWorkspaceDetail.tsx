@@ -1000,17 +1000,30 @@ export function ExecutionWorkspaceDetail() {
   /**
    * Password-independent workspace entry (PAP-17572).
    *
-   * The server answers with a ticket-bearing URL. `location.assign` sends the
-   * browser there and the server responds with a redirect, so the ticket never
-   * becomes a navigable history entry. On refusal we keep the machine reason and
-   * let the access card explain whether to wait, start, or repair.
+   * The server answers with a ticket-bearing URL, and the workspace answers *that*
+   * with a redirect — which is what keeps the ticket out of session history.
+   *
+   * The target tab is opened synchronously on click and only pointed at the URL
+   * once the ticket arrives. Opening it after the request resolves would be a
+   * popup the browser did not attribute to the click, and Safari and Firefox
+   * block exactly that. If the tab could not be opened anyway, fall back to
+   * navigating this one rather than silently doing nothing.
    */
   const openWorkspace = useMutation({
-    mutationFn: () => executionWorkspacesApi.requestLoginHandoff(workspace!.id),
-    onSuccess: (ticket) => {
+    mutationFn: async () => {
+      const target = window.open("about:blank", "_blank", "noopener,noreferrer");
+      try {
+        return { ticket: await executionWorkspacesApi.requestLoginHandoff(workspace!.id), target };
+      } catch (error) {
+        target?.close();
+        throw error;
+      }
+    },
+    onSuccess: ({ ticket, target }) => {
       setHandoffFailure(null);
       setHandoffErrorMessage(null);
-      window.location.assign(ticket.url);
+      if (target && !target.closed) target.location.replace(ticket.url);
+      else window.location.assign(ticket.url);
     },
     onError: async (error) => {
       // A structured refusal is rendered as workspace state by the access card,
