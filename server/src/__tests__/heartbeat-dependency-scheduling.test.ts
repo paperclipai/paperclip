@@ -1364,6 +1364,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           return issue?.executionRunId == null;
         }, 30_000),
       ).toBe(true);
+      // The success path still finalizes the agent status after the release;
+      // wait for that last write so the continuation wake cannot race it.
+      expect(
+        await waitForCondition(async () => {
+          const agent = await db
+            .select({ status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0]);
+          return agent?.status !== "running";
+        }, 30_000),
+      ).toBe(true);
 
       mockAdapterExecute.mockImplementationOnce(async () => {
         throw new Error("synthetic adapter failure after resume");
