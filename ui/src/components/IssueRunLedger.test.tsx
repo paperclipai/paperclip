@@ -608,4 +608,24 @@ describe("IssueRunLedger", () => {
 
     expect(container.querySelector('[data-testid="responsible-user-denial-notice"]')).toBeNull();
   });
+
+  it("renders instead of throwing when a live run carries an Invalid Date", () => {
+    // Regression: toIsoString guarded on `instanceof Date`, which is true for an
+    // Invalid Date, so toISOString() threw RangeError: Invalid time value. That
+    // happened inside the ledger useMemo, so it took the entire issue page down
+    // rather than degrading the ledger. Live runs are typed `string | Date | null`
+    // (api/heartbeats.ts), so a Date is a legitimate input shape here.
+    expect(() =>
+      renderLedger({
+        runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
+        activeRun: createActiveRun({
+          startedAt: new Date("not-a-date"),
+          finishedAt: new Date("not-a-date"),
+        }),
+      }),
+    ).not.toThrow();
+
+    expect(container.textContent).toContain("CodexCoder");
+  });
+
 });

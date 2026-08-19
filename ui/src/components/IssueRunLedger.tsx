@@ -225,7 +225,16 @@ function formatDuration(start: string | Date | null | undefined, end: string | D
 
 function toIsoString(value: string | Date | null | undefined) {
   if (!value) return null;
-  return value instanceof Date ? value.toISOString() : value;
+  if (value instanceof Date) {
+    // An Invalid Date passes both guards above — it is truthy and it is a Date —
+    // and toISOString() then throws RangeError: Invalid time value. Because this
+    // runs inside the useMemo that builds the ledger, that exception takes the
+    // whole issue page down, not just the ledger. Live runs reach here with
+    // `string | Date | null` (api/heartbeats.ts), so a malformed date from that
+    // path must degrade to null rather than throw.
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  return value;
 }
 
 function liveRunToLedgerRun(run: LiveRunForIssue | ActiveRunForIssue): LedgerRun {
