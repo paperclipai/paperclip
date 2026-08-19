@@ -6735,37 +6735,47 @@ export async function finalizeRunningRunWithTaskSession(
       )`,
     );
     if (mutation) {
-      const sessionParamsJson = mutation.kind === "upsert" ? mutation.sessionParamsJson : null;
-      const sessionDisplayId = mutation.kind === "upsert" ? mutation.sessionDisplayId : null;
-      const lastError = mutation.kind === "upsert" ? mutation.lastError : null;
-      await tx
-        .insert(agentTaskSessions)
-        .values({
-          companyId: mutation.companyId,
-          agentId: mutation.agentId,
-          adapterType: mutation.adapterType,
-          taskKey: mutation.taskKey,
-          sessionParamsJson,
-          sessionDisplayId,
-          lastRunId: run.id,
-          lastError,
-        })
-        .onConflictDoUpdate({
-          target: [
-            agentTaskSessions.companyId,
-            agentTaskSessions.agentId,
-            agentTaskSessions.adapterType,
-            agentTaskSessions.taskKey,
-          ],
-          set: {
-            sessionParamsJson,
-            sessionDisplayId,
+      if (mutation.kind === "clear") {
+        await tx
+          .delete(agentTaskSessions)
+          .where(
+            and(
+              eq(agentTaskSessions.companyId, mutation.companyId),
+              eq(agentTaskSessions.agentId, mutation.agentId),
+              eq(agentTaskSessions.adapterType, mutation.adapterType),
+              eq(agentTaskSessions.taskKey, mutation.taskKey),
+            ),
+          );
+      } else {
+        await tx
+          .insert(agentTaskSessions)
+          .values({
+            companyId: mutation.companyId,
+            agentId: mutation.agentId,
+            adapterType: mutation.adapterType,
+            taskKey: mutation.taskKey,
+            sessionParamsJson: mutation.sessionParamsJson,
+            sessionDisplayId: mutation.sessionDisplayId,
             lastRunId: run.id,
-            lastError,
-            updatedAt: new Date(),
-          },
-          setWhere: existingSessionIsNotNewer,
-        });
+            lastError: mutation.lastError,
+          })
+          .onConflictDoUpdate({
+            target: [
+              agentTaskSessions.companyId,
+              agentTaskSessions.agentId,
+              agentTaskSessions.adapterType,
+              agentTaskSessions.taskKey,
+            ],
+            set: {
+              sessionParamsJson: mutation.sessionParamsJson,
+              sessionDisplayId: mutation.sessionDisplayId,
+              lastRunId: run.id,
+              lastError: mutation.lastError,
+              updatedAt: new Date(),
+            },
+            setWhere: existingSessionIsNotNewer,
+          });
+      }
     }
 
     return run;
