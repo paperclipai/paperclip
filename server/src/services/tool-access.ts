@@ -100,6 +100,7 @@ import type {
   ToolRuntimeSlot,
   ToolStdioCommandTemplate,
   ReviewToolProfileNewTools,
+  SecretProjectionClass,
   UpdateToolApplication,
   UpdateToolConnection,
   PutToolConnectionInstalls,
@@ -169,6 +170,13 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+};
+
+type CredentialBindingRow = {
+  secretId: string;
+  configPath: string;
+  projectionClass: SecretProjectionClass;
+  projectionAllowlistKey: string | null;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1365,6 +1373,45 @@ function readStdioTemplateId(config: Record<string, unknown>): string {
     throw badRequest("Local stdio MCP connections must use an approved templateId");
   }
   return templateId.trim();
+}
+
+/**
+ * `credentialRefs` and `credentialSecretRefs` can legitimately describe the
+ * same credential: the first places the header, the second declares how the
+ * secret projects. Both derive a `company_secret_bindings` row keyed by
+ * config path, so an unmerged pair collided on
+ * `company_secret_bindings_target_path_uq` inside a single multi-row insert
+ * and surfaced as a bare 500. Merge the rows that share a config path, and
+ * reject only a true ambiguity: one path bound to two different secrets.
+ */
+function mergeCredentialBindingRows(rows: CredentialBindingRow[]): CredentialBindingRow[] {
+  const byConfigPath = new Map<string, CredentialBindingRow>();
+  for (const row of rows) {
+    const existing = byConfigPath.get(row.configPath);
+    if (!existing) {
+      byConfigPath.set(row.configPath, row);
+      continue;
+    }
+    if (existing.secretId !== row.secretId) {
+      throw badRequest(
+        `Config path "${row.configPath}" is bound to two different secrets. Bind it once in credentialRefs or credentialSecretRefs.`,
+        { code: "duplicate_credential_binding", configPath: row.configPath },
+      );
+    }
+    // A `credentialRefs` row always carries the default projection, so keep
+    // the stricter class and the declared allowlist key. Otherwise the merge
+    // could silently downgrade an explicit `class_3_static_lease` binding.
+    byConfigPath.set(row.configPath, {
+      secretId: existing.secretId,
+      configPath: existing.configPath,
+      projectionClass:
+        existing.projectionClass === "class_3_static_lease" || row.projectionClass === "class_3_static_lease"
+          ? "class_3_static_lease"
+          : existing.projectionClass,
+      projectionAllowlistKey: existing.projectionAllowlistKey ?? row.projectionAllowlistKey,
+    });
+  }
+  return [...byConfigPath.values()];
 }
 
 export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}) {
@@ -2732,6 +2779,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function syncCredentialBindings(connection: typeof toolConnections.$inferSelect) {
+    const declared: CredentialBindingRow[] = [
+      ...connection.credentialRefs.map((ref): CredentialBindingRow => ({
+        secretId: ref.secretId,
+        configPath: `credentials.${ref.name}`,
+        projectionClass: "unclassified",
+        projectionAllowlistKey: null,
+      })),
+      ...connection.credentialSecretRefs.map((ref): CredentialBindingRow => ({
+        secretId: ref.secretId,
+        configPath: ref.configPath,
+        projectionClass: ref.projectionClass ?? "unclassified",
+        projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
+      })),
+    ];
+    // Merge before the delete. A rejected payload must not leave the
+    // connection with its bindings removed and nothing written back.
+    const bindings = mergeCredentialBindingRows(declared);
     await db
       .delete(companySecretBindings)
       .where(
@@ -2741,20 +2805,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(companySecretBindings.targetId, connection.id),
         ),
       );
-    const bindings = [
-      ...connection.credentialRefs.map((ref) => ({
-        secretId: ref.secretId,
-        configPath: `credentials.${ref.name}`,
-        projectionClass: "unclassified",
-        projectionAllowlistKey: null,
-      })),
-      ...connection.credentialSecretRefs.map((ref) => ({
-        secretId: ref.secretId,
-        configPath: ref.configPath,
-        projectionClass: ref.projectionClass ?? "unclassified",
-        projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
-      })),
-    ];
     if (bindings.length === 0) return;
     await db.insert(companySecretBindings).values(bindings.map((ref) => ({
       companyId: connection.companyId,

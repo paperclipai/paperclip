@@ -7007,6 +7007,191 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ targetType: "agent", targetId: agent.id }),
     ]));
   });
+
+  it("merges credentialRefs and credentialSecretRefs that bind one secret to the same config path", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Authorization ${randomUUID()}`,
+      key: `authorization.${randomUUID()}`,
+      value: "token-value",
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: "Duplicate binding fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [{
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+      credentialRefs: [{
+        name: "authorization",
+        secretId: secret.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    });
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connection.id),
+      ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.configPath).toBe("credentials.authorization");
+    expect(rows[0]!.secretId).toBe(secret.id);
+  });
+
+  it("updates a connection that sends credentialRefs and credentialSecretRefs together", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Authorization ${randomUUID()}`,
+      key: `authorization.${randomUUID()}`,
+      value: "token-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Patch binding fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [{
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+    });
+
+    const updated = await service.updateConnection(connection.id, {
+      credentialSecretRefs: [{
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+      credentialRefs: [{
+        name: "authorization",
+        secretId: secret.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    });
+
+    expect(updated.id).toBe(connection.id);
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connection.id),
+      ));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("keeps the class-3 projection when a header ref merges into a declared secret ref", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Slack bot token ${randomUUID()}`,
+      key: `slack.bot.${randomUUID()}`,
+      value: "xoxb-token-value",
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: "Class 3 binding fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [{
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: "credentials.bot_token",
+        required: true,
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "slack.bot_token",
+      }],
+      credentialRefs: [{
+        name: "bot_token",
+        secretId: secret.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    });
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connection.id),
+      ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.projectionClass).toBe("class_3_static_lease");
+    expect(rows[0]!.projectionAllowlistKey).toBe("slack.bot_token");
+  });
+
+  it("rejects one config path bound to two different secrets", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secretService_ = secretService(db);
+    const first = await secretService_.create(company.id, {
+      provider: "local_encrypted",
+      name: `First ${randomUUID()}`,
+      key: `first.${randomUUID()}`,
+      value: "first-value",
+    });
+    const second = await secretService_.create(company.id, {
+      provider: "local_encrypted",
+      name: `Second ${randomUUID()}`,
+      key: `second.${randomUUID()}`,
+      value: "second-value",
+    });
+
+    await expect(service.createConnection(company.id, {
+      name: "Conflicting binding fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [{
+        secretId: first.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+      credentialRefs: [{
+        name: "authorization",
+        secretId: second.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    })).rejects.toMatchObject({
+      status: 400,
+      details: { code: "duplicate_credential_binding", configPath: "credentials.authorization" },
+    });
+  });
+
 });
 
 describe("classifyRisk", () => {
