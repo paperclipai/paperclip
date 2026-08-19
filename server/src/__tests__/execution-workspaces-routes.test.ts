@@ -500,6 +500,7 @@ describe.sequential("execution workspace routes", () => {
     mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
       state: "ready",
       blockingReasons: [],
+      workspaceHeadSha: "readiness-head-sha",
     });
     mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
       outcome: "archived",
@@ -528,6 +529,11 @@ describe.sequential("execution workspace routes", () => {
       }),
     );
     expect(mockExecutionWorkspaceService.runManualArchiveArtifactCleanup).toHaveBeenCalledTimes(1);
+    // Cleanup is anchored to the HEAD the readiness check cleared, not to a
+    // fresh self-read taken after the archive already committed.
+    expect(mockExecutionWorkspaceService.runManualArchiveArtifactCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedHeadSha: "readiness-head-sha" }),
+    );
   });
 
   it("keeps the reusable sandbox leases when a reopen makes the fence skip the archive teardown", async () => {

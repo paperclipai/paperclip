@@ -197,6 +197,7 @@ const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
     isMergedIntoBase: false,
     createdByRuntime: true,
   },
+  workspaceHeadSha: "9f2c1ad4bd7e0c53a1f6e8b90d4c27a5e3b18f60",
   runtimeServices: storybookExecutionWorkspaces[0]?.runtimeServices ?? [],
 };
 

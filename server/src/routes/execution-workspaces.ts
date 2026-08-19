@@ -1270,6 +1270,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             });
             return svc.runManualArchiveArtifactCleanup({
               workspace: existing,
+              // Anchor destruction to the HEAD the close-readiness check cleared,
+              // so a commit landing between readiness and cleanup fails closed.
+              expectedHeadSha: readiness.workspaceHeadSha,
               projectWorkspace,
               teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
               cleanupCommand: configForCleanup?.cleanupCommand ?? null,

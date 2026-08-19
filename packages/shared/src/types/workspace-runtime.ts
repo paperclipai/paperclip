@@ -154,6 +154,10 @@ export interface ExecutionWorkspaceCloseReadiness {
   isSharedWorkspace: boolean;
   isProjectPrimaryWorkspace: boolean;
   git: ExecutionWorkspaceCloseGitReadiness | null;
+  // HEAD resolved while readiness was computed. The close route threads this
+  // back into artifact cleanup, so destruction is anchored to the commit the
+  // readiness decision was made against instead of a later self-read.
+  workspaceHeadSha: string | null;
   runtimeServices: WorkspaceRuntimeService[];
 }
 

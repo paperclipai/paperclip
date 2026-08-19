@@ -1035,7 +1035,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
 
     expect(readiness?.deliveryState).toBe("unmerged");
-    expect(readiness?.warnings).toContain(
+    expect(readiness?.state).toBe("blocked");
+    expect(readiness?.blockingReasons).toContain(
       "This workspace is 2 commits ahead of main and is not merged.",
     );
     expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
@@ -1054,7 +1055,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
 
     expect(readiness?.deliveryState).toBe("merged_via_pr");
-    expect(readiness?.warnings).toContain("The workspace has 1 untracked file.");
+    expect(readiness?.state).toBe("blocked");
+    expect(readiness?.blockingReasons).toContain("The workspace has 1 untracked file.");
     expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
     expect(workspace?.status).toBe("active");
   });
@@ -4695,5 +4697,154 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+  }, 20_000);
+
+  it("blocks the close while a linked issue still has an active agent run", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.state).toBe("blocked");
+    expect(readiness?.isDestructiveCloseAllowed).toBe(false);
+    expect(readiness?.blockingReasons).toEqual(expect.arrayContaining([
+      "This workspace has an active agent run on a linked issue.",
+    ]));
+  }, 20_000);
+
+  it("clears the active-run blocker once the run leaves queued/running", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.companyId, seeded.companyId));
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.blockingReasons).not.toContain(
+      "This workspace has an active agent run on a linked issue.",
+    );
+  }, 20_000);
+
+  it("blocks the close while the source issue tree still has an open descendant", async () => {
+    // The reaper requires the whole descendant tree to be terminal. The
+    // descendant here never points its executionWorkspaceId at the workspace, so
+    // the directly-linked issue check alone would miss it.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, childStatus: "todo" });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.state).toBe("blocked");
+    expect(readiness?.blockingReasons).toEqual(expect.arrayContaining([
+      "The source issue tree still has 1 open issue.",
+    ]));
+  }, 20_000);
+
+  it("keeps git conditions as warnings for a shared workspace session", async () => {
+    // A shared session points at the project's primary worktree and archiving it
+    // only removes the session record, so dirty/untracked/unmerged state must not
+    // block the close or the session row could never be closed.
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-shared-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "paperclip-shared-check"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "paperclip-shared-check"]);
+    await fs.writeFile(path.join(worktreePath, "feature.txt"), "hello\n", "utf8");
+    await runGit(worktreePath, ["add", "feature.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Feature commit"]);
+    await fs.writeFile(path.join(worktreePath, "untracked.txt"), "left behind\n", "utf8");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `S${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared workspaces",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "git_worktree",
+      name: "Shared session",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "paperclip-shared-check",
+      baseRef: "main",
+    });
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness?.isSharedWorkspace).toBe(true);
+    expect(readiness?.state).toBe("ready_with_warnings");
+    expect(readiness?.isDestructiveCloseAllowed).toBe(true);
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.warnings).toEqual(expect.arrayContaining([
+      "The workspace has 1 untracked file.",
+      "This workspace is 1 commit ahead of main and is not merged.",
+    ]));
+  }, 20_000);
+
+  it("surfaces the readiness HEAD sha so the close route can anchor cleanup", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.workspaceHeadSha).toBe(seeded.headSha);
+  }, 20_000);
+
+  it("refuses manual archive cleanup when the expected HEAD sha is unknown", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]!);
+
+    await expect(
+      svc.runManualArchiveArtifactCleanup({ workspace, expectedHeadSha: null }),
+    ).rejects.toThrow(/expected git HEAD is unknown/);
+
+    // The worktree must survive a refused cleanup.
+    await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
+  }, 20_000);
+
+  it("refuses manual archive cleanup when HEAD moved after readiness cleared the close", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]!);
+
+    await fs.writeFile(path.join(seeded.worktreePath, "raced.txt"), "raced\n", "utf8");
+    await runGit(seeded.worktreePath, ["add", "raced.txt"]);
+    await runGit(seeded.worktreePath, ["commit", "-m", "Raced commit"]);
+
+    await expect(
+      svc.runManualArchiveArtifactCleanup({ workspace, expectedHeadSha: seeded.headSha }),
+    ).rejects.toThrow(/git worktree changed after delivery was verified/);
+    await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
   }, 20_000);
 });

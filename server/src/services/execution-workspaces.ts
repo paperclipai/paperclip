@@ -1434,6 +1434,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
+      issueTree,
     };
   }
 
@@ -1669,13 +1670,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
-    const [projectPolicy] = await Promise.all([
-      db
-        .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-        .from(projects)
-        .where(and(eq(projects.companyId, workspace.companyId), eq(projects.id, workspace.projectId)))
-        .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
-    ]);
+    const projectPolicy = await db
+      .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects)
+      .where(and(eq(projects.companyId, workspace.companyId), eq(projects.id, workspace.projectId)))
+      .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy));
     const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
     return runTerminalWorkspaceCleanupWithSideEffects(workspace, expectedHeadSha, {
       cleanupCommand: config?.cleanupCommand ?? null,
@@ -1706,8 +1705,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       import("./workspace-runtime.js"),
       import("./workspace-operations.js"),
     ]);
-    const projectWorkspace = input.projectWorkspace
-      ?? (workspace.projectWorkspaceId
+    // Only fall back to the lookup when the caller said nothing. An explicit
+    // `null` means the caller already resolved it and there is none, so a `??`
+    // fallback here would silently re-query and run cleanup against a project
+    // workspace the caller deliberately excluded.
+    const projectWorkspace = input.projectWorkspace !== undefined
+      ? input.projectWorkspace
+      : (workspace.projectWorkspaceId
         ? await db
             .select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
             .from(projectWorkspaces)
@@ -2333,7 +2337,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         warnings: gitWarnings,
         statusInspectionSucceeded,
       } = await inspectGitCloseReadiness(executionWorkspace);
-      const { deliveryState } = await assessDelivery(workspace, git);
+      const { deliveryState, workspaceHeadSha, issueTree } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
       if (!statusInspectionSucceeded) {
@@ -2368,6 +2372,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
       }
 
+      // The reaper requires the source issue's whole descendant tree to be
+      // terminal before it archives. Directly-linked issues are only part of that
+      // tree: a child issue can be open without ever pointing its
+      // executionWorkspaceId at this workspace. Walk the same tree here so the
+      // manual close path refuses in the same cases the reaper skips.
+      const linkedIssueIds = new Set(linkedIssueSummaries.map((issue) => issue.id));
+      const openTreeIssues = issueTree.filter(
+        (issue) => !TERMINAL_ISSUE_STATUSES.has(issue.status) && !linkedIssueIds.has(issue.id),
+      );
+      if (openTreeIssues.length > 0) {
+        const treeIssueMessage =
+          openTreeIssues.length === 1
+            ? "The source issue tree still has 1 open issue."
+            : `The source issue tree still has ${openTreeIssues.length} open issues.`;
+        if (isSharedWorkspace) {
+          warnings.push(`${treeIssueMessage} Archiving this shared workspace session keeps the underlying project workspace available.`);
+        } else {
+          blockingReasons.push(treeIssueMessage);
+        }
+      }
+
       if (isSharedWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
       }
@@ -2380,32 +2405,52 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         );
       }
 
+      // Archiving a shared workspace session only removes the session record; it
+      // never destroys the underlying project workspace (see the warning above).
+      // A shared session points at the project's primary worktree, which carries
+      // unrelated in-flight work almost all of the time, so treating its git
+      // state as a blocker would make the session record impossible to close
+      // while protecting nothing. Keep the same signals as warnings there.
+      const pushGitCloseSignal = (message: string) => {
+        if (isSharedWorkspace) warnings.push(message);
+        else blockingReasons.push(message);
+      };
+
       if (git?.hasDirtyTrackedFiles) {
-        blockingReasons.push(
+        pushGitCloseSignal(
           git.dirtyEntryCount === 1
             ? "The workspace has 1 modified tracked file."
             : `The workspace has ${git.dirtyEntryCount} modified tracked files.`,
         );
       }
       if (git?.hasUntrackedFiles) {
-        blockingReasons.push(
+        pushGitCloseSignal(
           git.untrackedEntryCount === 1
             ? "The workspace has 1 untracked file."
             : `The workspace has ${git.untrackedEntryCount} untracked files.`,
         );
       }
+      // Fail closed on unverifiable ancestry. `isMergedIntoBase` is null when the
+      // merge-base probe could not run (missing base ref, detached HEAD, git
+      // failure), which is exactly when Paperclip cannot prove the commits are
+      // safe to destroy. Only a positive `true` clears this blocker.
       if (
         git?.aheadCount
         && git.aheadCount > 0
-        && git.isMergedIntoBase === false
+        && git.isMergedIntoBase !== true
         && deliveryState !== "merged_via_pr"
       ) {
-        blockingReasons.push(
-          git.aheadCount === 1
-            ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
-            : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
+        pushGitCloseSignal(
+          git.isMergedIntoBase === null
+            ? `Paperclip could not verify whether this workspace is merged into ${git.baseRef ?? "the base ref"}.`
+            : git.aheadCount === 1
+              ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
+              : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
         );
       }
+      // Not gated on shared mode: an active run owns the checkout regardless of
+      // workspace mode, and closing the session record under a live run strands
+      // it. This mirrors the reaper's `skippedActiveRun` guard.
       if (await workspaceHasActiveRun(workspace)) {
         blockingReasons.push("This workspace has an active agent run on a linked issue.");
       }
@@ -2525,6 +2570,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         isSharedWorkspace,
         isProjectPrimaryWorkspace,
         git,
+        workspaceHeadSha,
         runtimeServices,
       };
     },
@@ -3388,17 +3434,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
     runManualArchiveArtifactCleanup: async (input: {
       workspace: ExecutionWorkspaceRow;
+      // HEAD as observed by the close-readiness check that authorized this
+      // archive. Anchoring destruction to that commit covers the whole
+      // readiness -> archive -> cleanup window; a self-read here would only
+      // cover the rev-parse -> lock window and would happily re-anchor onto a
+      // commit that landed after the caller was cleared to close.
+      expectedHeadSha: string | null;
       projectWorkspace?: { cwd: string | null; cleanupCommand: string | null } | null;
       cleanupCommand?: string | null;
       teardownCommand?: string | null;
       recorder?: WorkspaceOperationRecorder | null;
     }) => {
-      const workspacePath =
-        readNullableString(input.workspace.providerRef) ?? readNullableString(input.workspace.cwd);
-      const expectedHeadSha = workspacePath
-        ? await readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null)
-        : null;
-      return runClosedWorkspaceArtifactCleanup(input.workspace, expectedHeadSha, {
+      return runClosedWorkspaceArtifactCleanup(input.workspace, input.expectedHeadSha, {
         projectWorkspace: input.projectWorkspace,
         cleanupCommand: input.cleanupCommand,
         teardownCommand: input.teardownCommand,

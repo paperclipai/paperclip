@@ -141,6 +141,9 @@ export const executionWorkspaceCloseReadinessSchema = z.object({
   isSharedWorkspace: z.boolean(),
   isProjectPrimaryWorkspace: z.boolean(),
   git: executionWorkspaceCloseGitReadinessSchema.nullable(),
+  // HEAD observed while readiness was computed. The close route threads it back
+  // into artifact cleanup so destruction is anchored to the verified commit.
+  workspaceHeadSha: z.string().nullable(),
   runtimeServices: z.array(workspaceRuntimeServiceSchema),
 }).strict();
 
