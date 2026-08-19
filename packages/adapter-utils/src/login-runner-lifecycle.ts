@@ -70,10 +70,12 @@ export type LoginRunnerRaceResult =
  * Races the streaming `work` against the timeout and the cancellation signal. The
  * work result resolves the race with an `exit` status; the timeout resolves it
  * with a `timeout` status; the signal resolves it with a `cancelled` status. A
- * work error rejects the race, so the caller can convert it to a fixed,
- * non-secret error. A late work rejection after the race already settled is
- * consumed here, so it never becomes an unhandled rejection. The helper clears
- * the timer and removes the signal listener on the first settle.
+ * pre-aborted signal resolves the race with a `cancelled` status at once, before
+ * the helper starts the timer or listens to the work. A work error rejects the
+ * race, so the caller can convert it to a fixed, non-secret error. A late work
+ * rejection after the race already settled is consumed here, so it never becomes
+ * an unhandled rejection. The helper clears the timer and removes the signal
+ * listener on the first settle.
  */
 export function raceLoginRunnerExit(
   work: Promise<{ exitCode: number | null }>,
@@ -81,6 +83,17 @@ export function raceLoginRunnerExit(
   signal: AbortSignal | undefined,
 ): Promise<LoginRunnerRaceResult> {
   return new Promise<LoginRunnerRaceResult>((resolve, reject) => {
+    // The signal is already aborted. Resolve with the cancelled status now. The
+    // "abort" event does not fire again for an already-aborted signal, so a late
+    // listener never runs. The helper still consumes a late work rejection below.
+    if (signal?.aborted) {
+      work.then(
+        () => {},
+        () => {},
+      );
+      resolve({ kind: "cancelled" });
+      return;
+    }
     let settled = false;
     const cleanup = () => {
       clearTimeout(timer);

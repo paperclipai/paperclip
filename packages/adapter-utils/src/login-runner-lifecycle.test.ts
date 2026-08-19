@@ -51,6 +51,41 @@ describe("raceLoginRunnerExit", () => {
     expect(await racePromise).toEqual<LoginRunnerRaceResult>({ kind: "cancelled" });
   });
 
+  it("resolves with the cancelled kind when the signal is already aborted", async () => {
+    const hang = new Promise<{ exitCode: number | null }>(() => {});
+    const controller = new AbortController();
+    controller.abort();
+    const raced = await raceLoginRunnerExit(hang, 10_000, controller.signal);
+    expect(raced).toEqual<LoginRunnerRaceResult>({ kind: "cancelled" });
+  });
+
+  it("returns cancelled for a pre-aborted signal even when the work can resolve", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const raced = await raceLoginRunnerExit(
+      Promise.resolve({ exitCode: 0 }),
+      10_000,
+      controller.signal,
+    );
+    expect(raced).toEqual<LoginRunnerRaceResult>({ kind: "cancelled" });
+  });
+
+  it("consumes a late work rejection after a pre-aborted signal cancels the race", async () => {
+    let rejectWork: (error: Error) => void = () => {};
+    const work = new Promise<{ exitCode: number | null }>((_resolve, reject) => {
+      rejectWork = reject;
+    });
+    const controller = new AbortController();
+    controller.abort();
+    const raced = await raceLoginRunnerExit(work, 10_000, controller.signal);
+    expect(raced).toEqual<LoginRunnerRaceResult>({ kind: "cancelled" });
+    // The pre-aborted signal already cancelled the race. The work then rejects.
+    // The helper consumes the late rejection, so it never becomes an unhandled
+    // rejection.
+    expect(() => rejectWork(new Error("late"))).not.toThrow();
+    await Promise.resolve();
+  });
+
   it("rejects when the work rejects", async () => {
     const error = new Error("the driver errored");
     await expect(raceLoginRunnerExit(Promise.reject(error), 10_000, undefined)).rejects.toBe(error);
