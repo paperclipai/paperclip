@@ -9,6 +9,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
+import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -19,6 +20,8 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
   getConfigSchema as getClaudeConfigSchema,
+  parseClaudeStreamJson,
+  describeClaudeFailure,
 } from "@paperclipai/adapter-claude-local/server";
 import {
   agentConfigurationDoc as claudeAgentConfigurationDoc,
@@ -210,6 +213,31 @@ const claudeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,
+  // AGE-697: recover the real outcome of a hot-restart-adopted run whose
+  // process later exited without this server observing the exit live. Reuses
+  // the exact same terminal-result presence check (`resultJson !== null`)
+  // that `runChildProcess`'s `terminalResultCleanup.hasTerminalResult` already
+  // performs live for this adapter (packages/adapters/claude-local/src/server/execute.ts).
+  //
+  // Success/failure mirrors the live classification in execute.ts's
+  // `toAdapterResult` as closely as possible given what is actually knowable
+  // post-exit: live code computes `failed = !parsedSucceeded && (exitCode !==
+  // 0 || is_error)`, i.e. a non-"success" subtype with a clean exit (e.g.
+  // `model_refusal`, `error_max_turns`) is NOT treated as failed. `exitCode`
+  // is unavailable here (the process is already gone, which is the whole
+  // reason recovery is needed), so this can only key off `is_error` -- the
+  // one live-failure signal that doesn't depend on exit code. Matching this
+  // (rather than requiring `subtype === "success"`) avoids recording a
+  // spurious `adopted_run_recovered_failure` for a run that live execution
+  // would have called successful.
+  recoverAdoptedRunOutcome: ({ stdout }) => {
+    const parsed = parseClaudeStreamJson(stdout).resultJson;
+    if (!parsed) return null;
+    const isError = asBoolean(parsed.is_error, false);
+    return isError
+      ? { outcome: "failed", errorMessage: describeClaudeFailure(parsed) ?? "Claude reported an error result" }
+      : { outcome: "succeeded" };
+  },
 };
 
 const acpxLocalAdapter: ServerAdapterModule = {

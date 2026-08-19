@@ -500,6 +500,32 @@ export interface ServerAdapterModule {
    * and provisioned in fresh remote environments such as sandboxes.
    */
   getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+
+  /**
+   * Optional (AGE-697): recover the real terminal outcome of a local child
+   * process from its persisted stdout/stderr log content. Used only when a
+   * run's process was adopted across a hot restart (AGE-656) and later exits
+   * without this server observing the exit live -- at that point the process
+   * is gone and its in-memory exit code was never captured, so the only
+   * remaining evidence is whatever the adapter itself already wrote to its
+   * log files.
+   *
+   * Returns `null` when no terminal result is present in the given output;
+   * the caller then finalizes the run with an explicit unknown-outcome state
+   * instead of guessing at success/failure. This deliberately reuses the same
+   * terminal-result detection an adapter already performs live via
+   * `runChildProcess`'s `terminalResultCleanup.hasTerminalResult`
+   * (packages/adapter-utils/src/server-utils.ts) -- an adapter that doesn't
+   * wire that live detection also doesn't implement this hook and simply
+   * falls back to the unknown-outcome floor.
+   */
+  recoverAdoptedRunOutcome?: (output: { stdout: string; stderr: string }) => AdoptedRunOutcomeRecovery | null;
+}
+
+export interface AdoptedRunOutcomeRecovery {
+  outcome: "succeeded" | "failed";
+  errorMessage?: string | null;
+  summary?: string | null;
 }
 
 // ---------------------------------------------------------------------------

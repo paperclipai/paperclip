@@ -47,7 +47,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { runningProcesses } from "../adapters/index.ts";
+import { runningProcesses, getServerAdapter } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
@@ -113,6 +113,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { getRunLogStore } from "../services/run-log-store.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -2179,6 +2180,230 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           processGroupId: orphan.processGroupId,
         },
       });
+    });
+  });
+
+  it("recovers the real outcome from a hot-restart-adopted run's persisted log once its process has fully exited", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_997,
+      processGroupId: null,
+      contextSnapshot: {
+        stdoutLogFilePath: "/nonexistent/does-not-matter-for-this-test.log",
+      },
+    });
+    // Adoption metadata is normally written by `reconcileHotRestartAdoption`;
+    // seeded directly here since this test only exercises `reapOrphanedRuns`.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:00:30.000Z",
+            previousServerPid: 1,
+            newServerPid: process.pid,
+            previousServerVersion: "old-version",
+            processPid: 999_999_997,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    vi.mocked(getServerAdapter).mockReturnValueOnce({
+      type: "codex_local",
+      execute: mockAdapterExecute,
+      testEnvironment: async () => ({
+        adapterType: "codex_local",
+        status: "ok",
+        testedAt: new Date().toISOString(),
+        checks: [],
+      }),
+      recoverAdoptedRunOutcome: () => ({ outcome: "succeeded" }),
+    } as unknown as ReturnType<typeof getServerAdapter>);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // Recovering a real outcome must not enqueue a retry: exactly one row.
+    expect(runs).toHaveLength(1);
+
+    const finalized = runs.find((row) => row.id === runId);
+    expect(finalized?.status).toBe("succeeded");
+    expect(finalized?.errorCode).not.toBe("process_lost");
+    expect(finalized?.errorCode).toBeNull();
+    expect(finalized?.resultJson).toMatchObject({
+      adoptedRunLogEvidence: {
+        stdoutLogFilePath: "/nonexistent/does-not-matter-for-this-test.log",
+      },
+    });
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("finalizes a hot-restart-adopted run as unknown-outcome (never process_lost, never retried) once its process has fully exited with no recoverable terminal result", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_996,
+      processGroupId: null,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:00:30.000Z",
+            previousServerPid: 1,
+            newServerPid: process.pid,
+            previousServerVersion: "old-version",
+            processPid: 999_999_996,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // No log file path was ever persisted for this run (or the adapter has no
+    // `recoverAdoptedRunOutcome`), so the default mocked adapter (no such hook)
+    // applies -- nothing to override here.
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // The unknown-outcome floor must never enqueue a retry: exactly one row.
+    expect(runs).toHaveLength(1);
+
+    const finalized = runs.find((row) => row.id === runId);
+    expect(finalized?.status).toBe("failed");
+    expect(finalized?.errorCode).not.toBe("process_lost");
+    expect(finalized?.errorCode).toBe("adopted_run_outcome_unknown");
+  });
+
+  it("recovers a hot-restart-adopted run's outcome from the general-purpose run transcript log when no direct log-file path was ever persisted", async () => {
+    // This is the path that is already reachable in production TODAY,
+    // independent of the sibling file-backed-local-run-output change: every
+    // run writes its stdout/stderr through `runLogStore` right now, so
+    // recovery must be able to reconstruct a terminal result from that NDJSON
+    // transcript alone -- not only from `contextSnapshot.stdoutLogFilePath`.
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "running",
+      processPid: 999_999_995,
+      processGroupId: null,
+    });
+
+    const runLogStore = getRunLogStore();
+    const handle = await runLogStore.begin({ companyId, agentId, runId });
+    // Split the terminal Claude "result" event across two appends to also
+    // exercise the reconstruction's cross-page leftover-line buffering.
+    const resultLine = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: "sess-1",
+      result: "All done.",
+    });
+    await runLogStore.append(handle, {
+      stream: "stdout",
+      chunk: `${resultLine.slice(0, 20)}`,
+      ts: "2026-03-19T00:00:10.000Z",
+      seq: 1,
+    });
+    await runLogStore.append(handle, {
+      stream: "stdout",
+      chunk: `${resultLine.slice(20)}\n`,
+      ts: "2026-03-19T00:00:11.000Z",
+      seq: 2,
+    });
+    await runLogStore.append(handle, {
+      stream: "stderr",
+      chunk: "warning: ignored\n",
+      ts: "2026-03-19T00:00:11.500Z",
+      seq: 3,
+    });
+    await runLogStore.finalize(handle);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        logStore: handle.store,
+        logRef: handle.logRef,
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:00:30.000Z",
+            previousServerPid: 1,
+            newServerPid: process.pid,
+            previousServerVersion: "old-version",
+            processPid: 999_999_995,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    vi.mocked(getServerAdapter).mockReturnValueOnce({
+      type: "claude_local",
+      execute: mockAdapterExecute,
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "ok",
+        testedAt: new Date().toISOString(),
+        checks: [],
+      }),
+      // Mirrors the shape of the real claude_local wiring in
+      // server/src/adapters/registry.ts without importing the real package,
+      // so this test isolates the NDJSON-transcript reconstruction from
+      // claude-specific parsing (covered separately by parse.test.ts).
+      recoverAdoptedRunOutcome: ({ stdout }) => {
+        for (const line of stdout.split("\n")) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as { type?: string; is_error?: boolean };
+          if (event.type === "result") {
+            return event.is_error ? { outcome: "failed" as const } : { outcome: "succeeded" as const };
+          }
+        }
+        return null;
+      },
+    } as unknown as ReturnType<typeof getServerAdapter>);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const finalized = runs.find((row) => row.id === runId);
+    expect(finalized?.status).toBe("succeeded");
+    expect(finalized?.errorCode).not.toBe("process_lost");
+    expect(finalized?.errorCode).toBeNull();
+    expect(finalized?.resultJson).toMatchObject({
+      adoptedRunLogEvidence: { recoverySource: "run_log_store" },
     });
   });
 

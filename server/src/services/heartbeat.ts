@@ -95,7 +95,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES, MAX_CAPTURE_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -357,6 +357,30 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// AGE-697: a hot-restart-adopted run whose process later exited without this
+// server observing the exit live, and whose persisted log content contained
+// no adapter terminal result. Distinct from "process_lost" on purpose: this
+// run is NOT eligible for the automatic process-loss retry, because the
+// adopted process may already have completed its real side effects (posted
+// comments, patched issues, opened PRs) before it exited, and retrying would
+// duplicate them. See the AGE-656/AGE-697 decision: recover the real outcome
+// from the persisted run log when possible, and finalize with this distinct,
+// non-retrying "unknown outcome" state as the floor when it isn't.
+const ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE = "adopted_run_outcome_unknown";
+// AGE-697: a hot-restart-adopted run whose process exited and whose
+// persisted log DID contain an adapter terminal result, but that result was
+// itself a failure. Also never auto-retried (see above) -- the run already
+// ran to completion, so this is a real failure outcome, not a lost process.
+const ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE = "adopted_run_recovered_failure";
+// AGE-697: pagination size for reconstructing a run's stdout/stderr text from
+// the general-purpose NDJSON run transcript log (see
+// `reconstructRunLogStreamsTail`). Large enough to keep round trips low for a
+// typical run log without holding an unreasonable amount in memory per page.
+const RUN_LOG_STREAM_PAGE_BYTES = 512 * 1024;
+// Safety valve on the total bytes scanned while reconstructing a run's
+// transcript tail: bounds the I/O cost for a pathologically large log. This
+// only runs for a rare adopted-and-now-dead reap tick, not on every heartbeat.
+const RUN_LOG_STREAM_SCAN_MAX_BYTES = 32 * 1024 * 1024;
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
 // The reaper stops retrying a pending_cleanup lease after this many attempts.
@@ -13461,6 +13485,277 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { swept: rows.length, destroyed, capped };
   }
 
+  // AGE-697: read the tail of a run's persisted stdout/stderr log file so an
+  // adopted-and-now-exited run's real outcome can be recovered from it. Reads
+  // at most `MAX_CAPTURE_BYTES` from the end of the file, matching the cap a
+  // live `runChildProcess` capture already enforces (packages/adapter-utils/src/server-utils.ts),
+  // so an adapter's terminal-result parser sees comparable input either way.
+  // Any read failure (missing file, permission error, path never persisted)
+  // is treated as "no evidence found" rather than a hard failure -- the
+  // caller falls back to the unknown-outcome floor, which is always safe.
+  async function readAdoptedRunOutputLogTail(logFilePath: string): Promise<string> {
+    let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+    try {
+      handle = await fs.open(logFilePath, "r");
+      const stat = await handle.stat();
+      const start = Math.max(0, stat.size - MAX_CAPTURE_BYTES);
+      const length = stat.size - start;
+      if (length <= 0) return "";
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      return buffer.toString("utf8");
+    } catch {
+      return "";
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  }
+
+  // AGE-697: fallback reconstruction of a run's stdout/stderr text from the
+  // general-purpose run transcript log (`run.logStore`/`run.logRef`), which
+  // EVERY run already writes today via `runLogStore` -- unlike the raw
+  // file-backed stdout/stderr paths on `contextSnapshot`, which only exist
+  // once the sibling file-backed-local-run-output change lands. This is what
+  // makes real-outcome recovery actually reachable in production before that
+  // change ships, instead of always falling through to the unknown-outcome
+  // floor.
+  //
+  // The transcript is NDJSON: each line is `{ts, stream, chunk, seq}`, not raw
+  // adapter stdout, so this reconstructs the stdout/stderr streams by
+  // concatenating each line's `chunk` in order (by stream tag), keeping only
+  // the last `MAX_CAPTURE_BYTES` of each stream so a terminal-result parser
+  // sees the same tail-shaped input it would from the direct-file path above.
+  //
+  // Prefers `runLogStore.readTail`, a true O(1)-request tail read regardless
+  // of total log size, so a terminal result near the end of a large
+  // transcript is always reachable. Falls back to forward pagination via
+  // `read` (bounded by `RUN_LOG_STREAM_SCAN_MAX_BYTES`) only for a store
+  // implementation that hasn't implemented `readTail` (e.g. a test fake) --
+  // that fallback CAN miss a terminal result past the scan cap on a
+  // pathologically large transcript, which is why `readTail` is preferred.
+  async function reconstructRunLogStreamsTail(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<{ stdout: string; stderr: string } | null> {
+    if (!run.logStore || !run.logRef) return null;
+    const runLogStore = getRunLogStore();
+    const handle: RunLogHandle = { store: run.logStore as RunLogHandle["store"], logRef: run.logRef };
+    const trimToCap = (parts: string[]): string[] => {
+      const joined = parts.join("");
+      return joined.length > MAX_CAPTURE_BYTES ? [joined.slice(-MAX_CAPTURE_BYTES)] : parts;
+    };
+    let stdoutParts: string[] = [];
+    let stderrParts: string[] = [];
+
+    const consumeLine = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      let event: { stream?: unknown; chunk?: unknown } | null = null;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      const chunk = typeof event?.chunk === "string" ? event.chunk : "";
+      if (!chunk) return;
+      if (event?.stream === "stdout") {
+        stdoutParts.push(chunk);
+        stdoutParts = trimToCap(stdoutParts);
+      } else if (event?.stream === "stderr") {
+        stderrParts.push(chunk);
+        stderrParts = trimToCap(stderrParts);
+      }
+    };
+
+    if (runLogStore.readTail) {
+      let tail: Awaited<ReturnType<NonNullable<typeof runLogStore.readTail>>> | null = null;
+      try {
+        tail = await runLogStore.readTail(handle, { maxBytes: RUN_LOG_STREAM_SCAN_MAX_BYTES });
+      } catch {
+        return null;
+      }
+      if (!tail || !tail.content) return { stdout: "", stderr: "" };
+      const lines = tail.content.split("\n");
+      // The read window was clamped to the tail, so its first line may be a
+      // record truncated mid-JSON by the clamp -- drop it rather than risk a
+      // parse of a corrupted fragment. Only skip it when the window did NOT
+      // start at the true beginning of the file (see `truncatedAtStart`).
+      if (tail.truncatedAtStart) lines.shift();
+      for (const rawLine of lines) consumeLine(rawLine);
+      return { stdout: stdoutParts.join(""), stderr: stderrParts.join("") };
+    }
+
+    // Fallback: forward pagination from the start. Bounded by
+    // `RUN_LOG_STREAM_SCAN_MAX_BYTES`, so a transcript larger than that cap
+    // can still miss a terminal result near the true end -- acceptable only
+    // because this path is exercised solely by a store implementation that
+    // hasn't implemented `readTail` (a test fake), never in production.
+    let offset = 0;
+    let scanned = 0;
+    let leftover = "";
+    for (;;) {
+      let page: Awaited<ReturnType<typeof runLogStore.read>> | null = null;
+      try {
+        page = await runLogStore.read(handle, { offset, limitBytes: RUN_LOG_STREAM_PAGE_BYTES });
+      } catch {
+        break;
+      }
+      if (!page || !page.content) break;
+      scanned += Buffer.byteLength(page.content, "utf8");
+      const combined = leftover + page.content;
+      const lines = combined.split("\n");
+      leftover = page.nextOffset ? (lines.pop() ?? "") : "";
+      for (const rawLine of lines) consumeLine(rawLine);
+      if (!page.nextOffset || scanned >= RUN_LOG_STREAM_SCAN_MAX_BYTES) break;
+      offset = page.nextOffset;
+    }
+    if (leftover.trim()) consumeLine(leftover);
+    return { stdout: stdoutParts.join(""), stderr: stderrParts.join("") };
+  }
+
+  // AGE-697: finalize a hot-restart-adopted run once its process (pid AND
+  // process group) is confirmed dead. This path is deliberately separate from
+  // the generic `process_lost` finalization below it: an adopted run may
+  // already have completed all of its real side effects (posted comments,
+  // patched issues, opened PRs) before this server ever observed it, so it
+  // must never be labeled `process_lost` and must never auto-enqueue a
+  // process-loss retry -- doing either risks duplicating that work. See the
+  // AGE-656/AGE-697 decision: recover the real outcome from the persisted run
+  // log when possible, and finalize with a distinct, non-retrying "unknown
+  // outcome" state as the floor when it isn't.
+  async function finalizeAdoptedRunAfterProcessExit(
+    run: typeof heartbeatRuns.$inferSelect,
+    agentInfo: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
+    now: Date,
+  ): Promise<string | null> {
+    const runContext = parseObject(run.contextSnapshot);
+    const stdoutLogFilePath = readNonEmptyString(runContext.stdoutLogFilePath);
+    const stderrLogFilePath = readNonEmptyString(runContext.stderrLogFilePath);
+    const recoverOutcome = getServerAdapter(agentInfo.adapterType).recoverAdoptedRunOutcome;
+
+    let recovered: ReturnType<NonNullable<typeof recoverOutcome>> = null;
+    let recoverySource: "log_file" | "run_log_store" | null = null;
+    if (recoverOutcome && stdoutLogFilePath) {
+      // Preferred: the raw file-backed stdout/stderr this run's own process
+      // wrote to directly (see the sibling file-backed-local-run-output
+      // change). A single tail read, and the content an adapter's terminal-
+      // result parser expects with no reconstruction needed.
+      const [stdout, stderr] = await Promise.all([
+        readAdoptedRunOutputLogTail(stdoutLogFilePath),
+        stderrLogFilePath ? readAdoptedRunOutputLogTail(stderrLogFilePath) : Promise.resolve(""),
+      ]);
+      recovered = recoverOutcome({ stdout, stderr });
+      if (recovered) recoverySource = "log_file";
+    }
+    if (!recovered && recoverOutcome) {
+      // Fallback: every run already writes its general-purpose NDJSON
+      // transcript via `runLogStore` today, independent of whether the
+      // direct-file path above has ever been persisted for this run. This is
+      // what makes recovery reachable right now rather than only once the
+      // sibling change ships.
+      const reconstructed = await reconstructRunLogStreamsTail(run);
+      if (reconstructed) {
+        recovered = recoverOutcome(reconstructed);
+        if (recovered) recoverySource = "run_log_store";
+      }
+    }
+
+    const logEvidence = {
+      stdoutLogFilePath: stdoutLogFilePath ?? null,
+      stderrLogFilePath: stderrLogFilePath ?? null,
+      runLogStore: run.logStore ?? null,
+      runLogRef: run.logRef ?? null,
+      recoverySource,
+    };
+
+    let finalizedRun: typeof heartbeatRuns.$inferSelect | null;
+    let message: string;
+    if (recovered) {
+      const succeeded = recovered.outcome === "succeeded";
+      message = succeeded
+        ? "Adopted run's process exited after a hot restart; recovered a successful terminal result from its persisted output"
+        : (recovered.errorMessage ??
+          "Adopted run's process exited after a hot restart; recovered a failed terminal result from its persisted output");
+      finalizedRun = await setRunStatus(run.id, succeeded ? "succeeded" : "failed", {
+        error: succeeded ? null : message,
+        errorCode: succeeded ? null : ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE,
+        finishedAt: now,
+        resultJson: {
+          ...mergeRunStopMetadataForAgent(agentInfo, succeeded ? "succeeded" : "failed", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: succeeded ? null : ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE,
+            errorMessage: succeeded ? null : message,
+          }),
+          adoptedRunLogEvidence: logEvidence,
+        },
+      });
+    } else {
+      message =
+        "Adopted run's process exited after a hot restart, but no terminal result could be recovered from its persisted output";
+      finalizedRun = await setRunStatus(run.id, "failed", {
+        error: message,
+        errorCode: ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE,
+        finishedAt: now,
+        resultJson: {
+          ...mergeRunStopMetadataForAgent(agentInfo, "failed", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE,
+            errorMessage: message,
+          }),
+          adoptedRunLogEvidence: logEvidence,
+        },
+      });
+    }
+    await setWakeupStatus(run.wakeupRequestId, recovered?.outcome === "succeeded" ? "completed" : "failed", {
+      finishedAt: now,
+      error: recovered?.outcome === "succeeded" ? null : message,
+    });
+    if (!finalizedRun) finalizedRun = await getRun(run.id);
+    if (!finalizedRun) return null;
+    finalizedRun =
+      (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ?? finalizedRun;
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+      failureReason: finalizedRun.error ?? undefined,
+    });
+
+    // Never auto-retry from this path (AGE-697): an adopted run may already
+    // have produced real side effects before it exited, whether or not this
+    // reap tick could recover its outcome, so retrying here risks duplicating
+    // them. `suppressImmediateRecovery` also blocks `releaseIssueExecutionAndPromote`'s
+    // own "queue a continuation run" path for a failed/unknown-outcome issue --
+    // that path is a second, independent auto-retry mechanism (see the
+    // `issueNeedsImmediateRecovery` / `issueNeedsReviewParticipantRecovery`
+    // branches below) and is just as capable of duplicating an adopted run's
+    // side effects as the process-loss retry this function replaces.
+    await releaseIssueExecutionAndPromote(finalizedRun, { suppressImmediateRecovery: true });
+
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: recovered?.outcome === "succeeded" ? "info" : "error",
+      message,
+      payload: {
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+        ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        adoptedRunOutcomeRecovered: Boolean(recovered),
+        ...logEvidence,
+      },
+    });
+
+    await finalizeAgentStatus(
+      finalizedRun.agentId,
+      finalizedRun.status === "succeeded" ? "succeeded" : "failed",
+      message,
+      { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
+    );
+    await startNextQueuedRunForAgent(finalizedRun.agentId);
+    runningProcesses.delete(run.id);
+    return finalizedRun.id;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -13538,6 +13833,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         }
+        continue;
+      }
+
+      // AGE-697: the run carries hot-restart adoption metadata but its
+      // process is now confirmed dead (both the guard above and the
+      // `processPidAlive` branch above already ruled out "still alive").
+      // Never fall through to the unconditional `process_lost` finalization
+      // below for this run -- see `finalizeAdoptedRunAfterProcessExit`.
+      if (readHotRestartAdoptionMetadata(parseObject(run.resultJson))) {
+        const finalizedRunId = await finalizeAdoptedRunAfterProcessExit(
+          run,
+          { adapterType, adapterConfig },
+          now,
+        );
+        if (finalizedRunId) reaped.push(finalizedRunId);
         continue;
       }
 

@@ -29,6 +29,16 @@ export interface RunLogFinalizeSummary {
   compressed: boolean;
 }
 
+export interface RunLogTailReadResult {
+  content: string;
+  // True when the returned content starts partway into the log (the read
+  // window was clamped to the last `maxBytes`), so the caller's first parsed
+  // line/record may be truncated mid-record and should be discarded rather
+  // than parsed. False only when the whole file fit in the window, in which
+  // case the first line is genuinely complete.
+  truncatedAtStart: boolean;
+}
+
 export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
@@ -37,6 +47,12 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  // Optional so existing fakes/fixtures keep compiling: read the last
+  // `maxBytes` of the log directly (a true tail, O(1) requests regardless of
+  // total log size), for a caller that only needs to look for a marker near
+  // the end -- e.g. AGE-697's adopted-run terminal-result recovery. Falls
+  // back to forward pagination via `read` when unimplemented.
+  readTail?(handle: RunLogHandle, opts?: { maxBytes?: number }): Promise<RunLogTailReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
   // in-flight mirror is not enabled.
@@ -345,6 +361,29 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       if (local) return local;
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
       return readS3Range(handle.logRef, offset, limitBytes);
+    },
+
+    async readTail(handle, opts) {
+      if (handle.store !== "local_file") throw notFound("Run log not found");
+      const maxBytes = opts?.maxBytes && opts.maxBytes > 0 ? opts.maxBytes : 256_000;
+      const absPath = resolveWithin(basePath, handle.logRef);
+      const stat = await fs.stat(absPath).catch(() => null);
+      if (stat) {
+        const start = Math.max(0, stat.size - maxBytes);
+        const length = stat.size - start;
+        const local = length > 0 ? await readLocalRange(absPath, start, length) : { content: "" };
+        if (local) return { content: local.content, truncatedAtStart: start > 0 };
+      }
+      // Local file gone (pod rolled) or stat failed -> serve from the S3 mirror.
+      if (!s3) throw notFound("Run log not found");
+      const key = s3Key(handle.logRef);
+      const head = await s3.provider.headObject({ objectKey: key });
+      if (!head.exists) throw notFound("Run log not found");
+      const total = head.contentLength ?? 0;
+      const start = Math.max(0, total - maxBytes);
+      const length = Math.max(1, total - start);
+      const remote = await readS3Range(handle.logRef, start, length);
+      return { content: remote.content, truncatedAtStart: start > 0 };
     },
 
     async flushInflightMirrors() {
