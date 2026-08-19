@@ -166,6 +166,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
+import {
+  describeUnknownModel,
+  precheckAdapterModel,
+  usesUnenumerableModelSource,
+} from "../services/adapter-model-precheck.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import { logger } from "../middleware/logger.js";
@@ -1854,6 +1859,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.companyId,
     );
     return normalizedAdapterConfig;
   }
@@ -1983,7 +1989,11 @@ export function agentRoutes(
   async function assertAdapterConfigConstraints(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    companyId?: string | null,
   ) {
+    if (adapterType) {
+      await assertConfiguredModelIsOffered(adapterType, adapterConfig, companyId);
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -1991,6 +2001,42 @@ export function agentRoutes(
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
     }
+  }
+
+  /**
+   * Reject a model id the adapter does not offer, at save time rather than at
+   * run time. A provider rejects an unknown id with a permanent error, so an
+   * agent saved this way fails on every run without producing anything. The
+   * check stands down for custom gateways and for failed discovery — see
+   * `precheckAdapterModel`. Discovery failing outright must not block a save,
+   * so a thrown discovery call is swallowed and the run-time classifier stays
+   * the backstop.
+   */
+  async function assertConfiguredModelIsOffered(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+    companyId?: string | null,
+  ) {
+    if (usesUnenumerableModelSource(adapterConfig)) return;
+    if (typeof adapterConfig.model !== "string" || adapterConfig.model.trim().length === 0) return;
+
+    let knownModels: { id: string; label: string }[];
+    try {
+      knownModels = await listAdapterModels(adapterType);
+    } catch {
+      return;
+    }
+
+    const outcome = precheckAdapterModel({ adapterConfig, knownModels });
+    if (outcome.kind !== "unknown_model") return;
+    throw unprocessable(
+      describeUnknownModel({
+        adapterType,
+        model: outcome.model,
+        knownModels: outcome.knownModels,
+        companyId,
+      }),
+    );
   }
 
   function resolveInstructionsFilePath(candidatePath: string, adapterConfig: Record<string, unknown>) {
