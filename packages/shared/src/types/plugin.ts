@@ -216,10 +216,19 @@ export interface PluginEnvironmentDriverDeclaration {
   /** Provider supports best-effort deletion/cleanup of captured templates. */
   supportsTemplateDelete?: boolean;
   /**
-   * Provider can host the Claude setup-token login on a real pseudo-terminal.
-   * Only a provider with this flag exposes the setup-token pseudo-terminal
-   * methods. The setup-token login server and the login UI both gate on this
-   * flag, so a provider without it never starts a login.
+   * Provider can host an interactive login on a real pseudo-terminal. Only a
+   * provider with this flag exposes the login pseudo-terminal methods. The login
+   * server and the login UI both gate on this flag, so a provider without it
+   * never starts a login.
+   */
+  supportsLoginPty?: boolean;
+  /**
+   * Deprecated alias for `supportsLoginPty`. It exists only so an external
+   * plugin manifest that declares the old name still loads. The manifest
+   * validator canonicalizes it onto `supportsLoginPty` and drops it. Do not read
+   * this field; read `supportsLoginPty`.
+   *
+   * @deprecated Use `supportsLoginPty`.
    */
   supportsSetupTokenLogin?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */

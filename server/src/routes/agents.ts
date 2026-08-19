@@ -1247,7 +1247,7 @@ export function agentRoutes(
     const resolved = provider
       ? await resolvePluginSandboxProviderDriverByKey({ db, driverKey: provider })
       : null;
-    if (!resolved?.driver.supportsSetupTokenLogin) {
+    if (!resolved?.driver.supportsLoginPty) {
       throw unprocessable(SETUP_TOKEN_PROVIDER_UNSUPPORTED, {
         code: SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
       });

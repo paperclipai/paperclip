@@ -350,3 +350,64 @@ describe("sandbox provider capability declaration validators", () => {
     expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(false);
   });
 });
+
+describe("login pty transport capability and legacy alias", () => {
+  it("test_login_pty_new_field_parses_and_carries_the_flag", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsLoginPty: true }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.supportsLoginPty).toBe(true);
+  });
+
+  it("test_legacy_alias_only_canonicalizes_onto_login_pty", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsSetupTokenLogin: true }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    // The validator maps the deprecated alias onto the canonical field at parse
+    // time, and it drops the alias so a downstream reader cannot read the old
+    // name.
+    expect(driver?.supportsLoginPty).toBe(true);
+    expect(driver).not.toHaveProperty("supportsSetupTokenLogin");
+  });
+
+  it("test_conflicting_alias_and_new_field_reject", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        supportsLoginPty: true,
+        supportsSetupTokenLogin: false,
+      }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_matching_alias_and_new_field_pass", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        supportsLoginPty: true,
+        supportsSetupTokenLogin: true,
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.supportsLoginPty).toBe(true);
+  });
+
+  it("test_unknown_login_field_misspelling_rejects", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({ supportsLoginPTY: true }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_login_pty_accepts_literal_booleans_only", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({ supportsLoginPty: "true" }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+});

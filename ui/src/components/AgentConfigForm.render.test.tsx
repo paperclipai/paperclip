@@ -113,6 +113,9 @@ const mockLoginProjections = vi.hoisted(
       ["claude_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
       // A third adapter, not a built-in, with a projected displayed-code login.
       ["vendor_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+      // A non-built-in adapter with a pseudo-terminal login transport. The gate
+      // requires the provider pty capability from the transport, not the name.
+      ["pty_vendor_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
     ]),
 );
 
@@ -348,6 +351,19 @@ const VENDOR_AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+const PTY_VENDOR_AUTH_MISSING_RESULT = {
+  adapterType: "pty_vendor_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
 const CLAUDE_AUTH_MISSING_RESULT = {
   adapterType: "claude_local",
   status: "warn",
@@ -371,8 +387,8 @@ const CLAUDE_AUTH_MISSING_RESULT = {
 // for a provider with the capability.
 const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
   sandboxProviders: {
-    daytona: { supportsSetupTokenLogin: true, displayName: "Daytona" },
-    e2b: { supportsSetupTokenLogin: false, displayName: "E2B" },
+    daytona: { supportsLoginPty: true, displayName: "Daytona" },
+    e2b: { supportsLoginPty: false, displayName: "E2B" },
   },
 });
 
@@ -1046,7 +1062,7 @@ describe("AgentConfigForm environment selector", () => {
 
   it("hides the Login button for a Daytona sandbox while the capabilities report no setup-token support", async () => {
     // Reproduces the reported defect: the Test carries the auth-missing check,
-    // but the capabilities endpoint reports `supportsSetupTokenLogin: false`
+    // but the capabilities endpoint reports `supportsLoginPty: false`
     // for Daytona (a stale persisted plugin manifest). The gate hides the
     // panel. The server-side fix refreshes the persisted manifest so the
     // capability reports true and the panel shows (see the companion positive
@@ -1055,7 +1071,7 @@ describe("AgentConfigForm environment selector", () => {
     mockEnvironmentsApi.capabilities.mockResolvedValue(
       getEnvironmentCapabilities(["claude_local", "codex_local"], {
         sandboxProviders: {
-          daytona: { supportsSetupTokenLogin: false, displayName: "Daytona" },
+          daytona: { supportsLoginPty: false, displayName: "Daytona" },
         },
       }),
     );
@@ -1077,6 +1093,57 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
 
     expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("gates a pseudo-terminal login on the provider pty capability for a non-Claude adapter", async () => {
+    // The gate reads the adapter login transport, not the adapter name. This
+    // adapter is not `claude_local`, but its login runs on a pseudo-terminal.
+    // The E2B provider reports no pty capability, so the panel stays hidden even
+    // after the auth-missing check.
+    mockAgentsApi.testEnvironment.mockResolvedValue(PTY_VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "pty_vendor_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("shows a pseudo-terminal login for a non-Claude adapter when the provider advertises pty support", async () => {
+    // The same non-Claude pseudo-terminal adapter on Daytona. Daytona advertises
+    // the pty capability, so the panel shows. This confirms the gate follows the
+    // provider capability, not the adapter name.
+    mockAgentsApi.testEnvironment.mockResolvedValue(PTY_VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "Daytona",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        }),
+      ],
+      { adapterType: "pty_vendor_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
   });
 
   it("shows the Login button when a parent lifts the test feedback and renders the panel from the descriptor", async () => {

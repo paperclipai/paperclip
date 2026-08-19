@@ -1,10 +1,12 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
-// 0.1.2 adds `supportsSetupTokenLogin` to the driver. The version bump makes
-// the bundled-plugin boot reconcile refresh the persisted manifest for an
-// existing install, so the Claude setup-token login capability propagates.
-const PLUGIN_VERSION = "0.1.2";
+// 0.1.3 renames the login transport flag from `supportsSetupTokenLogin` to the
+// neutral `supportsLoginPty`. The boot reconcile reads the persisted manifest
+// raw and does not re-run the validator, so it never canonicalizes the old
+// name. The version bump makes the reconcile refresh the persisted manifest for
+// an existing install, so the renamed capability propagates.
+const PLUGIN_VERSION = "0.1.3";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -44,10 +46,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       templateIdentityPaths: ["apiUrl"],
       supportsTemplateDelete: true,
-      // Daytona hosts the Claude setup-token login on a real pseudo-terminal.
-      // It is the only bundled provider that implements the setup-token
-      // pseudo-terminal methods, so it advertises the capability.
-      supportsSetupTokenLogin: true,
+      // Daytona hosts an interactive login on a real pseudo-terminal. It is the
+      // only bundled provider that implements the login pseudo-terminal methods,
+      // so it advertises the capability.
+      supportsLoginPty: true,
       configSchema: {
         type: "object",
         properties: {

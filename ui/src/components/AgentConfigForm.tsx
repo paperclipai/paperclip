@@ -586,17 +586,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
-  // Load the sandbox provider capabilities. The Claude setup-token login runs on
-  // a real pseudo-terminal, so it needs a provider that advertises the
-  // setup-token login capability. The login panel gate reads this to hide the
-  // panel for a provider without the capability. The gate is advisory; the
-  // server resolves the capability again and fails closed.
+  // Load the sandbox provider capabilities. A login that runs on a real
+  // pseudo-terminal needs a provider that advertises the login pseudo-terminal
+  // capability. The login panel gate reads this to hide the panel for a provider
+  // without the capability. Enable the query from the adapter login transport,
+  // not the adapter name: only a pseudo-terminal login consults this data. The
+  // gate is advisory; the server resolves the capability again and fails closed.
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.environments.capabilities(selectedCompanyId)
       : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && adapterType === "claude_local",
+    enabled:
+      Boolean(selectedCompanyId) &&
+      adapterCaps.login?.sandboxTransport === "pseudo_terminal",
   });
 
   // When the instance forces Kubernetes execution, new agents must default to the
@@ -952,24 +955,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     testResult && testResultSupportsSandboxLogin
       ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
-  // The Claude login runs on a real pseudo-terminal, so it needs a provider that
-  // advertises the setup-token login capability. Read the capability for the
-  // effective environment provider. The codex login uses a different flow and
-  // does not gate on this capability, so the requirement applies to Claude only.
+  // A login that runs on a real pseudo-terminal needs a provider that advertises
+  // the login pseudo-terminal capability. Read the capability for the effective
+  // environment provider. The form reads the adapter login transport, not the
+  // adapter name: a login with a streamed-exec transport does not gate on this
+  // capability, so the requirement applies to a pseudo-terminal login only.
   const effectiveLoginProvider =
     typeof effectiveLoginEnvironment?.config?.provider === "string"
       ? effectiveLoginEnvironment.config.provider
       : null;
-  const providerSupportsSetupTokenLogin =
+  const providerSupportsLoginPty =
     effectiveLoginProvider != null &&
-    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsSetupTokenLogin === true;
+    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
+  const loginNeedsPty = adapterCaps.login?.sandboxTransport === "pseudo_terminal";
   const showAdapterLogin =
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&
     Boolean(authMissingCheck) &&
-    (adapterType !== "claude_local" || providerSupportsSetupTokenLogin);
+    (!loginNeedsPty || providerSupportsLoginPty);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");

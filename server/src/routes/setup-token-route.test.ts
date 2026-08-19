@@ -486,7 +486,7 @@ beforeEach(() => {
   mockResolvePluginSandboxProviderDriverByKey.mockImplementation(
     async ({ driverKey }: { driverKey: string }) =>
       driverKey === "daytona"
-        ? { plugin: { id: "plugin-daytona" }, driver: { supportsSetupTokenLogin: true } }
+        ? { plugin: { id: "plugin-daytona" }, driver: { supportsLoginPty: true } }
         : null,
   );
 });
