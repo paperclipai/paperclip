@@ -10,6 +10,7 @@ All environment variables that Paperclip uses for server configuration.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3100` | Server port |
+| `PAPERCLIP_PORT_STRICT_MODE` | `false` | When `true`, a busy `PORT` (or busy embedded-Postgres port) throws at startup instead of silently rebinding to the next free port. Recommended for single-instance production deployments behind a reverse proxy, so a process supervisor's restart loop keeps retrying the intended port rather than serving on one nothing is routed to. |
 | `PAPERCLIP_BIND` | `loopback` | Reachability preset: `loopback`, `lan`, `tailnet`, or `custom` |
 | `PAPERCLIP_BIND_HOST` | (unset) | Required when `PAPERCLIP_BIND=custom` |
 | `HOST` | `127.0.0.1` | Legacy host override; prefer `PAPERCLIP_BIND` for new setups |
