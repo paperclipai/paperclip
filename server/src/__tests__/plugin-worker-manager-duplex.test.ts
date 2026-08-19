@@ -287,6 +287,123 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("ends the route when the total data bytes pass the cap for a bound listener", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 10 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          data: [
+            { chunk: "aaaaa" }, // total 5 → deliver
+            { chunk: "bbbbb" }, // total 10 → deliver
+            { chunk: "ccccc" }, // total 15 > 10 → end route
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // A listener is bound, so the host forwards each chunk until the cumulative
+      // bytes pass the cap. The third chunk passes the cap, so the host drops it
+      // and ends the route. The listener never receives data past the cap.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["aaaaa", "bbbbb"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("counts inbound bytes, not characters, against the total cap", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          // "€" is one character but three bytes in UTF-8. The first chunk is 3
+          // bytes (≤ 4), so the host delivers it. The second chunk brings the
+          // total to 6 bytes (> 4), so the host ends the route. A character count
+          // would admit both chunks (2 ≤ 4), so one delivered chunk proves the
+          // host counts bytes.
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["€"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the active route when the lifetime timer expires", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxDurationMs: 100 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({ mode: "normal", workerSessionId: "ws-A" }),
+      );
+      const waitResult = session.wait();
+      // The route sends no exit. The lifetime timer expires, so the host ends the
+      // route and resolves the wait with the fixed null exit code.
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route at once when one inbound chunk passes the per-chunk limit before a listener binds", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxChunkChars: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          data: [{ chunk: "this-one-chunk-is-too-large" }],
+        }),
+      );
+      // No listener attaches. One inbound chunk is larger than the per-chunk
+      // limit, so the host ends the route at once. The default protocol-error
+      // budget is far above one, so a single chunk that ends the route proves the
+      // host does not treat it as a protocol error.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route at once when one inbound chunk passes the per-chunk limit after a listener binds", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxChunkChars: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          data: [{ chunk: "this-one-chunk-is-too-large" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // A listener is bound. One inbound chunk is larger than the per-chunk
+      // limit, so the host ends the route at once and never forwards the chunk.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual([]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Authoritative closure and worker retirement.
   // -------------------------------------------------------------------------

@@ -159,7 +159,7 @@ const SETUP_TOKEN_PTY_ROUTE_BUSY = "SETUP_TOKEN_PTY_ROUTE_BUSY";
 const SETUP_TOKEN_PTY_OPEN_FAILED = "SETUP_TOKEN_PTY_OPEN_FAILED";
 
 // Bounds and timeouts for the generic duplex channel route. The route mirrors the
-// login pseudo-terminal route, but it carries no command allowlist and adds five
+// login pseudo-terminal route, but it carries no command allowlist and adds seven
 // explicit bounds the pseudo-terminal route lacks. Each bound ends the route when
 // it passes the limit, so a faulty or hostile worker cannot flood the host.
 /** The default maximum characters for one duplex channel data notification. */
@@ -189,6 +189,20 @@ const MAX_DUPLEX_CHANNEL_WRITE_CHARS = 1_000_000;
  * when the count passes this budget, so a flood of bad frames bounds the route.
  */
 const MAX_DUPLEX_CHANNEL_PROTOCOL_ERRORS = 100;
+/**
+ * The default maximum cumulative bytes the host forwards for one duplex channel
+ * route over its whole life. The host counts the bytes of every inbound chunk,
+ * before and after a data listener attaches. The route ends when the count
+ * passes this cap, so an active route with a bound listener cannot stream an
+ * unbounded number of bytes.
+ */
+const MAX_DUPLEX_CHANNEL_TOTAL_DATA_BYTES = 256 * 1024 * 1024;
+/**
+ * The default maximum lifetime for one duplex channel route, in milliseconds.
+ * The host starts a timer when the route opens and ends the route when the
+ * timer expires, so a route cannot live without limit.
+ */
+const MAX_DUPLEX_CHANNEL_DURATION_MS = 60 * 60 * 1000;
 /** The default open timeout for one duplex channel route, in milliseconds. */
 const DUPLEX_CHANNEL_OPEN_TIMEOUT_MS = 30_000;
 /** The default close timeout for one duplex channel route, in milliseconds. */
@@ -385,6 +399,10 @@ export interface WorkerStartOptions {
     maxWriteChars?: number;
     /** Max number of protocol errors for one route before the route ends. */
     maxProtocolErrors?: number;
+    /** Max cumulative bytes the host forwards for one route over its whole life. */
+    maxTotalDataBytes?: number;
+    /** The maximum lifetime for one route, in milliseconds. */
+    maxDurationMs?: number;
     /** The open timeout for one duplex channel route, in milliseconds. */
     openTimeoutMs?: number;
     /** The close timeout for one duplex channel route, in milliseconds. */
@@ -796,6 +814,11 @@ export function createPluginWorkerHandle(
   const maxDuplexChannelProtocolErrors =
     options.duplexChannelLimits?.maxProtocolErrors ??
     MAX_DUPLEX_CHANNEL_PROTOCOL_ERRORS;
+  const maxDuplexChannelTotalDataBytes =
+    options.duplexChannelLimits?.maxTotalDataBytes ??
+    MAX_DUPLEX_CHANNEL_TOTAL_DATA_BYTES;
+  const maxDuplexChannelDurationMs =
+    options.duplexChannelLimits?.maxDurationMs ?? MAX_DUPLEX_CHANNEL_DURATION_MS;
   const duplexChannelOpenTimeoutMs =
     options.duplexChannelLimits?.openTimeoutMs ?? DUPLEX_CHANNEL_OPEN_TIMEOUT_MS;
   const duplexChannelCloseTimeoutMs =
@@ -1436,7 +1459,7 @@ export function createPluginWorkerHandle(
   // unconfirmed close. The duplex channel carries no command allowlist, so the
   // caller owns the command.
   //
-  // The route adds five explicit bounds the pseudo-terminal route lacks. Each
+  // The route adds seven explicit bounds the pseudo-terminal route lacks. Each
   // bound ends the route when it passes its limit:
   //   1. pre-bind buffered bytes — the cumulative characters the host buffers
   //      before a data listener attaches;
@@ -1444,7 +1467,10 @@ export function createPluginWorkerHandle(
   //      buffers before a data listener attaches;
   //   3. pending request count — the number of in-flight host→worker requests;
   //   4. host→worker write size — the characters for one write;
-  //   5. protocol error rate — the count of malformed or mismatched data frames.
+  //   5. protocol error rate — the count of malformed or mismatched data frames;
+  //   6. total data bytes — the cumulative inbound bytes over the whole life,
+  //      counted before and after a data listener attaches;
+  //   7. route lifetime — the milliseconds from the open to the terminal end.
   interface DuplexChannelRoute {
     hostRouteId: string;
     state: RouteState;
@@ -1454,6 +1480,8 @@ export function createPluginWorkerHandle(
     bufferedChars: number;
     pendingRequests: number;
     protocolErrors: number;
+    totalDataBytes: number;
+    lifetimeTimer: ReturnType<typeof setTimeout> | null;
     terminalized: boolean;
     settleWait: (value: { exitCode: number | null }) => void;
   }
@@ -1482,6 +1510,15 @@ export function createPluginWorkerHandle(
   // Terminalize the route exactly once. Resolve the wait, close the worker
   // channel by the host route identifier, and free the per-worker slot only
   // after the close resolves. Retire the worker when the close is unconfirmed.
+  // Clear the route lifetime timer one time. Every terminal path and the
+  // worker-exit path calls this, so a timer never fires after the route ends.
+  function clearDuplexChannelLifetimeTimer(route: DuplexChannelRoute): void {
+    if (route.lifetimeTimer) {
+      clearTimeout(route.lifetimeTimer);
+      route.lifetimeTimer = null;
+    }
+  }
+
   async function terminalizeDuplexChannelRoute(route: DuplexChannelRoute): Promise<void> {
     if (route.terminalized) return;
     route.terminalized = true;
@@ -1489,6 +1526,7 @@ export function createPluginWorkerHandle(
     route.listener = null;
     route.buffered = [];
     route.bufferedChars = 0;
+    clearDuplexChannelLifetimeTimer(route);
     // A terminalized route reports a null exit code, which the caller treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
@@ -1517,9 +1555,11 @@ export function createPluginWorkerHandle(
 
   // Route one duplex channel data notification to the per-session listener.
   // Deliver only while the route is `open` and the notification carries the exact
-  // bound worker session identifier and valid bounded bytes. Count a mismatched
-  // or malformed frame as a protocol error. Buffer a valid frame under the
-  // pre-bind bounds when no listener has attached yet. Never log the raw bytes.
+  // bound worker session identifier and a valid chunk. Count a mismatched or
+  // malformed frame as a protocol error. End the route at once when one chunk is
+  // larger than the per-chunk limit or when the cumulative bytes pass the total
+  // cap. Buffer a valid frame under the pre-bind bounds when no listener has
+  // attached yet. Never log the raw bytes.
   function routeDuplexChannelData(notification: JsonRpcNotification): void {
     const route = duplexChannelRoute;
     if (!route || route.state !== "open") return;
@@ -1530,14 +1570,28 @@ export function createPluginWorkerHandle(
       !workerSessionId ||
       workerSessionId !== route.workerSessionId ||
       typeof chunk !== "string" ||
-      chunk.length === 0 ||
-      chunk.length > maxDuplexChannelChunkChars
+      chunk.length === 0
     ) {
       // A late, unknown, malformed, or mismatched frame. Drop it and count one
       // protocol error.
       recordDuplexChannelProtocolError(route);
       return;
     }
+    if (chunk.length > maxDuplexChannelChunkChars) {
+      // One inbound chunk is larger than the per-chunk limit. End the route at
+      // once. Do not count the chunk as a protocol error.
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
+    // Count the bytes of the chunk. Enforce the cumulative total-byte cap before
+    // and after a listener attaches. End the route when the cap is exceeded, so a
+    // bound listener cannot receive data past the cap.
+    const chunkBytes = Buffer.byteLength(chunk);
+    if (route.totalDataBytes + chunkBytes > maxDuplexChannelTotalDataBytes) {
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
+    route.totalDataBytes += chunkBytes;
     if (route.listener) {
       route.listener(chunk);
       return;
@@ -1580,6 +1634,7 @@ export function createPluginWorkerHandle(
     route.listener = null;
     route.buffered = [];
     route.bufferedChars = 0;
+    clearDuplexChannelLifetimeTimer(route);
     settleRouteWait(route, { exitCode: null });
   }
 
@@ -1609,6 +1664,8 @@ export function createPluginWorkerHandle(
       bufferedChars: 0,
       pendingRequests: 0,
       protocolErrors: 0,
+      totalDataBytes: 0,
+      lifetimeTimer: null,
       terminalized: false,
       settleWait,
     };
@@ -1646,6 +1703,14 @@ export function createPluginWorkerHandle(
     // Bind the worker session identifier one time and move the route to `open`.
     route.workerSessionId = workerSessionId;
     route.state = "open";
+
+    // Start the route lifetime timer now the route is open. The route ends when
+    // the timer expires. Every terminal path and the worker-exit path clears the
+    // timer. Unreference the timer so it never blocks the host process shutdown.
+    route.lifetimeTimer = setTimeout(() => {
+      void terminalizeDuplexChannelRoute(route);
+    }, maxDuplexChannelDurationMs);
+    route.lifetimeTimer.unref?.();
 
     // Send one host→worker request under the pending-request bound. End the route
     // when too many requests are in-flight, so a worker that never replies cannot
