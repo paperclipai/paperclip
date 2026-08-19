@@ -71,20 +71,28 @@ vi.mock("../services/workspace-runtime.js", async (importActual) => {
   };
 });
 
+// Stubs the writes the shared-workspace archive branch performs. The default
+// `{}` db is enough for an isolated workspace, which never reaches them.
+function createSharedWorkspaceDbStub() {
+  return {
+    update: () => ({ set: () => ({ where: async () => undefined }) }),
+  };
+}
+
 function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "local-board",
   companyIds: ["company-1"],
   source: "session",
   isInstanceAdmin: false,
-}) {
+}, db: unknown = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", executionWorkspaceRoutes({} as any));
+  app.use("/api", executionWorkspaceRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
@@ -576,7 +584,7 @@ describe.sequential("execution workspace routes", () => {
       }),
     );
 
-    const res = await request(createApp())
+    const res = await request(createApp(undefined, createSharedWorkspaceDbStub()))
       .patch("/api/execution-workspaces/workspace-1")
       .send({ status: "archived" });
 
