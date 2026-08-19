@@ -732,14 +732,16 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
-  it("resolves only structured same-company agent mentions", async () => {
+  it("unions structured and bare same-company agent mentions", async () => {
     const companyId = await seedAssignableAgentCompany();
     const otherCompanyId = await seedAssignableAgentCompany();
     const localAgentId = randomUUID();
+    const bareAgentId = randomUUID();
     const foreignAgentId = randomUUID();
 
     await db.insert(agents).values([
       agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
+      agentRow(companyId, { id: bareAgentId, name: "Ops Sol" }),
       agentRow(otherCompanyId, { id: foreignAgentId, name: "ForeignAgent" }),
     ]);
 
@@ -748,13 +750,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       [
         `hello [@LocalAgent](${buildAgentMentionHref(localAgentId)})`,
         `and [@ForeignAgent](${buildAgentMentionHref(foreignAgentId)})`,
+        "then ask @ops-sol",
       ].join(" "),
     );
 
-    expect(mentions).toEqual([localAgentId]);
+    expect(mentions).toEqual([localAgentId, bareAgentId]);
   });
 
-  it("does not wake agents from raw @name text without a structured mention", async () => {
+  it("resolves an unambiguous bare @name mention within the same company", async () => {
     const companyId = await seedAssignableAgentCompany();
     const localAgentId = randomUUID();
 
@@ -762,7 +765,60 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
     ]);
 
-    await expect(svc.findMentionedAgents(companyId, "@LocalAgent please inspect this"))
+    await expect(svc.findMentionedAgents(companyId, "@localagent please inspect this"))
+      .resolves.toEqual([localAgentId]);
+  });
+
+  it("resolves a hyphenated bare mention to the agent URL key", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const opsAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: opsAgentId, name: "Ops Sol" }),
+      agentRow(companyId, { id: randomUUID(), name: "ops-sol", status: "terminated" }),
+      agentRow(companyId, { id: randomUUID(), name: "ops-sol", status: "pending_approval" }),
+    ]);
+
+    await expect(svc.findMentionedAgents(companyId, "Please ask @ops-sol for help"))
+      .resolves.toEqual([opsAgentId]);
+  });
+
+  it("ignores bare-name syntax in email addresses and Markdown code", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const localAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
+    ]);
+
+    await expect(svc.findMentionedAgents(
+      companyId,
+      [
+        "Email user@localagent.example",
+        "visit https://example.com/@localagent",
+        "or run `notify @localagent` / ```sh\nnotify @localagent\n```",
+      ].join(" "),
+    )).resolves.toEqual([]);
+  });
+
+  it("does not resolve ambiguous bare @name mentions", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: randomUUID(), name: "Ops-Sol" }),
+      agentRow(companyId, { id: randomUUID(), name: "ops-sol" }),
+    ]);
+
+    await expect(svc.findMentionedAgents(companyId, "@ops-sol please inspect this"))
+      .resolves.toEqual([]);
+  });
+
+  it("does not resolve bare mentions to agents with an invalid reporting chain", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const managerId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: managerId, name: "Former Manager", status: "terminated" }),
+      agentRow(companyId, { id: randomUUID(), name: "Ops Sol", reportsTo: managerId }),
+    ]);
+
+    await expect(svc.findMentionedAgents(companyId, "@ops-sol please inspect this"))
       .resolves.toEqual([]);
   });
 

@@ -31,6 +31,7 @@ export const issueComments = pgTable(
     derivedCreatedByRunId: uuid("derived_created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     derivedAuthorSource: text("derived_author_source").$type<IssueCommentDerivedAuthorSource>(),
     body: text("body").notNull(),
+    mentionedAgentIds: jsonb("mentioned_agent_ids").$type<string[]>(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),

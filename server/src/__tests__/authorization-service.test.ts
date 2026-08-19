@@ -14,12 +14,13 @@ import {
   projects,
   userInboxAgentPolicies,
 } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
+import { deriveAgentUrlKey, LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { authorizationService } from "../services/authorization.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -38,19 +39,26 @@ async function createCompany(db: ReturnType<typeof createDb>, label: string) {
 async function createAgent(
   db: ReturnType<typeof createDb>,
   companyId: string,
-  input: { role?: string; reportsTo?: string | null; permissions?: Record<string, unknown> } = {},
+  input: {
+    name?: string;
+    role?: string;
+    reportsTo?: string | null;
+    permissions?: Record<string, unknown>;
+    status?: "active" | "terminated";
+  } = {},
 ) {
   return db
     .insert(agents)
     .values({
       companyId,
-      name: `Agent ${randomUUID()}`,
+      name: input.name ?? `Agent ${randomUUID()}`,
       role: input.role ?? "engineer",
       reportsTo: input.reportsTo ?? null,
       permissions: input.permissions ?? {},
       adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
+      status: input.status ?? "active",
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -1553,7 +1561,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.insert(issueComments).values({
       companyId: company.id,
       issueId: issue.id,
-      body: `[@Mentioned Agent](agent://${mentionedAgent.id}) please respond here`,
+      body: `[Mentioned Agent](agent://${mentionedAgent.id}) please respond here`,
       authorAgentId: ownerAgent.id,
     });
 
@@ -1578,6 +1586,88 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "issue:mutate",
       resource,
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("grants read and comment access for a unique eligible bare mention", async () => {
+    const company = await createCompany(db, "BareMentionCommentAuth");
+    const allowedProject = await createProject(db, company.id, "BareMentionAllowed");
+    const targetProject = await createProject(db, company.id, "BareMentionTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      name: "Ops Sol",
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const collision = await createAgent(db, company.id, { name: "ops-sol" });
+    const terminatedManager = await createAgent(db, company.id, {
+      name: "Former Manager",
+      status: "terminated",
+    });
+    await createAgent(db, company.id, {
+      name: "ops-sol",
+      reportsTo: terminatedManager.id,
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Bare mention-scoped comment target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: ownerAgent.id,
+      authorType: "agent",
+      body: `@${deriveAgentUrlKey(mentionedAgent.name, mentionedAgent.id)} please reply here`,
+      mentionedAgentIds: [],
+    });
+
+    const authorization = authorizationService(db);
+    const actor = {
+      type: "agent",
+      agentId: mentionedAgent.id,
+      companyId: company.id,
+      source: "agent_key",
+    } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({ actor, action: "issue:comment", resource }))
+      .resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, collision.id));
+
+    await expect(authorization.decide({ actor, action: "issue:comment", resource }))
+      .resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    const boundComment = await issueService(db).addComment(
+      issue.id,
+      `@${deriveAgentUrlKey(mentionedAgent.name, mentionedAgent.id)} please reply here`,
+      { agentId: ownerAgent.id },
+      { authorType: "agent" },
+    );
+    expect(boundComment.mentionedAgentIds).toEqual([mentionedAgent.id]);
+
+    await expect(authorization.decide({ actor, action: "issue:read", resource }))
+      .resolves.toMatchObject({ allowed: true, reason: "allow_issue_mention_grant" });
+    await expect(authorization.decide({ actor, action: "issue:comment", resource }))
+      .resolves.toMatchObject({ allowed: true, reason: "allow_issue_mention_grant" });
+    await expect(authorization.decide({ actor, action: "issue:mutate", resource }))
+      .resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
   it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
