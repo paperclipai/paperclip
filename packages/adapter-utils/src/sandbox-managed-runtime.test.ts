@@ -440,6 +440,74 @@ describe("sandbox managed runtime", () => {
     expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
   });
 
+  it.each(["workspace", "git-workspace"])(
+    "rejects an asset key that collides with the reserved %s archive name",
+    async (reservedKey) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-asset-key-"));
+      cleanupDirs.push(rootDir);
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      const localAssetsDir = path.join(rootDir, "local-assets");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(localAssetsDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+
+      const client = makeFilesystemClient();
+      await expect(
+        prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-1",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "test-adapter",
+          client,
+          workspaceLocalDir: localWorkspaceDir,
+          assets: [{ key: reservedKey, localDir: localAssetsDir }],
+        }),
+      ).rejects.toThrow(/collides with a reserved runtime archive name/);
+
+      // The reserved-key guard fails before any workspace or asset archive is
+      // built, so nothing lands in the remote workspace directory.
+      await expect(readdir(remoteWorkspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.each(["skills/nested", "skills\\nested", "..", "../escape"])(
+    "rejects an asset key that is not a simple path segment: %s",
+    async (unsafeKey) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-asset-key-"));
+      cleanupDirs.push(rootDir);
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      const localAssetsDir = path.join(rootDir, "local-assets");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(localAssetsDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+
+      const client = makeFilesystemClient();
+      await expect(
+        prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-1",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "test-adapter",
+          client,
+          workspaceLocalDir: localWorkspaceDir,
+          assets: [{ key: unsafeKey, localDir: localAssetsDir }],
+        }),
+      ).rejects.toThrow(/is not a simple path segment/);
+    },
+  );
+
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
     cleanupDirs.push(rootDir);

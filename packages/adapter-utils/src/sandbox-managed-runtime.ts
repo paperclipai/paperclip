@@ -414,6 +414,29 @@ function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): 
   return `${input.targetPath}${input.suffix}.${randomUUID()}`;
 }
 
+// The workspace stages under `<runtimeRootDir>/workspace-upload.tar` and, for a
+// git-backed workspace, under `<runtimeRootDir>/git-workspace-upload.tar`. Each
+// asset stages under `<runtimeRootDir>/<key>-upload.tar`, so an asset key equal to
+// one of these stems resolves to the same remote archive path. Reserve the stems.
+const RESERVED_RUNTIME_ASSET_KEYS = new Set(["workspace", "git-workspace"]);
+
+// Reject an asset key before any path is built from it. An asset key becomes a
+// remote directory (`<runtimeRootDir>/<key>`), a remote archive name
+// (`<key>-upload.tar`), and a host temp file (`<key>.tar`). A path separator or
+// `..` in the key escapes those roots. A reserved stem makes the asset archive
+// share a path with the workspace archive; under concurrent sync the asset task
+// and the workspace task then write or upload the same archive at the same time,
+// which fails extraction nondeterministically or puts asset bytes in the
+// workspace. Fail closed on both cases.
+function assertRuntimeAssetKeyIsSafe(key: string): void {
+  if (key.length === 0 || key.includes("/") || key.includes("\\") || key.includes("..")) {
+    throw new Error(`sandbox runtime asset key is not a simple path segment: ${key}`);
+  }
+  if (RESERVED_RUNTIME_ASSET_KEYS.has(key)) {
+    throw new Error(`sandbox runtime asset key collides with a reserved runtime archive name: ${key}`);
+  }
+}
+
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
   const parsed = asObject(value);
   const transport = asString(parsed.transport).trim();
@@ -744,6 +767,12 @@ export async function prepareSandboxManagedRuntime(input: {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
   const syncWorkspace = input.syncWorkspace !== false;
+
+  // Reject any unsafe asset key before an archive path or an asset directory is
+  // built from it. This runs before the git snapshot work so a bad key fails fast.
+  for (const asset of input.assets ?? []) {
+    assertRuntimeAssetKeyIsSafe(asset.key);
+  }
 
   // Wrap a host-side staging sub-step or one scheduler task in its own span when
   // the caller injects a runtime span runner. The runner defaults to a no-op, so
