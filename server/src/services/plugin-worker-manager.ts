@@ -490,7 +490,12 @@ export interface DuplexChannelOpenInput {
   companyId: string;
   environmentId: string;
   providerLeaseId: string;
-  command: string;
+  /**
+   * The command argument vector the worker runs on the channel. Element 0 is the
+   * program. The worker runs the vector with no shell, so a shell metacharacter
+   * in an element cannot inject a command.
+   */
+  command: readonly string[];
 }
 
 /**

@@ -523,8 +523,12 @@ export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput 
 }
 
 export interface EnvironmentDriverOpenDuplexChannelInput extends EnvironmentDriverLeaseInput {
-  /** The command line the sandbox runs as the duplex channel child process. */
-  command: string;
+  /**
+   * The command argument vector the sandbox runs as the duplex channel child
+   * process. Element 0 is the program. The worker runs the vector with no
+   * shell, so a shell metacharacter in an element cannot inject a command.
+   */
+  command: readonly string[];
 }
 
 export interface EnvironmentRuntimeDriver {
