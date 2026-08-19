@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
@@ -54,8 +54,18 @@ import {
   issueWorkspaceLoginHandoff,
   workspaceLoginHandoffFailureStatus,
 } from "../services/workspace-login-handoff-issuer.js";
+import { conflict, unprocessable } from "../errors.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+
+function isReadableFile(filePath: string) {
+  try {
+    accessSync(filePath, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
@@ -528,6 +538,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         if (action === "repair") {
           type RepairPhase =
             | "managed_stop"
+            | "precondition_validation"
             | "target_backup"
             | "full_reseed"
             | "managed_restart"
@@ -538,6 +549,24 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             at: string;
           }> = [];
           let repairPhase: RepairPhase = "managed_stop";
+          const repairPreconditionError = (
+            status: 409 | 422,
+            reason:
+              | "seed_manifest_malformed"
+              | "seed_manifest_instance_mismatch"
+              | "source_instance_unavailable"
+              | "paperclip_cli_unavailable",
+            message: string,
+          ) => {
+            const details = {
+              code: "workspace_repair_precondition_failed",
+              reason,
+              repairPhase,
+            };
+            return status === 409
+              ? conflict(message, details)
+              : unprocessable(message, details);
+          };
           const reportRepairPhase = async (
             phase: RepairPhase,
             status: "started" | "succeeded" | "failed",
@@ -564,6 +593,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               workspaceCwd,
             });
             await reportRepairPhase("managed_stop", "succeeded");
+            await reportRepairPhase("precondition_validation", "started");
 
             const manifestPath = path.join(workspaceCwd, ".paperclip", "seed-manifest.json");
             const targetConfigPath = path.join(workspaceCwd, ".paperclip", "config.json");
@@ -580,7 +610,11 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
                   ? path.resolve(manifest.source.configPath)
                   : null;
               } catch {
-                throw new Error("Workspace seed manifest is malformed; repair source identity cannot be trusted.");
+                throw repairPreconditionError(
+                  422,
+                  "seed_manifest_malformed",
+                  "Workspace seed manifest is malformed; repair source identity cannot be trusted.",
+                );
               }
             }
             const baseWorkspaceCwd = projectWorkspace?.cwd ?? workspaceCwd;
@@ -588,21 +622,30 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             if (!sourceConfigPath && existsSync(baseConfigPath) && path.resolve(baseConfigPath) !== path.resolve(targetConfigPath)) {
               sourceConfigPath = baseConfigPath;
             }
-            if (!sourceConfigPath || !existsSync(sourceConfigPath)) {
-              throw new Error("Workspace repair has no readable configured source instance.");
+            if (!sourceConfigPath || !isReadableFile(sourceConfigPath)) {
+              throw repairPreconditionError(
+                409,
+                "source_instance_unavailable",
+                "Workspace repair has no readable configured source instance.",
+              );
             }
 
             const cliRunner = path.join(baseWorkspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
             const cliEntry = path.join(baseWorkspaceCwd, "cli", "src", "index.ts");
             const cliDist = path.join(baseWorkspaceCwd, "cli", "dist", "index.js");
-            const cliArgs = existsSync(cliRunner) && existsSync(cliEntry)
+            const cliArgs = isReadableFile(cliRunner) && isReadableFile(cliEntry)
               ? [cliRunner, cliEntry]
-              : existsSync(cliDist)
+              : isReadableFile(cliDist)
                 ? [cliDist]
                 : null;
             if (!cliArgs) {
-              throw new Error("Workspace repair cannot find a runnable Paperclip CLI in the base workspace.");
+              throw repairPreconditionError(
+                409,
+                "paperclip_cli_unavailable",
+                "Workspace repair cannot find a runnable Paperclip CLI in the base workspace.",
+              );
             }
+            await reportRepairPhase("precondition_validation", "succeeded");
 
             await reportRepairPhase("target_backup", "started");
             const child = spawn(process.execPath, [
@@ -705,7 +748,11 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             }
             const expectedInstanceId = resolveManagedWorkspaceInstanceId(workspaceCwd);
             if (manifest.targetInstanceId !== expectedInstanceId) {
-              throw new Error("Verified seed manifest belongs to a different workspace instance.");
+              throw repairPreconditionError(
+                422,
+                "seed_manifest_instance_mismatch",
+                "Verified seed manifest belongs to a different workspace instance.",
+              );
             }
             await reportRepairPhase("full_reseed", "succeeded");
 

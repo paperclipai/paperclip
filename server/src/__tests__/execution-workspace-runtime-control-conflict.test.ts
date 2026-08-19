@@ -261,6 +261,160 @@ describe.sequential("execution workspace runtime control conflict and failure re
     );
   });
 
+  it("returns 422 with a stable reason when the repair seed manifest is malformed", async () => {
+    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-malformed-"));
+    try {
+      const configDir = path.join(workspaceCwd, ".paperclip");
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
+      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), "{ definitely-not-json\n");
+      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
+
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        code: "workspace_repair_precondition_failed",
+        reason: "seed_manifest_malformed",
+        repairPhase: "precondition_validation",
+      });
+      expect(mockSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 409 with a stable reason when no repair source is readable", async () => {
+    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-no-source-"));
+    try {
+      const configDir = path.join(workspaceCwd, ".paperclip");
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
+      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+        version: 2,
+        source: { instanceId: "source", configPath: path.join(workspaceCwd, "missing", "config.json") },
+        state: "failed",
+        attemptId: "previous",
+      }));
+      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
+
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        code: "workspace_repair_precondition_failed",
+        reason: "source_instance_unavailable",
+        repairPhase: "precondition_validation",
+      });
+      expect(mockSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 409 with a stable reason when no Paperclip CLI is runnable", async () => {
+    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-no-cli-"));
+    try {
+      const configDir = path.join(workspaceCwd, ".paperclip");
+      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
+      fs.writeFileSync(sourceConfigPath, "{}\n");
+      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+        version: 2,
+        source: { instanceId: "source", configPath: sourceConfigPath },
+        state: "failed",
+        attemptId: "previous",
+      }));
+      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
+
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        code: "workspace_repair_precondition_failed",
+        reason: "paperclip_cli_unavailable",
+        repairPhase: "precondition_validation",
+      });
+      expect(mockSpawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 422 with a stable reason when the verified manifest names another instance", async () => {
+    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-wrong-instance-"));
+    try {
+      const configDir = path.join(workspaceCwd, ".paperclip");
+      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
+      const cliRunner = path.join(workspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
+      const cliEntry = path.join(workspaceCwd, "cli", "src", "index.ts");
+      for (const dir of [configDir, path.dirname(sourceConfigPath), path.dirname(cliRunner), path.dirname(cliEntry)]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
+      fs.writeFileSync(sourceConfigPath, "{}\n");
+      fs.writeFileSync(cliRunner, "// test runner\n");
+      fs.writeFileSync(cliEntry, "// test entry\n");
+      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+        version: 2,
+        source: { instanceId: "source", configPath: sourceConfigPath },
+        state: "failed",
+        attemptId: "previous",
+      }));
+      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
+      mockSpawn.mockImplementation(() => {
+        const child = new EventEmitter() as EventEmitter & {
+          stdout: PassThrough;
+          stderr: PassThrough;
+          kill: ReturnType<typeof vi.fn>;
+        };
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.kill = vi.fn();
+        queueMicrotask(() => {
+          fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+            version: 2,
+            source: { instanceId: "source", configPath: sourceConfigPath },
+            snapshotAt: "2026-08-18T00:00:00.000Z",
+            seedMode: "full",
+            migrationRevision: "0142_test.sql",
+            targetInstanceId: "another-workspace-instance",
+            phase: "complete",
+            state: "verified",
+            attemptId: "repair-attempt",
+            startedAt: "2026-08-18T00:00:00.000Z",
+            finishedAt: "2026-08-18T00:01:00.000Z",
+            diagnostics: [{ phase: "complete", status: "succeeded", at: "2026-08-18T00:01:00.000Z" }],
+          }));
+          child.emit("exit", 0);
+        });
+        return child;
+      });
+
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        code: "workspace_repair_precondition_failed",
+        reason: "seed_manifest_instance_mismatch",
+        repairPhase: "full_reseed",
+      });
+      expect(mockStartRuntimeServices).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+    }
+  });
+
   it("uses the recorded instance pointer consistently for readiness, handoff, and repair", async () => {
     const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-success-"));
     try {
@@ -489,7 +643,8 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: "Internal server error" });
       expect(progress).toEqual(expect.arrayContaining([
         expect.objectContaining({ metadata: { seedFailurePhase: "restore" } }),
       ]));
