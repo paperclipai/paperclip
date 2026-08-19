@@ -1509,6 +1509,129 @@ describe("sandbox managed runtime", () => {
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
+  it("the workspace wipe command preserves in-flight sync scratch tarballs (.paperclip-upload-*)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-scratch-shape-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    // The wipe `find` runs before the extract. It must preserve the daytona
+    // scratch prefix so a concurrent referenced-project upload survives the wipe.
+    const wipeCommand = captured[0].postUploadCommands![0].command;
+    expect(wipeCommand).toContain("find ");
+    expect(wipeCommand).toContain("! -name '.paperclip-upload-*'");
+  });
+
+  it("the workspace wipe keeps an in-flight scratch tarball at the root but removes a stale sibling", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-scratch-race-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+    // Pre-seed the sandbox root. `.paperclip-upload-test.tar` simulates a
+    // concurrent referenced-project scratch tarball in flight; `stale-junk.txt`
+    // is an unrelated child that the wipe must remove.
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, ".paperclip-upload-test.tar"), "scratch\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, "stale-junk.txt"), "junk\n", "utf8");
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    // The real `find` wipe ran through `sh -c`. The scratch tarball survived and
+    // the unrelated sibling did not.
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, ".paperclip-upload-test.tar"), "utf8"),
+    ).resolves.toBe("scratch\n");
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "stale-junk.txt"), "utf8"),
+    ).rejects.toThrow();
+  });
+
   it("issues one merged syncIn operation for a git-backed workspace stage-sync with two ordered extract commands", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-merged-git-"));
     cleanupDirs.push(rootDir);

@@ -379,9 +379,18 @@ function buildWorkspaceTarExtractCommand(input: {
   remoteTar: string;
   wipeExceptNames: string[] | null;
 }): string {
+  // The wipe must also preserve any in-flight sync scratch tarball at the
+  // workspace root. A concurrent referenced-project upload stages a scratch
+  // tarball named `.paperclip-upload-<uuid>.tar` there. Without this preserve
+  // term the wipe unlinks the in-flight tarball and the later extract fails.
+  // The static pattern must agree with the daytona scratch prefix
+  // `SCRATCH_PREFIX` in
+  // `packages/plugins/sandbox-providers/daytona/src/file-sync.ts:80`.
+  // The term is a static literal; `preserveFindArgs` shell-quotes it, so the
+  // shell passes it to `find -name` as a pattern (Security Conditions C1/C3).
   const wipe = input.wipeExceptNames
     ? ` && find ${shellQuote(input.workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ` +
-      `${preserveFindArgs(input.wipeExceptNames)} -exec rm -rf -- {} +`
+      `${preserveFindArgs([...input.wipeExceptNames, ".paperclip-upload-*"])} -exec rm -rf -- {} +`
     : "";
   return (
     `mkdir -p ${shellQuote(input.workspaceRemoteDir)}${wipe} && ` +
