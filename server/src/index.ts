@@ -151,9 +151,14 @@ export interface StartedServer {
 // serving traffic a reverse proxy never sends it.
 async function resolveListenPort(
   requestedPort: number,
-  opts: { label: string; strict: boolean },
+  opts: { label: string; strict: boolean; host: string },
 ): Promise<number> {
-  const selectedPort = await detectPort(requestedPort);
+  // Probe the exact host we will bind to. `detectPort(requestedPort)` with no
+  // hostname instead cascades through the unspecified address, 0.0.0.0,
+  // 127.0.0.1, localhost, and the machine's LAN IP in turn, so a conflict on
+  // an interface we will never bind to (e.g. the LAN IP when opts.host is
+  // 127.0.0.1) reads as a false conflict on the requested port.
+  const selectedPort = await detectPort({ port: requestedPort, hostname: opts.host });
   if (selectedPort === requestedPort) return selectedPort;
 
   const detail = `requestedPort=${requestedPort}, selectedPort=${selectedPort}, label=${opts.label}`;
@@ -478,6 +483,9 @@ export async function startServer(): Promise<StartedServer> {
         port = await resolveListenPort(configuredPort, {
           label: "Embedded PostgreSQL",
           strict: config.portStrictMode,
+          // Embedded Postgres is only ever addressed via 127.0.0.1 (see the
+          // admin connection string above), regardless of config.host.
+          host: "127.0.0.1",
         });
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         const createEmbeddedPostgres = () => new EmbeddedPostgres({
@@ -605,6 +613,7 @@ export async function startServer(): Promise<StartedServer> {
   const listenPort = await resolveListenPort(requestedListenPort, {
     label: "server",
     strict: config.portStrictMode,
+    host: config.host,
   });
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);

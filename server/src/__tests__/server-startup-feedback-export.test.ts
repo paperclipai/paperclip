@@ -40,7 +40,9 @@ const {
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
     })),
   }) as never);
-  const detectPortMock = vi.fn(async (port: number) => port);
+  const detectPortMock = vi.fn(async (arg: number | { port: number; hostname?: string }) =>
+    typeof arg === "object" ? arg.port : arg,
+  );
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
     suppressed: false,
@@ -754,5 +756,15 @@ describe("startServer PAPERCLIP_PORT_STRICT_MODE", () => {
     const started = await startServer();
 
     expect(started.listenPort).toBe(3110);
+  });
+
+  it("probes the configured bind host, not every interface", async () => {
+    loadConfigMock.mockReturnValue(
+      buildTestConfig({ port: 3100, host: "192.168.1.50", portStrictMode: true }),
+    );
+
+    await startServer();
+
+    expect(detectPortMock).toHaveBeenCalledWith({ port: 3100, hostname: "192.168.1.50" });
   });
 });
