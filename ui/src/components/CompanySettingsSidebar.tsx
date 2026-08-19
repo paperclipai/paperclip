@@ -28,6 +28,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { useTranslation } from "@/i18n";
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -42,6 +43,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { slots: companySettingsPluginSlots } = usePluginSlots({
@@ -96,10 +98,10 @@ export function CompanySettingsSidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Company settings
+          {t("nav.companySettings", { defaultValue: "Company settings" })}
         </div>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/settings" label={t("nav.general", { defaultValue: "General" })} icon={SlidersHorizontal} end />
           <SidebarNavItem to="/company/export" label="Export" icon={Download} />
           <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
           <SidebarNavItem
@@ -124,7 +126,7 @@ export function CompanySettingsSidebar() {
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
         </div>
         <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Instance settings
+          {t("nav.instanceSettings", { defaultValue: "Instance settings" })}
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem
@@ -135,7 +137,7 @@ export function CompanySettingsSidebar() {
           />
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
-            label="General"
+            label={t("nav.general", { defaultValue: "General" })}
             icon={SlidersHorizontal}
             end
           />

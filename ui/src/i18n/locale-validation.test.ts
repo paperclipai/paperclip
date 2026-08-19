@@ -99,4 +99,23 @@ describe("locale validation", () => {
       "message is too long: 200 characters exceeds 133",
     ]);
   });
+
+  it("keeps English nav labels as the default locale", async () => {
+    const { setAppLocale } = await import(".");
+    setAppLocale("en");
+    expect(t("nav.inbox")).toBe("Inbox");
+    expect(t("pages.settings.save")).toBe("Save changes");
+  });
+
+  it("resolves German Hauptflächen messages after setAppLocale", async () => {
+    const { setAppLocale } = await import(".");
+    setAppLocale("de");
+    expect(t("nav.inbox")).toBe("Posteingang");
+    expect(t("nav.tasks")).toBe("Aufgaben");
+    expect(t("nav.agents")).toBe("Agenten");
+    expect(t("nav.settings")).toBe("Einstellungen");
+    expect(t("nav.companySettings")).toBe("Unternehmenseinstellungen");
+    expect(t("pages.companies.newCompany")).toBe("Neues Unternehmen");
+    setAppLocale("en");
+  });
 });

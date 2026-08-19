@@ -4,6 +4,65 @@
       "title": "Vytvořte svou první společnost",
       "description": "Začněte vytvořením společnosti.",
       "newCompany": "Nová společnost"
+    },
+    "language": {
+      "label": "Language",
+      "description": "Choose the product UI language.",
+      "en": "English",
+      "de": "Deutsch"
+    }
+  },
+  "nav": {
+    "newTask": "New Task",
+    "search": "Search",
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "tasks": "Tasks",
+    "agents": "Agents",
+    "projects": "Projects",
+    "company": "Company",
+    "settings": "Settings",
+    "work": "Work",
+    "org": "Org",
+    "costs": "Costs",
+    "activity": "Activity",
+    "timeline": "Timeline",
+    "routines": "Routines",
+    "skills": "Skills",
+    "artifacts": "Artifacts",
+    "general": "General",
+    "instanceSettings": "Instance settings",
+    "newAgent": "New agent",
+    "browseAgents": "Browse agents",
+    "companySettings": "Company settings"
+  },
+  "pages": {
+    "inbox": {
+      "title": "Inbox",
+      "selectCompany": "Select a company to view inbox.",
+      "searchPlaceholder": "Search inbox…",
+      "emptyZero": "Inbox zero.",
+      "emptyNone": "No new inbox items.",
+      "emptyFiltered": "No inbox items match these filters.",
+      "emptySearch": "No inbox items match your search."
+    },
+    "tasks": {
+      "title": "Tasks",
+      "selectCompany": "Select a company to view tasks."
+    },
+    "agents": {
+      "title": "Agents",
+      "selectCompany": "Select a company to view agents.",
+      "empty": "Create your first agent to get started.",
+      "newAgent": "New Agent"
+    },
+    "settings": {
+      "title": "Settings",
+      "save": "Save changes",
+      "saving": "Saving..."
+    },
+    "companies": {
+      "newCompany": "New Company"
     }
   }
 }

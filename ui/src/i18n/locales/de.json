@@ -4,6 +4,65 @@
       "title": "Erstellen Sie Ihr erstes Unternehmen",
       "description": "Beginnen Sie, indem Sie ein Unternehmen erstellen.",
       "newCompany": "Neues Unternehmen"
+    },
+    "language": {
+      "label": "Sprache",
+      "description": "Wähle die Sprache der Produkt-Oberfläche.",
+      "en": "English",
+      "de": "Deutsch"
+    }
+  },
+  "nav": {
+    "newTask": "Neue Aufgabe",
+    "search": "Suche",
+    "dashboard": "Dashboard",
+    "inbox": "Posteingang",
+    "tasks": "Aufgaben",
+    "agents": "Agenten",
+    "projects": "Projekte",
+    "company": "Unternehmen",
+    "settings": "Einstellungen",
+    "work": "Arbeit",
+    "org": "Organisation",
+    "costs": "Kosten",
+    "activity": "Aktivität",
+    "timeline": "Zeitachse",
+    "routines": "Routinen",
+    "skills": "Skills",
+    "artifacts": "Artefakte",
+    "general": "Allgemein",
+    "instanceSettings": "Instanz-Einstellungen",
+    "newAgent": "Neuer Agent",
+    "browseAgents": "Agenten durchsuchen",
+    "companySettings": "Unternehmenseinstellungen"
+  },
+  "pages": {
+    "inbox": {
+      "title": "Posteingang",
+      "selectCompany": "Wähle ein Unternehmen, um den Posteingang zu sehen.",
+      "searchPlaceholder": "Posteingang durchsuchen…",
+      "emptyZero": "Posteingang leer.",
+      "emptyNone": "Keine neuen Posteingangs-Einträge.",
+      "emptyFiltered": "Keine Posteingangs-Einträge passen zu diesen Filtern.",
+      "emptySearch": "Keine Posteingangs-Einträge passen zur Suche."
+    },
+    "tasks": {
+      "title": "Aufgaben",
+      "selectCompany": "Wähle ein Unternehmen, um Aufgaben zu sehen."
+    },
+    "agents": {
+      "title": "Agenten",
+      "selectCompany": "Wähle ein Unternehmen, um Agenten zu sehen.",
+      "empty": "Erstelle deinen ersten Agenten, um zu starten.",
+      "newAgent": "Neuer Agent"
+    },
+    "settings": {
+      "title": "Einstellungen",
+      "save": "Änderungen speichern",
+      "saving": "Speichern..."
+    },
+    "companies": {
+      "newCompany": "Neues Unternehmen"
     }
   }
 }
