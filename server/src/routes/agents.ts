@@ -1262,19 +1262,17 @@ export function agentRoutes(
   async function readOwnerLoginSession(
     companyId: string,
     adapterType: string,
-    sessionId: string,
+    publicSessionId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await adapterLoginStore.get(sessionId);
-    if (
-      !row ||
-      row.companyId !== companyId ||
-      row.adapterType !== adapterType ||
-      row.startedByUserId !== requestingUserId
-    ) {
+    // Read by the public session id, scoped to the company. The store predicate
+    // already carries the company id, so a foreign-company caller reads nothing
+    // and the internal row id never matches. Keep the adapter and owner checks.
+    const row = await adapterLoginStore.getByPublicId(publicSessionId, companyId);
+    if (!row || row.adapterType !== adapterType || row.startedByUserId !== requestingUserId) {
       return null;
     }
-    return adapterLoginService.readOwnerSession(sessionId, requestingUserId);
+    return adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -2602,7 +2600,7 @@ export function agentRoutes(
       // even when this process does not own the in-flight run, so a cross-process
       // cancel or a cancel after a restart does not leave the slot held until the
       // expiry. The reaper deletes the sandbox and finalizes the terminal.
-      const cancelled = await adapterLoginService.cancelOwnerSession(sessionId, ownerUserId);
+      const cancelled = await adapterLoginService.cancelOwnerSession(sessionId, companyId, ownerUserId);
       // Abort the in-flight run this process owns, so the local login stops at
       // once instead of waiting for the reaper. A run in another process, or an
       // already-terminal run, has no controller here.

@@ -192,6 +192,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       activeSlots.add(key);
       rows.set(input.id, {
         id: input.id,
+        publicSessionId: input.publicSessionId,
         companyId: input.companyId,
         environmentId: input.environmentId,
         adapterType: input.adapterType,
@@ -232,6 +233,16 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
     async get(sessionId) {
       const row = rows.get(sessionId);
       return row ? { ...row } : null;
+    },
+    async getByPublicId(publicSessionId, companyId) {
+      // Scope the read to the company and the public session id, so a
+      // foreign-company lookup reads nothing and the internal id never matches.
+      for (const row of rows.values()) {
+        if (row.publicSessionId === publicSessionId && row.companyId === companyId) {
+          return { ...row };
+        }
+      }
+      return null;
     },
     async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The route test runs on a single event loop, so it needs no real lock. The
@@ -374,10 +385,15 @@ describe("adapter device-login routes", () => {
       adapterType: "codex_local",
       startedByUserId: OWNER_A,
     });
-    // The row persists the immutable owner from the actor.
+    // The row persists the immutable owner from the actor. The response carries
+    // the public session id, so read the row by the public id, not the internal id.
     const store = harness.store as ReturnType<typeof createMemoryStore>;
-    const row = store.rows.get(res.body.sessionId);
+    const row = await store.getByPublicId(res.body.sessionId, COMPANY_1);
     expect(row?.startedByUserId).toBe(OWNER_A);
+    // The public session id is never the internal row id.
+    expect(row?.id).not.toBe(res.body.sessionId);
+    // No row is keyed by the public session id in the internal-id map.
+    expect(store.rows.get(res.body.sessionId)).toBeUndefined();
   });
 
   it("rejects an adapter whose login capability drives a different transport", async () => {
@@ -638,7 +654,10 @@ describe("adapter device-login routes", () => {
       expect(status.body.failure?.reason).toBe("promotion_failed");
     });
 
-    const row = (harness.store as ReturnType<typeof createMemoryStore>).rows.get(sessionId);
+    const row = await (harness.store as ReturnType<typeof createMemoryStore>).getByPublicId(
+      sessionId,
+      COMPANY_1,
+    );
     expect(row?.status).toBe("failed");
     expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
   });
@@ -664,7 +683,10 @@ describe("adapter device-login routes", () => {
       expect(status.body.failure?.reason).toBe("promotion_failed");
     });
 
-    const row = (harness.store as ReturnType<typeof createMemoryStore>).rows.get(sessionId);
+    const row = await (harness.store as ReturnType<typeof createMemoryStore>).getByPublicId(
+      sessionId,
+      COMPANY_1,
+    );
     expect(row?.status).toBe("failed");
     expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
   });

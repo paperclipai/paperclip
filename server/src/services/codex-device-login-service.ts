@@ -212,6 +212,10 @@ export class AdapterAuthSessionConflictError extends Error {
 
 export interface AdapterAuthSessionRow {
   id: string;
+  /** The public, CSPRNG session identifier. The API returns and looks up this
+   *  value. It never equals the internal primary-key `id`, so a caller cannot
+   *  address a row by the internal id. */
+  publicSessionId: string;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -229,6 +233,9 @@ export interface AdapterAuthSessionRow {
 
 export interface InsertAdapterAuthSessionInput {
   id: string;
+  /** The public, CSPRNG session identifier. The service builds it and returns it
+   *  to the client; the store persists it in `public_session_id`. */
+  publicSessionId: string;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -274,6 +281,13 @@ export interface AdapterAuthSessionStore {
   /** A conditional status write. It returns true only when it changed one row. */
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
+  /**
+   * Read a session by its public session id, scoped to the company and the Codex
+   * device-login adapter. The predicate carries the company id, so a query never
+   * keys on the public session id alone, and a foreign-company caller reads
+   * nothing. It never accepts the internal primary-key `id`.
+   */
+  getByPublicId(publicSessionId: string, companyId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
    *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
    *  row inside this lock, so a reclaim never interleaves with a live credential
@@ -394,6 +408,7 @@ function isUniqueViolation(error: unknown): boolean {
 function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSessionRow {
   return {
     id: row.id,
+    publicSessionId: row.publicSessionId,
     companyId: row.companyId,
     environmentId: row.environmentId,
     adapterType: row.adapterType,
@@ -439,10 +454,11 @@ export function createDbAdapterAuthSessionStore(
           environmentId: input.environmentId,
           adapterType: input.adapterType,
           startedByUserId: input.startedByUserId,
-          // The unified table requires a unique public session id. The Codex flow
-          // returns the row id to the client, so it fills the public id with an
-          // independent CSPRNG value. It never uses a timestamp or a counter.
-          publicSessionId: randomUUID(),
+          // The unified table requires a unique public session id. The service
+          // builds it from a CSPRNG and returns it to the client, so the store
+          // persists that value here. It never uses the internal id, a timestamp,
+          // or a counter.
+          publicSessionId: input.publicSessionId,
           status: "starting",
           expiresAt: input.expiresAt,
           createdAt: input.at,
@@ -489,6 +505,25 @@ export function createDbAdapterAuthSessionStore(
         .select()
         .from(adapterAuthSessions)
         .where(eq(adapterAuthSessions.id, sessionId))
+        .limit(1);
+      const row = rows[0];
+      return row ? toRow(row) : null;
+    },
+    async getByPublicId(publicSessionId, companyId) {
+      // The predicate carries the company id and the Codex device-login adapter,
+      // so a read never keys on the public session id alone. A foreign-company or
+      // foreign-adapter caller reads nothing. The internal primary-key `id` never
+      // matches, so a caller cannot address a row by the internal id.
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(
+          and(
+            eq(adapterAuthSessions.publicSessionId, publicSessionId),
+            eq(adapterAuthSessions.companyId, companyId),
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+          ),
+        )
         .limit(1);
       const row = rows[0];
       return row ? toRow(row) : null;
@@ -673,6 +708,10 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     input: StartCodexDeviceLoginInput,
   ): Promise<StartCodexDeviceLoginResult> {
     const sessionId = randomUUID();
+    // The public session identifier the API returns and looks up. It is an
+    // independent CSPRNG value, so it never equals the internal `sessionId` and a
+    // caller cannot address the row by the internal id.
+    const publicSessionId = randomUUID();
     const startedAt = now();
     const ttlSeconds = input.ttlSeconds ?? CODEX_DEVICE_LOGIN_TIMEOUT_MS / 1000;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
@@ -691,6 +730,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     // acquires a lease for a losing start.
     await store.insert({
       id: sessionId,
+      publicSessionId,
       companyId: input.companyId,
       environmentId: input.environmentId,
       adapterType: input.adapterType,
@@ -755,7 +795,8 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     activity("lease_acquired");
 
     const session: AdapterAuthSessionResponse = {
-      sessionId,
+      // The API identifier is the public session id, never the internal `sessionId`.
+      sessionId: publicSessionId,
       environmentId: input.environmentId,
       status: "starting",
       expiresAt: expiresAt.toISOString(),
@@ -1002,24 +1043,28 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   }
 
   async function readOwnerSession(
-    sessionId: string,
+    publicSessionId: string,
+    companyId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await store.get(sessionId);
+    // Look the row up by its public session id, scoped to the company. A
+    // foreign-company caller reads nothing, and the internal id never matches.
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row) return null;
     const isOwner = row.startedByUserId === requestingUserId;
     const status = resolvePublicStatus(row);
     // Deliver the one-time prompt to the owner principal exactly once. The read
     // and the delete run with no await between them, so the first authorized
     // owner read consumes the prompt and every later read returns null. This
-    // keeps the short-lived device code out of a repeated response.
+    // keeps the short-lived device code out of a repeated response. The prompt
+    // map keys on the internal id, so read it by `row.id`, not the public id.
     let prompt: DeviceLoginPrompt | null = null;
     if (isOwner) {
-      prompt = promptsBySession.get(sessionId) ?? null;
-      if (prompt) promptsBySession.delete(sessionId);
+      prompt = promptsBySession.get(row.id) ?? null;
+      if (prompt) promptsBySession.delete(row.id);
     }
     return {
-      sessionId: row.id,
+      sessionId: row.publicSessionId,
       environmentId: row.environmentId,
       status,
       expiresAt: row.expiresAt?.toISOString() ?? null,
@@ -1041,14 +1086,18 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   // row, so a cancel never interrupts an in-flight credential write; that
   // promotion runs to its own terminal.
   async function cancelOwnerSession(
-    sessionId: string,
+    publicSessionId: string,
+    companyId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await store.get(sessionId);
+    // Look the row up by its public session id, scoped to the company. The status
+    // write keys on the internal `row.id`, so a cancel never addresses a row by
+    // the public id alone.
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row || row.startedByUserId !== requestingUserId) return null;
     const write = terminalCleanupWrite(false, "cancelled", null);
     await store.compareAndSetStatus({
-      sessionId,
+      sessionId: row.id,
       expectedStatuses: ["starting", "waiting_for_user"],
       status: write.status,
       at: now(),
@@ -1056,7 +1105,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
       finishedAt: now(),
       promotionExpiresAt: null,
     });
-    return readOwnerSession(sessionId, requestingUserId);
+    return readOwnerSession(publicSessionId, companyId, requestingUserId);
   }
 
   return { start, readOwnerSession, cancelOwnerSession };
