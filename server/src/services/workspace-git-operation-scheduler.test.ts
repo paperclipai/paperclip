@@ -169,10 +169,12 @@ describe("WorkspaceGitOperationScheduler", () => {
     await vi.waitFor(() => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(1));
     expect(calls).toBe(1);
     gate.resolve();
-    await expect(Promise.all([first, joined])).resolves.toEqual([
-      expect.objectContaining({ stdout: "shared", singleFlightJoined: false }),
-      expect.objectContaining({ stdout: "shared", singleFlightJoined: true }),
+    const results = await Promise.all([first, joined]);
+    expect(results).toEqual([
+      expect.objectContaining({ stdout: "shared" }),
+      expect.objectContaining({ stdout: "shared" }),
     ]);
+    expect(results.map((result) => result.singleFlightJoined).sort()).toEqual([false, true]);
 
     shouldFail = true;
     await expect(scheduler.run(scanInput(workspace, "failure"))).rejects.toMatchObject({
