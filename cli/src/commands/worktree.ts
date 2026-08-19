@@ -1416,20 +1416,14 @@ export function resolveWorktreeSeedMigrationRevision(
   migrationState: Awaited<ReturnType<typeof inspectMigrations>>,
   requirement: "sourcePrefix" | "upToDate",
 ): string {
-  if (migrationState.journalEntryCount > migrationState.availableMigrations.length) {
-    throw new Error(
-      `Migration journal is ahead of this Paperclip checkout (${migrationState.journalEntryCount} applied migration(s), ${migrationState.availableMigrations.length} available).`,
-    );
-  }
-
   const expectedAppliedPrefix = migrationState.availableMigrations.slice(
     0,
     migrationState.appliedMigrations.length,
   );
+  const appliedMigrationNames = new Set(migrationState.appliedMigrations);
   if (
-    migrationState.appliedMigrations.some(
-      (migration, index) => migration !== expectedAppliedPrefix[index],
-    )
+    appliedMigrationNames.size !== expectedAppliedPrefix.length ||
+    expectedAppliedPrefix.some((migration) => !appliedMigrationNames.has(migration))
   ) {
     throw new Error("Migration journal is not a prefix of this Paperclip checkout's migration journal.");
   }
@@ -1440,7 +1434,7 @@ export function resolveWorktreeSeedMigrationRevision(
     );
   }
 
-  const migrationRevision = migrationState.appliedMigrations.at(-1);
+  const migrationRevision = expectedAppliedPrefix.at(-1);
   if (!migrationRevision) {
     throw new Error("Migration journal has no applied revision.");
   }
