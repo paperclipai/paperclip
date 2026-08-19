@@ -43,6 +43,46 @@ export async function findReusableMetaIssue(
   },
 ): Promise<ReusableMetaIssueMatch | null> {
   const now = input.now ?? new Date();
+
+  // DEPTH CAP (2026-08-19, board-shipped): title-keyed dedupe cannot see CHAINS —
+  // 9 Postiz roots spawned 25 uniquely-titled meta descendants in one night
+  // (recover(X) -> "Unblock: inspect recover(X)" -> recover(that) ...), each title
+  // distinct so every layer minted. A meta card ABOUT a meta card carries no new
+  // information: the root already has its recovery card. Policy: if this mint's
+  // SUBJECT is itself a meta card (by origin issue, or by the identifier embedded
+  // in the generated title), suppress the mint entirely — callers already treat
+  // terminal_suppressed as do-not-mint.
+  const META_TITLE = /^(Recover (missing next step|stalled issue)|Unblock:)/;
+  if (META_TITLE.test(input.title)) {
+    let subject: { id: string; status: string; title: string } | null = null;
+    if (input.originId) {
+      const originRows = await db
+        .select({ id: issues.id, status: issues.status, title: issues.title })
+        .from(issues)
+        .where(eq(issues.id, input.originId))
+        .limit(1);
+      subject = originRows[0] ?? null;
+    }
+    if (!subject) {
+      const embedded = input.title.match(/\b([A-Z]{2,4}-\d{3,6})\b/);
+      if (embedded) {
+        const bySlug = await db
+          .select({ id: issues.id, status: issues.status, title: issues.title })
+          .from(issues)
+          .where(and(eq(issues.companyId, input.companyId), eq(issues.identifier, embedded[1]!)))
+          .limit(1);
+        subject = bySlug[0] ?? null;
+      }
+    }
+    if (subject && META_TITLE.test(subject.title)) {
+      return { outcome: "terminal_suppressed", issue: { id: subject.id, status: subject.status } };
+    }
+    // A terminal subject needs no recovery either — the work it recovered is over.
+    if (subject && (subject.status === "done" || subject.status === "cancelled")) {
+      return { outcome: "terminal_suppressed", issue: { id: subject.id, status: subject.status } };
+    }
+  }
+
   const identity = [
     eq(issues.companyId, input.companyId),
     eq(issues.title, input.title),
