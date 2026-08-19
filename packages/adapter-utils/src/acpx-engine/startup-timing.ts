@@ -109,6 +109,11 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   transferWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.wall_ms`,
   /** The number of serial guard round trips before one transfer. */
   transferGuardCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.guard.count`,
+  /** The transfer direction: `inbound` for an upload to the sandbox, `outbound`
+   * for a download from the sandbox. The parent span carries operation identity,
+   * so the transfer span never carries an operation label. The value stays in a
+   * closed set, so the attribute cardinality is bounded. */
+  transferDirection: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.direction`,
 } as const;
 
 /** The closed value set for the `outcome` attribute. */

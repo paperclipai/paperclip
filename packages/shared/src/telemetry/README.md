@@ -278,7 +278,8 @@ the attributes that the producer sends for one span.
 
 The `span.record` host handler enforces the allowlist. It re-maps `provider`
 through the provider-family normalizer. It keeps `outcome` only when the value
-is `ok`, `skipped`, or `failed`. It keeps a numeric attribute only when the
+is `ok`, `skipped`, or `failed`. It keeps `transfer.direction` only when the
+value is `inbound` or `outbound`. It keeps a numeric attribute only when the
 value is a finite number. It drops a status message and keeps only the numeric
 status code. The handler never throws, because observability must not change the
 sync control flow.
