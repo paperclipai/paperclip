@@ -607,7 +607,7 @@ describe.sequential("execution workspace routes", () => {
     );
   });
 
-  it("returns cleanup_failed instead of 500 when cleanup and the recovery write both throw", async () => {
+  it("reports the persisted archived row, not a fabricated cleanup_failed, when the recovery write throws", async () => {
     const archivedWorkspace = {
       id: "workspace-1",
       companyId: "company-1",
@@ -618,10 +618,14 @@ describe.sequential("execution workspace routes", () => {
       projectId: null,
       cwd: "/tmp/worktree",
     };
-    mockExecutionWorkspaceService.getById.mockResolvedValue({
+    // The initial route read sees the live row; every later read sees what the
+    // archive actually persisted — `archived`, with no cleanup_failed marker,
+    // because the recovery write never landed.
+    mockExecutionWorkspaceService.getById.mockResolvedValueOnce({
       ...archivedWorkspace,
       status: "active",
     });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(archivedWorkspace);
     mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
       state: "ready",
       blockingReasons: [],
@@ -652,10 +656,13 @@ describe.sequential("execution workspace routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       id: "workspace-1",
-      status: "cleanup_failed",
+      status: "archived",
+      cleaned: false,
       cleanupSucceeded: false,
+      cleanupFailureRecorded: false,
     });
-    expect(res.body.cleanupReason).toMatch(/^worktree_remove_failed:/);
+    expect(res.body.cleanupFailureReason).toMatch(/^worktree_remove_failed:/);
+    expect(res.body.cleanupReason).toBeUndefined();
     expect(mockExecutionWorkspaceService.applyClosedWorkspaceCleanupOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         markCleanupFailed: true,

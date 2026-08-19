@@ -1160,7 +1160,14 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
-    let archiveCleanupOutcome: { cleaned: boolean; cleanupSucceeded: boolean } | null = null;
+    let archiveCleanupOutcome:
+      | {
+          cleaned: boolean;
+          cleanupSucceeded: boolean;
+          cleanupFailureRecorded?: boolean;
+          cleanupFailureReason?: string;
+        }
+      | null = null;
     const configForCleanup = readExecutionWorkspaceConfig(
       ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
     );
@@ -1354,6 +1361,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         const failureReason = formatIsolatedArchiveCleanupFailureReason([
           error instanceof Error ? error.message : String(error),
         ]);
+        let cleanupFailureRecorded = true;
         try {
           const marked = await svc.applyClosedWorkspaceCleanupOutcome({
             id,
@@ -1368,13 +1376,21 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             { err: recoveryError, executionWorkspaceId: id, cleanupFailureReason: failureReason },
             "failed to record isolated archive cleanup failure",
           );
-          workspace = {
-            ...workspace,
-            status: "cleanup_failed",
-            cleanupReason: failureReason,
-          };
+          // The failure marker never reached the database, so the row stays
+          // plain `archived`: reporting a `cleanup_failed` status here would
+          // contradict every later read and imply a terminal-sweep retry that
+          // will not happen. Report the persisted row and flag the gap instead.
+          cleanupFailureRecorded = false;
+          cleanupWarnings = [...cleanupWarnings, failureReason];
+          workspace = (await svc.getById(id).catch(() => null)) ?? workspace;
         }
-        archiveCleanupOutcome = { cleaned: false, cleanupSucceeded: false };
+        archiveCleanupOutcome = {
+          cleaned: false,
+          cleanupSucceeded: false,
+          ...(cleanupFailureRecorded
+            ? {}
+            : { cleanupFailureRecorded: false, cleanupFailureReason: failureReason }),
+        };
       }
     } else {
       const updatedWorkspace = await svc.update(id, patch);
