@@ -63,11 +63,13 @@ function readyProbe() {
       databaseReady: true,
       cloneDataReady: true,
       authHandoffReady: true,
+      authHandoffUserId: "user-1",
       seedState: "verified" as const,
       seedPhase: "complete",
       seedMode: "minimal" as const,
       instanceId: INSTANCE_ID,
       executionWorkspaceId: EXECUTION_WORKSPACE_ID,
+      companyId: COMPANY_ID,
       failurePhase: null,
     },
   }));
@@ -131,6 +133,10 @@ describe("issueWorkspaceLoginHandoff", () => {
     // separately configured address.
     expect(probe).toHaveBeenCalledTimes(1);
     expect(probe.mock.calls[0]![0]!.healthUrl).toBe("https://workspace.example.ts.net:42013/api/health");
+    expect(probe.mock.calls[0]![0]!.handoffSubject).toEqual({
+      userId: "user-1",
+      email: "operator@example.com",
+    });
   });
 
   it("refuses to mint a ticket for a workspace that is not ready", async () => {

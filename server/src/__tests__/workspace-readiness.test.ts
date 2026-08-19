@@ -26,6 +26,8 @@ import {
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_HEADER,
+  WORKSPACE_READINESS_USER_EMAIL_HEADER,
+  WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 
 const tempDirs: string[] = [];
@@ -129,6 +131,7 @@ describe("resolveWorkspaceReadiness", () => {
       databaseReady: true,
       cloneDataReady: true,
       authHandoffReady: true,
+      authHandoffUserId: null,
       seedState: "verified",
       seedMode: "minimal",
       executionWorkspaceId: "ews-1",
@@ -294,6 +297,7 @@ describe("probeManagedWorkspaceReadiness", () => {
       databaseReady: true,
       cloneDataReady: true,
       authHandoffReady: true,
+      authHandoffUserId: null,
       seedState: "verified",
       seedPhase: "complete",
       seedMode: "minimal",
@@ -315,6 +319,39 @@ describe("probeManagedWorkspaceReadiness", () => {
     const [, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect((init as RequestInit & { headers: Record<string, string> }).headers[WORKSPACE_READINESS_TOKEN_HEADER])
       .toBe("probe-token");
+  });
+
+  it("binds a caller-scoped readiness probe to the exact handoff user", async () => {
+    const fetchImpl = respond({
+      ...readyPayload,
+      workspace: { ...readyPayload.workspace, authHandoffUserId: "user-1" },
+    });
+    const result = await probeManagedWorkspaceReadiness({
+      healthUrl: "http://127.0.0.1:42013/api/health",
+      identity,
+      handoffSubject: { userId: "user-1", email: "operator@example.com" },
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    const [, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect((init as RequestInit & { headers: Record<string, string> }).headers).toMatchObject({
+      [WORKSPACE_READINESS_USER_ID_HEADER]: "user-1",
+      [WORKSPACE_READINESS_USER_EMAIL_HEADER]: "operator@example.com",
+    });
+  });
+
+  it("rejects a readiness response scoped to another handoff user", async () => {
+    expect(
+      await probeManagedWorkspaceReadiness({
+        healthUrl: "http://127.0.0.1:42013/api/health",
+        identity,
+        handoffSubject: { userId: "user-1", email: "operator@example.com" },
+        fetchImpl: respond({
+          ...readyPayload,
+          workspace: { ...readyPayload.workspace, authHandoffUserId: "user-other" },
+        }),
+      }),
+    ).toMatchObject({ ok: false, reason: "identity_mismatch" });
   });
 
   it("rejects a workspace serving another instance, workspace, or company", async () => {
@@ -493,6 +530,7 @@ describe("waitForManagedWorkspaceReadiness", () => {
       databaseReady: true,
       cloneDataReady: true,
       authHandoffReady: true,
+      authHandoffUserId: null,
       seedState: "verified",
       seedPhase: "complete",
       seedMode: "minimal",

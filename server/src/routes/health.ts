@@ -23,6 +23,8 @@ import { isManagedWorkspaceInstance, resolveWorkspaceReadiness } from "../servic
 import {
   resolveWorkspaceReadinessLocalToken,
   WORKSPACE_READINESS_TOKEN_HEADER,
+  WORKSPACE_READINESS_USER_EMAIL_HEADER,
+  WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
 
@@ -174,6 +176,11 @@ export function healthRoutes(
     const exposeWorkspaceReadiness =
       isManagedWorkspaceInstance()
       && (exposeFullDetails || hasWorkspaceReadinessToken(req.get(WORKSPACE_READINESS_TOKEN_HEADER)));
+    const requestedHandoffUserId = req.get(WORKSPACE_READINESS_USER_ID_HEADER)?.trim();
+    const requestedHandoffUserEmail = req.get(WORKSPACE_READINESS_USER_EMAIL_HEADER)?.trim();
+    const handoffSubject = requestedHandoffUserId && requestedHandoffUserEmail
+      ? { userId: requestedHandoffUserId, email: requestedHandoffUserEmail }
+      : null;
 
     if (!db) {
       res.json(
@@ -204,7 +211,7 @@ export function healthRoutes(
       // disk is exactly what tells an operator whether this is a half-finished
       // restore or a database that died after being verified.
       const workspace = exposeWorkspaceReadiness
-        ? await resolveWorkspaceReadiness({ db }).catch(() => null)
+        ? await resolveWorkspaceReadiness({ db, handoffSubject }).catch(() => null)
         : null;
       res.status(503).json({
         status: "unhealthy",
@@ -271,7 +278,7 @@ export function healthRoutes(
     }
 
     const workspaceReadiness = exposeWorkspaceReadiness
-      ? await resolveWorkspaceReadiness({ db }).catch((error) => {
+      ? await resolveWorkspaceReadiness({ db, handoffSubject }).catch((error) => {
           logger.warn({ err: error }, "workspace readiness probe failed");
           return null;
         })

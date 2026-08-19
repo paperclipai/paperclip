@@ -12,6 +12,8 @@ import {
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_HEADER,
+  WORKSPACE_READINESS_USER_EMAIL_HEADER,
+  WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 
 const tempDirs: string[] = [];
@@ -136,8 +138,14 @@ describe("GET /api/health workspace readiness", () => {
     const response = await request(createApp("none"))
       .get("/api/health")
       .set(WORKSPACE_READINESS_TOKEN_HEADER, "probe-token")
+      .set(WORKSPACE_READINESS_USER_ID_HEADER, "user-1")
+      .set(WORKSPACE_READINESS_USER_EMAIL_HEADER, "operator@example.com")
       .expect(200);
-    expect(response.body.workspace).toMatchObject({ state: "ready", instanceId: expect.any(String) });
+    expect(response.body.workspace).toMatchObject({
+      state: "ready",
+      instanceId: expect.any(String),
+      authHandoffUserId: "user-1",
+    });
     // Still redacted apart from readiness: the token buys one contract, not full detail.
     expect(response.body.serverInfo).toBeUndefined();
   });

@@ -46,6 +46,8 @@ export interface WorkspaceReadiness {
   cloneDataReady: boolean;
   /** A signing key and a resolvable cloned admin identity are both present. */
   authHandoffReady: boolean;
+  /** Exact cloned user checked for a caller-scoped handoff probe, or null. */
+  authHandoffUserId: string | null;
   seedState: WorkspaceSeedReadinessState;
   /** Last recorded seed phase, e.g. `restore` or `post_restore_validation`. */
   seedPhase: string | null;

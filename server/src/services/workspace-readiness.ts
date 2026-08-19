@@ -173,6 +173,7 @@ export function resetManagedWorkspaceInstanceCacheForTests(): void {
 export type WorkspaceReadinessDeps = {
   db: Db | null | undefined;
   env?: NodeJS.ProcessEnv;
+  handoffSubject?: { userId: string; email: string } | null;
 };
 
 /**
@@ -190,6 +191,8 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
   // missing or has no members, which is a workspace that must not report ready.
   const companyId = resolveWorkspaceHandoffLocalCompanyId(env);
   const handoffKeyPresent = Boolean(resolveWorkspaceHandoffLocalKey(env));
+  const handoffUserId = deps.handoffSubject?.userId.trim() || null;
+  const handoffUserEmail = deps.handoffSubject?.email.trim().toLowerCase() || null;
 
   let databaseReady = false;
   let cloneDataReady = false;
@@ -240,6 +243,8 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
               eq(companyMemberships.principalId, authUsers.id),
               eq(companyMemberships.status, "active"),
               eq(companyMemberships.companyId, companyId),
+              ...(handoffUserId ? [eq(authUsers.id, handoffUserId)] : []),
+              ...(handoffUserEmail ? [sql`lower(${authUsers.email}) = ${handoffUserEmail}`] : []),
             ),
           )
           .limit(1)
@@ -277,6 +282,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
     databaseReady,
     cloneDataReady,
     authHandoffReady,
+    authHandoffUserId: handoffUserId,
     seedState: seed.state,
     seedPhase: seed.phase,
     seedMode: seed.mode,

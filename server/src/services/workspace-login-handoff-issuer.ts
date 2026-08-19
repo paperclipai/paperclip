@@ -160,6 +160,7 @@ export async function issueWorkspaceLoginHandoff(input: {
     // reassigned port is caught before a ticket exists rather than after.
     healthUrl: new URL("/api/health", origin).toString(),
     identity,
+    handoffSubject: boardIdentity,
   });
   if (!readinessResult.ok) {
     return {

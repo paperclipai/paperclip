@@ -22,6 +22,8 @@ import {
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_HEADER,
+  WORKSPACE_READINESS_USER_EMAIL_HEADER,
+  WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -112,6 +114,7 @@ function isWorkspaceReadinessShape(value: unknown): value is WorkspaceReadiness 
     && typeof candidate.databaseReady === "boolean"
     && typeof candidate.cloneDataReady === "boolean"
     && typeof candidate.authHandoffReady === "boolean"
+    && (typeof candidate.authHandoffUserId === "string" || candidate.authHandoffUserId === null)
     && typeof candidate.seedState === "string"
     && (typeof candidate.companyId === "string" || candidate.companyId === null)
   );
@@ -129,12 +132,21 @@ export async function probeManagedWorkspaceReadiness(input: {
   identity: ManagedWorkspaceIdentity;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  handoffSubject?: { userId: string; email: string } | null;
 }): Promise<WorkspaceReadinessProbeResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   let response: Response;
   try {
     response = await fetchImpl(input.healthUrl, {
-      headers: { [WORKSPACE_READINESS_TOKEN_HEADER]: input.identity.readinessToken },
+      headers: {
+        [WORKSPACE_READINESS_TOKEN_HEADER]: input.identity.readinessToken,
+        ...(input.handoffSubject
+          ? {
+              [WORKSPACE_READINESS_USER_ID_HEADER]: input.handoffSubject.userId,
+              [WORKSPACE_READINESS_USER_EMAIL_HEADER]: input.handoffSubject.email,
+            }
+          : {}),
+      },
       signal: AbortSignal.timeout(input.timeoutMs ?? WORKSPACE_READINESS_PROBE_TIMEOUT_MS),
     });
   } catch (error) {
@@ -172,6 +184,19 @@ export async function probeManagedWorkspaceReadiness(input: {
       detail: `expected company ${input.identity.companyId}, got missing`,
     };
   }
+  if (
+    input.handoffSubject
+    && payload.workspace
+    && typeof payload.workspace === "object"
+    && !("authHandoffUserId" in payload.workspace)
+  ) {
+    return {
+      ok: false,
+      reason: "identity_mismatch",
+      readiness: null,
+      detail: `expected handoff user ${input.handoffSubject.userId}, got missing`,
+    };
+  }
   if (!isWorkspaceReadinessShape(payload.workspace)) {
     // Either the token was rejected or the guest predates this contract. Both
     // mean the control plane cannot prove user readiness, so neither may publish.
@@ -193,6 +218,14 @@ export async function probeManagedWorkspaceReadiness(input: {
   }
   if (!readiness.databaseReady || !readiness.cloneDataReady || !readiness.authHandoffReady) {
     return { ok: false, reason: "not_ready", readiness, detail: readiness.failurePhase };
+  }
+  if (input.handoffSubject && readiness.authHandoffUserId !== input.handoffSubject.userId) {
+    return {
+      ok: false,
+      reason: "identity_mismatch",
+      readiness,
+      detail: `expected handoff user ${input.handoffSubject.userId}, got ${readiness.authHandoffUserId}`,
+    };
   }
 
   return { ok: true, readiness };
