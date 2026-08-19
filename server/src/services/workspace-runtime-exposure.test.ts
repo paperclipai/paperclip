@@ -6,7 +6,10 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { BrokerClient, BrokerListenerRequest } from "./runtime-exposure/broker-client.js";
-import { diagnoseRuntimeListenerBinds } from "./runtime-exposure/loopback-listener.js";
+import {
+  diagnoseRuntimeListenerBinds,
+  readListenerBindFacts,
+} from "./runtime-exposure/loopback-listener.js";
 import {
   resetRuntimeServicesForTests,
   setWorkspaceRuntimeExposureDepsForTests,
@@ -162,6 +165,9 @@ function createBroker() {
  * "make exposure fixture honor occupied ports").
  */
 async function isLoopbackPortFree(port: number): Promise<boolean> {
+  const facts = await readListenerBindFacts(port);
+  if (facts?.present) return false;
+
   return await new Promise<boolean>((resolve) => {
     const probe = net.createServer();
     probe.unref();
