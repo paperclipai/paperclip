@@ -834,7 +834,7 @@ export function summarySlotService(db: Db) {
         : null;
 
       if (existingDocument) {
-        if (input.baseRevisionId && input.baseRevisionId !== existingDocument.latestRevisionId) {
+        if (!input.baseRevisionId || input.baseRevisionId !== existingDocument.latestRevisionId) {
           throw conflict("Summary was updated by someone else", {
             currentRevisionId: existingDocument.latestRevisionId,
           });

@@ -637,7 +637,7 @@ describeEmbeddedPostgres("summary slot service", () => {
       ).rejects.toMatchObject({ status: 403 });
     });
 
-    it("lets a checked-out refresh routine claim and update a changed stale slot but rejects an unrelated slot", async () => {
+    it("requires the current base revision when a checked-out refresh routine writes a claimed slot", async () => {
       const companyId = await seedCompany();
       const changedProjectId = await seedProject(companyId);
       const unrelatedProjectId = await seedProject(companyId);
@@ -719,21 +719,41 @@ describeEmbeddedPostgres("summary slot service", () => {
         generationIssueId: routineIssue!.id,
       }, { agentId: summarizerAgentId, runId: routineRunId })).rejects.toMatchObject({ status: 403 });
 
+      const [concurrentRevision] = await db.insert(documentRevisions).values({
+        companyId,
+        documentId: changedPrevious.document.id,
+        revisionNumber: 2,
+        body: "# Concurrent summary",
+        createdByUserId: "board-user",
+      }).returning();
+      await db.update(documents).set({
+        latestBody: concurrentRevision!.body,
+        latestRevisionId: concurrentRevision!.id,
+        latestRevisionNumber: concurrentRevision!.revisionNumber,
+        updatedByUserId: "board-user",
+      }).where(eq(documents.id, changedPrevious.document.id));
+
+      await expect(svc.write({
+        ...projectSelector(companyId, changedProjectId),
+        markdown: "# Missing base write",
+        generationIssueId: routineIssue!.id,
+      }, { agentId: summarizerAgentId, runId: routineRunId })).rejects.toMatchObject({ status: 409 });
+
       await expect(svc.write({
         ...projectSelector(companyId, changedProjectId),
         markdown: "# Stale write",
-        baseRevisionId: randomUUID(),
+        baseRevisionId: changedPrevious.revision.id,
         generationIssueId: routineIssue!.id,
       }, { agentId: summarizerAgentId, runId: routineRunId })).rejects.toMatchObject({ status: 409 });
 
       const refreshed = await svc.write({
         ...projectSelector(companyId, changedProjectId),
         markdown: "# Refreshed summary",
-        baseRevisionId: changedPrevious.revision.id,
+        baseRevisionId: concurrentRevision!.id,
         generationIssueId: routineIssue!.id,
         model: "claude-haiku-4-5",
       }, { agentId: summarizerAgentId, runId: routineRunId });
-      expect(refreshed.revision.revisionNumber).toBe(2);
+      expect(refreshed.revision.revisionNumber).toBe(3);
       expect(refreshed.slot).toMatchObject({ status: "idle", generatingIssueId: null });
     });
   });
