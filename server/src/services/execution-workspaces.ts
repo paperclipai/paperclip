@@ -2442,22 +2442,30 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             : `The workspace has ${git.untrackedEntryCount} untracked files.`,
         );
       }
-      // Fail closed on unverifiable ancestry. `isMergedIntoBase` is null when the
-      // merge-base probe could not run (missing base ref, detached HEAD, git
-      // failure), which is exactly when Paperclip cannot prove the commits are
-      // safe to destroy. Only a positive `true` clears this blocker.
+      // Fail closed on unverifiable ancestry. Both probes run only when the repo
+      // root and the base ref resolved, so a null count or a null
+      // `isMergedIntoBase` under those conditions means the probe ran and
+      // failed. That is exactly when Paperclip cannot prove the commits are safe
+      // to destroy, so only a positive `isMergedIntoBase` with a known count
+      // clears this blocker.
+      //
+      // The guard stays scoped to a resolved repo and base ref on purpose. A
+      // workspace whose path is already gone reports null counts too, and
+      // blocking there would strand a record that has nothing left to protect.
+      const ancestryProbed = Boolean(git?.repoRoot && git.baseRef);
+      const ancestryUnverified = ancestryProbed && (git!.aheadCount === null || git!.isMergedIntoBase === null);
       if (
-        git?.aheadCount
-        && git.aheadCount > 0
-        && git.isMergedIntoBase !== true
+        git
+        && ancestryProbed
+        && (ancestryUnverified || (git.aheadCount! > 0 && git.isMergedIntoBase !== true))
         && deliveryState !== "merged_via_pr"
       ) {
         pushGitCloseSignal(
-          git.isMergedIntoBase === null
-            ? `Paperclip could not verify whether this workspace is merged into ${git.baseRef ?? "the base ref"}.`
+          ancestryUnverified
+            ? `Paperclip could not verify whether this workspace is merged into ${git.baseRef}.`
             : git.aheadCount === 1
-              ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
-              : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
+              ? `This workspace is 1 commit ahead of ${git.baseRef} and is not merged.`
+              : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef} and is not merged.`,
         );
       }
       // Not gated on shared mode: an active run owns the checkout regardless of

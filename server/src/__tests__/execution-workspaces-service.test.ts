@@ -4814,6 +4814,44 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness?.workspaceHeadSha).toBe(seeded.headSha);
   }, 20_000);
 
+  it("blocks the close when the ancestry probe cannot resolve the base ref", async () => {
+    // Both git probes run only when the repo root and the base ref resolve. An
+    // unresolvable base ref leaves aheadCount and isMergedIntoBase null, which
+    // must fail closed rather than silently clear the delivery blocker. There is
+    // no merged PR here, so nothing else proves the commits were delivered.
+    const seeded = await seedTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ baseRef: "refs/heads/does-not-exist" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.git?.aheadCount).toBeNull();
+    expect(readiness?.git?.isMergedIntoBase).toBeNull();
+    expect(readiness?.state).toBe("blocked");
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify whether this workspace is merged into refs/heads/does-not-exist.",
+    );
+  }, 20_000);
+
+  it("does not block the close when the workspace path is already gone", async () => {
+    // A missing path reports null counts too, but there is nothing left to
+    // protect, so the record must still be closable.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const missingPath = path.join(path.dirname(seeded.repoRoot), `paperclip-gone-${randomUUID()}`);
+    await db
+      .update(executionWorkspaces)
+      .set({ cwd: missingPath, providerRef: missingPath })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.git?.repoRoot).toBeNull();
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.isDestructiveCloseAllowed).toBe(true);
+  }, 20_000);
+
   it("keeps the worktree and the branch when a shared workspace session is closed", async () => {
     // Closing a shared session must remove the session record only. The
     // underlying worktree is project infrastructure that outlives the session,
