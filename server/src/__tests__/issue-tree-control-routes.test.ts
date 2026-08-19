@@ -21,8 +21,14 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   wakeup: vi.fn(),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   heartbeatService: () => mockHeartbeatService,
   issueService: () => mockIssueService,
   issueTreeControlService: () => mockTreeControlService,

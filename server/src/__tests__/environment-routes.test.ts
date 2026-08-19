@@ -16,6 +16,12 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   clearExecutionWorkspaceEnvironmentSelection: vi.fn(),
@@ -85,6 +91,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   issueService: () => mockIssueService,
   instanceSettingsService: () => mockInstanceSettingsService,
   environmentCustomImageService: () => mockEnvironmentCustomImageService,

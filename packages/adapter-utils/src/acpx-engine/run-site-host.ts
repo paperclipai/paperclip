@@ -57,6 +57,7 @@ export interface RuntimeCacheEntry {
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: ReturnType<typeof setTimeout>;
+  closePromise?: Promise<void>;
 }
 
 /** Construction options for the host site. */

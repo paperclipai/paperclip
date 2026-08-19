@@ -47,6 +47,11 @@ const mockInteractionService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" })));
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 const mockRunAttribution = vi.hoisted(() => ({
@@ -161,6 +166,7 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     clampIssueListLimit: (value: number) => value,
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),

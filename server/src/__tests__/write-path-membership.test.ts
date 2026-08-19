@@ -36,6 +36,12 @@ const mockGoalService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackGoalCreated: vi.fn(),
 }));
@@ -45,6 +51,7 @@ vi.mock("../telemetry.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   goalService: () => mockGoalService,
   logActivity: mockLogActivity,
 }));

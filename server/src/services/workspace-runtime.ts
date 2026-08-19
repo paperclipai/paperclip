@@ -51,6 +51,7 @@ import {
   findLocalServiceRegistryRecordByRuntimeServiceId,
   findAdoptableLocalService,
   isLocalServiceProcessOwnedBy,
+  isPidAlive,
   isLocalServiceProcessInWorkspace,
   readLocalServiceProcessCwd,
   readLocalServicePortOwner,
@@ -64,6 +65,7 @@ import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execu
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { readProcessStartedAt } from "./hot-restart.js";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -5799,6 +5801,9 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       runtimeServiceId: record.id,
       reuseKey: input.reuseKey,
       startedAt: record.startedAt,
+      processStartedAt: child.pid
+        ? await readProcessStartedAt(child.pid).catch(() => null)
+        : null,
       lastSeenAt: record.lastUsedAt,
       metadata: {
         projectId: record.projectId,
@@ -7202,6 +7207,77 @@ export async function releaseRuntimeServicesForRun(runId: string) {
       }
       scheduleIdleStop(record);
     }
+  }
+}
+
+export async function releaseTerminalRuntimeServicesForRun(db: Db, runId: string) {
+  await releaseRuntimeServicesForRun(runId);
+
+  const stranded = await db
+    .select()
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.startedByRunId, runId),
+        eq(workspaceRuntimeServices.lifecycle, "ephemeral"),
+        inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"]),
+      ),
+    );
+
+  for (const row of stranded) {
+    const retained = runtimeServicesById.get(row.id);
+    if (retained) {
+      await stopRuntimeService(row.id);
+      continue;
+    }
+
+    if (row.provider !== "local" && row.provider !== "local_process") {
+      throw new Error(
+        `Cannot recover ephemeral runtime service ${row.id}: unsupported provider ${row.provider}`,
+      );
+    }
+
+    const registryRecord = await findLocalServiceRegistryRecordByRuntimeServiceId({
+      runtimeServiceId: row.id,
+      profileKind: "workspace-runtime",
+      requireExactProcessIdentity: true,
+    });
+    if (registryRecord) {
+      await terminateLocalService({
+        pid: registryRecord.pid,
+        processGroupId: registryRecord.processGroupId ?? null,
+      });
+      await removeLocalServiceRegistryRecord(registryRecord.serviceKey);
+    } else if (row.providerRef) {
+      const pid = Number.parseInt(row.providerRef, 10);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        throw new Error(
+          `Cannot recover ephemeral runtime service ${row.id}: invalid local process reference`,
+        );
+      }
+      if (isPidAlive(pid)) {
+        throw new Error(
+          `Cannot recover ephemeral runtime service ${row.id}: live process has no verified registry identity`,
+        );
+      }
+    }
+
+    const now = new Date();
+    await db
+      .update(workspaceRuntimeServices)
+      .set({
+        status: "stopped",
+        healthStatus: "unknown",
+        stoppedAt: now,
+        lastUsedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(workspaceRuntimeServices.id, row.id),
+          inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"]),
+        ),
+      );
   }
 }
 

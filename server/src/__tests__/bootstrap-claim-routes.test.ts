@@ -14,6 +14,11 @@ const accessServiceMock = vi.hoisted(() => ({
   ensureMembership: vi.fn(),
   setPrincipalGrants: vi.fn(),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("../first-admin-claim.js", () => ({
   claimFirstInstanceAdmin: claimFirstInstanceAdminMock,
@@ -24,6 +29,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   boardAuthService: () => ({
     createCliAuthChallenge: vi.fn(),
     resolveBoardAccess: vi.fn(),

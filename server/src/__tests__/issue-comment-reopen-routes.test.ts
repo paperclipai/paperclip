@@ -36,6 +36,11 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   resolveByReference: vi.fn(),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
@@ -139,6 +144,7 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   companySkillService: () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),

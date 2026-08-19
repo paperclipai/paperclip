@@ -1,9 +1,14 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
+  beginHttpServerShutdown,
+  closeHttpServerForShutdown,
+  coalesceShutdown,
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
+  drainExecutionOwnershipForShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runShutdownAndExit,
 } from "./shutdown.js";
 
 function deferred<T = void>() {
@@ -133,6 +138,92 @@ describe("finalizeServerShutdown", () => {
     expect(shutdownAppServices).toHaveBeenCalledOnce();
     expect(shutdownInstrumentation).toHaveBeenCalledOnce();
     expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("coalesceShutdown", () => {
+  it("returns one in-flight shutdown when different signals arrive together", async () => {
+    let releaseShutdown!: () => void;
+    const shutdownBlocked = new Promise<void>((resolve) => {
+      releaseShutdown = resolve;
+    });
+    const performShutdown = vi.fn(async (_signal: "SIGINT" | "SIGTERM") => {
+      await shutdownBlocked;
+    });
+    const shutdown = coalesceShutdown(performShutdown);
+
+    const first = shutdown("SIGINT");
+    const second = shutdown("SIGTERM");
+
+    expect(second).toBe(first);
+    expect(performShutdown).toHaveBeenCalledOnce();
+    expect(performShutdown).toHaveBeenCalledWith("SIGINT");
+
+    releaseShutdown();
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+  });
+});
+
+describe("closeHttpServerForShutdown", () => {
+  it("awaits and propagates an HTTP listener close failure", async () => {
+    const closeError = new Error("listener close failed");
+    let reportClose!: (error?: Error) => void;
+    const closeIdleConnections = vi.fn();
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => {
+        reportClose = callback;
+      }),
+      closeIdleConnections,
+    };
+
+    let settled = false;
+    const closing = closeHttpServerForShutdown(server).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(closeIdleConnections).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+
+    reportClose(closeError);
+    await expect(closing).rejects.toBe(closeError);
+  });
+});
+
+describe("beginHttpServerShutdown", () => {
+  it("starts listener close without blocking execution drain on an active response", async () => {
+    let reportClose!: (error?: Error) => void;
+    const closeAllConnections = vi.fn(() => reportClose());
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => {
+        reportClose = callback;
+      }),
+      closeIdleConnections: vi.fn(),
+      closeAllConnections,
+    };
+
+    const shutdown = beginHttpServerShutdown(server);
+
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(server.closeIdleConnections).toHaveBeenCalledOnce();
+    expect(closeAllConnections).not.toHaveBeenCalled();
+
+    shutdown.closeRemainingConnections();
+    await expect(shutdown.waitForClose()).resolves.toBeUndefined();
+    expect(closeAllConnections).toHaveBeenCalledOnce();
+  });
+
+  it("captures an early close failure until the ordered waiter observes it", async () => {
+    const closeError = new Error("listener close failed before drain");
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => callback(closeError)),
+    };
+
+    const shutdown = beginHttpServerShutdown(server);
+    await Promise.resolve();
+
+    await expect(shutdown.waitForClose()).rejects.toBe(closeError);
   });
 });
 
@@ -315,5 +406,93 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
       preparationError,
       waitedForSchedulerIdle: true,
     });
+  });
+});
+
+describe("drainExecutionOwnershipForShutdown", () => {
+  it("always closes retained runtimes after a heartbeat drain failure", async () => {
+    const drainError = new Error("heartbeat drain failed");
+    const closeRetainedRuntimes = vi.fn(async () => ({ closedWarmHandles: 1 }));
+
+    await expect(drainExecutionOwnershipForShutdown({
+      drainHeartbeatRuns: async () => {
+        throw drainError;
+      },
+      closeRetainedRuntimes,
+    })).rejects.toBe(drainError);
+
+    expect(closeRetainedRuntimes).toHaveBeenCalledOnce();
+  });
+
+  it("retries retained runtime closure before failing shutdown", async () => {
+    const closeError = new Error("runtime close failed");
+    const closeRetainedRuntimes = vi
+      .fn()
+      .mockRejectedValueOnce(closeError)
+      .mockResolvedValueOnce({ closedWarmHandles: 1 });
+
+    await expect(drainExecutionOwnershipForShutdown({
+      drainHeartbeatRuns: async () => ({ interrupted: 0 }),
+      closeRetainedRuntimes,
+      retainedRuntimeCloseAttempts: 2,
+    })).resolves.toEqual({
+      drain: { interrupted: 0 },
+      retainedRuntimes: { closedWarmHandles: 1 },
+    });
+    expect(closeRetainedRuntimes).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when retained runtime closure remains unsuccessful", async () => {
+    const closeError = new Error("runtime close failed");
+    const closeRetainedRuntimes = vi.fn().mockRejectedValue(closeError);
+
+    await expect(drainExecutionOwnershipForShutdown({
+      drainHeartbeatRuns: async () => null,
+      closeRetainedRuntimes,
+      retainedRuntimeCloseAttempts: 3,
+    })).rejects.toBe(closeError);
+    expect(closeRetainedRuntimes).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("runShutdownAndExit", () => {
+  it("exits non-zero when work after the HTTP close fails", async () => {
+    const events: string[] = [];
+    const error = new Error("post-listener shutdown failed");
+
+    await runShutdownAndExit({
+      shutdown: async () => {
+        events.push("http_closed");
+        throw error;
+      },
+      onFailure: (caught) => {
+        expect(caught).toBe(error);
+        events.push("failure_recorded");
+      },
+      exit: (code) => {
+        events.push(`exit_${code}`);
+      },
+    });
+
+    expect(events).toEqual(["http_closed", "failure_recorded", "exit_1"]);
+  });
+
+  it("exits zero only after all shutdown work succeeds", async () => {
+    const events: string[] = [];
+
+    await runShutdownAndExit({
+      shutdown: async () => {
+        events.push("http_closed");
+        events.push("drained");
+      },
+      onFailure: () => {
+        events.push("unexpected_failure");
+      },
+      exit: (code) => {
+        events.push(`exit_${code}`);
+      },
+    });
+
+    expect(events).toEqual(["http_closed", "drained", "exit_0"]);
   });
 });

@@ -445,6 +445,10 @@ interface AcpxPreparedRuntime {
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
+const quarantinedWarmHandles = new WeakMap<
+  Map<string, RuntimeCacheEntry>,
+  Set<RuntimeCacheEntry>
+>();
 const defaultStagedRuntimes = new Map<string, StagedRuntimeCacheEntry>();
 const defaultStagingLocks = new Map<string, Promise<unknown>>();
 
@@ -2929,23 +2933,75 @@ function clearWarmHandleTimer(entry: RuntimeCacheEntry) {
   entry.cleanupTimer = undefined;
 }
 
+function getQuarantinedWarmHandles(handles: Map<string, RuntimeCacheEntry>) {
+  let entries = quarantinedWarmHandles.get(handles);
+  if (!entries) {
+    entries = new Set<RuntimeCacheEntry>();
+    quarantinedWarmHandles.set(handles, entries);
+  }
+  return entries;
+}
+
 async function closeWarmHandle(input: {
   handles: Map<string, RuntimeCacheEntry>;
-  key: string;
+  key: string | null;
   entry: RuntimeCacheEntry;
   reason: string;
   discardPersistentState?: boolean;
+  suppressCloseErrors?: boolean;
 }) {
-  if (input.handles.get(input.key) === input.entry) {
+  clearWarmHandleTimer(input.entry);
+  const quarantine = getQuarantinedWarmHandles(input.handles);
+  if (input.key !== null && input.handles.get(input.key) === input.entry) {
     input.handles.delete(input.key);
   }
-  clearWarmHandleTimer(input.entry);
-  await input.entry.runtime.close({
+  quarantine.add(input.entry);
+  const closePromise = input.entry.closePromise ?? Promise.resolve().then(() => input.entry.runtime.close({
     handle: input.entry.handle,
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
-  }).catch(() => {});
-  flushChildStderr(input.entry.childStderrState);
+  }));
+  input.entry.closePromise = closePromise;
+  try {
+    await closePromise;
+    quarantine.delete(input.entry);
+  } catch (error) {
+    if (input.suppressCloseErrors === false) throw error;
+  } finally {
+    if (input.entry.closePromise === closePromise) {
+      input.entry.closePromise = undefined;
+    }
+    flushChildStderr(input.entry.childStderrState);
+  }
+}
+
+export async function closeAcpxEngineRuntimesForShutdown(input: {
+  warmHandles?: Map<string, RuntimeCacheEntry>;
+} = {}) {
+  const warmHandles = input.warmHandles ?? defaultWarmHandles;
+  const active = [...warmHandles.entries()];
+  const activeEntries = new Set(active.map(([, entry]) => entry));
+  const quarantined = [...(quarantinedWarmHandles.get(warmHandles) ?? [])]
+    .filter((entry) => !activeEntries.has(entry));
+  const retained = [
+    ...active.map(([key, entry]) => ({ key, entry })),
+    ...quarantined.map((entry) => ({ key: null, entry })),
+  ];
+  const results = await Promise.allSettled(retained.map(({ key, entry }) => closeWarmHandle({
+    handles: warmHandles,
+    key,
+    entry,
+    reason: "paperclip server shutdown",
+    suppressCloseErrors: false,
+  })));
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Multiple retained ACP runtimes failed to close");
+  }
+  return { closedWarmHandles: retained.length };
 }
 
 function warmHandleMatches(
@@ -3325,6 +3381,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let processIdentitySink!: AcpxProcessIdentitySink;
       let resumedSession = false;
       let clearSession = false;
+      // Signals that the settlement deliberately retained this run's process as an
+      // idle reusable runtime. Absent means any live process is still run-owned.
+      let processOwnership: AdapterExecutionResult["processOwnership"];
       let referencedProjectStagingFailuresField:
         | { referencedProjectStagingFailures: Array<{ projectId: string }> }
         | Record<string, never> = {};
@@ -3957,6 +4016,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           cancelTurnReason: null,
         };
 
+
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : resultErrorMessage(terminal);
@@ -3982,6 +4042,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
+          ...(processOwnership ? { processOwnership } : {}),
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
@@ -4165,7 +4226,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // on close.
         endSession: (slots, decision) => timedPhase("end_session", async () => {
           if (!slots.has("acp_runtime")) return;
-          if (decision.kind === "save" && decision.savedId === "acp_runtime") return;
+          if (decision.kind === "save" && decision.savedId === "acp_runtime") {
+            // The settlement retained the runtime as an idle reusable process.
+            // Signal run-process ownership release so the drain-fence finalizer
+            // can certify this run without blocking on the still-live process.
+            processOwnership = "retained_runtime";
+            return;
+          }
           const settlement: RuntimeSettlementPlan = runtimeSettlement ?? {
             mode: "direct",
             handle: syntheticCloseHandle(),
@@ -4272,7 +4339,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (!capturedResult) {
             throw new Error("run coordinator reproduced a result before the run recorded one");
           }
-          return capturedResult;
+          // The settlement decided the reuse after the result was captured; carry
+          // its retained-runtime signal into the reproduced result so the server
+          // releases run-process ownership for the still-live warm process.
+          return processOwnership ? { ...capturedResult, processOwnership } : capturedResult;
         },
       };
       return await runAttempt(plan);

@@ -36,6 +36,11 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeases: vi.fn(async () => undefined),
@@ -43,6 +48,7 @@ const mockEnvironmentRuntimeService = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,

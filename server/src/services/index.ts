@@ -8,6 +8,10 @@ export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./com
 export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {
+  agentExecutionFenceService,
+  isAgentExecutionFenceError,
+} from "./agent-execution-fence.js";
+export {
   builtInAgentService,
   deriveBuiltInAgentStatus,
   getBuiltInAgentDefinition,

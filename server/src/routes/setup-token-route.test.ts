@@ -137,6 +137,7 @@ function registerModuleMocks(): void {
   }));
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentExecutionFenceService: () => ({}),
     agentInstructionsService: () => ({}),
     accessService: () => ({
       canUser: vi.fn(async () => true),

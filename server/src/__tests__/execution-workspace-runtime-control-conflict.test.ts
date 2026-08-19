@@ -36,6 +36,11 @@ const mockListConfiguredRuntimeServiceEntries = vi.hoisted(() => vi.fn());
 const mockClaimRuntimeLease = vi.hoisted(() => vi.fn(async () => null));
 const mockReleaseRuntimeLease = vi.hoisted(() => vi.fn(async () => undefined));
 const mockSpawn = vi.hoisted(() => vi.fn());
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("node:child_process", async () => ({
   ...(await vi.importActual<typeof import("node:child_process")>("node:child_process")),
@@ -46,6 +51,7 @@ vi.mock("../telemetry.js", () => ({ getTelemetryClient: mockGetTelemetryClient }
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   environmentService: () => mockEnvironmentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   heartbeatService: () => mockHeartbeatService,

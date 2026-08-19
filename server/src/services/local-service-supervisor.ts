@@ -5,8 +5,37 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { readProcessStartedAt } from "./hot-restart.js";
 
 const execFileAsync = promisify(execFile);
+
+type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
+
+function runProcessCommand(command: string, args: string[]) {
+  return execFileAsync(command, args).then(({ stdout }) => stdout);
+}
+
+async function runPowerShell(script: string, runCommand: ProcessCommandRunner) {
+  const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+  // On 64-bit Windows running 32-bit Node, powershell.exe resolves to the
+  // 32-bit PowerShell (WOW64), which cannot inspect a native 64-bit target.
+  // Launch the 64-bit PowerShell via the Sysnative redirect instead.
+  const sysnative = process.platform === "win32" && process.arch === "ia32"
+    ? `${process.env.WINDIR ?? "C:\\Windows"}\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe`
+    : null;
+  if (sysnative) {
+    try {
+      return await runCommand(sysnative, args);
+    } catch {
+      // Fall through to the 32-bit PowerShell (e.g. 32-bit Windows).
+    }
+  }
+  try {
+    return await runCommand("powershell.exe", args);
+  } catch {
+    return await runCommand("pwsh.exe", args);
+  }
+}
 
 export interface LocalServiceRegistryRecord {
   version: 1;
@@ -24,6 +53,7 @@ export interface LocalServiceRegistryRecord {
   runtimeServiceId: string | null;
   reuseKey: string | null;
   startedAt: string;
+  processStartedAt?: string | null;
   lastSeenAt: string;
   metadata: Record<string, unknown> | null;
 }
@@ -99,6 +129,7 @@ function normalizeRegistryRecord(raw: unknown): LocalServiceRegistryRecord | nul
     runtimeServiceId: typeof rec.runtimeServiceId === "string" ? rec.runtimeServiceId : null,
     reuseKey: typeof rec.reuseKey === "string" ? rec.reuseKey : null,
     startedAt: typeof rec.startedAt === "string" ? rec.startedAt : new Date().toISOString(),
+    processStartedAt: typeof rec.processStartedAt === "string" ? rec.processStartedAt : null,
     lastSeenAt: typeof rec.lastSeenAt === "string" ? rec.lastSeenAt : new Date().toISOString(),
     metadata:
       rec.metadata && typeof rec.metadata === "object" && !Array.isArray(rec.metadata)
@@ -180,12 +211,17 @@ export async function listLocalServiceRegistryRecords(filter?: {
 export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   runtimeServiceId: string;
   profileKind?: string;
+  requireExactProcessIdentity?: boolean;
 }) {
   const records = await listLocalServiceRegistryRecords(
     input.profileKind ? { profileKind: input.profileKind } : undefined,
   );
   const record = records.find((entry) => entry.runtimeServiceId === input.runtimeServiceId) ?? null;
   if (!record) return null;
+
+  if (input.requireExactProcessIdentity) {
+    return (await hasExactLocalServiceProcessIdentity(record)) ? record : null;
+  }
 
   let candidate = record;
   if (!isPidAlive(candidate.pid)) {
@@ -220,8 +256,9 @@ export function isPidAlive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    return true;
   }
 }
 
@@ -231,8 +268,9 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   try {
     process.kill(-processGroupId, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    return true;
   }
 }
 
@@ -296,6 +334,17 @@ export async function readLocalServiceProcessGroupId(pid: number) {
   }
 }
 
+async function readProcessGroupId(pid: number) {
+  if (process.platform === "win32") return isPidAlive(pid) ? pid : null;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "pgid=", "-p", String(pid)]);
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function isLocalServiceProcessOwnedBy(pid: number, ownerProcessId: number) {
   if (pid === ownerProcessId) return true;
   if (process.platform !== "win32") {
@@ -329,6 +378,71 @@ export async function isLocalServiceProcessOwnedBy(pid: number, ownerProcessId: 
   }
 }
 
+export async function readLocalServiceProcessCommand(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const platform = options.platform ?? process.platform;
+  const runCommand = options.runCommand ?? runProcessCommand;
+  try {
+    const stdout = platform === "win32"
+      ? await runPowerShell(
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop).CommandLine`,
+        runCommand,
+      )
+      : await runCommand("ps", ["-o", "command=", "-p", String(pid)]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function hasExactLocalServiceProcessIdentity(
+  record: LocalServiceRegistryRecord,
+  options: {
+    isAlive?: (pid: number) => boolean;
+    readCommand?: (pid: number) => Promise<string | null>;
+    readCwd?: (pid: number) => Promise<string | null>;
+    readStartedAt?: (pid: number) => Promise<string | null>;
+    readGroupId?: (pid: number) => Promise<number | null>;
+    isInWorkspace?: (processCwd: string, workspaceCwd: string) => Promise<boolean>;
+  } = {},
+) {
+  const isAlive = options.isAlive ?? isPidAlive;
+  if (!isAlive(record.pid)) return false;
+
+  const [commandLine, processCwd, observedStartedAt, observedGroupId] = await Promise.all([
+    (options.readCommand ?? readLocalServiceProcessCommand)(record.pid),
+    (options.readCwd ?? readLocalServiceProcessCwd)(record.pid),
+    (options.readStartedAt ?? readProcessStartedAt)(record.pid).catch(() => null),
+    (options.readGroupId ?? readProcessGroupId)(record.pid),
+  ]);
+  if (!commandLine || !processCwd || !observedStartedAt) return false;
+
+  const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
+  if (!normalize(commandLine).includes(normalize(record.command))) return false;
+  if (!(await (options.isInWorkspace ?? isLocalServiceProcessInWorkspace)(processCwd, record.cwd))) {
+    return false;
+  }
+
+  if (!record.processStartedAt) return false;
+  const recordedStartMs = Date.parse(record.processStartedAt);
+  const observedStartMs = Date.parse(observedStartedAt);
+  if (
+    !Number.isFinite(recordedStartMs)
+    || !Number.isFinite(observedStartMs)
+    || recordedStartMs !== observedStartMs
+  ) {
+    return false;
+  }
+
+  return record.processGroupId === null || observedGroupId === record.processGroupId;
+}
+
 async function adoptLocalServiceFromPortOwner(input: {
   serviceKey: string;
   profileKind?: string | null;
@@ -353,6 +467,7 @@ async function adoptLocalServiceFromPortOwner(input: {
   const processGroupId = await readLocalServiceProcessGroupId(ownerPid);
   const pid = processGroupId && isPidAlive(processGroupId) ? processGroupId : ownerPid;
   const now = new Date().toISOString();
+  const processStartedAt = await readProcessStartedAt(pid).catch(() => null);
   const record: LocalServiceRegistryRecord = {
     version: 1,
     serviceKey: input.serviceKey,
@@ -369,6 +484,7 @@ async function adoptLocalServiceFromPortOwner(input: {
     runtimeServiceId: null,
     reuseKey: input.envFingerprint ?? null,
     startedAt: now,
+    processStartedAt,
     lastSeenAt: now,
     metadata: null,
   };
@@ -467,10 +583,93 @@ export async function readLocalServicePortOwner(port: number) {
   }
 }
 
-export async function readLocalServiceProcessCwd(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
+export async function readLocalServiceProcessCwd(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    readLink?: (target: string) => Promise<string>;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const platform = options.platform ?? process.platform;
+  const readLink = options.readLink ?? fs.readlink;
+  const runCommand = options.runCommand ?? runProcessCommand;
   try {
-    return await fs.readlink(`/proc/${pid}/cwd`);
+    if (platform === "linux") return await readLink(`/proc/${pid}/cwd`);
+    if (platform === "darwin") {
+      const stdout = await runCommand("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+      return stdout
+        .split("\n")
+        .find((line) => line.startsWith("n"))
+        ?.slice(1)
+        .trim() || null;
+    }
+    if (platform === "win32") {
+      const script = [
+        "$source = @'",
+        "using System;",
+        "using System.ComponentModel;",
+        "using System.Runtime.InteropServices;",
+        "using System.Text;",
+        "public static class PaperclipProcessCwd {",
+        "  [StructLayout(LayoutKind.Sequential)]",
+        "  private struct ProcessBasicInformation {",
+        "    public IntPtr Reserved1; public IntPtr PebBaseAddress;",
+        "    public IntPtr Reserved2_0; public IntPtr Reserved2_1;",
+        "    public IntPtr UniqueProcessId; public IntPtr Reserved3;",
+        "  }",
+        "  [DllImport(\"ntdll.dll\")] private static extern int NtQueryInformationProcess(IntPtr handle, int infoClass, ref ProcessBasicInformation info, int size, out int returned);",
+        "  [DllImport(\"ntdll.dll\")] private static extern int NtQueryInformationProcess(IntPtr handle, int infoClass, out IntPtr info, int size, out int returned);",
+        "  [DllImport(\"kernel32.dll\", SetLastError = true)] private static extern IntPtr OpenProcess(int access, bool inherit, int processId);",
+        "  [DllImport(\"kernel32.dll\", SetLastError = true)] private static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, int size, out IntPtr read);",
+        "  [DllImport(\"kernel32.dll\", SetLastError = true)] private static extern bool IsWow64Process(IntPtr process, out bool isWow64);",
+        "  [DllImport(\"kernel32.dll\")] private static extern bool CloseHandle(IntPtr handle);",
+        "  private static byte[] Read(IntPtr process, IntPtr address, int count) {",
+        "    var buffer = new byte[count]; IntPtr read;",
+        "    if (!ReadProcessMemory(process, address, buffer, count, out read) || read.ToInt64() != count) throw new Win32Exception(Marshal.GetLastWin32Error());",
+        "    return buffer;",
+        "  }",
+        "  public static string Get(int processId) {",
+        "    const int QueryInformation = 0x0400; const int VmRead = 0x0010;",
+        "    var process = OpenProcess(QueryInformation | VmRead, false, processId);",
+        "    if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());",
+        "    try {",
+        "      bool targetIsWow64;",
+        "      if (!IsWow64Process(process, out targetIsWow64)) throw new Win32Exception(Marshal.GetLastWin32Error());",
+        "      if (Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess && !targetIsWow64) throw new InvalidOperationException(\"A 32-bit inspector cannot read a native 64-bit target\");",
+        "      var pointerSize = targetIsWow64 || !Environment.Is64BitOperatingSystem ? 4 : 8;",
+        "      IntPtr peb; int returned; int status;",
+        "      if (targetIsWow64) {",
+        "        status = NtQueryInformationProcess(process, 26, out peb, IntPtr.Size, out returned);",
+        "      } else {",
+        "        var info = new ProcessBasicInformation();",
+        "        status = NtQueryInformationProcess(process, 0, ref info, Marshal.SizeOf(info), out returned);",
+        "        peb = info.PebBaseAddress;",
+        "      }",
+        "      if (status != 0 || peb == IntPtr.Zero) throw new InvalidOperationException(\"NtQueryInformationProcess failed: \" + status);",
+        "      var parametersOffset = pointerSize == 8 ? 0x20 : 0x10;",
+        "      var currentDirectoryOffset = pointerSize == 8 ? 0x38 : 0x24;",
+        "      var pointerOffset = pointerSize == 8 ? 8 : 4;",
+        "      var pointerBytes = Read(process, IntPtr.Add(peb, parametersOffset), pointerSize);",
+        "      var parameters = pointerSize == 8 ? new IntPtr(BitConverter.ToInt64(pointerBytes, 0)) : new IntPtr((long)BitConverter.ToUInt32(pointerBytes, 0));",
+        "      if (parameters == IntPtr.Zero) throw new InvalidOperationException(\"Process parameters unavailable\");",
+        "      var unicode = Read(process, IntPtr.Add(parameters, currentDirectoryOffset), pointerOffset + pointerSize);",
+        "      var length = BitConverter.ToUInt16(unicode, 0);",
+        "      var buffer = pointerSize == 8 ? new IntPtr(BitConverter.ToInt64(unicode, pointerOffset)) : new IntPtr((long)BitConverter.ToUInt32(unicode, pointerOffset));",
+        "      if (length == 0 || buffer == IntPtr.Zero) throw new InvalidOperationException(\"Current directory unavailable\");",
+        "      return Encoding.Unicode.GetString(Read(process, buffer, length));",
+        "    } finally { CloseHandle(process); }",
+        "  }",
+        "}",
+        "'@",
+        "Add-Type -TypeDefinition $source -ErrorAction Stop",
+        `[PaperclipProcessCwd]::Get(${pid})`,
+      ].join("\n");
+      const stdout = await runPowerShell(script, runCommand);
+      return stdout.trim() || null;
+    }
+    return null;
   } catch {
     return null;
   }

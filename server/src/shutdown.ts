@@ -59,6 +59,54 @@ type ShutdownSignalTarget = {
   removeListener(eventName: string, listener: (...args: any[]) => void): unknown;
 };
 
+type ClosableHttpServer = {
+  close(callback: (error?: Error) => void): unknown;
+  closeIdleConnections?: () => void;
+  closeAllConnections?: () => void;
+};
+
+export function coalesceShutdown<TSignal>(
+  performShutdown: (signal: TSignal) => Promise<void>,
+): (signal: TSignal) => Promise<void> {
+  let shutdownPromise: Promise<void> | null = null;
+  return (signal) => {
+    shutdownPromise ??= performShutdown(signal);
+    return shutdownPromise;
+  };
+}
+
+export async function closeHttpServerForShutdown(server: ClosableHttpServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+    server.closeIdleConnections?.();
+  });
+}
+
+export function beginHttpServerShutdown(server: ClosableHttpServer) {
+  const settled = closeHttpServerForShutdown(server).then(
+    () => ({ error: null as Error | null }),
+    (error: unknown) => ({
+      error: error instanceof Error ? error : new Error(String(error)),
+    }),
+  );
+
+  return {
+    closeRemainingConnections: () => {
+      server.closeAllConnections?.();
+    },
+    waitForClose: async () => {
+      const result = await settled;
+      if (result.error) throw result.error;
+    },
+  };
+}
+
 /**
  * Some dependencies eagerly install process signal handlers as an import side
  * effect. Paperclip must remain the sole owner of SIGINT/SIGTERM ordering: its
@@ -130,4 +178,59 @@ export async function coordinateHeartbeatSchedulerShutdown<
     preparationError,
     waitedForSchedulerIdle: true,
   };
+}
+
+export async function drainExecutionOwnershipForShutdown<TDrain, TRetained>(input: {
+  drainHeartbeatRuns: () => Promise<TDrain>;
+  closeRetainedRuntimes: () => Promise<TRetained>;
+  retainedRuntimeCloseAttempts?: number;
+}): Promise<{ drain: TDrain; retainedRuntimes: TRetained }> {
+  let drain: TDrain | undefined;
+  let drainError: unknown = null;
+  try {
+    drain = await input.drainHeartbeatRuns();
+  } catch (error) {
+    drainError = error;
+  }
+
+  const attempts = Math.max(1, Math.trunc(input.retainedRuntimeCloseAttempts ?? 3));
+  let retainedRuntimes: TRetained | undefined;
+  let retainedRuntimeError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      retainedRuntimes = await input.closeRetainedRuntimes();
+      retainedRuntimeError = null;
+      break;
+    } catch (error) {
+      retainedRuntimeError = error;
+    }
+  }
+
+  if (drainError && retainedRuntimeError) {
+    throw new AggregateError(
+      [drainError, retainedRuntimeError],
+      "Heartbeat drain and retained runtime closure both failed",
+    );
+  }
+  if (drainError) throw drainError;
+  if (retainedRuntimeError) throw retainedRuntimeError;
+  return {
+    drain: drain as TDrain,
+    retainedRuntimes: retainedRuntimes as TRetained,
+  };
+}
+
+export async function runShutdownAndExit(input: {
+  shutdown: () => Promise<void>;
+  exit: (code: 0 | 1) => void;
+  onFailure: (error: unknown) => void;
+}): Promise<void> {
+  try {
+    await input.shutdown();
+  } catch (error) {
+    input.onFailure(error);
+    input.exit(1);
+    return;
+  }
+  input.exit(0);
 }

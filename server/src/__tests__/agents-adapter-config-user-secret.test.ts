@@ -52,6 +52,7 @@ const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => ({}),
   agentInstructionsService: () => ({}),
   accessService: () => mockAccessService,
   approvalService: () => ({}),
