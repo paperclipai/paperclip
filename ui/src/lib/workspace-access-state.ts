@@ -125,7 +125,8 @@ export function resolveWorkspaceAccessState(input: {
   const runtimeServices = input.runtimeServices ?? [];
   const repair = latestOperation(operations, "workspace_repair");
   const provision =
-    latestOperation(operations, "workspace_runtime_provision")
+    latestOperation(operations, "workspace_seed")
+    ?? latestOperation(operations, "workspace_runtime_provision")
     ?? latestOperation(operations, "workspace_provision");
   const failure = input.handoffFailure ?? null;
   const cause = describeWorkspaceReadinessCause(failure);

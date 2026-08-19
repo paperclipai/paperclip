@@ -2,6 +2,7 @@ export type WorkspaceOperationPhase =
   | "worktree_prepare"
   | "workspace_config_freshness"
   | "workspace_provision"
+  | "workspace_seed"
   | "workspace_runtime_provision"
   | "workspace_repair"
   | "workspace_teardown"

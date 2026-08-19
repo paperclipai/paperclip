@@ -3882,6 +3882,60 @@ describe("ensureRuntimeServicesForRun", () => {
     }
   });
 
+  it("records the built-in deferred seed as failed when its manifest is not verified", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-seed-operation-"));
+    const restorePaperclipEnv = configureRuntimeProvisionTestHome(workspaceRoot, "workspace-seed-operation");
+    const scriptsDir = path.join(workspaceRoot, "scripts");
+    const markerDir = path.join(workspaceRoot, ".paperclip");
+    await fs.mkdir(scriptsDir, { recursive: true });
+    await fs.mkdir(markerDir, { recursive: true });
+    await fs.writeFile(
+      path.join(scriptsDir, "provision-worktree-runtime.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `printf '%s\\n' '${JSON.stringify({ version: 2, state: "failed", phase: "source_validation" })}' > .paperclip/seed-manifest.json`,
+      ].join("\n"),
+      "utf8",
+    );
+    const config = runtimeProvisionTestConfig({
+      provisionCommand: "bash ./scripts/provision-worktree-runtime.sh",
+    });
+    const workspace = buildWorkspace(workspaceRoot);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    try {
+      await expect(
+        startRuntimeServicesForWorkspaceControl(
+          runtimeProvisionStartInput({ workspace, config, recorder }),
+        ),
+      ).rejects.toThrow(/without a verified manifest.*source_validation/);
+
+      expect(operations).toEqual([
+        expect.objectContaining({
+          phase: "workspace_seed",
+          result: expect.objectContaining({
+            status: "failed",
+            exitCode: 1,
+            metadata: expect.objectContaining({
+              provisionKind: "workspace_seed",
+              seedState: "failed",
+              seedPhase: "source_validation",
+              seedFailurePhase: "source_validation",
+            }),
+          }),
+        }),
+      ]);
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-1",
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      restorePaperclipEnv();
+    }
+  });
+
   it("does not create a runtime provision operation when the command is absent", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-provision-noop-"));
     const restorePaperclipEnv = configureRuntimeProvisionTestHome(workspaceRoot, "runtime-provision-noop");
