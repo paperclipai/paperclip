@@ -311,4 +311,27 @@ describe("POST /issues persists origin fields (KEN-4172)", { timeout: 20_000 }, 
     expect(res.status).toBe(400);
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
+
+  it("rejects non-task-bridge callers forging a task_bridge origin", async () => {
+    const app = await createApp({
+      type: "user",
+      actorId: "board-user",
+      companyId: "company-1",
+    });
+
+    // authorization.ts grants a bridge key write access to issues whose
+    // originKind === "task_bridge" && originId === keyId, so a forged origin
+    // would widen that key's scope; the schema must reject it up front.
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Scope widener",
+        originKind: "task_bridge",
+        originId: "victim-bridge-key",
+      });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/reserved/i);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
 });

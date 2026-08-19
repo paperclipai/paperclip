@@ -442,6 +442,10 @@ export const SYSTEM_RESERVED_ORIGIN_KINDS = [
   "issue_productivity_review",
   "stranded_issue_recovery",
   "blocker_attention_open_recovery",
+  // Forged task_bridge origins would grant the named bridge key write access to
+  // the issue (authorization matches originKind + originId === keyId); the
+  // server mints the real value after route validation, so callers never send it.
+  "task_bridge",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
