@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -51,6 +51,82 @@ export function readRunSourceIssueId(contextSnapshot: unknown) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
+}
+
+async function loadLockedIssueAssigneeAgentId(
+  tx: Db,
+  input: { companyId: string; targetIssueId: string },
+) {
+  const issue = await tx
+    .select({ assigneeAgentId: issues.assigneeAgentId })
+    .from(issues)
+    .where(and(
+      eq(issues.id, input.targetIssueId),
+      eq(issues.companyId, input.companyId),
+    ))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+  return issue?.assigneeAgentId ?? null;
+}
+
+async function assertUnboundRunSameAssigneeCommentAllowed(
+  tx: Db,
+  input: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    targetIssueId: string;
+    contextSnapshot: unknown;
+  },
+) {
+  if (readRunSourceIssueId(input.contextSnapshot)) return;
+
+  const assigneeAgentId = await loadLockedIssueAssigneeAgentId(tx, input);
+  if (assigneeAgentId === input.agentId) return;
+  throw crossIssueInfluenceUnboundRunSameAssigneeRequiredError();
+}
+
+/**
+ * Re-lock the target issue and re-validate unbound-run same-assignee comment
+ * authorization immediately before comment insertion. The route's initial issue
+ * read and observeCrossIssueInfluence can both be stale if assignment changes
+ * concurrently; this check must share the insert transaction.
+ */
+export async function revalidateUnboundRunSameAssigneeCommentAuth(
+  tx: Db,
+  input: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    targetIssueId: string;
+  },
+) {
+  const run = await tx
+    .select({
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+    ))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+  if (
+    !run ||
+    run.companyId !== input.companyId ||
+    run.agentId !== input.agentId
+  ) {
+    throw crossIssueInfluenceRunContextError();
+  }
+
+  await assertUnboundRunSameAssigneeCommentAllowed(tx, {
+    ...input,
+    contextSnapshot: run.contextSnapshot,
+  });
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -122,11 +198,15 @@ export async function observeCrossIssueInfluence(
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
     if (!sourceIssueId) {
-      if (input.kind === "comment" && input.targetAssigneeAgentId === input.agentId) {
-        return null;
-      }
       if (input.kind === "comment") {
-        throw crossIssueInfluenceUnboundRunSameAssigneeRequiredError();
+        await assertUnboundRunSameAssigneeCommentAllowed(tx, {
+          companyId: input.companyId,
+          runId: input.runId,
+          agentId: input.agentId,
+          targetIssueId: input.targetIssueId,
+          contextSnapshot: run.contextSnapshot,
+        });
+        return null;
       }
       throw crossIssueInfluenceUnboundRunCommentOnlyError();
     }

@@ -281,6 +281,7 @@ function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
+  issueAssigneeAgentId: string | null = ownerAgentId,
 ) {
   const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
@@ -296,6 +297,7 @@ function createRunContextDb(
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
   const rowsForSelection = (selection: Record<string, unknown>) => {
     const keys = Object.keys(selection);
+    if (keys.includes("assigneeAgentId")) return [{ assigneeAgentId: issueAssigneeAgentId }];
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
     if (keys.includes("agentCompanyId")) return runRows;
@@ -308,6 +310,9 @@ function createRunContextDb(
       limit: vi.fn(() => ({
         then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
       })),
+      for: vi.fn(() => ({
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
+      })),
       then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
     };
     const query = {
@@ -316,12 +321,13 @@ function createRunContextDb(
     };
     return query;
   };
-  return {
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+  const dbLike = {
+    transaction: async (callback: (tx: typeof dbLike) => Promise<unknown>) => callback(dbLike),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn(() => buildQuery(selection)),
     })),
   };
+  return dbLike;
 }
 
 async function createApp(actor: Record<string, unknown>, db?: unknown) {
@@ -2177,13 +2183,19 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   describe("unbound run same-agent self-report authorization matrix", () => {
-    function unboundDb() {
-      return createRunContextDb({});
+    function unboundDb(issueAssigneeAgentId: string | null = ownerAgentId) {
+      return createRunContextDb({}, ownerAgentId, ownerRunId, issueAssigneeAgentId);
     }
 
     it("allows comment on own assigned blocked issue from a valid unbound run", async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
       mockObserveCrossIssueInfluence.mockResolvedValue(null);
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-unbound-self-report",
+        issueId,
+        companyId,
+        body: "Blocked inbox note",
+      });
       const app = await createApp(ownerActor(), unboundDb());
       const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Blocked inbox note" });
 
@@ -2269,6 +2281,19 @@ describe("agent issue mutation checkout ownership", () => {
       ));
       const app = await createApp(ownerActor(), unboundDb());
       const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Cross-agent attempt" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toEqual(expect.objectContaining({
+        code: "cross_issue_influence_unbound_run_same_assignee_required",
+      }));
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("denies comment on unassigned issue from an unbound run", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
+      mockObserveCrossIssueInfluence.mockResolvedValue(null);
+      const app = await createApp(ownerActor(), unboundDb(null));
+      const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Unassigned attempt" });
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.details).toEqual(expect.objectContaining({

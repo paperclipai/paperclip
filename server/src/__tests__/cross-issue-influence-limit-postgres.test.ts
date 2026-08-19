@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -15,6 +16,7 @@ import {
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   observeCrossIssueInfluence,
+  revalidateUnboundRunSameAssigneeCommentAuth,
 } from "../services/cross-issue-influence-limit.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -32,6 +34,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -112,5 +115,81 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  it("denies unbound-run comment revalidation after concurrent reassignment", async () => {
+    const companyId = randomUUID();
+    const ownerAgentId = randomUUID();
+    const peerAgentId = randomUUID();
+    const runId = randomUUID();
+    const targetIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values([
+      {
+        id: ownerAgentId,
+        companyId,
+        name: "Owner",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: peerAgentId,
+        companyId,
+        name: "Peer",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: targetIssueId,
+      companyId,
+      title: "Blocked inbox task",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: ownerAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: ownerAgentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: {},
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId: ownerAgentId,
+      targetIssueId,
+      kind: "comment",
+    })).resolves.toBeNull();
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: peerAgentId })
+      .where(eq(issues.id, targetIssueId));
+
+    await expect(db.transaction((tx) => revalidateUnboundRunSameAssigneeCommentAuth(tx, {
+      companyId,
+      runId,
+      agentId: ownerAgentId,
+      targetIssueId,
+    }))).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_unbound_run_same_assignee_required" },
+    });
   });
 });

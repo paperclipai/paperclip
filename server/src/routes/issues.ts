@@ -247,6 +247,7 @@ import {
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
   readRunSourceIssueId,
+  revalidateUnboundRunSameAssigneeCommentAuth,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 
@@ -4858,6 +4859,40 @@ export function issueRoutes(
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
+  }
+
+  async function insertIssueCommentWithUnboundRevalidation(
+    req: Request,
+    issue: { id: string; companyId: string },
+    body: string,
+    actor: ReturnType<typeof getActorInfo>,
+    options: NonNullable<Parameters<typeof svc.addComment>[3]>,
+    dbOrTx: typeof db = db,
+  ) {
+    const run = actor.actorType === "agent" && actor.runId
+      ? await loadActorRunContext(req, issue.companyId)
+      : null;
+    const needsUnboundRevalidation = !!run && !readRunSourceIssueId(run.contextSnapshot);
+    const actorPayload = {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: actor.runId,
+      onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+    };
+    const insert = async (tx: typeof db) => {
+      if (needsUnboundRevalidation) {
+        await revalidateUnboundRunSameAssigneeCommentAuth(tx, {
+          companyId: issue.companyId,
+          runId: actor.runId!,
+          agentId: actor.agentId!,
+          targetIssueId: issue.id,
+        });
+      }
+      return svc.addComment(issue.id, body, actorPayload, options, tx);
+    };
+    if (dbOrTx !== db) return insert(dbOrTx);
+    if (needsUnboundRevalidation) return db.transaction(insert);
+    return insert(db);
   }
 
   async function assertIssueBoundRunForAgentMutation(
@@ -12092,15 +12127,11 @@ export function issueRoutes(
       const postCommitActivityPublications: ActivityPublication[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
-          const insertedComment = await svc.addComment(
-            id,
+          const insertedComment = await insertIssueCommentWithUnboundRevalidation(
+            req,
+            { id, companyId: currentIssue.companyId },
             req.body.body,
-            {
-              agentId: actor.agentId ?? undefined,
-              userId: actor.actorType === "user" ? actor.actorId : undefined,
-              runId: actor.runId,
-              onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-            },
+            actor,
             { ...commentOptions, authorizationReason: commentAuthorizationReason },
             tx,
           );
@@ -12168,18 +12199,19 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-      }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
-        authorizationReason: commentAuthorizationReason,
-        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
+      comment = await insertIssueCommentWithUnboundRevalidation(
+        req,
+        { id, companyId: currentIssue.companyId },
+        req.body.body,
+        actor,
+        {
+          authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+          presentation: commentPresentation,
+          metadata: req.body.metadata ?? null,
+          authorizationReason: commentAuthorizationReason,
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+        },
+      );
     }
 
     await issueReferencesSvc.syncComment(comment.id);
