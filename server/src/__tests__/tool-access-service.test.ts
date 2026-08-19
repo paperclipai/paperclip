@@ -7149,6 +7149,109 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(rows[0]!.projectionAllowlistKey).toBe("slack.bot_token");
   });
 
+  it("rejects two secret refs that declare different projections for one config path", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Bot token ${randomUUID()}`,
+      key: `bot.token.${randomUUID()}`,
+      value: "bot-token-value",
+    });
+
+    // Both allowlist keys are valid for `credentials.bot_token`, so neither
+    // declaration is rejected earlier. The merge must not pick one by position.
+    await expect(service.createConnection(company.id, {
+      name: "Contradictory projection fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [
+        {
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: "credentials.bot_token",
+          required: true,
+          projectionClass: "class_3_static_lease",
+          projectionAllowlistKey: "slack.bot_token",
+        },
+        {
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: "credentials.bot_token",
+          required: true,
+          projectionClass: "class_3_static_lease",
+          projectionAllowlistKey: "discord.bot_token",
+        },
+      ],
+    })).rejects.toMatchObject({
+      status: 400,
+      details: { code: "conflicting_credential_projection", configPath: "credentials.bot_token" },
+    });
+  });
+
+  it("leaves the stored connection unchanged when an update cannot merge its bindings", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secrets = secretService(db);
+    const first = await secrets.create(company.id, {
+      provider: "local_encrypted",
+      name: `First ${randomUUID()}`,
+      key: `first.${randomUUID()}`,
+      value: "first-value",
+    });
+    const second = await secrets.create(company.id, {
+      provider: "local_encrypted",
+      name: `Second ${randomUUID()}`,
+      key: `second.${randomUUID()}`,
+      value: "second-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Stable binding fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [{
+        secretId: first.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+    });
+
+    await expect(service.updateConnection(connection.id, {
+      credentialSecretRefs: [{
+        secretId: first.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+      credentialRefs: [{
+        name: "authorization",
+        secretId: second.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    })).rejects.toMatchObject({ status: 400 });
+
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(row!.credentialRefs).toEqual([]);
+    expect(row!.credentialSecretRefs).toHaveLength(1);
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connection.id),
+      ));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]!.secretId).toBe(first.id);
+  });
+
   it("rejects one config path bound to two different secrets", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
