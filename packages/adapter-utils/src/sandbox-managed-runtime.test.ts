@@ -3200,3 +3200,262 @@ describe("sandbox managed runtime outbound coordinator", () => {
     await restore;
   });
 });
+
+// The bundle export inside the workspace restore task selects its outbound
+// transport by the client. A client with native `syncOut` copies the bundle
+// straight into the host restore temp directory through one `kind: "file"`
+// mapping. A client without native `syncOut` reads the bundle back through
+// `readFile`. These tests build a git-backed workspace and assert the transport
+// branch, the confinement guard, and the full-bundle retry.
+describe("sandbox git-bundle export transport", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  // Copy a directory tree and drop each entry whose name matches an exclude
+  // term. This models a native provider `syncOut` for a directory mapping: it
+  // honors `exclude`, so `.git`, `node_modules`, and the runtime root never
+  // reach the host restore temp directory. The tar fallback drops the same set.
+  async function copyDirectoryWithExclude(
+    sourceDir: string,
+    targetDir: string,
+    exclude: string[] | undefined,
+  ): Promise<void> {
+    const excludeNames = new Set((exclude ?? []).map((entry) => entry.replace(/\/$/, "")));
+    await mkdir(targetDir, { recursive: true });
+    const entries = await readdir(sourceDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (excludeNames.has(entry.name)) continue;
+      const source = path.join(sourceDir, entry.name);
+      const target = path.join(targetDir, entry.name);
+      if (entry.isDirectory()) {
+        await copyDirectoryWithExclude(source, target, exclude);
+      } else if (entry.isSymbolicLink()) {
+        await symlink(await fsPromises.readlink(source), target);
+      } else {
+        await writeFile(target, await readFile(source));
+      }
+    }
+  }
+
+  interface TransportCapture {
+    syncOutOperations: SandboxSyncOperation[];
+    readFilePaths: string[];
+  }
+
+  // Build a git-backed managed-runtime client. `native` toggles the outbound
+  // `syncOut`. The client records every `syncOut` operation and every `readFile`
+  // remote path, so a test can prove which transport moved the bundle.
+  function makeTransportClient(native: boolean, capture: TransportCapture): SandboxManagedRuntimeClient {
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => {
+        capture.readFilePaths.push(remotePath);
+        return await readFile(remotePath);
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    attachFallbackSyncIn(client);
+    if (native) {
+      client.syncOut = async (operations) => {
+        for (const operation of operations) {
+          capture.syncOutOperations.push(operation);
+          for (const mapping of operation.files) {
+            if (mapping.kind === "directory") {
+              await copyDirectoryWithExclude(mapping.sourcePath, mapping.targetPath, mapping.exclude);
+            } else {
+              await mkdir(path.dirname(mapping.targetPath), { recursive: true });
+              await writeFile(mapping.targetPath, await readFile(mapping.sourcePath));
+            }
+          }
+        }
+        return {
+          operations: operations.map((operation) => ({
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          })),
+        };
+      };
+    }
+    return client;
+  }
+
+  const gitSpec = (remoteWorkspaceDir: string) => ({
+    transport: "sandbox" as const,
+    provider: "test",
+    sandboxId: "sandbox-1",
+    remoteCwd: remoteWorkspaceDir,
+    timeoutMs: 30_000,
+    apiKey: null,
+  });
+
+  // Create a git repository with one commit and a linked worktree. Return the
+  // host worktree directory and the sandbox workspace directory the prepare step
+  // fills through a shallow standalone clone.
+  async function setupGitBackedWorkspace(prefix: string): Promise<{
+    localWorkspaceDir: string;
+    remoteWorkspaceDir: string;
+  }> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "base\n", "utf8");
+    await git(sourceRepoDir, ["add", "-A"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+    return { localWorkspaceDir, remoteWorkspaceDir };
+  }
+
+  // Advance the sandbox history by one commit that also adds a new file. The
+  // caller runs the restore after this, so the export moves this new history.
+  async function commitInSandbox(remoteWorkspaceDir: string): Promise<void> {
+    await git(remoteWorkspaceDir, ["config", "user.name", "Paperclip Sandbox"]);
+    await git(remoteWorkspaceDir, ["config", "user.email", "sandbox@paperclip.dev"]);
+    await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "from sandbox\n", "utf8");
+    await git(remoteWorkspaceDir, ["add", "-A"]);
+    await git(remoteWorkspaceDir, ["commit", "-m", "sandbox update"]);
+  }
+
+  function bundleFileMappings(capture: TransportCapture) {
+    return capture.syncOutOperations
+      .flatMap((operation) => operation.files)
+      .filter((mapping) => path.posix.basename(mapping.sourcePath) === "git-delta.bundle");
+  }
+
+  it("moves the bundle through one native syncOut file mapping, never through readFile", async () => {
+    const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-bundle-native-");
+    const client = makeTransportClient(true, capture);
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir),
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await commitInSandbox(remoteWorkspaceDir);
+    await prepared.restoreWorkspace();
+
+    // The restore imported the sandbox commit and its new file.
+    expect(await git(localWorkspaceDir, ["log", "-1", "--pretty=%s"])).toBe("sandbox update");
+    await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("from sandbox\n");
+
+    // The bundle rode exactly one native `kind: "file"` mapping into the host
+    // restore temp directory; `readFile` never touched the bundle.
+    const mappings = bundleFileMappings(capture);
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0]!.kind).toBe("file");
+    expect(path.posix.basename(mappings[0]!.targetPath)).toBe("git-delta.bundle");
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(false);
+
+    // The small status file stays on `readFile`; the change does not migrate it.
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("workspace-status.txt"))).toBe(true);
+  });
+
+  it("reads the bundle through readFile when the client has no native syncOut", async () => {
+    const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-bundle-fallback-");
+    const client = makeTransportClient(false, capture);
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir),
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await commitInSandbox(remoteWorkspaceDir);
+    await prepared.restoreWorkspace();
+
+    expect(await git(localWorkspaceDir, ["log", "-1", "--pretty=%s"])).toBe("sandbox update");
+    await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("from sandbox\n");
+
+    // Without native `syncOut` the fallback path is unchanged: no sync operation
+    // ran and the bundle came back through `readFile`.
+    expect(client.syncOut).toBeUndefined();
+    expect(capture.syncOutOperations).toHaveLength(0);
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
+  });
+
+  it("retries the full bundle through the native branch when the delta misses its prerequisite", async () => {
+    const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
+    cleanupDirs.push(rootDir);
+    // A standalone host repository, so the test controls object reachability. A
+    // linked worktree shares the source object store, and the boundary commit
+    // stays reachable there; a standalone repository lets `gc` prune it.
+    const localWorkspaceDir = path.join(rootDir, "local-repo");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await git(localWorkspaceDir, ["init"]);
+    await git(localWorkspaceDir, ["checkout", "-b", "work"]);
+    await git(localWorkspaceDir, ["config", "user.name", "Paperclip Test"]);
+    await git(localWorkspaceDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "base\n", "utf8");
+    await git(localWorkspaceDir, ["add", "-A"]);
+    await git(localWorkspaceDir, ["commit", "-m", "base"]);
+    const firstCommit = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "second\n", "utf8");
+    await git(localWorkspaceDir, ["add", "-A"]);
+    await git(localWorkspaceDir, ["commit", "-m", "second"]);
+    const stagedBase = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
+
+    const client = makeTransportClient(true, capture);
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir),
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await commitInSandbox(remoteWorkspaceDir);
+    const sandboxHead = await git(remoteWorkspaceDir, ["rev-parse", "HEAD"]);
+
+    // The host drops below the staged base commit and prunes it. The delta
+    // bundle names that boundary commit as a prerequisite the host no longer
+    // holds, so the import fails and forces the full-bundle retry.
+    await git(localWorkspaceDir, ["reset", "--hard", firstCommit]);
+    await git(localWorkspaceDir, ["reflog", "expire", "--expire=now", "--all"]);
+    await git(localWorkspaceDir, ["gc", "--prune=now"]);
+    await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
+
+    await prepared.restoreWorkspace();
+
+    // Two bundle exports rode native file mappings: the delta attempt and the
+    // full-bundle retry. `readFile` never moved the bundle on either attempt.
+    const mappings = bundleFileMappings(capture);
+    expect(mappings).toHaveLength(2);
+    expect(mappings.every((mapping) => mapping.kind === "file")).toBe(true);
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(false);
+
+    // The full bundle was self-contained: the host repository now holds the
+    // sandbox head commit.
+    await expect(git(localWorkspaceDir, ["cat-file", "-e", `${sandboxHead}^{commit}`])).resolves.toBe("");
+  });
+});

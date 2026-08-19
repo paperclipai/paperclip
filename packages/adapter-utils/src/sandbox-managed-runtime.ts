@@ -1269,9 +1269,35 @@ export async function prepareSandboxManagedRuntime(input: {
                       undefined,
                       { sink: input.onRuntimeProgress, phase: "export" },
                     );
-                    const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
-                    const bundleBuffer = toBuffer(bundleBytes);
-                    await gitExport.finish(bundleBuffer.byteLength, bundleBuffer.byteLength);
+                    if (nativeSyncOut) {
+                      // Native outbound: the provider copies the bundle straight from
+                      // the sandbox into the host restore temp directory. This maps to
+                      // one `kind: "file"` mapping. The host does not buffer the full
+                      // bundle in RAM and does not move the bytes through the base64
+                      // read loop. The git import step below reads the bundle from
+                      // `localBundlePath`. The provider transfer reports no byte counts,
+                      // so the "Exporting git history" progress degrades to
+                      // start-and-finish only (mirrors the workspace restore below).
+                      const operations: SandboxSyncOperation[] = [{
+                        operationId: nextSyncOperationId(),
+                        files: [{
+                          sourcePath: remoteGitBundle,
+                          targetPath: localBundlePath,
+                          kind: "file",
+                        }],
+                      }];
+                      assertSyncOperationsConfined(operations, {
+                        sourceRoots: [runtimeRootDir],
+                        targetRoots: [tempDir],
+                      });
+                      await input.client.syncOut!(operations);
+                      await gitExport.finish(0, 0);
+                    } else {
+                      const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
+                      const bundleBuffer = toBuffer(bundleBytes);
+                      await gitExport.finish(bundleBuffer.byteLength, bundleBuffer.byteLength);
+                      await fs.writeFile(localBundlePath, bundleBuffer);
+                    }
                     await input.client.remove(remoteGitBundle).catch(() => undefined);
                     if (!forceFullBundle) {
                       remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
@@ -1280,7 +1306,6 @@ export async function prepareSandboxManagedRuntime(input: {
                       remoteWorkspaceStatus = remoteWorkspaceStatus === "clean" ? "clean" : "dirty";
                       await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
                     }
-                    await fs.writeFile(localBundlePath, bundleBuffer);
                     return fetchGitBundleIntoLocalRef({
                       localDir: input.workspaceLocalDir,
                       bundlePath: localBundlePath,
