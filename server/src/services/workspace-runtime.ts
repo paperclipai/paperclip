@@ -3707,7 +3707,17 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
-  const cleanupCommands = input.runCleanupCommands === false
+  // Cleanup and teardown commands run from the workspace path and are written
+  // to tear that path down. A preserved path is shared project infrastructure
+  // that other live sessions still use, so these commands must not run there.
+  // The session's own runtime services are stopped by the caller, which is
+  // scoped to this record and stays correct.
+  if (input.preserveWorkspacePath && input.runCleanupCommands !== false) {
+    warnings.push(
+      "Skipped the cleanup and teardown commands because this record points at shared project infrastructure.",
+    );
+  }
+  const cleanupCommands = input.runCleanupCommands === false || input.preserveWorkspacePath
     ? []
     : [
         input.cleanupCommand ?? null,

@@ -4821,7 +4821,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db
       .update(executionWorkspaces)
-      .set({ mode: "shared_workspace" })
+      .set({
+        mode: "shared_workspace",
+        // A cleanup command is written to tear the path down, so it must not run
+        // against shared infrastructure that other live sessions still use.
+        metadata: { config: { cleanupCommand: "rm -f delivered.txt" } },
+      })
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     const workspace = await db
       .select()
@@ -4835,12 +4840,15 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const cleanup = await svc.runManualArchiveArtifactCleanup({
       workspace,
       expectedHeadSha: seeded.headSha,
+      cleanupCommand: "rm -f delivered.txt",
     });
 
     expect(cleanup.cleaned).toBe(true);
     expect(cleanup.warnings.join(" | ")).toContain("shared project infrastructure");
     await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
     await expect(fs.stat(path.join(seeded.worktreePath, "in-flight.txt"))).resolves.toBeTruthy();
+    // The cleanup command never ran, so the tracked file it targets survives.
+    await expect(fs.stat(path.join(seeded.worktreePath, "delivered.txt"))).resolves.toBeTruthy();
     expect(await readGit(seeded.repoRoot, ["rev-parse", "--verify", "PAP-16015-delivery"])).toBe(seeded.headSha);
   }, 20_000);
 
