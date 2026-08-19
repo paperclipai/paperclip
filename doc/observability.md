@@ -60,6 +60,27 @@ export OTEL_SERVICE_NAME="paperclip"
 export OTEL_SERVICE_VERSION="2026.5.0"
 ```
 
+### `service.version` resolution order
+
+The `service.version` span attribute reports the commit the running server was
+built from. The server resolves it in this order and uses the first source that
+returns a value:
+
+1. **The build stamp.** The server `build` script writes the commit SHA into
+   `dist/build-info.json`. The stamp wins so the reported version tracks the
+   true built commit and cannot go stale across rebuilds.
+2. **A runtime `git rev-parse --short HEAD`.** This covers `tsx src/index.ts`
+   dev mode, where the server runs from the source checkout and writes no
+   stamp. A failure here is not fatal.
+3. **The `OTEL_SERVICE_VERSION` environment variable.** This is the fallback
+   for a build with no stamp and no reachable git — for example a tarball
+   build. `OTEL_SERVICE_VERSION` is a Paperclip-specific variable, not an
+   OpenTelemetry SDK variable, so Paperclip controls this precedence.
+4. **`"unknown"`** when no source returns a value.
+
+The server logs the resolved `service.version` once at startup, so an operator
+can confirm the value.
+
 If `OTEL_EXPORTER_OTLP_PROTOCOL` is set to an unrecognized value, Paperclip
 logs a single warning and falls back to gRPC.
 
