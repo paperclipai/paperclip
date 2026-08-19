@@ -1306,6 +1306,13 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
         code: "oauth_challenge",
       };
     }
+    if (code === "credential_header_missing") {
+      return {
+        status: "error",
+        message: "This connection has secret references but no credential header. Add a credentialRefs entry that places the secret.",
+        code: "credential_header_missing",
+      };
+    }
     if (code === "oauth_refresh_missing") {
       return {
         status: "failed",
@@ -2880,6 +2887,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
       if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
+        // `credentialSecretRefs` declares how a secret projects; only a
+        // `credentialRefs` entry places it in a header. A connection that
+        // carries the first and not the second sends no credential at all, and
+        // the 401 that follows is not a sign-in problem. Report the real cause
+        // instead of the OAuth challenge, which points an api_key connection at
+        // a consent flow that does not exist.
+        if (
+          Object.keys(headers).length === 0
+          && connection.credentialSecretRefs.length > 0
+          && Object.keys(oauthConfig(connection)).length === 0
+        ) {
+          throw new HttpError(502, "This connection sent no credential header.", {
+            code: "credential_header_missing",
+            status: response.status,
+            setupUrl: connectionSetupUrl(connection),
+            credentialSecretRefCount: connection.credentialSecretRefs.length,
+          });
+        }
         const endpoints = await discoverOAuthEndpoints(connection, authenticate);
         if (endpoints) {
           const nextConfig = {
