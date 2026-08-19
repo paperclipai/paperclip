@@ -175,7 +175,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     assertBoard(req);
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
-    assertCompanyAccess(req, workspace.companyId);
     // Opening a workspace board is a runtime-control-grade action: it hands the
     // caller an authenticated session inside the cloned instance.
     if (!(await assertRuntimeManageAllowed(req, res, workspace.companyId))) return;
