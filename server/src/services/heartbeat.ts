@@ -15001,6 +15001,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // TSMC-19829: finalize only lands idle|running|error. paused/terminated already
       // returned above; resume/clear_error heal on the agents route. Here heal
       // when a lane leaves error for an invokable status.
+      // COMPLETION CHAINING (2026-08-19, operator throughput mandate): a lane that
+      // finishes a run and still holds dispatchable todo work gets its next card
+      // offered IMMEDIATELY instead of waiting for the external sweep cadence.
+      // Measured cost of the gap: runs complete in 1-3 minutes but the periodic
+      // re-offer ran every 5-10 with a per-lane cooldown, so loaded lanes idled
+      // ~90% of wall-clock while 27 of 122 lanes carried the whole fleet's day.
+      // Guards: only on clean success into idle; next card must be free of
+      // non-terminal blockers; the per-issue rewake throttle still applies at the
+      // wake layer, so a chain can never hammer one card.
+      if (outcome === "succeeded" && nextStatus === "idle") {
+        try {
+          const nextCard = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(
+              eq(issues.assigneeAgentId, agentId),
+              eq(issues.status, "todo"),
+              visibleIssueCondition(),
+            ))
+            .orderBy(issues.createdAt)
+            .limit(5)
+            .then(async (rows) => {
+              if (rows.length === 0) return null;
+              const readiness = await issuesSvc.listDependencyReadiness(
+                updated.companyId,
+                rows.map((r) => r.id),
+              );
+              return rows.find((r) => readiness.get(r.id)?.isDependencyReady !== false) ?? null;
+            });
+          if (nextCard) {
+            void trackWakeup(agentId, {
+              source: "automation",
+              triggerDetail: "completion_chain",
+              reason: "issue_assigned",
+              payload: { issueId: nextCard.id },
+              contextSnapshot: { issueId: nextCard.id, wakeReason: "completion_chain" },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, agentId }, "completion-chain next-card offer failed");
+        }
+      }
+
       const becameInvokable =
         (nextStatus === "idle" || nextStatus === "running") &&
         previousStatus === "error";
