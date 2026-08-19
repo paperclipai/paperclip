@@ -3,6 +3,12 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { companyRoutes } from "../routes/companies.js";
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     list: vi.fn(),
@@ -32,6 +38,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(),
     listFeedbackTraces: vi.fn(),

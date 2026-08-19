@@ -42,8 +42,14 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForAgentAccess: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
 }));

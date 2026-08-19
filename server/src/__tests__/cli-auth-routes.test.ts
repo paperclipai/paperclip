@@ -12,6 +12,12 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockBoardAuthService = vi.hoisted(() => ({
   createCliAuthChallenge: vi.fn(),
   describeCliAuthChallenge: vi.fn(),
@@ -31,6 +37,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   boardAuthService: () => mockBoardAuthService,
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
@@ -43,6 +50,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     boardAuthService: () => mockBoardAuthService,
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),

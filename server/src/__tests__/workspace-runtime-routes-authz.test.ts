@@ -37,6 +37,11 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 
@@ -46,6 +51,7 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   environmentService: () => mockEnvironmentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   heartbeatService: () => mockHeartbeatService,
@@ -76,6 +82,7 @@ function registerWorkspaceRouteMocks() {
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     environmentService: () => mockEnvironmentService,
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     heartbeatService: () => mockHeartbeatService,

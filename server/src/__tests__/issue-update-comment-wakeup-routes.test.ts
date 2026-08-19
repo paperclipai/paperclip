@@ -26,6 +26,11 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
@@ -53,6 +58,7 @@ vi.mock("../services/index.js", () => ({
       agent: { id: raw },
     })),
   }),
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   companySkillService: () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
@@ -125,6 +131,7 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),

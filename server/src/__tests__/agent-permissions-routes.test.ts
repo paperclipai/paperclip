@@ -51,6 +51,12 @@ const mockAgentService = vi.hoisted(() => ({
   resolveByReference: vi.fn(),
 }));
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockBuiltInAgentService = vi.hoisted(() => ({
   ensureCompanyDefaultAgentGrants: vi.fn(),
 }));
@@ -196,6 +202,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,

@@ -12,12 +12,18 @@ const accessServiceMock = vi.hoisted(() => ({
   setPrincipalGrants: vi.fn(),
 }));
 const logActivityMock = vi.hoisted(() => vi.fn());
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => accessServiceMock,
   agentService: () => ({
     getById: vi.fn(),
   }),
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   boardAuthService: () => ({
     createChallenge: vi.fn(),
     resolveBoardAccess: vi.fn(),

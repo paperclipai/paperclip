@@ -26,6 +26,11 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -33,6 +38,7 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   environmentService: () => mockEnvironmentService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
@@ -60,6 +66,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     environmentService: () => mockEnvironmentService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,

@@ -17,9 +17,16 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => ({}),
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   budgetService: () => mockBudgetService,
   companyArtifactsService: () => ({}),
   companyPortabilityService: () => ({}),

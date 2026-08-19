@@ -11,6 +11,12 @@ const mockAgentService = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockAdapterPluginStore = vi.hoisted(() => ({
   getDisabledAdapterTypes: vi.fn<() => string[]>(() => []),
 }));
@@ -70,6 +76,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
@@ -96,6 +103,7 @@ vi.mock("../services/secrets.js", () => ({
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,

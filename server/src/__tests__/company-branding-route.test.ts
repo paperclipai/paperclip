@@ -16,6 +16,12 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockAccessService = vi.hoisted(() => ({
   ensureMembership: vi.fn(),
 }));
@@ -46,6 +52,7 @@ const mockFeedbackService = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   budgetService: () => mockBudgetService,
   companyArtifactsService: () => mockCompanyArtifactsService,
   companyPortabilityService: () => mockCompanyPortabilityService,

@@ -150,6 +150,12 @@ const {
   };
 });
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 function buildTestConfig(overrides: Record<string, unknown> = {}) {
   return {
     deploymentMode: "authenticated",
@@ -238,6 +244,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
     migratedConnections: 0,

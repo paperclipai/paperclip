@@ -32,6 +32,12 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
   getBundle: vi.fn(),
@@ -77,6 +83,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => ({}),
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,

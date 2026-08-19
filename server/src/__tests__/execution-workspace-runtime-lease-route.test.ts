@@ -39,11 +39,17 @@ const mockStartRuntimeServices = vi.hoisted(() => vi.fn(async () => []));
 const mockStopRuntimeServices = vi.hoisted(() => vi.fn(async () => undefined));
 const mockAssertCanManage = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock("../services/index.js", async () => {
   const leases = await import("../services/workspace-runtime-leases.js");
   return {
     accessService: () => mockAccessService,
+    agentExecutionFenceService: () => mockAgentExecutionFenceService,
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     heartbeatService: () => ({}),
     logActivity: mockLogActivity,

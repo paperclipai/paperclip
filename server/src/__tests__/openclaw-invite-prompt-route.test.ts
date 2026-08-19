@@ -23,6 +23,12 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mockBoardAuthService = vi.hoisted(() => ({
   createCliAuthChallenge: vi.fn(),
   describeCliAuthChallenge: vi.fn(),
@@ -41,6 +47,7 @@ const mockStorage = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   boardAuthService: () => mockBoardAuthService,
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
