@@ -43,6 +43,7 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -1668,6 +1669,32 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+    const [projectPolicy] = await Promise.all([
+      db
+        .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .from(projects)
+        .where(and(eq(projects.companyId, workspace.companyId), eq(projects.id, workspace.projectId)))
+        .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
+    ]);
+    const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+    return runTerminalWorkspaceCleanupWithSideEffects(workspace, expectedHeadSha, {
+      cleanupCommand: config?.cleanupCommand ?? null,
+      teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+      runCleanupCommands: false,
+    });
+  }
+
+  async function runClosedWorkspaceArtifactCleanup(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+    input: {
+      projectWorkspace?: { cwd: string | null; cleanupCommand: string | null } | null;
+      cleanupCommand?: string | null;
+      teardownCommand?: string | null;
+      recorder?: WorkspaceOperationRecorder | null;
+      runCleanupCommands?: boolean;
+    },
+  ) {
     const [
       {
         acquireGitWorktreeCleanupLock,
@@ -1679,9 +1706,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       import("./workspace-runtime.js"),
       import("./workspace-operations.js"),
     ]);
-    const [projectWorkspace, projectPolicy] = await Promise.all([
-      workspace.projectWorkspaceId
-        ? db
+    const projectWorkspace = input.projectWorkspace
+      ?? (workspace.projectWorkspaceId
+        ? await db
             .select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
             .from(projectWorkspaces)
             .where(and(
@@ -1689,14 +1716,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               eq(projectWorkspaces.id, workspace.projectWorkspaceId),
             ))
             .then((rows) => rows[0] ?? null)
-        : null,
-      db
-        .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-        .from(projects)
-        .where(and(eq(projects.companyId, workspace.companyId), eq(projects.id, workspace.projectId)))
-        .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
-    ]);
-    const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+        : null);
 
     const cleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
       ? await acquireGitWorktreeCleanupLock(workspace.providerRef ?? workspace.cwd!)
@@ -1713,9 +1733,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
         projectWorkspace,
-        cleanupCommand: config?.cleanupCommand ?? null,
-        teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-        recorder: workspaceOperationService(db).createRecorder({
+        cleanupCommand: input.cleanupCommand ?? null,
+        teardownCommand: input.teardownCommand ?? null,
+        recorder: input.recorder ?? workspaceOperationService(db).createRecorder({
           companyId: workspace.companyId,
           executionWorkspaceId: workspace.id,
         }),
@@ -1726,33 +1746,42 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // from crossing final validation. The branch lock is released only
         // after non-forced worktree removal, then deletion is anchored to the
         // verified HEAD so a raced ref update fails closed.
-        runCleanupCommands: false,
+        runCleanupCommands: input.runCleanupCommands ?? false,
         forceWorktreeRemoval: false,
       });
-      if (cleanup.cleaned && workspace.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({ executionWorkspaceId: null, updatedAt: now() })
-          .where(and(
-            eq(issues.companyId, workspace.companyId),
-            eq(issues.executionWorkspaceId, workspace.id),
-          ));
-      }
-      const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
-      if (!cleanup.cleaned || cleanup.warnings.length > 0) {
-        await db
-          .update(executionWorkspaces)
-          .set({
-            ...(cleanup.cleaned ? {} : { status: "cleanup_failed" }),
-            cleanupReason,
-            updatedAt: now(),
-          })
-          .where(eq(executionWorkspaces.id, workspace.id));
-      }
       return cleanup;
     } finally {
       await cleanupLock?.release();
     }
+  }
+
+  async function runTerminalWorkspaceCleanupWithSideEffects(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+    input: Parameters<typeof runClosedWorkspaceArtifactCleanup>[2],
+  ) {
+    const cleanup = await runClosedWorkspaceArtifactCleanup(workspace, expectedHeadSha, input);
+    if (cleanup.cleaned && workspace.mode === "shared_workspace") {
+      await db
+        .update(issues)
+        .set({ executionWorkspaceId: null, updatedAt: now() })
+        .where(and(
+          eq(issues.companyId, workspace.companyId),
+          eq(issues.executionWorkspaceId, workspace.id),
+        ));
+    }
+    const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
+    if (!cleanup.cleaned || cleanup.warnings.length > 0) {
+      await db
+        .update(executionWorkspaces)
+        .set({
+          ...(cleanup.cleaned ? {} : { status: "cleanup_failed" }),
+          cleanupReason,
+          updatedAt: now(),
+        })
+        .where(eq(executionWorkspaces.id, workspace.id));
+    }
+    return cleanup;
   }
 
   // Write the cleanup-failed status under the per-workspace lifecycle lock, but
@@ -2352,14 +2381,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
 
       if (git?.hasDirtyTrackedFiles) {
-        warnings.push(
+        blockingReasons.push(
           git.dirtyEntryCount === 1
             ? "The workspace has 1 modified tracked file."
             : `The workspace has ${git.dirtyEntryCount} modified tracked files.`,
         );
       }
       if (git?.hasUntrackedFiles) {
-        warnings.push(
+        blockingReasons.push(
           git.untrackedEntryCount === 1
             ? "The workspace has 1 untracked file."
             : `The workspace has ${git.untrackedEntryCount} untracked files.`,
@@ -2371,11 +2400,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         && git.isMergedIntoBase === false
         && deliveryState !== "merged_via_pr"
       ) {
-        warnings.push(
+        blockingReasons.push(
           git.aheadCount === 1
             ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
             : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
         );
+      }
+      if (await workspaceHasActiveRun(workspace)) {
+        blockingReasons.push("This workspace has an active agent run on a linked issue.");
       }
       if (git?.behindCount && git.behindCount > 0) {
         warnings.push(
@@ -3351,6 +3383,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         },
         onSkip: () => ({ skippedReopened: true as const }),
         write: async () => ({ skippedReopened: false as const, result: await input.destroy() }),
+      });
+    },
+
+    runManualArchiveArtifactCleanup: async (input: {
+      workspace: ExecutionWorkspaceRow;
+      projectWorkspace?: { cwd: string | null; cleanupCommand: string | null } | null;
+      cleanupCommand?: string | null;
+      teardownCommand?: string | null;
+      recorder?: WorkspaceOperationRecorder | null;
+    }) => {
+      const workspacePath =
+        readNullableString(input.workspace.providerRef) ?? readNullableString(input.workspace.cwd);
+      const expectedHeadSha = workspacePath
+        ? await readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null)
+        : null;
+      return runClosedWorkspaceArtifactCleanup(input.workspace, expectedHeadSha, {
+        projectWorkspace: input.projectWorkspace,
+        cleanupCommand: input.cleanupCommand,
+        teardownCommand: input.teardownCommand,
+        recorder: input.recorder,
+        runCleanupCommands: true,
       });
     },
 

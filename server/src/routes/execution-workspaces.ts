@@ -34,7 +34,6 @@ import { parseProjectExecutionWorkspacePolicy } from "../services/execution-work
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
-  cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
@@ -1269,7 +1268,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               executionWorkspaceId: existing.id,
               workspaceCwd: existing.cwd,
             });
-            return cleanupExecutionWorkspaceArtifacts({
+            return svc.runManualArchiveArtifactCleanup({
               workspace: existing,
               projectWorkspace,
               teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,

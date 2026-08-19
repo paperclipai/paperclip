@@ -4668,10 +4668,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness).toMatchObject({
       workspaceId: executionWorkspaceId,
       deliveryState: "unmerged",
-      state: "ready_with_warnings",
+      state: "blocked",
       isSharedWorkspace: false,
       isProjectPrimaryWorkspace: false,
-      isDestructiveCloseAllowed: true,
+      isDestructiveCloseAllowed: false,
       git: {
         workspacePath: worktreePath,
         branchName: "paperclip-close-check",
@@ -4684,7 +4684,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         isMergedIntoBase: false,
       },
     });
-    expect(readiness?.warnings).toEqual(expect.arrayContaining([
+    expect(readiness?.blockingReasons).toEqual(expect.arrayContaining([
       "The workspace has 1 untracked file.",
       "This workspace is 1 commit ahead of main and is not merged.",
     ]));

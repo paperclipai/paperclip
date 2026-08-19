@@ -12,6 +12,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getCloseReadiness: vi.fn(),
   archiveWorkspaceUnderLifecycleLock: vi.fn(),
   fenceClosedWorkspaceDestruction: vi.fn(),
+  runManualArchiveArtifactCleanup: vi.fn(async () => ({ cleaned: true, warnings: [] as string[] })),
   reconcileExecutionWorkspaceBranch: vi.fn(),
   update: vi.fn(),
 }));
@@ -424,6 +425,31 @@ describe.sequential("execution workspace routes", () => {
     }));
   });
 
+  it("returns 409 and skips archive when close readiness is blocked", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "blocked",
+      blockingReasons: ["The workspace has 1 untracked file."],
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "The workspace has 1 untracked file.",
+    });
+    expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.runManualArchiveArtifactCleanup).not.toHaveBeenCalled();
+  });
+
   it("returns 409 and skips destructive cleanup when the archive hits a reopen-pending workspace", async () => {
     // A reopen published the workspace active while its source issue is still
     // terminal. The archive control must return 409 before any lease teardown,
@@ -501,6 +527,7 @@ describe.sequential("execution workspace routes", () => {
         failureReason: "execution_workspace_closed",
       }),
     );
+    expect(mockExecutionWorkspaceService.runManualArchiveArtifactCleanup).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the reusable sandbox leases when a reopen makes the fence skip the archive teardown", async () => {
