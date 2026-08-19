@@ -1,0 +1,123 @@
+import { ExternalLink, Loader2, Play, ScrollText, Wrench } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "../lib/utils";
+import type { WorkspaceAccessState } from "../lib/workspace-access-state";
+
+/**
+ * Workspace access surface (PAP-17572).
+ *
+ * One card per workspace that names the state, the cause, and the single safe
+ * next action. It replaces the previous behavior where a cloned workspace whose
+ * database was missing still rendered a plain "Open" link and answered with
+ * "invalid email or password".
+ */
+
+const STATE_BADGE_CLASSES: Record<WorkspaceAccessState["state"], string> = {
+  provisioning: "border-border text-muted-foreground",
+  validating: "border-border text-muted-foreground",
+  ready: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  degraded: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+  repairing: "border-border text-muted-foreground",
+  failed: "border-destructive/50 text-destructive",
+};
+
+const STATE_LABELS: Record<WorkspaceAccessState["state"], string> = {
+  provisioning: "Provisioning",
+  validating: "Validating clone",
+  ready: "Ready",
+  degraded: "Degraded",
+  repairing: "Repairing",
+  failed: "Failed",
+};
+
+const ACTION_ICONS = {
+  open: ExternalLink,
+  start: Play,
+  repair: Wrench,
+  view_logs: ScrollText,
+  wait: Loader2,
+} as const;
+
+export function WorkspaceAccessCard({
+  access,
+  isBusy,
+  onOpen,
+  onStart,
+  onRepair,
+  onViewLogs,
+  errorMessage,
+}: {
+  access: WorkspaceAccessState;
+  isBusy?: boolean;
+  onOpen: () => void;
+  onStart: () => void;
+  onRepair: () => void;
+  onViewLogs: () => void;
+  errorMessage?: string | null;
+}) {
+  const Icon = ACTION_ICONS[access.action.kind];
+  const isWaiting = access.action.kind === "wait";
+  const handlers: Record<WorkspaceAccessState["action"]["kind"], () => void> = {
+    open: onOpen,
+    start: onStart,
+    repair: onRepair,
+    view_logs: onViewLogs,
+    wait: () => undefined,
+  };
+
+  return (
+    <Card data-testid="workspace-access-card" data-state={access.state}>
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-2">
+          <CardTitle>{access.title}</CardTitle>
+          <span
+            data-testid="workspace-access-badge"
+            className={cn(
+              "inline-flex items-center rounded-full border bg-background px-2.5 py-1 text-xs",
+              STATE_BADGE_CLASSES[access.state],
+            )}
+          >
+            {(access.state === "repairing" || access.state === "provisioning") && (
+              <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+            )}
+            {STATE_LABELS[access.state]}
+          </span>
+        </div>
+        <CardDescription>{access.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant={access.action.kind === "open" ? "default" : "outline"}
+            disabled={isWaiting || isBusy}
+            onClick={handlers[access.action.kind]}
+          >
+            {isBusy && !isWaiting ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Icon className={cn("mr-2 h-4 w-4", isWaiting && "animate-spin")} />
+            )}
+            {access.action.label}
+          </Button>
+          {access.state === "ready" && !access.handoffAvailable ? (
+            <span className="text-xs text-muted-foreground">
+              Signs in with the snapshot-local credentials captured when this clone was made.
+            </span>
+          ) : null}
+          {access.state === "ready" && access.handoffAvailable ? (
+            <span className="text-xs text-muted-foreground">
+              Uses a single-use login handoff — no password needed.
+            </span>
+          ) : null}
+        </div>
+        {errorMessage ? (
+          <p data-testid="workspace-access-error" className="text-sm text-destructive">
+            {errorMessage}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}

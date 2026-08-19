@@ -13,6 +13,7 @@ import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { agentsApi } from "../api/agents";
+import { ApiError } from "../api/client";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
@@ -35,12 +36,17 @@ import {
   type WorkspaceRuntimeControlRequest,
 } from "../components/WorkspaceRuntimeControls";
 import { WorkspaceServiceControlBar } from "../components/WorkspaceServiceControlBar";
+import { WorkspaceAccessCard } from "../components/WorkspaceAccessCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import {
+  resolveWorkspaceAccessState,
+  type WorkspaceLoginHandoffFailureInfo,
+} from "../lib/workspace-access-state";
 import {
   getWorkspaceSpecificRoutineVariableNames,
   routineHasWorkspaceSpecificVariables,
@@ -412,6 +418,27 @@ export function resolveRuntimeProvisionStatus(input: {
   return configured ? { kind: "deferred" } : { kind: "eager" };
 }
 
+/**
+ * Read the structured refusal the login-handoff endpoint returns.
+ *
+ * The server keeps a machine `reason` (and, where it probed, the workspace's own
+ * readiness) on the error body so the UI can name the cause instead of showing a
+ * bare HTTP failure. Anything else is a genuine transport error.
+ */
+export function readWorkspaceHandoffFailure(error: unknown): WorkspaceLoginHandoffFailureInfo | null {
+  if (!(error instanceof ApiError)) return null;
+  const body = error.body as
+    | { reason?: unknown; detail?: unknown; readiness?: unknown }
+    | null
+    | undefined;
+  if (!body || typeof body.reason !== "string") return null;
+  return {
+    reason: body.reason,
+    detail: typeof body.detail === "string" ? body.detail : null,
+    readiness: (body.readiness as WorkspaceLoginHandoffFailureInfo["readiness"]) ?? null,
+  };
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 py-1.5 sm:flex-row sm:items-start sm:gap-3">
@@ -779,6 +806,8 @@ export function ExecutionWorkspaceDetail() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [handoffFailure, setHandoffFailure] = useState<WorkspaceLoginHandoffFailureInfo | null>(null);
+  const [handoffErrorMessage, setHandoffErrorMessage] = useState<string | null>(null);
   const [pendingRuntimeActions, setPendingRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
   const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
   const pluginTabFromSearch = useMemo(() => {
@@ -968,6 +997,54 @@ export function ExecutionWorkspaceDetail() {
     },
   });
 
+  /**
+   * Password-independent workspace entry (PAP-17572).
+   *
+   * The server answers with a ticket-bearing URL. `location.assign` sends the
+   * browser there and the server responds with a redirect, so the ticket never
+   * becomes a navigable history entry. On refusal we keep the machine reason and
+   * let the access card explain whether to wait, start, or repair.
+   */
+  const openWorkspace = useMutation({
+    mutationFn: () => executionWorkspacesApi.requestLoginHandoff(workspace!.id),
+    onSuccess: (ticket) => {
+      setHandoffFailure(null);
+      setHandoffErrorMessage(null);
+      window.location.assign(ticket.url);
+    },
+    onError: async (error) => {
+      // A structured refusal is rendered as workspace state by the access card,
+      // so only an unrecognized transport error needs its own message line.
+      const failure = readWorkspaceHandoffFailure(error);
+      setHandoffFailure(failure);
+      setHandoffErrorMessage(
+        failure ? null : error instanceof Error ? error.message : "Failed to open the workspace.",
+      );
+      // The refusal reason often comes from an operation that has since advanced,
+      // so refresh the log the access card derives its state from.
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.workspaceOperations(workspace!.id),
+      });
+    },
+  });
+  const repairWorkspace = useMutation({
+    mutationFn: () => executionWorkspacesApi.repair(workspace!.id),
+    onSuccess: (result) => {
+      queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id),
+      });
+      setHandoffFailure(null);
+      setHandoffErrorMessage(null);
+      setRuntimeActionErrorMessage(null);
+      setRuntimeActionMessage("Workspace database repaired.");
+    },
+    onError: (error) => {
+      setRuntimeActionMessage(null);
+      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to repair the workspace.");
+    },
+  });
+
   if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
   if (workspaceQuery.error) {
     return (
@@ -991,6 +1068,11 @@ export function ExecutionWorkspaceDetail() {
     sections: runtimeControlSections,
     runtimeServices: workspace.runtimeServices ?? [],
     pendingRequests: pendingRuntimeActions,
+  });
+  const workspaceAccess = resolveWorkspaceAccessState({
+    runtimeServices: workspace.runtimeServices ?? [],
+    operations: workspaceOperationsQuery.data,
+    handoffFailure,
   });
 
   const pluginSlotContext = {
@@ -1061,6 +1143,20 @@ export function ExecutionWorkspaceDetail() {
         </div>
         {runtimeActionErrorMessage ? <p className="text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
         {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
+
+        <WorkspaceAccessCard
+          access={workspaceAccess}
+          isBusy={openWorkspace.isPending || repairWorkspace.isPending}
+          onOpen={() => openWorkspace.mutate()}
+          onStart={() => {
+            runRuntimeControlRequests(
+              resolveWorkspaceServiceControlRequests(runtimeControlSections, "start", null),
+            );
+          }}
+          onRepair={() => repairWorkspace.mutate()}
+          onViewLogs={() => handleTabChange("runtime_logs")}
+          errorMessage={handoffErrorMessage}
+        />
 
         <PluginSlotOutlet
           slotTypes={["toolbarButton", "contextMenuItem"]}
