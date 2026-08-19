@@ -232,6 +232,8 @@ const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
+const runtimeControlStartByOwner = new Map<string, Promise<void>>();
+const runtimeReplacementClaimsByReuseKey = new Map<string, number>();
 const quarantinedRuntimeExposurePorts = new Set<number>();
 /**
  * Pair-atomic in-process claims for exposure allocations that have not bound a
@@ -477,6 +479,8 @@ export async function resetRuntimeServicesForTests(
   runtimeServicesByReuseKey.clear();
   runtimeServiceLeasesByRun.clear();
   runtimeProvisionByWorkspace.clear();
+  runtimeControlStartByOwner.clear();
+  runtimeReplacementClaimsByReuseKey.clear();
   quarantinedRuntimeExposurePorts.clear();
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
@@ -4752,14 +4756,26 @@ function resolveRuntimeServiceHealthUrl(
 
 async function isRuntimeServiceUrlHealthy(
   url: string | null,
-  input?: { serviceName?: string | null; command?: string | null },
+  input?: {
+    serviceName?: string | null;
+    command?: string | null;
+    provider?: string | null;
+    port?: number | null;
+  },
 ) {
-  if (!url) return true;
-  const healthUrl = resolveRuntimeServiceHealthUrl(url, input);
+  const localProbeUrl = input?.provider === "local_process" && input.port && isPaperclipDevRuntimeService(input)
+    ? `http://127.0.0.1:${input.port}`
+    : null;
+  const probeUrl = localProbeUrl ?? url;
+  if (!probeUrl) return true;
+  const healthUrl = resolveRuntimeServiceHealthUrl(probeUrl, input);
   if (!healthUrl) return false;
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
-    return response.ok;
+    if (!response.ok) return false;
+    if (!isPaperclipDevRuntimeService(input ?? {})) return true;
+    const payload = await response.json().catch(() => null) as { status?: unknown } | null;
+    return payload?.status === "ok";
   } catch {
     return false;
   }
@@ -5957,6 +5973,37 @@ async function stopRuntimeService(serviceId: string) {
   await persistRuntimeServiceRecord(record.db, record);
 }
 
+async function findHealthyRunningRuntimeService(reuseKey: string | null) {
+  const existingId = reuseKey ? runtimeServicesByReuseKey.get(reuseKey) : null;
+  const existing = existingId ? runtimeServicesById.get(existingId) : null;
+  if (!existing || existing.status !== "running") return null;
+  const healthInput = {
+    serviceName: existing.serviceName,
+    command: existing.command,
+    provider: existing.provider,
+    port: existing.port,
+  };
+  let healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
+  if (!healthy) {
+    // A single timeout or connection reset is not enough evidence to destroy a
+    // shared runtime that active runs may still use. Confirm the failure after
+    // a short bounded delay before entering the destructive replacement path.
+    await delay(250);
+    healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
+  }
+  if (healthy) return existing;
+  if (existing.leaseRunIds.size > 0) {
+    existing.healthStatus = "unhealthy";
+    if (reuseKey && runtimeServicesByReuseKey.get(reuseKey) === existing.id) {
+      runtimeServicesByReuseKey.delete(reuseKey);
+    }
+    await persistRuntimeServiceRecord(existing.db, existing);
+    return null;
+  }
+  await stopRuntimeService(existing.id);
+  return null;
+}
+
 async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
   db: Db;
   executionWorkspaceId: string;
@@ -6280,7 +6327,7 @@ async function isPersistedIsolatedExecutionWorkspace(input: {
   return row?.mode === "isolated_workspace";
 }
 
-export async function ensureRuntimeServicesForRun(input: {
+type EnsureRuntimeServicesForRunInput = {
   db?: Db;
   runId: string;
   agent: ExecutionWorkspaceAgentRef;
@@ -6291,7 +6338,11 @@ export async function ensureRuntimeServicesForRun(input: {
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   recorder?: WorkspaceOperationRecorder | null;
-}): Promise<RuntimeServiceRef[]> {
+};
+
+async function ensureRuntimeServicesForRunInvocation(
+  input: EnsureRuntimeServicesForRunInput,
+): Promise<RuntimeServiceRef[]> {
   const rawServices = selectRuntimeServiceEntries({
     config: input.config,
     respectDesiredStates: true,
@@ -6330,9 +6381,8 @@ export async function ensureRuntimeServicesForRun(input: {
       }).reuseKey;
 
       if (reuseKey) {
-        const existingId = runtimeServicesByReuseKey.get(reuseKey);
-        const existing = existingId ? runtimeServicesById.get(existingId) : null;
-        if (existing && existing.status === "running") {
+        const existing = await findHealthyRunningRuntimeService(reuseKey);
+        if (existing) {
           existing.leaseRunIds.add(input.runId);
           existing.lastUsedAt = new Date().toISOString();
           existing.stoppedAt = null;
@@ -6378,6 +6428,124 @@ export async function ensureRuntimeServicesForRun(input: {
   }
 
   return refs;
+}
+
+async function withRuntimeStartMutex<T>(ownerKey: string, start: () => Promise<T>): Promise<T> {
+  const previous = runtimeControlStartByOwner.get(ownerKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => current);
+  runtimeControlStartByOwner.set(ownerKey, queued);
+  await previous;
+  try {
+    return await start();
+  } finally {
+    release();
+    if (runtimeControlStartByOwner.get(ownerKey) === queued) runtimeControlStartByOwner.delete(ownerKey);
+  }
+}
+
+function resolveRuntimeStartMutexPlan(input: {
+  services: Array<Record<string, unknown>>;
+  workspace: RealizedExecutionWorkspace;
+  executionWorkspaceId?: string | null;
+  issue: ExecutionWorkspaceIssueRef | null;
+  runId: string;
+  agent: ExecutionWorkspaceAgentRef;
+  adapterEnv: Record<string, string>;
+}) {
+  const fallbackOwnerId = input.executionWorkspaceId
+    ?? input.workspace.workspaceId
+    ?? path.resolve(input.workspace.cwd);
+  const replacementReuseKeys: string[] = [];
+  const keys = input.services.map((service) => {
+    const { scopeType, scopeId } = resolveServiceScopeId({
+      service,
+      workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
+      issue: input.issue,
+      runId: input.runId,
+      agent: input.agent,
+    });
+    const reuseKey = resolveRuntimeServiceReuseIdentity({
+      service,
+      workspace: input.workspace,
+      agent: input.agent,
+      issue: input.issue,
+      adapterEnv: input.adapterEnv,
+      scopeType,
+      scopeId,
+    }).reuseKey;
+    // Converge all callers that can replace an existing shared runtime on its
+    // reuse identity. For an initial start, retain owner-level concurrency so
+    // the exposure allocator's in-flight pair claims remain authoritative.
+    if (
+      reuseKey
+      && (runtimeServicesByReuseKey.has(reuseKey) || runtimeReplacementClaimsByReuseKey.has(reuseKey))
+    ) {
+      runtimeReplacementClaimsByReuseKey.set(
+        reuseKey,
+        (runtimeReplacementClaimsByReuseKey.get(reuseKey) ?? 0) + 1,
+      );
+      replacementReuseKeys.push(reuseKey);
+      return `reuse:${reuseKey}`;
+    }
+    return `${input.agent.companyId}:owner:${fallbackOwnerId}`;
+  });
+  return {
+    ownerKeys: [...new Set(keys)].sort(),
+    replacementReuseKeys,
+  };
+}
+
+function releaseRuntimeReplacementClaims(reuseKeys: string[]) {
+  for (const reuseKey of reuseKeys) {
+    const next = (runtimeReplacementClaimsByReuseKey.get(reuseKey) ?? 1) - 1;
+    if (next <= 0) runtimeReplacementClaimsByReuseKey.delete(reuseKey);
+    else runtimeReplacementClaimsByReuseKey.set(reuseKey, next);
+  }
+}
+
+async function withRuntimeStartMutexes<T>(
+  ownerKeys: string[],
+  start: () => Promise<T>,
+): Promise<T> {
+  const acquire = async (index: number): Promise<T> => {
+    const ownerKey = ownerKeys[index];
+    if (!ownerKey) return await start();
+    return await withRuntimeStartMutex(ownerKey, () => acquire(index + 1));
+  };
+  return await acquire(0);
+}
+
+export async function ensureRuntimeServicesForRun(
+  input: EnsureRuntimeServicesForRunInput,
+): Promise<RuntimeServiceRef[]> {
+  const services = selectRuntimeServiceEntries({
+    config: input.config,
+    respectDesiredStates: true,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "running",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
+  const mutexPlan = resolveRuntimeStartMutexPlan({
+    services,
+    workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
+    issue: input.issue,
+    runId: input.runId,
+    agent: input.agent,
+    adapterEnv: input.adapterEnv,
+  });
+  try {
+    return await withRuntimeStartMutexes(
+      mutexPlan.ownerKeys,
+      () => ensureRuntimeServicesForRunInvocation(input),
+    );
+  } finally {
+    releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
+  }
 }
 
 type StartRuntimeServicesForWorkspaceControlInput = {
@@ -6443,9 +6611,8 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     }).reuseKey;
 
     if (reuseKey) {
-      const existingId = runtimeServicesByReuseKey.get(reuseKey);
-      const existing = existingId ? runtimeServicesById.get(existingId) : null;
-      if (existing && existing.status === "running") {
+      const existing = await findHealthyRunningRuntimeService(reuseKey);
+      if (existing) {
         const prepared = options?.preparedProvisioning;
         if (prepared?.service === service && prepared.record.id !== existing.id && persistenceDb) {
           await persistenceDb
@@ -6569,7 +6736,7 @@ async function discardFailedDeferredRuntimeStart(db: Db, record: RuntimeServiceR
   await persistRuntimeServiceRecord(db, record);
 }
 
-export async function startRuntimeServicesForWorkspaceControl(
+async function startRuntimeServicesForWorkspaceControlInvocation(
   input: StartRuntimeServicesForWorkspaceControlInput,
 ): Promise<RuntimeServiceRef[]> {
   const rawServices = selectRuntimeServiceEntries({
@@ -6634,9 +6801,8 @@ export async function startRuntimeServicesForWorkspaceControl(
           scopeType,
           scopeId,
         }).reuseKey;
-        const existingId = reuseKey ? runtimeServicesByReuseKey.get(reuseKey) : null;
-        const existing = existingId ? runtimeServicesById.get(existingId) : null;
-        if (existing?.status === "running") continue;
+        const existing = await findHealthyRunningRuntimeService(reuseKey);
+        if (existing) continue;
 
         const record = await prepareRuntimeProvisioning({
           db: input.db,
@@ -6788,6 +6954,36 @@ export async function startRuntimeServicesForWorkspaceControl(
   }
 }
 
+export async function startRuntimeServicesForWorkspaceControl(
+  input: StartRuntimeServicesForWorkspaceControlInput,
+): Promise<RuntimeServiceRef[]> {
+  const services = selectRuntimeServiceEntries({
+    config: input.config,
+    serviceIndex: input.serviceIndex,
+    respectDesiredStates: input.respectDesiredStates,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
+  const invocationId = input.invocationId ?? "workspace_control";
+  const mutexPlan = resolveRuntimeStartMutexPlan({
+    services,
+    workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
+    issue: input.issue,
+    runId: invocationId,
+    agent: input.actor,
+    adapterEnv: input.adapterEnv,
+  });
+  try {
+    return await withRuntimeStartMutexes(
+      mutexPlan.ownerKeys,
+      () => startRuntimeServicesForWorkspaceControlInvocation(input),
+    );
+  } finally {
+    releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
+  }
+}
+
 export async function releaseRuntimeServicesForRun(runId: string) {
   const acquired = runtimeServiceLeasesByRun.get(runId) ?? [];
   runtimeServiceLeasesByRun.delete(runId);
@@ -6799,7 +6995,14 @@ export async function releaseRuntimeServicesForRun(runId: string) {
     const stopType = asString(record.stopPolicy?.type, record.lifecycle === "ephemeral" ? "on_run_finish" : "manual");
     await persistRuntimeServiceRecord(record.db, record);
     if (record.leaseRunIds.size === 0) {
-      if (record.lifecycle === "ephemeral" || stopType === "on_run_finish") {
+      const detachedUnhealthySharedRuntime = record.healthStatus === "unhealthy"
+        && Boolean(record.reuseKey)
+        && runtimeServicesByReuseKey.get(record.reuseKey!) !== record.id;
+      if (
+        record.lifecycle === "ephemeral"
+        || stopType === "on_run_finish"
+        || detachedUnhealthySharedRuntime
+      ) {
         await stopRuntimeService(serviceId);
         continue;
       }
@@ -7030,6 +7233,59 @@ async function buildPersistedRuntimeExposureIntentLookup(db: Db) {
   };
 }
 
+export async function refreshPersistedRuntimeServiceHealth(input: {
+  db: Db;
+  companyId: string;
+  executionWorkspaceId: string;
+  projectWorkspaceId?: string | null;
+}) {
+  const ownershipCondition = input.projectWorkspaceId
+    ? or(
+        eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId),
+        and(
+          eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
+          eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        ),
+      )
+    : eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId);
+  const rows = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      serviceName: workspaceRuntimeServices.serviceName,
+      command: workspaceRuntimeServices.command,
+      provider: workspaceRuntimeServices.provider,
+      port: workspaceRuntimeServices.port,
+      url: workspaceRuntimeServices.url,
+      healthStatus: workspaceRuntimeServices.healthStatus,
+    })
+    .from(workspaceRuntimeServices)
+    .where(and(
+      eq(workspaceRuntimeServices.companyId, input.companyId),
+      eq(workspaceRuntimeServices.provider, "local_process"),
+      eq(workspaceRuntimeServices.status, "running"),
+      ownershipCondition,
+    ));
+  const results = await Promise.all(rows.map(async (row) => ({
+    row,
+    healthStatus: await isRuntimeServiceUrlHealthy(row.url, row) ? "healthy" as const : "unhealthy" as const,
+  })));
+  await Promise.all(results.map(async ({ row, healthStatus }) => {
+    const liveRecord = runtimeServicesById.get(row.id);
+    if (liveRecord) liveRecord.healthStatus = healthStatus;
+    if (row.healthStatus === healthStatus) return;
+    await input.db.update(workspaceRuntimeServices).set({ healthStatus, updatedAt: new Date() }).where(and(
+      eq(workspaceRuntimeServices.id, row.id),
+      eq(workspaceRuntimeServices.companyId, input.companyId),
+      eq(workspaceRuntimeServices.status, "running"),
+    ));
+  }));
+  return {
+    checked: results.length,
+    healthy: results.filter((result) => result.healthStatus === "healthy").length,
+    unhealthy: results.filter((result) => result.healthStatus === "unhealthy").length,
+  };
+}
+
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
   const rows = await db
     .select()
@@ -7211,7 +7467,12 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
       if (
         backfillDecision.action === "reprovision"
         || !exposureHealthMatches
-        || !(await isRuntimeServiceUrlHealthy(adoptedUrl, { serviceName: row.serviceName, command: row.command }))
+        || !(await isRuntimeServiceUrlHealthy(adoptedUrl, {
+          serviceName: row.serviceName,
+          command: row.command,
+          provider: "local_process",
+          port: adoptedRecord.port ?? row.port,
+        }))
       ) {
         if (backfillDecision.action === "reprovision") backfilled += 1;
         await terminateLocalService(adoptedRecord);

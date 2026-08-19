@@ -11,11 +11,14 @@ import {
   authUsers,
   companies,
   createDb,
+  executionWorkspaces,
   issueComments,
   issues,
+  projectWorkspaces,
   projects,
   routines,
   routineTriggers,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   copyGitHooksToWorktreeGitDir,
@@ -434,6 +437,9 @@ describe("worktree helpers", () => {
           quarantinedInProgressIssues: 1,
           unassignedTodoIssues: 1,
           unassignedReviewIssues: 1,
+          stoppedProjectWorkspaceRuntimes: 0,
+          stoppedExecutionWorkspaceRuntimes: 0,
+          stoppedRuntimeServices: 0,
         },
         reboundWorkspaces: [],
       });
@@ -540,6 +546,9 @@ describe("worktree helpers", () => {
             quarantinedInProgressIssues: 0,
             unassignedTodoIssues: 0,
             unassignedReviewIssues: 0,
+            stoppedProjectWorkspaceRuntimes: 0,
+            stoppedExecutionWorkspaceRuntimes: 0,
+            stoppedRuntimeServices: 0,
           },
           reboundWorkspaces: [],
         };
@@ -599,6 +608,10 @@ describe("worktree helpers", () => {
     const todoIssueId = randomUUID();
     const reviewIssueId = randomUUID();
     const userIssueId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeServiceId = randomUUID();
 
     try {
       await db.insert(companies).values({
@@ -634,6 +647,64 @@ describe("worktree helpers", () => {
           permissions: {},
         },
       ]);
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Runtime quarantine",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Primary workspace",
+        cwd: "/source/project",
+        metadata: {
+          keep: "project-metadata",
+          runtimeConfig: {
+            workspaceRuntime: { services: [{ name: "paperclip-dev" }] },
+            desiredState: "running",
+            serviceStates: { "0": "running", "1": "manual" },
+          },
+        },
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Copied runtime workspace",
+        cwd: "/source/worktree",
+        providerType: "git_worktree",
+        metadata: {
+          keep: "execution-metadata",
+          config: {
+            environmentId: "environment-1",
+            desiredState: "running",
+            serviceStates: { "0": "running" },
+          },
+        },
+      });
+      await db.insert(workspaceRuntimeServices).values({
+        id: runtimeServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        scopeType: "project_workspace",
+        scopeId: projectWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        provider: "local_process",
+        providerRef: "12345",
+        ownerAgentId: agentId,
+        port: 42013,
+        url: "https://paperclip-dev.example.test:42013",
+        healthStatus: "healthy",
+      });
       await db.insert(issues).values([
         {
           id: inProgressIssueId,
@@ -685,6 +756,9 @@ describe("worktree helpers", () => {
         quarantinedInProgressIssues: 1,
         unassignedTodoIssues: 1,
         unassignedReviewIssues: 1,
+        stoppedProjectWorkspaceRuntimes: 1,
+        stoppedExecutionWorkspaceRuntimes: 1,
+        stoppedRuntimeServices: 1,
       });
 
       const [quarantinedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
@@ -715,6 +789,47 @@ describe("worktree helpers", () => {
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, inProgressIssueId));
       expect(comments).toHaveLength(1);
       expect(comments[0]?.body).toContain("Quarantined during worktree seed");
+
+      const [projectWorkspace] = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.id, projectWorkspaceId));
+      expect(projectWorkspace?.metadata).toEqual({
+        keep: "project-metadata",
+        runtimeConfig: {
+          workspaceRuntime: { services: [{ name: "paperclip-dev" }] },
+          desiredState: "stopped",
+          serviceStates: { "0": "stopped", "1": "manual" },
+        },
+      });
+
+      const [executionWorkspace] = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, executionWorkspaceId));
+      expect(executionWorkspace?.metadata).toEqual({
+        keep: "execution-metadata",
+        config: {
+          environmentId: "environment-1",
+          desiredState: "stopped",
+          serviceStates: { "0": "stopped" },
+        },
+      });
+
+      const [runtimeService] = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.id, runtimeServiceId));
+      expect(runtimeService).toMatchObject({
+        status: "stopped",
+        healthStatus: "unknown",
+        providerRef: null,
+        ownerAgentId: null,
+        startedByRunId: null,
+        port: null,
+        url: null,
+      });
+      expect(runtimeService?.stoppedAt).toBeInstanceOf(Date);
     } finally {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
       await tempDb.cleanup();

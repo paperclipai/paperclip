@@ -289,9 +289,12 @@ export async function cleanupWorktreeInstanceArtifacts(input: {
     return { status: "refused", instanceRoot: configuredInstanceRoot, warning };
   }
 
-  const expectedInstanceRoot = input.expectedInstanceRoot
-    ? path.resolve(input.expectedInstanceRoot)
-    : null;
+  const expectedInstanceRoot = input.expectedInstanceRoot ? path.resolve(input.expectedInstanceRoot) : null;
+  if (!expectedInstanceRoot) {
+    warning = `Refusing to remove instance directory "${configuredInstanceRoot}" because execution workspace ${input.workspaceId} has no persisted instance root.`;
+    await recordRefusal({ refusalReason: "persisted_instance_root_missing" });
+    return { status: "refused", instanceRoot: configuredInstanceRoot, warning };
+  }
   if (expectedInstanceRoot && configuredInstanceRoot !== expectedInstanceRoot) {
     warning = `Refusing to remove instance directory "${configuredInstanceRoot}" because it does not match execution workspace ${input.workspaceId}'s persisted instance root "${expectedInstanceRoot}".`;
     await recordRefusal({

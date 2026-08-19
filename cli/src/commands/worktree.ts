@@ -30,6 +30,7 @@ import {
   documentRevisions,
   documents,
   ensurePostgresDatabase,
+  executionWorkspaces,
   formatDatabaseBackupResult,
   goals,
   heartbeatRuns,
@@ -45,6 +46,7 @@ import {
   runDatabaseBackup,
   runDatabaseRestore,
   resetPostgresDatabase,
+  workspaceRuntimeServices,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
   prepareEmbeddedPostgresNativeRuntime,
@@ -233,6 +235,9 @@ export type SeededWorktreeExecutionQuarantineSummary = {
   quarantinedInProgressIssues: number;
   unassignedTodoIssues: number;
   unassignedReviewIssues: number;
+  stoppedProjectWorkspaceRuntimes: number;
+  stoppedExecutionWorkspaceRuntimes: number;
+  stoppedRuntimeServices: number;
 };
 
 function nonEmpty(value: string | null | undefined): string | null {
@@ -256,6 +261,9 @@ function formatSeededWorktreeExecutionQuarantineSummary(
     `quarantined in-progress issues: ${summary.quarantinedInProgressIssues}`,
     `unassigned todo issues: ${summary.unassignedTodoIssues}`,
     `unassigned review issues: ${summary.unassignedReviewIssues}`,
+    `stopped project workspace runtimes: ${summary.stoppedProjectWorkspaceRuntimes}`,
+    `stopped execution workspace runtimes: ${summary.stoppedExecutionWorkspaceRuntimes}`,
+    `stopped runtime services: ${summary.stoppedRuntimeServices}`,
   ].join(", ");
 }
 
@@ -1187,6 +1195,9 @@ const EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY: SeededWorktreeExecutio
   quarantinedInProgressIssues: 0,
   unassignedTodoIssues: 0,
   unassignedReviewIssues: 0,
+  stoppedProjectWorkspaceRuntimes: 0,
+  stoppedExecutionWorkspaceRuntimes: 0,
+  stoppedRuntimeServices: 0,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1216,6 +1227,36 @@ function normalizeWorktreeRuntimeConfig(runtimeConfig: unknown): {
   }
 
   return { runtimeConfig: nextRuntimeConfig, disabledTimerHeartbeat: false, changed: false };
+}
+
+function stopSeededWorkspaceRuntime(
+  metadata: unknown,
+  configKey: "config" | "runtimeConfig",
+): { metadata: Record<string, unknown>; changed: boolean } {
+  const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
+  const currentConfig = isRecord(nextMetadata[configKey])
+    ? { ...(nextMetadata[configKey] as Record<string, unknown>) }
+    : null;
+  if (!currentConfig) return { metadata: nextMetadata, changed: false };
+
+  let changed = false;
+  if (currentConfig.desiredState === "running") {
+    currentConfig.desiredState = "stopped";
+    changed = true;
+  }
+
+  if (isRecord(currentConfig.serviceStates)) {
+    const nextServiceStates = { ...currentConfig.serviceStates };
+    for (const [serviceIndex, state] of Object.entries(nextServiceStates)) {
+      if (state !== "running") continue;
+      nextServiceStates[serviceIndex] = "stopped";
+      changed = true;
+    }
+    if (changed) currentConfig.serviceStates = nextServiceStates;
+  }
+
+  if (changed) nextMetadata[configKey] = currentConfig;
+  return { metadata: nextMetadata, changed };
 }
 
 export async function quarantineSeededWorktreeExecutionState(
@@ -1300,6 +1341,50 @@ export async function quarantineSeededWorktreeExecutionState(
           summary.unassignedReviewIssues += 1;
         }
       }
+
+      const seededProjectWorkspaces = await tx
+        .select({ id: projectWorkspaces.id, metadata: projectWorkspaces.metadata })
+        .from(projectWorkspaces);
+      for (const workspace of seededProjectWorkspaces) {
+        const stopped = stopSeededWorkspaceRuntime(workspace.metadata, "runtimeConfig");
+        if (!stopped.changed) continue;
+        await tx
+          .update(projectWorkspaces)
+          .set({ metadata: stopped.metadata, updatedAt: new Date() })
+          .where(eq(projectWorkspaces.id, workspace.id));
+        summary.stoppedProjectWorkspaceRuntimes += 1;
+      }
+
+      const seededExecutionWorkspaces = await tx
+        .select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces);
+      for (const workspace of seededExecutionWorkspaces) {
+        const stopped = stopSeededWorkspaceRuntime(workspace.metadata, "config");
+        if (!stopped.changed) continue;
+        await tx
+          .update(executionWorkspaces)
+          .set({ metadata: stopped.metadata, updatedAt: new Date() })
+          .where(eq(executionWorkspaces.id, workspace.id));
+        summary.stoppedExecutionWorkspaceRuntimes += 1;
+      }
+
+      const now = new Date();
+      const stoppedRuntimeServices = await tx
+        .update(workspaceRuntimeServices)
+        .set({
+          status: "stopped",
+          healthStatus: "unknown",
+          providerRef: null,
+          ownerAgentId: null,
+          startedByRunId: null,
+          port: null,
+          url: null,
+          stoppedAt: now,
+          lastUsedAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: workspaceRuntimeServices.id });
+      summary.stoppedRuntimeServices = stoppedRuntimeServices.length;
     });
 
     return summary;
@@ -3593,7 +3678,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services in the seeded worktree", false)
     .option("--no-seed", "Skip database seeding from the source instance")
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeMakeCommand);
@@ -3610,7 +3695,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services in the seeded worktree", false)
     .option("--no-seed", "Skip database seeding from the source instance")
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeInitCommand);
@@ -3629,7 +3714,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-config <path>", "Source config.json to seed from (defaults to the seed-pending marker)")
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues", false)
+    .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services", false)
     .action(worktreeEnsureSeededCommand);
 
   program
@@ -3660,7 +3745,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: full)", "full")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services in the seeded worktree", false)
     .option("--yes", "Skip the destructive confirmation prompt", false)
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeReseedCommand);
@@ -3674,7 +3759,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config (default: default)")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Do not quarantine copied agent work or workspace runtime services in the seeded worktree", false)
     .option("--no-seed", "Repair metadata only and skip reseeding when bootstrapping a missing worktree config", false)
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeRepairCommand);
