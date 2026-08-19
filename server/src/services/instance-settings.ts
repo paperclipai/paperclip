@@ -218,6 +218,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   const parsed = instanceExperimentalSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
+      enableNativeRunner: parsed.data.enableNativeRunner ?? false,
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
@@ -255,6 +256,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     };
   }
   return {
+    enableNativeRunner: false,
     enableEnvironments: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,

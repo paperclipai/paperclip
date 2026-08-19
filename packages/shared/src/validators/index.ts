@@ -1,4 +1,10 @@
 export {
+  nativeFinalizationResultSchema,
+  nativeReportedWorkDispositionSchema,
+  type NativeFinalizationResultInput,
+} from "./native-finalization.js";
+
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,

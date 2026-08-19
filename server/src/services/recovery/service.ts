@@ -36,6 +36,7 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -1547,14 +1548,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
-  async function nextRunEventSeq(runId: string) {
-    const [row] = await db
-      .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
-      .from(heartbeatRunEvents)
-      .where(eq(heartbeatRunEvents.runId, runId));
-    return Number(row?.maxSeq ?? 0) + 1;
-  }
-
   async function appendRecoveryRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     event: {
@@ -1563,11 +1556,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       payload?: Record<string, unknown>;
     },
   ) {
-    await db.insert(heartbeatRunEvents).values({
+    await appendHeartbeatRunEvent(db, {
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
-      seq: await nextRunEventSeq(run.id),
       eventType: "lifecycle",
       stream: "system",
       level: event.level,

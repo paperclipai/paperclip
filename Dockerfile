@@ -20,6 +20,8 @@ COPY server/package.json server/
 COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
+COPY packages/paperclip-eval-kernel/package.json packages/paperclip-eval-kernel/
+COPY packages/paperclip-runner/package.json packages/paperclip-runner/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/

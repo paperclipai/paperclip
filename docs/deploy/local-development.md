@@ -42,6 +42,12 @@ This does:
 
 Default `pnpm dev` stays in `local_trusted` with loopback-only binding.
 
+The commands in this section configure a fresh local instance. When a managed
+Paperclip host already has Tailscale and its app service running, first reuse
+the existing service and advertised URL. A feature task or package preview
+must not reconfigure Tailscale Serve, request an operator grant, or create a
+certificate unless that network change is an explicit task requirement.
+
 To open Paperclip to a private network with login enabled:
 
 ```sh

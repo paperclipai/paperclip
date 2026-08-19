@@ -45,6 +45,8 @@ export interface InstanceGeneralSettings {
 }
 
 export interface InstanceExperimentalSettings {
+  /** Default-off Phase 6 native runner tracer and its instance kill switch. */
+  enableNativeRunner: boolean;
   enableEnvironments: boolean;
   /**
    * Hide the local environment and run all agents in the platform-managed

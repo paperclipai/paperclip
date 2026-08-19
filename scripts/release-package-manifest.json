@@ -80,6 +80,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/paperclip-eval-kernel",
+    "name": "@paperclipai/paperclip-eval-kernel",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/sdk",
     "name": "@paperclipai/plugin-sdk",
     "publishFromCi": true
