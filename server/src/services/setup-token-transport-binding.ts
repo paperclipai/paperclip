@@ -201,7 +201,6 @@ export function createSetupTokenSecretWriter(deps: {
         companyId: scope.companyId,
         ownerUserId: scope.ownerUserId,
         adapterType: scope.adapterType,
-        environmentId: scope.environmentId,
       });
       if (!transitioned) {
         // Zero-row result: roll back the whole transaction. The session then marks
@@ -220,9 +219,11 @@ export function createSetupTokenSecretWriter(deps: {
   };
 }
 
-/** The immutable scope key that correlates one acquire with one factory call. */
+/** The immutable scope key that correlates one acquire with one factory call. It
+ *  is the company, the owner, and the adapter, so it matches the active-slot
+ *  scope. The per-slot session cap is one, so one scope holds one live acquire. */
 function scopeKey(scope: SetupTokenSessionScope): string {
-  return [scope.companyId, scope.ownerUserId, scope.adapterType, scope.environmentId].join("\u0000");
+  return [scope.companyId, scope.ownerUserId, scope.adapterType].join("\u0000");
 }
 
 /**
@@ -415,7 +416,9 @@ export function createProductionSetupTokenSandboxProvider(
             environment,
             adapterType: scope.adapterType,
           },
-          targetAgentId: scope.targetAgentId ?? null,
+          // The setup-token login is company-and-environment scoped. It carries
+          // no target agent, so the lease binds no agent.
+          targetAgentId: null,
           // Re-check the environment company binding inside the lease insert
           // transaction. The route guard ran earlier, so a managed
           // reconciliation can bind this sandbox to another company between the

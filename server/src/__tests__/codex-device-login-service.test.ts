@@ -153,13 +153,16 @@ function createMemoryStore(): AdapterAuthSessionStore & {
 } {
   const rows = new Map<string, AdapterAuthSessionRow>();
   const activeSlots = new Set<string>();
-  const slotKey = (companyId: string, adapterType: string) => `${companyId}|${adapterType}`;
+  // The active company credential slot is scoped to the company, the owner, and
+  // the adapter, so two owners in one company hold independent slots.
+  const slotKey = (companyId: string, startedByUserId: string, adapterType: string) =>
+    `${companyId}|${startedByUserId}|${adapterType}`;
   const isActive = (status: AdapterAuthSessionRow["status"]) =>
     status === "starting" || status === "waiting_for_user" || status === "promoting";
   return {
     rows,
     async insert(input) {
-      const key = slotKey(input.companyId, input.adapterType);
+      const key = slotKey(input.companyId, input.startedByUserId, input.adapterType);
       if (activeSlots.has(key)) throw new AdapterAuthSessionConflictError();
       activeSlots.add(key);
       rows.set(input.id, {
@@ -187,7 +190,8 @@ function createMemoryStore(): AdapterAuthSessionStore & {
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
     },
     async compareAndSetStatus(input) {
       const row = rows.get(input.sessionId);
@@ -196,14 +200,15 @@ function createMemoryStore(): AdapterAuthSessionStore & {
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
       return true;
     },
     async get(sessionId) {
       const row = rows.get(sessionId);
       return row ? { ...row } : null;
     },
-    async withCompanyAdapterPromotionLock(_companyId, _adapterType, fn) {
+    async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The in-memory store runs on a single event loop, so it needs no real
       // lock. The pass-through keeps the store contract satisfied.
       return fn();
@@ -887,73 +892,112 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     return environmentId;
   }
 
-  it.each([
-    { name: "two owners, same environment" },
-    { name: "one owner, two environments" },
-  ])(
-    "returns one session, one lease, and one 409 for concurrent starts ($name)",
-    async ({ name }) => {
-      const { companyId, environmentId: environmentA } = await seedCompanyEnvironment();
-      const twoOwners = name.startsWith("two owners");
-      const environmentB = twoOwners ? environmentA : await seedEnvironment(companyId);
-      const ownerB = twoOwners ? OWNER_B : OWNER_A;
+  it("lets two owners in one company each hold an active session", async () => {
+    // The active slot is scoped to the company, the owner, and the adapter. Two
+    // owners in one company hold independent slots, so both concurrent starts
+    // succeed and each acquires one lease.
+    const { companyId, environmentId } = await seedCompanyEnvironment();
+    const store = createDbAdapterAuthSessionStore(db);
+    const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
+    const service = makeService({ store, runtime });
+    const controller = new AbortController();
 
-      const store = createDbAdapterAuthSessionStore(db);
-      const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
-      const service = makeService({ store, runtime });
-      const controller = new AbortController();
+    const results = await Promise.allSettled([
+      service.start({
+        companyId,
+        environmentId,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      }),
+      service.start({
+        companyId,
+        environmentId,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_B,
+        signal: controller.signal,
+      }),
+    ]);
 
-      const results = await Promise.allSettled([
-        service.start({
-          companyId,
-          environmentId: environmentA,
-          adapterType: ADAPTER_TYPE,
-          startedByUserId: OWNER_A,
-          signal: controller.signal,
-        }),
-        service.start({
-          companyId,
-          environmentId: environmentB,
-          adapterType: ADAPTER_TYPE,
-          startedByUserId: ownerB,
-          signal: controller.signal,
-        }),
-      ]);
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.start>>> =>
+        result.status === "fulfilled",
+    );
+    expect(fulfilled).toHaveLength(2);
+    expect(acquisitions).toHaveLength(2);
+    const rows = await db
+      .select()
+      .from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.companyId, companyId));
+    expect(rows).toHaveLength(2);
 
-      const fulfilled = results.filter(
-        (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.start>>> =>
-          result.status === "fulfilled",
-      );
-      const rejected = results.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
-      expect(fulfilled).toHaveLength(1);
-      expect(rejected).toHaveLength(1);
-      const conflict = rejected[0]!.reason;
-      expect(conflict).toBeInstanceOf(AdapterAuthSessionConflictError);
-      expect(conflict.statusCode).toBe(409);
+    // Release the surviving runs so the hanging login commands end.
+    controller.abort();
+    await Promise.all(fulfilled.map((result) => result.value.completed));
+  });
 
-      // Exactly one start acquired a lease; the losing start never acquired.
-      expect(acquisitions).toHaveLength(1);
-      const rows = await db
-        .select()
-        .from(adapterAuthSessions)
-        .where(eq(adapterAuthSessions.companyId, companyId));
-      expect(rows).toHaveLength(1);
+  it("returns one session, one lease, and one 409 when one owner starts twice", async () => {
+    // One owner starting twice in two environments conflicts on the active slot.
+    // The slot dropped the environment term, so the second environment does not
+    // grant a second active session.
+    const { companyId, environmentId: environmentA } = await seedCompanyEnvironment();
+    const environmentB = await seedEnvironment(companyId);
 
-      // Release the surviving run so the hanging login command ends.
-      controller.abort();
-      await fulfilled[0]!.value.completed;
-    },
-  );
+    const store = createDbAdapterAuthSessionStore(db);
+    const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
+    const service = makeService({ store, runtime });
+    const controller = new AbortController();
 
-  it("rejects a second start with a 409 while the first login holds the promotion claim", async () => {
+    const results = await Promise.allSettled([
+      service.start({
+        companyId,
+        environmentId: environmentA,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      }),
+      service.start({
+        companyId,
+        environmentId: environmentB,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      }),
+    ]);
+
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.start>>> =>
+        result.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const conflict = rejected[0]!.reason;
+    expect(conflict).toBeInstanceOf(AdapterAuthSessionConflictError);
+    expect(conflict.statusCode).toBe(409);
+
+    // Exactly one start acquired a lease; the losing start never acquired.
+    expect(acquisitions).toHaveLength(1);
+    const rows = await db
+      .select()
+      .from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.companyId, companyId));
+    expect(rows).toHaveLength(1);
+
+    // Release the surviving run so the hanging login command ends.
+    controller.abort();
+    await fulfilled[0]!.value.completed;
+  });
+
+  it("rejects the same owner's second start with a 409 while the first holds the promotion claim", async () => {
     const { companyId, environmentId } = await seedCompanyEnvironment();
     const store = createDbAdapterAuthSessionStore(db);
     const { runtime } = createFakeRuntime({ exec: execSuccess, authBytes: Buffer.from("{}") });
 
     // A promotion that never resolves. The first login stays in `promoting`, so
-    // it holds the active company slot through the claim window.
+    // it holds the active slot through the claim window.
     let releasePromotion!: () => void;
     const promotionGate = new Promise<void>((resolve) => {
       releasePromotion = resolve;
@@ -974,14 +1018,14 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     // The first login reaches the `promoting` claim and holds it.
     await waitForStatus(store, first.session.sessionId, "promoting");
 
-    // A second start for the same company and adapter conflicts on the active
-    // slot, even though the first login is mid-promotion.
+    // A second start for the same company, owner, and adapter conflicts on the
+    // active slot, even though the first login is mid-promotion.
     await expect(
       service.start({
         companyId,
         environmentId,
         adapterType: ADAPTER_TYPE,
-        startedByUserId: OWNER_B,
+        startedByUserId: OWNER_A,
       }),
     ).rejects.toBeInstanceOf(AdapterAuthSessionConflictError);
 
@@ -1003,6 +1047,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
       environmentId,
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
+      publicSessionId: randomUUID(),
       providerLeaseId: `lease-${sessionId}`,
       status: "promoting",
       expiresAt: past,
@@ -1033,7 +1078,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     const sectionActive = new Promise<void>((resolve) => {
       markSectionActive = resolve;
     });
-    const promotion = store.withCompanyAdapterPromotionLock(companyId, ADAPTER_TYPE, async () => {
+    const promotion = store.withCompanyAdapterPromotionLock(companyId, OWNER_A, ADAPTER_TYPE, async () => {
       markSectionActive();
       await sectionGate;
       // Decision H: the write proceeds only while the session still owns the slot.
@@ -1078,7 +1123,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     // A delayed promotion now runs its section. The ownership check reads the
     // reclaimed row, so it writes no credential and the terminal claim fails.
     let wroteCredential = false;
-    await store.withCompanyAdapterPromotionLock(companyId, ADAPTER_TYPE, async () => {
+    await store.withCompanyAdapterPromotionLock(companyId, OWNER_A, ADAPTER_TYPE, async () => {
       const row = await store.get(sessionId);
       if (row?.status === "promoting" && row.companyId === companyId) {
         wroteCredential = true;

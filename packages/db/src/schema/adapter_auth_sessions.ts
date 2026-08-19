@@ -62,10 +62,9 @@ export const adapterAuthSessions = pgTable(
     // a failed sandbox delete. It is not a public field.
     providerLeaseId: text("provider_lease_id"),
     // The merged login state. The column is `text`, so it stores every value of
-    // the merged `AdapterAuthSessionState` set. The compile-time `$type` stays at
-    // the device-login internal union for now; the store-unification phase widens
-    // it to `AdapterAuthSessionState` together with the service callers.
-    status: text("status").$type<AdapterAuthSessionInternalStatus>().notNull().default("starting"),
+    // the merged `AdapterAuthSessionState` set. The compile-time `$type` is the
+    // merged union, so both login stores share one status type.
+    status: text("status").$type<AdapterAuthSessionState>().notNull().default("starting"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     // The promotion claim deadline. The service sets this column when it moves the
     // row to `promoting`. While the deadline is in the future, the claim is live,

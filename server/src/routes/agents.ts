@@ -364,12 +364,10 @@ export function agentRoutes(
     companyId: string;
     ownerUserId: string;
     adapterType: string;
-    environmentId: string;
   }): boolean =>
     row.companyId === identity.companyId &&
     row.ownerUserId === identity.ownerUserId &&
-    row.adapterType === identity.adapterType &&
-    row.environmentId === identity.environmentId;
+    row.adapterType === identity.adapterType;
   const inMemorySetupTokenCleanupStore: SetupTokenCleanupStore = {
     async record(record): Promise<void> {
       setupTokenCleanupRows.set(record.sessionId, { ...record });
@@ -509,6 +507,7 @@ export function agentRoutes(
         // after the fence; the lock spans the whole section.
         const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
           context.companyId,
+          context.startedByUserId,
           context.adapterType,
           () =>
             promoteDeviceLoginCredential({
@@ -4685,7 +4684,6 @@ export function agentRoutes(
     const scope: SetupTokenSessionScope = {
       companyId,
       ownerUserId,
-      targetAgentId: null,
       adapterType,
       environmentId,
       confirmedOverwrite,

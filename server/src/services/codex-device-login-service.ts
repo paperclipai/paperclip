@@ -105,11 +105,12 @@ export interface LoginSessionRuntime {
 }
 
 /** The per-session context the promotion seam needs. The service knows the
- *  session, the company, and the adapter, so the promotion resolves the company
- *  scope and the sole-active-owner check for this exact session. */
+ *  session, the company, the owner, and the adapter, so the promotion resolves
+ *  the company slot and the sole-active-owner check for this exact session. */
 export interface CredentialPromotionContext {
   sessionId: string;
   companyId: string;
+  startedByUserId: string;
   adapterType: AgentAdapterType;
 }
 
@@ -274,32 +275,36 @@ export interface AdapterAuthSessionStore {
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
-   *  company and adapter. The reaper reclaims a stale `promoting` row inside this
-   *  lock, so a reclaim never interleaves with a live credential write. */
+   *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
+   *  row inside this lock, so a reclaim never interleaves with a live credential
+   *  write for the same slot. */
   withCompanyAdapterPromotionLock<T>(
     companyId: string,
+    startedByUserId: string,
     adapterType: AgentAdapterType,
     fn: () => Promise<T>,
   ): Promise<T>;
 }
 
 /** Build the advisory-lock key for the promotion critical section. The key is
- *  company-scoped and adapter-scoped, so two different company slots never
- *  contend. The credential-promotion path and the reaper reclaim both derive the
- *  key from this function, so they take the exact same lock. */
+ *  scoped to the company, the owner, and the adapter, so two different slots
+ *  never contend. The credential-promotion path and the reaper reclaim both
+ *  derive the key from this function, so they take the exact same lock. */
 export function adapterLoginPromotionLockKey(
   companyId: string,
+  startedByUserId: string,
   adapterType: AgentAdapterType,
 ): string {
-  return `paperclip:adapter-login-promotion:${companyId}:${adapterType}`;
+  return `paperclip:adapter-login-promotion:${companyId}:${startedByUserId}:${adapterType}`;
 }
 
 /**
- * Run `fn` inside the promotion critical section for one company and adapter.
+ * Run `fn` inside the promotion critical section for one company, owner, and
+ * adapter slot.
  *
  * The function opens a database transaction and takes a transaction-scoped
  * PostgreSQL advisory lock. The lock serializes the credential-promotion path
- * against the reaper reclaim, so a reaper never releases the company slot while a
+ * against the reaper reclaim, so a reaper never releases the slot while a
  * credential write runs, and a stale promotion never writes after the reaper
  * reclaims the slot. The transaction holds the lock through `fn`, so the caller
  * runs the ownership check and the credential write in one mutually-exclusive
@@ -309,10 +314,11 @@ export function adapterLoginPromotionLockKey(
 export async function withAdapterLoginPromotionLock<T>(
   db: Db,
   companyId: string,
+  startedByUserId: string,
   adapterType: AgentAdapterType,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = adapterLoginPromotionLockKey(companyId, adapterType);
+  const key = adapterLoginPromotionLockKey(companyId, startedByUserId, adapterType);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
     return fn();
@@ -355,10 +361,12 @@ export interface AdapterAuthReaperStore {
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
-   *  company and adapter. The reaper reclaims a stale `promoting` row inside this
-   *  lock, so a reclaim never interleaves with a live credential write. */
+   *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
+   *  row inside this lock, so a reclaim never interleaves with a live credential
+   *  write for the same slot. */
   withCompanyAdapterPromotionLock<T>(
     companyId: string,
+    startedByUserId: string,
     adapterType: AgentAdapterType,
     fn: () => Promise<T>,
   ): Promise<T>;
@@ -391,7 +399,10 @@ function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSession
     adapterType: row.adapterType,
     startedByUserId: row.startedByUserId,
     providerLeaseId: row.providerLeaseId ?? null,
-    status: row.status,
+    // The unified `status` column type is the merged login-state union. A Codex
+    // device-login row only ever holds a Codex internal status, so narrow the
+    // read back to the internal union the service reasons about.
+    status: row.status as AdapterAuthSessionInternalStatus,
     expiresAt: row.expiresAt ?? null,
     promotionExpiresAt: row.promotionExpiresAt ?? null,
     finishedAt: row.finishedAt ?? null,
@@ -428,6 +439,10 @@ export function createDbAdapterAuthSessionStore(
           environmentId: input.environmentId,
           adapterType: input.adapterType,
           startedByUserId: input.startedByUserId,
+          // The unified table requires a unique public session id. The Codex flow
+          // returns the row id to the client, so it fills the public id with an
+          // independent CSPRNG value. It never uses a timestamp or a counter.
+          publicSessionId: randomUUID(),
           status: "starting",
           expiresAt: input.expiresAt,
           createdAt: input.at,
@@ -490,6 +505,9 @@ export function createDbAdapterAuthSessionStore(
         .from(adapterAuthSessions)
         .where(
           and(
+            // The shared table also holds the setup-token rows, so every reaper
+            // scan filters by the device-login adapter to reach only Codex rows.
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
             inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
             isNotNull(adapterAuthSessions.expiresAt),
             lte(adapterAuthSessions.expiresAt, nowAt),
@@ -506,20 +524,30 @@ export function createDbAdapterAuthSessionStore(
       const rows = await db
         .select()
         .from(adapterAuthSessions)
-        .where(eq(adapterAuthSessions.status, "cleanup_pending"));
+        .where(
+          and(
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            eq(adapterAuthSessions.status, "cleanup_pending"),
+          ),
+        );
       return rows.map(toRow);
     },
     async listLeaseReferences() {
       const rows = await db
         .select({ providerLeaseId: adapterAuthSessions.providerLeaseId })
         .from(adapterAuthSessions)
-        .where(isNotNull(adapterAuthSessions.providerLeaseId));
+        .where(
+          and(
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            isNotNull(adapterAuthSessions.providerLeaseId),
+          ),
+        );
       return rows
         .map((row) => row.providerLeaseId)
         .filter((value): value is string => value != null);
     },
-    async withCompanyAdapterPromotionLock(companyId, adapterType, fn) {
-      return withAdapterLoginPromotionLock(db, companyId, adapterType, fn);
+    async withCompanyAdapterPromotionLock(companyId, startedByUserId, adapterType, fn) {
+      return withAdapterLoginPromotionLock(db, companyId, startedByUserId, adapterType, fn);
     },
   };
 }
@@ -838,6 +866,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
         await promotion.promote(credential, {
           sessionId,
           companyId: input.companyId,
+          startedByUserId: input.startedByUserId,
           adapterType: input.adapterType,
         });
       } catch {

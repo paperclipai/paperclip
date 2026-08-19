@@ -6,8 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
+  adapterAuthSessions,
   agents,
-  claudeSetupTokenSessions,
   companies,
   companySecretBindings,
   companySecretProviderConfigs,
@@ -227,7 +227,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await db.delete(companySecretProviderConfigs);
     await db.delete(userSecretDeclarations);
     await db.delete(userSecretDefinitions);
-    await db.delete(claudeSetupTokenSessions);
+    await db.delete(adapterAuthSessions);
     await db.delete(agents);
     await db.delete(environments);
     await db.delete(companies);
@@ -303,8 +303,8 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   async function readClaim(sessionId: string) {
     const rows = await db
       .select()
-      .from(claudeSetupTokenSessions)
-      .where(eq(claudeSetupTokenSessions.sessionId, sessionId));
+      .from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.publicSessionId, sessionId));
     return rows[0];
   }
 
@@ -507,10 +507,10 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     });
     const lockHeld = lockDb.transaction(async (tx) => {
       await tx.execute(
-        sql`SELECT bound_at FROM claude_setup_token_sessions WHERE session_id = ${sessionId} FOR UPDATE`,
+        sql`SELECT bound_at FROM adapter_auth_sessions WHERE public_session_id = ${sessionId} FOR UPDATE`,
       );
       await tx.execute(
-        sql`UPDATE claude_setup_token_sessions SET deadline_at = clock_timestamp() + interval '300 milliseconds' WHERE session_id = ${sessionId}`,
+        sql`UPDATE adapter_auth_sessions SET expires_at = clock_timestamp() + interval '300 milliseconds' WHERE public_session_id = ${sessionId}`,
       );
       signalLocked();
       await gate;
@@ -639,7 +639,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(JSON.stringify(created)).not.toContain("sk-owner-token");
     expect(await countAgents(scope.companyId)).toBe(1);
     // The path consumes no setup-token claim, so it needs no login round trip.
-    const claims = await db.select().from(claudeSetupTokenSessions);
+    const claims = await db.select().from(adapterAuthSessions);
     expect(claims).toHaveLength(0);
   });
 
@@ -803,7 +803,6 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     return {
       companyId: scope.companyId,
       ownerUserId: scope.ownerUserId,
-      targetAgentId: null,
       adapterType: "claude_local",
       environmentId: scope.environmentId,
     };
@@ -818,7 +817,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
     // The durable row transitioned to `stored` and stays unconsumed.
     const claim = await readClaim(sessionId);
-    expect(claim?.state).toBe("stored");
+    expect(claim?.status).toBe("stored");
     expect(claim?.boundAt).toBeNull();
     // The owner value committed in the same transaction.
     const status = await secretService(db).readClaudeOAuthUserSecretStatus(
@@ -848,7 +847,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     ).rejects.toThrow();
 
     const claim = await readClaim(sessionId);
-    expect(claim?.state).toBe("submitting");
+    expect(claim?.status).toBe("submitting");
     expect(claim?.boundAt).toBeNull();
     expect(
       await secretService(db).readClaudeOAuthUserSecretStatus(scope.companyId, scope.ownerUserId),
@@ -865,7 +864,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       writer({ scope: claimScope(scope), sessionId, token: "sk-ant-oat01-EXPIRED" }),
     ).rejects.toThrow();
 
-    expect((await readClaim(sessionId))?.state).toBe("submitting");
+    expect((await readClaim(sessionId))?.status).toBe("submitting");
     expect(
       await secretService(db).readClaudeOAuthUserSecretStatus(scope.companyId, scope.ownerUserId),
     ).toBeNull();
@@ -918,7 +917,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     });
 
     // The claim transitioned and the stored value rotated to a new version.
-    expect((await readClaim(sessionId))?.state).toBe("stored");
+    expect((await readClaim(sessionId))?.status).toBe("stored");
     const after = await secretService(db).readClaudeOAuthUserSecretStatus(
       scope.companyId,
       scope.ownerUserId,

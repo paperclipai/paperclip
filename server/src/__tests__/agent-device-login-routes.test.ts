@@ -177,13 +177,15 @@ vi.mock("../services/codex-device-login-service.js", async (importOriginal) => {
 function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, AdapterAuthSessionRow> } {
   const rows = new Map<string, AdapterAuthSessionRow>();
   const activeSlots = new Set<string>();
-  const slotKey = (companyId: string, adapterType: string) => `${companyId}|${adapterType}`;
+  // The active slot is scoped to the company, the owner, and the adapter.
+  const slotKey = (companyId: string, startedByUserId: string, adapterType: string) =>
+    `${companyId}|${startedByUserId}|${adapterType}`;
   const isActive = (status: AdapterAuthSessionRow["status"]) =>
     status === "starting" || status === "waiting_for_user" || status === "promoting";
   return {
     rows,
     async insert(input) {
-      const key = slotKey(input.companyId, input.adapterType);
+      const key = slotKey(input.companyId, input.startedByUserId, input.adapterType);
       if (activeSlots.has(key)) {
         throw new AdapterAuthSessionConflictError();
       }
@@ -213,7 +215,8 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
     },
     async compareAndSetStatus(input) {
       const row = rows.get(input.sessionId);
@@ -222,14 +225,15 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
       return true;
     },
     async get(sessionId) {
       const row = rows.get(sessionId);
       return row ? { ...row } : null;
     },
-    async withCompanyAdapterPromotionLock(_companyId, _adapterType, fn) {
+    async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The route test runs on a single event loop, so it needs no real lock. The
       // pass-through keeps the promotion contract satisfied.
       return fn();
@@ -536,7 +540,7 @@ describe("adapter device-login routes", () => {
     expect(restart.body.sessionId).not.toBe(sessionId);
   });
 
-  it("returns 409 for a second active start by a different owner", async () => {
+  it("lets a second owner start an active login in the same company", async () => {
     const app = await createApp();
 
     const first = await request(app)
@@ -545,13 +549,16 @@ describe("adapter device-login routes", () => {
     expect(first.status, JSON.stringify(first.body)).toBe(201);
 
     // A different owner starts a second login for the same company and adapter.
+    // The active slot is scoped to the company, the owner, and the adapter, so
+    // the second owner holds an independent slot and the start succeeds.
     currentActor = boardActor(OWNER_B);
     const second = await request(app)
       .post(loginPath(COMPANY_1))
       .send({ environmentId: SANDBOX_ENV_1 });
-    expect(second.status, JSON.stringify(second.body)).toBe(409);
-    // The second start never acquires a lease.
-    expect(harness.acquisitions).toHaveLength(1);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(second.body.sessionId).not.toBe(first.body.sessionId);
+    // Each owner's start acquires its own lease.
+    expect(harness.acquisitions).toHaveLength(2);
   });
 
   it("returns 409 for a second active start in a different environment", async () => {
