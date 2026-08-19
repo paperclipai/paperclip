@@ -3672,6 +3672,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   expectedBranchHeadSha?: string | null;
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
+  // Set for a workspace whose path is shared infrastructure that outlives this
+  // record, such as a shared workspace session pointing at the project's
+  // primary worktree. Runtime services still stop and cleanup commands still
+  // run, but the worktree, the branch, and the directory stay in place. The
+  // preserved path then counts as cleaned, because keeping it is the intended
+  // outcome rather than a cleanup failure.
+  preserveWorkspacePath?: boolean;
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -3736,7 +3743,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
-  if (worktreeInstancePointer && workspacePath && expectedWorktreeInstanceId) {
+  if (worktreeInstancePointer && workspacePath && expectedWorktreeInstanceId && !input.preserveWorkspacePath) {
     try {
       const result = await cleanupWorktreeInstanceArtifacts({
         pointer: worktreeInstancePointer,
@@ -3755,7 +3762,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
-  if (input.workspace.providerType === "git_worktree" && workspacePath) {
+  if (input.preserveWorkspacePath && workspacePath) {
+    warnings.push(
+      `Kept the workspace path "${workspacePath}" because it is shared project infrastructure. Closing this record removes the record only.`,
+    );
+  } else if (input.workspace.providerType === "git_worktree" && workspacePath) {
     const worktreeExists = await directoryExists(workspacePath);
     if (worktreeExists) {
       if (!repoRoot) {
@@ -3856,6 +3867,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   const cleaned =
+    Boolean(input.preserveWorkspacePath) ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 

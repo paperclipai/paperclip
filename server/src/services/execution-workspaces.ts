@@ -1722,13 +1722,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .then((rows) => rows[0] ?? null)
         : null);
 
+    // A shared workspace session points at project workspace infrastructure that
+    // outlives the session. Closing it removes the session record and stops the
+    // session's runtime services; it must never remove the worktree or delete
+    // the branch. The git-state fence guards destruction, so it does not apply
+    // here either — it would otherwise refuse every close of a shared session,
+    // because the project's primary worktree is dirty almost all of the time.
+    const preserveWorkspacePath = workspace.mode === "shared_workspace";
+    const assertSafeToCleanup = preserveWorkspacePath
+      ? null
+      : () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+
     const cleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
       ? await acquireGitWorktreeCleanupLock(workspace.providerRef ?? workspace.cwd!)
       : null;
     try {
-      await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      await assertSafeToCleanup?.();
       await opts.beforeTerminalWorkspaceCleanup?.(workspace);
-      await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      await assertSafeToCleanup?.();
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: workspace.id,
@@ -1743,9 +1754,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           companyId: workspace.companyId,
           executionWorkspaceId: workspace.id,
         }),
-        assertSafeToCleanup: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
+        assertSafeToCleanup,
         beforeBranchDelete: () => cleanupLock?.releaseBranchRefLock() ?? Promise.resolve(),
         expectedBranchHeadSha: expectedHeadSha,
+        preserveWorkspacePath,
         // Git index, HEAD, and branch-ref locks prevent a clean HEAD change
         // from crossing final validation. The branch lock is released only
         // after non-forced worktree removal, then deletion is anchored to the

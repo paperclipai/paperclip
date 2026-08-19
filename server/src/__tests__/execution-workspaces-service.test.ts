@@ -4814,6 +4814,36 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness?.workspaceHeadSha).toBe(seeded.headSha);
   }, 20_000);
 
+  it("keeps the worktree and the branch when a shared workspace session is closed", async () => {
+    // Closing a shared session must remove the session record only. The
+    // underlying worktree is project infrastructure that outlives the session,
+    // so cleanup must not remove it even though the close was allowed.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]!);
+
+    // Dirty the worktree, so the destruction fence would refuse if it applied.
+    await fs.writeFile(path.join(seeded.worktreePath, "in-flight.txt"), "unrelated work\n", "utf8");
+
+    const cleanup = await svc.runManualArchiveArtifactCleanup({
+      workspace,
+      expectedHeadSha: seeded.headSha,
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings.join(" | ")).toContain("shared project infrastructure");
+    await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(seeded.worktreePath, "in-flight.txt"))).resolves.toBeTruthy();
+    expect(await readGit(seeded.repoRoot, ["rev-parse", "--verify", "PAP-16015-delivery"])).toBe(seeded.headSha);
+  }, 20_000);
+
   it("refuses manual archive cleanup when the expected HEAD sha is unknown", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     const workspace = await db
