@@ -106,6 +106,79 @@ describe("resolveWorkspaceAccessState", () => {
     expect(access.description).toContain("backup");
   });
 
+  it("returns to ready after a failed repair when a newer healthy runtime is serving", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [runtimeService({ startedAt: new Date("2026-08-19T00:03:00.000Z") })],
+      operations: [
+        operation({
+          phase: "workspace_repair",
+          status: "failed",
+          metadata: { repairPhase: "managed_restart" },
+          finishedAt: new Date("2026-08-19T00:02:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(access).toMatchObject({
+      state: "ready",
+      action: { kind: "open", label: "Open workspace" },
+      secondaryNotice: {
+        title: "Repair failed",
+        action: { kind: "view_logs", label: "View repair log" },
+      },
+    });
+    expect(access.secondaryNotice?.description).toContain("managed_restart");
+    expect(access.secondaryNotice?.description).toContain("backup");
+  });
+
+  it("returns to ready when a serving runtime has subsequently reported ready", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [runtimeService({ startedAt: new Date("2026-08-19T00:01:00.000Z") })],
+      operations: [
+        operation({
+          phase: "workspace_repair",
+          status: "failed",
+          metadata: { repairPhase: "managed_restart" },
+          finishedAt: new Date("2026-08-19T00:02:00.000Z"),
+        }),
+      ],
+      handoffFailure: {
+        reason: "workspace_not_ready",
+        readiness: {
+          state: "ready",
+          databaseReady: true,
+          cloneDataReady: true,
+          authHandoffReady: true,
+          seedState: "verified",
+          seedPhase: "complete",
+          seedMode: "full",
+          instanceId: "instance-a",
+          executionWorkspaceId: "ews-1",
+          failurePhase: null,
+        },
+      },
+    });
+
+    expect(access).toMatchObject({ state: "ready", action: { kind: "open" } });
+    expect(access.secondaryNotice?.action.kind).toBe("view_logs");
+  });
+
+  it("keeps a newer failed repair primary even when an older runtime is healthy", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [runtimeService({ startedAt: new Date("2026-08-19T00:01:00.000Z") })],
+      operations: [
+        operation({
+          phase: "workspace_repair",
+          status: "failed",
+          finishedAt: new Date("2026-08-19T00:02:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(access).toMatchObject({ state: "failed", action: { kind: "view_logs" } });
+    expect(access.secondaryNotice).toBeUndefined();
+  });
+
   it("shows provisioning while the clone is restoring", () => {
     const access = resolveWorkspaceAccessState({
       runtimeServices: [],

@@ -72,6 +72,31 @@ describe("WorkspaceAccessCard", () => {
     act(() => root.unmount());
   });
 
+  it("keeps a superseded repair failure visible without hiding the open action", () => {
+    const { onOpen, onViewLogs, root } = renderCard({
+      access: accessState({
+        secondaryNotice: {
+          title: "Repair failed",
+          description: "The repair stopped during managed_restart. The pre-repair backup was kept.",
+          action: { kind: "view_logs", label: "View repair log" },
+        },
+      }),
+    });
+
+    const openButton = findButton("Open workspace");
+    const logButton = findButton("View repair log");
+    expect(openButton).toBeDefined();
+    expect(logButton).toBeDefined();
+    expect(container.querySelector("[data-testid='workspace-access-secondary-notice']")?.textContent)
+      .toContain("pre-repair backup was kept");
+
+    act(() => openButton!.click());
+    act(() => logButton!.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onViewLogs).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
   it("labels the credential fallback accurately when no handoff is available", () => {
     const { root } = renderCard({
       access: accessState({

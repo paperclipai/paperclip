@@ -71,6 +71,9 @@ export function WorkspaceAccessCard({
     view_logs: onViewLogs,
     wait: () => undefined,
   };
+  const SecondaryNoticeIcon = access.secondaryNotice
+    ? ACTION_ICONS[access.secondaryNotice.action.kind]
+    : null;
 
   return (
     <Card data-testid="workspace-access-card" data-state={access.state}>
@@ -122,6 +125,23 @@ export function WorkspaceAccessCard({
           <p data-testid="workspace-access-error" className="text-sm text-destructive">
             {errorMessage}
           </p>
+        ) : null}
+        {access.secondaryNotice && SecondaryNoticeIcon ? (
+          <div data-testid="workspace-access-secondary-notice" className="flex flex-col gap-1.5 text-sm">
+            <p className="font-medium text-destructive">{access.secondaryNotice.title}</p>
+            <p className="text-muted-foreground">{access.secondaryNotice.description}</p>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto w-fit p-0"
+              disabled={isBusy}
+              onClick={handlers[access.secondaryNotice.action.kind]}
+            >
+              <SecondaryNoticeIcon className="mr-2 h-4 w-4" />
+              {access.secondaryNotice.action.label}
+            </Button>
+          </div>
         ) : null}
       </CardContent>
     </Card>

@@ -31,6 +31,12 @@ export type WorkspaceAccessAction = {
   label: string;
 };
 
+export type WorkspaceAccessNotice = {
+  title: string;
+  description: string;
+  action: WorkspaceAccessAction;
+};
+
 export type WorkspaceAccessState = {
   state: WorkspaceReadinessState;
   title: string;
@@ -38,6 +44,8 @@ export type WorkspaceAccessState = {
   action: WorkspaceAccessAction;
   /** True when a password-independent handoff is the expected way in. */
   handoffAvailable: boolean;
+  /** A non-blocking historical failure that is still useful to inspect. */
+  secondaryNotice?: WorkspaceAccessNotice;
 };
 
 /** What the control plane said the last time a handoff was requested. */
@@ -54,6 +62,23 @@ function latestOperation(operations: WorkspaceOperation[], phase: WorkspaceOpera
 function describeSeedPhase(readiness: WorkspaceReadiness | null | undefined): string | null {
   if (!readiness?.failurePhase && !readiness?.seedPhase) return null;
   return readiness.failurePhase ?? readiness.seedPhase ?? null;
+}
+
+function timestampMs(value: Date | string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function failedRepairNotice(repair: WorkspaceOperation): WorkspaceAccessNotice {
+  const phase = typeof repair.metadata?.repairPhase === "string" ? repair.metadata.repairPhase : null;
+  return {
+    title: "Repair failed",
+    description: phase
+      ? `The repair stopped during ${phase}. The pre-repair backup was kept.`
+      : "The repair stopped before the workspace became usable. The pre-repair backup was kept.",
+    action: { kind: "view_logs", label: "View repair log" },
+  };
 }
 
 const HANDOFF_REASON_COPY: Record<string, string> = {
@@ -105,6 +130,22 @@ export function resolveWorkspaceAccessState(input: {
   const failure = input.handoffFailure ?? null;
   const cause = describeWorkspaceReadinessCause(failure);
   const handoffAvailable = failure?.reason !== "handoff_not_configured" && failure?.reason !== "no_board_identity";
+  const servingService = runtimeServices.find(
+    (service) => service.status === "running" && service.healthStatus === "healthy" && service.url,
+  );
+  const repairFinishedAt = timestampMs(repair?.finishedAt);
+  const servingServiceStartedAt = timestampMs(servingService?.startedAt);
+  const readinessConfirmsServing = Boolean(servingService && failure?.readiness?.state === "ready");
+  const runtimeStartedAfterRepair = repairFinishedAt !== null
+    && servingServiceStartedAt !== null
+    && repairFinishedAt < servingServiceStartedAt;
+  const repairFailureWasSuperseded = repair?.status === "failed" && Boolean(
+    servingService
+    && (readinessConfirmsServing || runtimeStartedAfterRepair),
+  );
+  const secondaryNotice = repair?.status === "failed" && repairFailureWasSuperseded
+    ? failedRepairNotice(repair)
+    : undefined;
 
   // A live repair outranks everything: it is already changing the answer.
   if (repair?.status === "running") {
@@ -119,15 +160,11 @@ export function resolveWorkspaceAccessState(input: {
       handoffAvailable,
     };
   }
-  if (repair?.status === "failed") {
-    const phase = typeof repair.metadata?.repairPhase === "string" ? repair.metadata.repairPhase : null;
+  if (repair?.status === "failed" && !repairFailureWasSuperseded) {
+    const notice = failedRepairNotice(repair);
     return {
       state: "failed",
-      title: "Repair failed",
-      description: phase
-        ? `The repair stopped during ${phase}. The pre-repair backup was kept.`
-        : "The repair stopped before the workspace became usable. The pre-repair backup was kept.",
-      action: { kind: "view_logs", label: "View repair log" },
+      ...notice,
       handoffAvailable,
     };
   }
@@ -156,13 +193,10 @@ export function resolveWorkspaceAccessState(input: {
     };
   }
 
-  const servingService = runtimeServices.find(
-    (service) => service.status === "running" && service.healthStatus === "healthy" && service.url,
-  );
-
   // Readiness the control plane actually observed beats anything inferred from
   // runtime rows, because it is the only signal that looked inside the clone.
-  if (failure) {
+  const staleNotReadyFailure = failure?.reason === "workspace_not_ready" && readinessConfirmsServing;
+  if (failure && !staleNotReadyFailure) {
     if (failure.reason === "runtime_not_running" && !servingService) {
       return {
         state: "provisioning",
@@ -197,6 +231,7 @@ export function resolveWorkspaceAccessState(input: {
           ? { kind: "open", label: "Open workspace" }
           : { kind: "start", label: "Start workspace" },
         handoffAvailable: false,
+        secondaryNotice,
       };
     }
   }
@@ -208,6 +243,7 @@ export function resolveWorkspaceAccessState(input: {
       description: "Opening the workspace signs you in to the cloned board without a password.",
       action: { kind: "open", label: "Open workspace" },
       handoffAvailable,
+      secondaryNotice,
     };
   }
 
