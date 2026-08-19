@@ -105,6 +105,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
   },
+  ollama_local: {
+    label: "Ollama",
+    description: "Native local Ollama/OpenAI-compatible model",
+    icon: Cpu,
+  },
   pi_local: {
     label: "Pi",
     description: "Pi harness",

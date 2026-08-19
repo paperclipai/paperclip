@@ -106,6 +106,15 @@ import {
   modelProfiles as openCodeModelProfiles,
 } from "@paperclipai/adapter-opencode-local";
 import {
+  execute as ollamaExecute,
+  testEnvironment as ollamaTestEnvironment,
+  sessionCodec as ollamaSessionCodec,
+} from "@paperclipai/adapter-ollama-local/server";
+import {
+  agentConfigurationDoc as ollamaAgentConfigurationDoc,
+  models as ollamaModels,
+} from "@paperclipai/adapter-ollama-local";
+import {
   execute as openclawGatewayExecute,
   testEnvironment as openclawGatewayTestEnvironment,
 } from "@paperclipai/adapter-openclaw-gateway/server";
@@ -446,6 +455,18 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const ollamaLocalAdapter: ServerAdapterModule = {
+  type: "ollama_local",
+  execute: ollamaExecute,
+  testEnvironment: ollamaTestEnvironment,
+  sessionCodec: ollamaSessionCodec,
+  models: ollamaModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: ollamaAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   execute: piExecute,
@@ -483,6 +504,7 @@ function registerBuiltInAdapters() {
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
+    ollamaLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,

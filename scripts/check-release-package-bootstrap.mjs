@@ -135,31 +135,27 @@ function collectReleasePackagesForChangedPaths(
     if (!isRelevant) continue;
     if (seen.has(pkg.name)) continue;
 
-    changedReleasePackages.push(pkg);
+    changedReleasePackages.push({ ...pkg, newlyReleaseEnabled });
     seen.add(pkg.name);
   }
 
   return changedReleasePackages;
 }
 
-function main(changedPaths) {
-  const releasePackages = buildReleasePackagePlan();
-  const baseReleaseState = getBaseReleaseState(process.env.PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA, releasePackages);
-  const changedReleasePackages = collectReleasePackagesForChangedPaths(changedPaths, releasePackages, baseReleaseState);
-
-  if (changedReleasePackages.length === 0) {
-    process.stdout.write("No release-enabled package manifests changed in this PR.\n");
-    return;
-  }
-
+function validateReleaseBootstrap(changedReleasePackages, inspectPackage = inspectNpmPackage) {
+  const newlyMissingPackages = [];
   const missingPackages = [];
   const registryFailures = [];
 
   for (const pkg of changedReleasePackages) {
-    const npmStatus = inspectNpmPackage(pkg.name);
+    const npmStatus = inspectPackage(pkg.name);
 
     if (npmStatus.status === "missing") {
-      missingPackages.push(pkg);
+      if (pkg.newlyReleaseEnabled) {
+        newlyMissingPackages.push(pkg);
+      } else {
+        missingPackages.push(pkg);
+      }
       continue;
     }
 
@@ -190,6 +186,27 @@ function main(changedPaths) {
     throw new Error(`release package bootstrap check could not verify npm state:\n- ${details}`);
   }
 
+  return newlyMissingPackages.map(
+    (pkg) =>
+      `${pkg.name} (${pkg.dir}) is newly release-enabled but does not exist on npm yet; the first publish will bootstrap it after merge`,
+  );
+}
+
+function main(changedPaths) {
+  const releasePackages = buildReleasePackagePlan();
+  const baseReleaseState = getBaseReleaseState(process.env.PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA, releasePackages);
+  const changedReleasePackages = collectReleasePackagesForChangedPaths(changedPaths, releasePackages, baseReleaseState);
+
+  if (changedReleasePackages.length === 0) {
+    process.stdout.write("No release-enabled package manifests changed in this PR.\n");
+    return;
+  }
+
+  const bootstrapWarnings = validateReleaseBootstrap(changedReleasePackages);
+  for (const warning of bootstrapWarnings) {
+    process.stdout.write(`Warning: ${warning}\n`);
+  }
+
   process.stdout.write(
     `Release bootstrap OK for changed manifests: ${changedReleasePackages.map((pkg) => pkg.name).join(", ")}\n`,
   );
@@ -203,4 +220,5 @@ export {
   classifyNpmViewFailure,
   collectReleasePackagesForChangedPaths,
   getBaseReleaseState,
+  validateReleaseBootstrap,
 };
