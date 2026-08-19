@@ -3,7 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
-const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -98,7 +98,8 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   );
   return {
     ...actual,
-    findExistingIssueBlockersResolvedWake: mockFindExistingIssueBlockersResolvedWake,
+    findExistingIssueBlockersResolvedWakeForReadyState:
+      mockFindExistingIssueBlockersResolvedWakeForReadyState,
   };
 });
 
@@ -145,7 +146,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
-    mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
