@@ -75,7 +75,13 @@ describe("agent session wake messages", () => {
 
   it("renders tool-action outcomes as directives plus fenced result data", async () => {
     const wakePayload = await buildPaperclipWakePayload({
-      db: {} as never,
+      db: {
+        select: () => ({
+          from: () => ({
+            where: async () => [],
+          }),
+        }),
+      } as never,
       companyId: "company-1",
       contextSnapshot: {
         wakeReason: "issue_commented",
@@ -117,7 +123,13 @@ describe("agent session wake messages", () => {
 
   it("renders newly resolved item verdicts and fences their reasons", async () => {
     const wakePayload = await buildPaperclipWakePayload({
-      db: {} as never,
+      db: {
+        select: () => ({
+          from: () => ({
+            where: async () => [],
+          }),
+        }),
+      } as never,
       companyId: "company-1",
       contextSnapshot: {
         wakeReason: "issue_commented",
