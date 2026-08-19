@@ -810,6 +810,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
+  "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
   "DELETE /api/board-api-keys/{keyId}",
@@ -5327,6 +5328,36 @@ registry.registerPath({
     body: jsonBody(reconcileExecutionWorkspaceBranchSchema),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/execution-workspaces/{id}/login-handoff",
+  tags: ["execution-workspaces"],
+  summary: "Issue a single-use workspace login handoff",
+  description:
+    "Mints a short-lived, single-use ticket the isolated workspace exchanges for its own "
+    + "instance-scoped session, so opening a managed workspace does not depend on a cloned "
+    + "password. Board actors only. The response `url` must be navigated to, not stored: the "
+    + "workspace answers it with a redirect so the ticket never enters browser history. A refusal "
+    + "carries a machine `reason` and, where the control plane probed it, the workspace's own "
+    + "readiness.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        next: z.string().optional().describe("Same-origin path to land on; anything else collapses to `/`."),
+      }),
+    ),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    501: r.serverError,
+  },
 });
 
 registry.registerPath({

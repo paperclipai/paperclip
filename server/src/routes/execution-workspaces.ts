@@ -50,6 +50,10 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { runExclusiveWorkspaceRuntimeControl } from "../services/workspace-operations.js";
 import { deriveWorktreeInstanceId } from "../services/workspace-instance-cleanup.js";
 import { isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
+import {
+  issueWorkspaceLoginHandoff,
+  workspaceLoginHandoffFailureStatus,
+} from "../services/workspace-login-handoff-issuer.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
@@ -142,6 +146,88 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
     res.json(readiness);
+  });
+
+  /**
+   * Mint a single-use workspace login handoff for the calling board user.
+   *
+   * Board-only: the ticket carries a user identity, so an agent key — which has
+   * no user to sign in — must never be able to mint one. Nothing in the request
+   * body influences what the ticket is bound to; only the landing path is taken
+   * from the caller, and it is reduced to a same-origin path before signing.
+   */
+  router.post("/execution-workspaces/:id/login-handoff", async (req, res) => {
+    const id = req.params.id as string;
+    assertBoard(req);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
+    assertCompanyAccess(req, workspace.companyId);
+    // Opening a workspace board is a runtime-control-grade action: it hands the
+    // caller an authenticated session inside the cloned instance.
+    if (!(await assertRuntimeManageAllowed(req, res, workspace.companyId))) return;
+
+    const requestedNext = typeof (req.body as { next?: unknown } | null)?.next === "string"
+      ? (req.body as { next: string }).next
+      : null;
+    const result = await issueWorkspaceLoginHandoff({
+      db,
+      companyId: workspace.companyId,
+      executionWorkspace: { id: workspace.id, cwd: workspace.cwd },
+      actor: {
+        userId: req.actor.userId ?? null,
+        userEmail: req.actor.userEmail ?? null,
+        source: req.actor.source ?? null,
+      },
+      next: requestedNext,
+    });
+
+    if (!result.ok) {
+      logger.warn(
+        {
+          executionWorkspaceId: workspace.id,
+          reason: result.failure.reason,
+          detail: "detail" in result.failure ? result.failure.detail : null,
+        },
+        "workspace login handoff was not issued",
+      );
+      res.status(workspaceLoginHandoffFailureStatus(result.failure)).json({
+        error: "workspace_login_handoff_unavailable",
+        // The UI turns this into the labeled snapshot-local credential fallback
+        // or a repair prompt, so the machine reason has to survive the boundary.
+        reason: result.failure.reason,
+        mode: "credentials",
+        ...("detail" in result.failure ? { detail: result.failure.detail } : {}),
+        ...("readiness" in result.failure ? { readiness: result.failure.readiness } : {}),
+      });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: workspace.companyId,
+      // Auditing issuance is a requirement of the handoff design: the nonce ties
+      // this record to the guest's own accept/reject record. The ticket itself is
+      // never recorded.
+      action: "workspace_login_handoff_issued",
+      entityType: "execution_workspace",
+      entityId: workspace.id,
+      actorType: "user",
+      actorId: result.issuance.userId,
+      details: {
+        nonce: result.issuance.nonce,
+        instanceId: result.issuance.instanceId,
+        origin: result.issuance.origin,
+        expiresAt: result.issuance.expiresAt,
+      },
+    }).catch((error) => {
+      logger.warn({ err: error, executionWorkspaceId: workspace.id }, "failed to audit workspace login handoff");
+    });
+
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json({
+      url: result.issuance.url,
+      expiresAt: result.issuance.expiresAt,
+      mode: "handoff",
+    });
   });
 
   router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
