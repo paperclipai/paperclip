@@ -27,7 +27,7 @@ Don't use when:
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file appended to system prompt via --append-system-prompt
-- promptTemplate (string, optional): user prompt template passed via -p flag
+- promptTemplate (string, optional): user prompt template sent to Pi on stdin in print mode (-p)
 - model (string, required): Pi model id in provider/model format (for example xai/grok-4)
 - thinking (string, optional): thinking level (off, minimal, low, medium, high, xhigh)
 - command (string, optional): defaults to "pi"
@@ -42,5 +42,5 @@ Notes:
 - Paperclip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
 - All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
-- Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
+- Agent instructions are appended to Pi's system prompt via --append-system-prompt. On local targets the adapter writes that text to a temp file and passes the file path so the command line stays under the Windows cmd.exe 8191-character limit. The user task is sent on stdin with -p.
 `;
