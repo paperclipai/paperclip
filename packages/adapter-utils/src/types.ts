@@ -500,6 +500,14 @@ export interface ServerAdapterModule {
    * and provisioned in fresh remote environments such as sandboxes.
    */
   getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+
+  /**
+   * Optional: declare the interactive sandbox login capability. The server uses
+   * it to drive the login flow and to project the safe panel fields to the user
+   * interface. An adapter with no interactive login (for example an
+   * API-key-only vendor) omits it. The capability data holds no secret.
+   */
+  loginCapability?: import("./login-capability.js").AdapterLoginCapability;
 }
 
 // ---------------------------------------------------------------------------
