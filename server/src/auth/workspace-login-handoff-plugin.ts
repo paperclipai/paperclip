@@ -11,7 +11,7 @@
  * verification key, so a normal control-plane instance exposes no extra surface.
  */
 
-import { and, count, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { setSessionCookie } from "better-auth/cookies";
 import { createAuthEndpoint } from "better-auth/api";
 import type { Session, User } from "better-auth/types";
@@ -117,10 +117,11 @@ export function workspaceLoginHandoffPlugin(deps: {
                 if (!user) return null;
                 // Membership lives in Paperclip's own schema, so it is read
                 // through the app's `db` handle rather than the Better Auth
-                // adapter. One active row is enough: the ticket authorizes a
-                // sign-in, and per-company authorization is enforced downstream.
-                const membershipCount = await deps.db
-                  .select({ count: count() })
+                // adapter. One active row is enough — the ticket authorizes a
+                // sign-in and per-company authorization is enforced downstream —
+                // so this asks for existence rather than counting them all.
+                const activeMemberships = await deps.db
+                  .select({ id: companyMemberships.id })
                   .from(companyMemberships)
                   .where(
                     and(
@@ -129,12 +130,13 @@ export function workspaceLoginHandoffPlugin(deps: {
                       eq(companyMemberships.status, "active"),
                     ),
                   )
-                  .then((rows) => Number(rows[0]?.count ?? 0));
+                  .limit(1)
+                  .then((rows) => rows.length);
                 return {
                   userId: user.id,
                   email: user.email ?? null,
                   name: user.name ?? null,
-                  hasActiveMembership: membershipCount > 0,
+                  hasActiveMembership: activeMemberships > 0,
                 };
               },
               reserveNonce: async ({ nonce, expiresAt }) => {

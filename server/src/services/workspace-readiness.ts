@@ -17,7 +17,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, issues } from "@paperclipai/db";
 import type {
@@ -128,15 +128,45 @@ export function resolveWorkspaceReadinessState(input: {
  * to treat "no clone" as "broken clone". Detection is by evidence on disk or
  * injected identity, never by a branch-name or path heuristic.
  */
-export function isManagedWorkspaceInstance(env: NodeJS.ProcessEnv = process.env): boolean {
+let managedWorkspaceInstanceCache: { markerDir: string; value: boolean; checkedAtMs: number } | null = null;
+
+/**
+ * How long the marker-file answer is reused. `/api/health` is polled by the dev
+ * runner, the control plane's readiness probe and the UI, so three `existsSync`
+ * calls per request would be pure overhead on an instance whose answer is
+ * effectively static. Short enough that a manifest appearing mid-provision is
+ * picked up promptly.
+ */
+const MANAGED_WORKSPACE_DETECTION_TTL_MS = 5_000;
+
+export function isManagedWorkspaceInstance(
+  env: NodeJS.ProcessEnv = process.env,
+  now: () => number = Date.now,
+): boolean {
+  // Injected identity is authoritative and free to read, so it short-circuits
+  // ahead of any filesystem work.
   if (resolveWorkspaceHandoffLocalKey(env)) return true;
   if (resolveWorkspaceHandoffLocalWorkspaceId(env)) return true;
+
   const markerDir = resolveWorkspaceSeedMarkerDir(env);
-  return (
-    existsSync(path.join(markerDir, WORKSPACE_SEED_MANIFEST_BASENAME))
+  const cached = managedWorkspaceInstanceCache;
+  if (
+    cached
+    && cached.markerDir === markerDir
+    && now() - cached.checkedAtMs < MANAGED_WORKSPACE_DETECTION_TTL_MS
+  ) {
+    return cached.value;
+  }
+  const value = existsSync(path.join(markerDir, WORKSPACE_SEED_MANIFEST_BASENAME))
     || existsSync(path.join(markerDir, LEGACY_SEED_PENDING_BASENAME))
-    || existsSync(path.join(markerDir, LEGACY_SEED_COMPLETE_BASENAME))
-  );
+    || existsSync(path.join(markerDir, LEGACY_SEED_COMPLETE_BASENAME));
+  managedWorkspaceInstanceCache = { markerDir, value, checkedAtMs: now() };
+  return value;
+}
+
+/** Test-only seam so a suite can change marker files without waiting out the TTL. */
+export function resetManagedWorkspaceInstanceCacheForTests(): void {
+  managedWorkspaceInstanceCache = null;
 }
 
 export type WorkspaceReadinessDeps = {
@@ -189,9 +219,11 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
       try {
         // The handoff can only sign in a user who survived the clone with an
         // active membership, so readiness asserts that identity exists here
-        // rather than discovering it at click time.
+        // rather than discovering it at click time. Existence, not a count: this
+        // runs on every protected health request and counting the whole join
+        // would scale with instance size for an answer that needs one row.
         const eligibleUsers = await deps.db
-          .select({ count: count() })
+          .select({ userId: authUsers.id })
           .from(authUsers)
           .innerJoin(
             companyMemberships,
@@ -201,7 +233,8 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
               eq(companyMemberships.status, "active"),
             ),
           )
-          .then((rows) => Number(rows[0]?.count ?? 0));
+          .limit(1)
+          .then((rows) => rows.length);
         clonedAdminPresent = eligibleUsers > 0;
         if (!clonedAdminPresent) probeFailurePhase ??= "cloned_membership_missing";
       } catch (error) {

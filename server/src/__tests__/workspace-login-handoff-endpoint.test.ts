@@ -38,16 +38,21 @@ const KEY = deriveWorkspaceHandoffKey({
 
 type MemoryStore = Record<string, Record<string, unknown>[]>;
 
-/** Membership lookup goes through the app `db`, not the Better Auth adapter. */
+/**
+ * Membership lookup goes through the app `db`, not the Better Auth adapter, and
+ * asks for existence — so the stub answers with rows, not a count.
+ */
 function stubDb(activeMembershipCount: number) {
+  const rows = Array.from({ length: Math.max(0, activeMembershipCount) }, (_, index) => ({
+    id: `membership-${index}`,
+  }));
   return {
     select: vi.fn(() => {
       const chain: Record<string, unknown> = {};
       for (const method of ["from", "where", "innerJoin", "limit", "orderBy"]) {
         chain[method] = vi.fn(() => chain);
       }
-      chain.then = (resolve: (rows: unknown) => unknown) =>
-        Promise.resolve([{ count: activeMembershipCount }]).then(resolve);
+      chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve);
       return chain;
     }),
   } as unknown as Db;

@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import type { WorkspaceReadinessProbeResult } from "@paperclipai/shared";
 import {
   isManagedWorkspaceInstance,
+  resetManagedWorkspaceInstanceCacheForTests,
   resolveWorkspaceReadiness,
   resolveWorkspaceReadinessState,
   resolveWorkspaceSeedMarkerDir,
@@ -52,9 +53,10 @@ function verifiedManifest(overrides: Record<string, unknown> = {}) {
 function readyDb() {
   return {
     execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
-    select: vi.fn((projection?: Record<string, unknown>) => {
-      const isCountQuery = Boolean(projection && "count" in projection);
-      const result = isCountQuery ? [{ count: 1 }] : [{ companyId: "company-1" }];
+    // Both readiness probes are `limit(1)` existence queries, so one row is enough
+    // to answer either of them.
+    select: vi.fn(() => {
+      const result = [{ companyId: "company-1", userId: "user-1" }];
       const chain = {
         from: vi.fn(() => chain),
         innerJoin: vi.fn(() => chain),
@@ -68,6 +70,7 @@ function readyDb() {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  resetManagedWorkspaceInstanceCacheForTests();
   vi.restoreAllMocks();
 });
 
@@ -193,6 +196,21 @@ describe("resolveWorkspaceReadiness", () => {
   it("resolves the marker directory from the configured config path", () => {
     const { dir, configPath } = createMarkerDir();
     expect(resolveWorkspaceSeedMarkerDir({ PAPERCLIP_CONFIG: configPath })).toBe(dir);
+  });
+
+  it("does not re-stat marker files on every health request", () => {
+    const { configPath } = createMarkerDir({ "seed-manifest.json": verifiedManifest() });
+    const env = { PAPERCLIP_CONFIG: configPath };
+    let clock = 0;
+    expect(isManagedWorkspaceInstance(env, () => clock)).toBe(true);
+
+    // Removing the marker inside the TTL keeps the cached answer; past it, the
+    // filesystem is consulted again.
+    rmSync(path.join(path.dirname(configPath), "seed-manifest.json"));
+    clock = 1_000;
+    expect(isManagedWorkspaceInstance(env, () => clock)).toBe(true);
+    clock = 10_000;
+    expect(isManagedWorkspaceInstance(env, () => clock)).toBe(false);
   });
 
   it("only treats a process with clone evidence as a managed workspace", () => {
