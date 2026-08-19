@@ -148,7 +148,7 @@ export function SearchFilterSheet({
           </button>
         </SheetHeader>
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        <div className="flex-1 space-y-5 overflow-y-auto p-4 pb-6">
           <ChipToggleGroup
             title="Status"
             options={options.status}
@@ -188,18 +188,18 @@ export function SearchFilterSheet({
             selected={draft.updatedWithin ? [draft.updatedWithin] : []}
             onToggle={(value) => toggleSingle("updatedWithin", value)}
           />
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <div className="text-xs font-medium text-muted-foreground">Sort by</div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-2">
               {COMPANY_SEARCH_SORTS.map((value) => (
                 <button
                   key={value}
                   type="button"
                   className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    "rounded-full border px-3 py-1.5 text-sm transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center",
                     value === sort
                       ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                      : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground active:scale-[0.98]",
                   )}
                   onClick={() => onSortChange(value)}
                 >

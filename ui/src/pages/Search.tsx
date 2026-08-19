@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, AlertTriangle, FileQuestion, Plus, X } from "lucide-react";
+import { Search as SearchIcon, AlertTriangle, FileQuestion, Plus, X, Camera } from "lucide-react";
+import { BarcodeScannerModal } from "@/components/search/BarcodeScannerModal";
 import {
   COMPANY_SEARCH_DEFAULT_LIMIT,
   COMPANY_SEARCH_SCOPES,
@@ -189,6 +190,7 @@ export function Search() {
   const [sort, setSort] = useState<CompanySearchSort>(urlSort);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draftSheetFilters, setDraftSheetFilters] = useState<ParsedSearchQuery["filters"]>({});
+  const [showBarcodeModal, setShowBarcodeModal] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [inputFocused, setInputFocused] = useState(false);
   const lastUrlSyncRef = useRef<string>("");
@@ -609,21 +611,30 @@ export function Search() {
             }}
             placeholder="Search tasks, comments, documents, artifacts, agents, projects…"
             aria-label="Search query"
-            className="h-10 pl-9 pr-20 text-sm"
+            className="h-11 pl-9 pr-12 text-sm sm:h-10 sm:pl-9 sm:pr-20"
           />
           {draftQuery.length > 0 ? (
             <button
               type="button"
               onClick={handleClear}
               aria-label="Clear search"
-              className="absolute right-12 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-accent/50"
+              className="absolute right-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-accent/50 sm:right-12 sm:h-6 sm:w-6"
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
             </button>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowBarcodeModal(true)}
+              aria-label="Scan ISBN barcode"
+              className="absolute right-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-accent/50 sm:hidden"
+            >
+              <Camera className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+            </button>
+          )}
           <kbd
             aria-hidden
-            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium text-muted-foreground"
+            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium text-muted-foreground sm:right-3"
           >
             ⌘K
           </kbd>
