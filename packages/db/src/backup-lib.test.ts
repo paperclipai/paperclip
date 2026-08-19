@@ -146,6 +146,19 @@ describe("createBufferedGzipTextFileWriter", () => {
     expect(gunzipSync(fs.readFileSync(outputPath)).toString("utf8")).toBe(lines.join("\n"));
     expect(fs.existsSync(path.join(tempDir, "backup.sql"))).toBe(false);
   });
+
+  it("fails with EEXIST when the gzip partial output path already exists", async () => {
+    const tempDir = createTempDir("paperclip-gzip-writer-eexist-");
+    const outputPath = path.join(tempDir, "backup.sql.gz.partial");
+    fs.writeFileSync(outputPath, "existing partial");
+
+    const writer = createBufferedGzipTextFileWriter(outputPath, 16);
+    writer.emit("-- header");
+
+    await expect(writer.close()).rejects.toMatchObject({
+      code: "EEXIST",
+    });
+  });
 });
 
 describe("runDatabaseBackup preflight", () => {
