@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
@@ -693,7 +703,18 @@ export function Layout() {
                 />
               ) : (
                 <RouteErrorBoundary>
-                  <Outlet />
+                  {/* Content-area Suspense boundary for route-level code
+                      splitting: keep the shell (sidebar, panels)
+                      mounted while a lazily-loaded page chunk resolves. */}
+                  <Suspense
+                    fallback={
+                      <div className="flex min-h-(--sz-40vh) items-center justify-center">
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      </div>
+                    }
+                  >
+                    <Outlet />
+                  </Suspense>
                 </RouteErrorBoundary>
               )}
             </main>

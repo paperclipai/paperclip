@@ -120,6 +120,14 @@ vi.mock("@mdxeditor/editor", async () => {
   };
 });
 
+// `@/components/MarkdownEditor` is a React.lazy wrapper around the real editor
+// (PAP-15666 keeps @mdxeditor + lexical off the critical path). This suite drives
+// the composer synchronously through flushSync, so that Suspense boundary would
+// never resolve within a commit and every editor query would miss. Substitute the
+// implementation module the wrapper loads: the editor under test is still the real
+// one, only the chunk-loading indirection is skipped.
+vi.mock("@/components/MarkdownEditor", async () => await import("../MarkdownEditorImpl"));
+
 vi.mock("../../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
 }));

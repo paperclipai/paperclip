@@ -1,93 +1,125 @@
-import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
+import { lazy, Suspense, type ComponentType } from "react";
+import { Loader2 } from "lucide-react";
+import { Navigate, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
-import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
-import { Cases } from "./pages/Cases";
-import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
-import { Dashboard } from "./pages/Dashboard";
-import { DashboardLive } from "./pages/DashboardLive";
-import { Timeline } from "./pages/Timeline";
-import { Companies } from "./pages/Companies";
-import { AGENT_FILTER_TABS, Agents } from "./pages/Agents";
-import { AgentDetail } from "./pages/AgentDetail";
-import { Projects } from "./pages/Projects";
-import { ProjectDetail } from "./pages/ProjectDetail";
-import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
-import { Workspaces } from "./pages/Workspaces";
-import { Issues } from "./pages/Issues";
-import { Search } from "./pages/Search";
-import { IssueDetail } from "./pages/IssueDetail";
-import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
-import { Routines } from "./pages/Routines";
-import { Learnings, PipelineItemDetail, PipelineItemLegacyRedirect, Pipelines, ReviewQueue } from "./pages/Pipelines";
-import { PipelineSettings } from "./pages/PipelineSettings";
-import { StatusCards } from "./pages/StatusCards";
-import { RoutineDetail } from "./pages/RoutineDetail";
-import { UserProfile } from "./pages/UserProfile";
-import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
-import { Goals } from "./pages/Goals";
-import { Artifacts } from "./pages/Artifacts";
-import { GoalDetail } from "./pages/GoalDetail";
-import { Approvals } from "./pages/Approvals";
-import { ApprovalDetail } from "./pages/ApprovalDetail";
-import { Costs } from "./pages/Costs";
-import { CompanyActivity } from "./pages/audit/CompanyActivity";
-import { Inbox } from "./pages/Inbox";
-import { WhatNeedsMe } from "./pages/WhatNeedsMe";
-import { DecisionQueuePage } from "./pages/DecisionQueuePage";
-import { BoardChat } from "./pages/BoardChat";
-import { CompanySettings } from "./pages/CompanySettings";
-import { CompanyEnvironments } from "./pages/CompanyEnvironments";
-import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
-import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
-import { CrossIssueCollaborationUxLab } from "./pages/CrossIssueCollaborationUxLab";
-import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
-import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
-import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
-import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
-import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
-import { Connections } from "./pages/apps/Connections";
-import { Browse } from "./pages/apps/Browse";
-import { AppsConnect } from "./pages/apps/AppsConnect";
+// Pure predicate with no module dependencies of its own — safe to keep on the
+// critical path so the /apps/connect entry route can decide synchronously.
 import { canEnterAppsConnect } from "./pages/apps/app-connect-policy";
-import { AppsReview } from "./pages/apps/AppsReview";
-import { AppDetail } from "./pages/apps/AppDetail";
-import { AppNotConnected } from "./pages/apps/AppNotConnected";
-import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
-import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
-import { CompanyInvites } from "./pages/CompanyInvites";
-import { CompanySkills } from "./pages/CompanySkills";
-import { SkillStudio } from "./pages/SkillStudio";
-import { Secrets } from "./pages/Secrets";
-import { CompanyExport } from "./pages/CompanyExport";
-import { CompanyImport } from "./pages/CompanyImport";
-import { DesignGuide } from "./pages/DesignGuide";
-import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
-import { InstanceAccess } from "./pages/InstanceAccess";
-import { InstanceSettings } from "./pages/InstanceSettings";
-import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
-import { ProfileSettings } from "./pages/ProfileSettings";
-import { PluginManager } from "./pages/PluginManager";
-import { PluginSettings } from "./pages/PluginSettings";
-import { AdapterManager } from "./pages/AdapterManager";
-import { PluginPage } from "./pages/PluginPage";
-import { OrgChart } from "./pages/OrgChart";
-import { NewAgent } from "./pages/NewAgent";
-import { AuthPage } from "./pages/Auth";
-import { BoardClaimPage } from "./pages/BoardClaim";
-import { CliAuthPage } from "./pages/CliAuth";
-import { InviteLandingPage } from "./pages/InviteLanding";
-import { JoinRequestQueue } from "./pages/JoinRequestQueue";
-import { NotFoundPage } from "./pages/NotFound";
+
+// Route-level code splitting. Previously every one of ~90 pages was
+// statically imported here, producing a single ~6.5 MB entry chunk shipped on
+// every route (including the issue page). Each page is now loaded lazily so a
+// route ships only its own chunk plus shared vendor chunks. Pages are named
+// exports, so `lazyPage` unwraps the requested export into a default for
+// React.lazy while preserving the component's prop types for JSX below.
+function lazyPage<M, K extends keyof M>(loader: () => Promise<M>, name: K): M[K] {
+  return lazy(() =>
+    loader().then((module) => ({ default: module[name] as ComponentType<unknown> })),
+  ) as unknown as M[K];
+}
+
+// AGENT_FILTER_TABS is a tiny stable constant the router needs eagerly to
+// register per-tab routes; inline it so it does not drag the heavy Agents page
+// into the entry chunk. Keep in sync with pages/Agents.tsx.
+const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
+
+const Cases = lazyPage(() => import("./pages/Cases"), "Cases");
+const CaseDetail = lazyPage(() => import("./pages/CaseDetail"), "CaseDetail");
+const Dashboard = lazyPage(() => import("./pages/Dashboard"), "Dashboard");
+const DashboardLive = lazyPage(() => import("./pages/DashboardLive"), "DashboardLive");
+const Timeline = lazyPage(() => import("./pages/Timeline"), "Timeline");
+const Companies = lazyPage(() => import("./pages/Companies"), "Companies");
+const Agents = lazyPage(() => import("./pages/Agents"), "Agents");
+const AgentDetail = lazyPage(() => import("./pages/AgentDetail"), "AgentDetail");
+const Projects = lazyPage(() => import("./pages/Projects"), "Projects");
+const ProjectDetail = lazyPage(() => import("./pages/ProjectDetail"), "ProjectDetail");
+const ProjectWorkspaceDetail = lazyPage(() => import("./pages/ProjectWorkspaceDetail"), "ProjectWorkspaceDetail");
+const Workspaces = lazyPage(() => import("./pages/Workspaces"), "Workspaces");
+const Issues = lazyPage(() => import("./pages/Issues"), "Issues");
+const Search = lazyPage(() => import("./pages/Search"), "Search");
+const IssueDetail = lazyPage(() => import("./pages/IssueDetail"), "IssueDetail");
+const IssueChatLongThreadPerf = lazyPage(() => import("./pages/IssueChatLongThreadPerf"), "IssueChatLongThreadPerf");
+// Dev-only harness. Lazy so it never reaches a production entry chunk even if
+// the `import.meta.env.DEV` route guard below is not tree-shaken away.
+const TaskChatLab = lazyPage(() => import("./pages/TaskChatLab"), "TaskChatLab");
+const Routines = lazyPage(() => import("./pages/Routines"), "Routines");
+const Learnings = lazyPage(() => import("./pages/Pipelines"), "Learnings");
+const PipelineItemDetail = lazyPage(() => import("./pages/Pipelines"), "PipelineItemDetail");
+const PipelineItemLegacyRedirect = lazyPage(() => import("./pages/Pipelines"), "PipelineItemLegacyRedirect");
+const Pipelines = lazyPage(() => import("./pages/Pipelines"), "Pipelines");
+const ReviewQueue = lazyPage(() => import("./pages/Pipelines"), "ReviewQueue");
+const PipelineSettings = lazyPage(() => import("./pages/PipelineSettings"), "PipelineSettings");
+const StatusCards = lazyPage(() => import("./pages/StatusCards"), "StatusCards");
+const RoutineDetail = lazyPage(() => import("./pages/RoutineDetail"), "RoutineDetail");
+const UserProfile = lazyPage(() => import("./pages/UserProfile"), "UserProfile");
+const ExecutionWorkspaceDetail = lazyPage(() => import("./pages/ExecutionWorkspaceDetail"), "ExecutionWorkspaceDetail");
+const Goals = lazyPage(() => import("./pages/Goals"), "Goals");
+const Artifacts = lazyPage(() => import("./pages/Artifacts"), "Artifacts");
+const GoalDetail = lazyPage(() => import("./pages/GoalDetail"), "GoalDetail");
+const Approvals = lazyPage(() => import("./pages/Approvals"), "Approvals");
+const ApprovalDetail = lazyPage(() => import("./pages/ApprovalDetail"), "ApprovalDetail");
+const Costs = lazyPage(() => import("./pages/Costs"), "Costs");
+const CompanyActivity = lazyPage(() => import("./pages/audit/CompanyActivity"), "CompanyActivity");
+const Inbox = lazyPage(() => import("./pages/Inbox"), "Inbox");
+const WhatNeedsMe = lazyPage(() => import("./pages/WhatNeedsMe"), "WhatNeedsMe");
+const DecisionQueuePage = lazyPage(() => import("./pages/DecisionQueuePage"), "DecisionQueuePage");
+const BoardChat = lazyPage(() => import("./pages/BoardChat"), "BoardChat");
+const CompanySettings = lazyPage(() => import("./pages/CompanySettings"), "CompanySettings");
+const CompanyEnvironments = lazyPage(() => import("./pages/CompanyEnvironments"), "CompanyEnvironments");
+const BootstrapSetupUxLab = lazyPage(() => import("./pages/BootstrapSetupUxLab"), "BootstrapSetupUxLab");
+const ResponsibleUserDenialUxLab = lazyPage(() => import("./pages/ResponsibleUserDenialUxLab"), "ResponsibleUserDenialUxLab");
+const CrossIssueCollaborationUxLab = lazyPage(
+  () => import("./pages/CrossIssueCollaborationUxLab"),
+  "CrossIssueCollaborationUxLab",
+);
+const CompanySettingsPluginPage = lazyPage(() => import("./pages/CompanySettingsPluginPage"), "CompanySettingsPluginPage");
+const CompanyAccess = lazyPage(() => import("./pages/CompanyAccess"), "CompanyAccess");
+const CompanyAccessLegacyRoute = lazyPage(() => import("./pages/CompanyAccess"), "CompanyAccessLegacyRoute");
+const AdvancedToolsRoute = lazyPage(() => import("./pages/tools/AdvancedToolsRoute"), "AdvancedToolsRoute");
+const ProfileWizardRoute = lazyPage(() => import("./pages/tools/profiles/ProfileWizardRoute"), "ProfileWizardRoute");
+const ProfileDetailRoute = lazyPage(() => import("./pages/tools/profiles/ProfileDetailRoute"), "ProfileDetailRoute");
+const Connections = lazyPage(() => import("./pages/apps/Connections"), "Connections");
+const Browse = lazyPage(() => import("./pages/apps/Browse"), "Browse");
+const AppsConnect = lazyPage(() => import("./pages/apps/AppsConnect"), "AppsConnect");
+const AppsReview = lazyPage(() => import("./pages/apps/AppsReview"), "AppsReview");
+const AppDetail = lazyPage(() => import("./pages/apps/AppDetail"), "AppDetail");
+const AppNotConnected = lazyPage(() => import("./pages/apps/AppNotConnected"), "AppNotConnected");
+const GatewaysList = lazyPage(() => import("./pages/apps/gateways/GatewaysList"), "GatewaysList");
+const GatewayDetail = lazyPage(() => import("./pages/apps/gateways/GatewayDetail"), "GatewayDetail");
+const CompanyInvites = lazyPage(() => import("./pages/CompanyInvites"), "CompanyInvites");
+const CompanySkills = lazyPage(() => import("./pages/CompanySkills"), "CompanySkills");
+const SkillStudio = lazyPage(() => import("./pages/SkillStudio"), "SkillStudio");
+const Secrets = lazyPage(() => import("./pages/Secrets"), "Secrets");
+const CompanyExport = lazyPage(() => import("./pages/CompanyExport"), "CompanyExport");
+const CompanyImport = lazyPage(() => import("./pages/CompanyImport"), "CompanyImport");
+const DesignGuide = lazyPage(() => import("./pages/DesignGuide"), "DesignGuide");
+const InstanceGeneralSettings = lazyPage(() => import("./pages/InstanceGeneralSettings"), "InstanceGeneralSettings");
+const InstanceAccess = lazyPage(() => import("./pages/InstanceAccess"), "InstanceAccess");
+const InstanceSettings = lazyPage(() => import("./pages/InstanceSettings"), "InstanceSettings");
+const InstanceExperimentalSettings = lazyPage(() => import("./pages/InstanceExperimentalSettings"), "InstanceExperimentalSettings");
+const ProfileSettings = lazyPage(() => import("./pages/ProfileSettings"), "ProfileSettings");
+const PluginManager = lazyPage(() => import("./pages/PluginManager"), "PluginManager");
+const PluginSettings = lazyPage(() => import("./pages/PluginSettings"), "PluginSettings");
+const AdapterManager = lazyPage(() => import("./pages/AdapterManager"), "AdapterManager");
+const PluginPage = lazyPage(() => import("./pages/PluginPage"), "PluginPage");
+const OrgChart = lazyPage(() => import("./pages/OrgChart"), "OrgChart");
+const NewAgent = lazyPage(() => import("./pages/NewAgent"), "NewAgent");
+const AuthPage = lazyPage(() => import("./pages/Auth"), "AuthPage");
+const BoardClaimPage = lazyPage(() => import("./pages/BoardClaim"), "BoardClaimPage");
+const CliAuthPage = lazyPage(() => import("./pages/CliAuth"), "CliAuthPage");
+const InviteLandingPage = lazyPage(() => import("./pages/InviteLanding"), "InviteLandingPage");
+const JoinRequestQueue = lazyPage(() => import("./pages/JoinRequestQueue"), "JoinRequestQueue");
+const NotFoundPage = lazyPage(() => import("./pages/NotFound"), "NotFoundPage");
 import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
@@ -541,9 +573,18 @@ function NoCompaniesStartPage() {
   );
 }
 
+function FullPageRouteFallback() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
 export function App() {
   return (
     <>
+      <Suspense fallback={<FullPageRouteFallback />}>
       <Routes>
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
@@ -619,6 +660,7 @@ export function App() {
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>
       </Routes>
+      </Suspense>
       <OnboardingWizardVariant />
     </>
   );

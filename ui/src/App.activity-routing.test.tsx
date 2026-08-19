@@ -112,15 +112,25 @@ function renderAppAt(container: HTMLElement, path: string) {
 }
 
 /**
- * Waits on the condition, not on a fixed number of turns. The previous version
+ * Waits on the condition, not on a fixed number of turns. An earlier version
  * yielded at most five macrotasks before asserting, which is ample on an idle
  * machine and not when the suite is running many workers in parallel — the
  * container was still empty and the assertion failed on a route that resolves
  * perfectly well. `vi.waitFor` retries against a time budget instead, so a
  * loaded worker gets more turns rather than a failure.
+ *
+ * Route elements are also code-split (PAP-15666), so a route only commits once
+ * its dynamic import resolves. The first route touched in a file therefore
+ * needs noticeably longer than later ones, which resolve from the module cache,
+ * and the default one-second budget is not enough headroom for that first
+ * chunk. Give the retry loop an explicit deadline so a failure means a
+ * genuinely missing route rather than a chunk that had not landed yet.
  */
 async function waitForRoute(container: HTMLElement, text: string) {
-  await vi.waitFor(() => expect(container.textContent).toContain(text));
+  await vi.waitFor(() => expect(container.textContent).toContain(text), {
+    timeout: 5_000,
+    interval: 10,
+  });
 }
 
 describe("App Activity routing (PAP-16302)", () => {

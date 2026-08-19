@@ -344,6 +344,18 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
+  // The composer is loaded lazily (React.lazy). Resolve its
+  // chunk (the same module React.lazy awaits) and then let React commit the
+  // mounted composer before asserting on its DOM.
+  async function settleComposer() {
+    await import("./IssueChatComposerDock");
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+  }
+
   it("drops the count heading and does not use an internal scrollbox", () => {
     const root = createRoot(container);
 
@@ -590,10 +602,10 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("renders the composer in planning mode when the issue is in planning mode", () => {
+  it("renders the composer in planning mode when the issue is in planning mode", async () => {
     const root = createRoot(container);
 
-    act(() => {
+    await act(async () => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
@@ -609,6 +621,8 @@ describe("IssueChatThread", () => {
         </MemoryRouter>,
       );
     });
+
+    await settleComposer();
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer).not.toBeNull();
@@ -628,11 +642,11 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("shows a persistent neutral mode chip on a standard issue and selects planning through its menu", () => {
+  it("shows a persistent neutral mode chip on a standard issue and selects planning through its menu", async () => {
     const root = createRoot(container);
     const onWorkModeChange = vi.fn();
 
-    act(() => {
+    await act(async () => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
@@ -648,6 +662,8 @@ describe("IssueChatThread", () => {
         </MemoryRouter>,
       );
     });
+
+    await settleComposer();
 
     // The mode chip is always present (mockup rev 5) — neutral "Agent mode" here.
     const chip = container.querySelector(
@@ -686,11 +702,11 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("selects ask mode from the composer menu and cycles work modes with cmd-period", () => {
+  it("selects ask mode from the composer menu and cycles work modes with cmd-period", async () => {
     const root = createRoot(container);
     const onWorkModeChange = vi.fn();
 
-    act(() => {
+    await act(async () => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
@@ -706,6 +722,8 @@ describe("IssueChatThread", () => {
         </MemoryRouter>,
       );
     });
+
+    await settleComposer();
 
     const chip = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',
@@ -750,10 +768,10 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("cycles work modes and prevents default when iOS leaves the keydown code empty", () => {
+  it("cycles work modes and prevents default when iOS leaves the keydown code empty", async () => {
     const root = createRoot(container);
 
-    act(() => {
+    await act(async () => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
@@ -768,6 +786,8 @@ describe("IssueChatThread", () => {
         </MemoryRouter>,
       );
     });
+
+    await settleComposer();
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
     expect(composer).not.toBeNull();

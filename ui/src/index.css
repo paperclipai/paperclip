@@ -2110,6 +2110,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-1280px: 1280px; /* Extracted from ui/src/components/FileViewerSheet.tsx (max-w-[1280px]). */
   --sz-60vh: 60vh; /* Extracted from ui/src/components/FrontDoor.tsx (min-h-[60vh]). */
   --sz-52vh: 52vh;
+  --sz-40vh: 40vh;
   --sz-40rem: 40rem;
   --sz-44rem: 44rem;
   --sz-30pct: 30%;
