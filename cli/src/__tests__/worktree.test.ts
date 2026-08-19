@@ -27,7 +27,9 @@ import {
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
+  ensureEmbeddedPostgres,
   ensureWorktreeSeeded,
+  formatWorktreeSeedFailureDiagnostic,
   markWorktreeSeedPending,
   pauseSeededScheduledRoutines,
   quarantineSeededWorktreeExecutionState,
@@ -488,6 +490,34 @@ describe("worktree helpers", () => {
     expect(full.nullifyColumns).toEqual({});
   });
 
+  it("requires the seed process to own the target embedded Postgres lifecycle", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-live-target-"));
+    try {
+      fs.writeFileSync(
+        path.join(tempRoot, "postmaster.pid"),
+        `${process.pid}\n${tempRoot}\n0\n55432\n`,
+      );
+
+      await expect(ensureEmbeddedPostgres(tempRoot, 55432, { allowExisting: false }))
+        .rejects.toThrow("while it is already running");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces a credential-safe diagnostic when the target shuts down during restore", () => {
+    expect(formatWorktreeSeedFailureDiagnostic(
+      "restore",
+      new Error(
+        "Failed to restore seed.sql.gz: FATAL: the database system is shutting down; psql error: write EPIPE",
+      ),
+    )).toBe(
+      "Target embedded PostgreSQL shut down during restore. Stop any competing worktree service and retry the seed.",
+    );
+    expect(formatWorktreeSeedFailureDiagnostic("migrations", new Error("secret connection failure")))
+      .toBe("Seed failed during migrations.");
+  });
+
   it("rejects a source migration journal that diverges from the code journal", () => {
     expect(() => resolveWorktreeSeedMigrationRevision({
       status: "upToDate",
@@ -714,7 +744,7 @@ describe("worktree helpers", () => {
     },
   );
 
-  it("ensure-seeded keeps the pending marker when seeding fails", async () => {
+  it("ensure-seeded records a target shutdown diagnostic when restore fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-failure-"));
     try {
       const sourceConfigPath = path.join(tempRoot, "source", "config.json");
@@ -746,13 +776,28 @@ describe("worktree helpers", () => {
       await expect(
         ensureWorktreeSeeded(
           { config: targetConfigPath, fromConfig: sourceConfigPath },
-          { seedDatabase: vi.fn().mockRejectedValue(new Error("seed failed")) },
+          {
+            seedDatabase: vi.fn(async (input) => {
+              input.onPhase?.("restore", "started");
+              throw new Error(
+                "Failed to restore seed.sql.gz: FATAL: the database system is shutting down; psql error: write EPIPE",
+              );
+            }),
+          },
         ),
-      ).rejects.toThrow("seed failed");
+      ).rejects.toThrow("database system is shutting down");
 
       expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
         state: "failed",
-        phase: "pending",
+        phase: "restore",
+        diagnostics: expect.arrayContaining([
+          expect.objectContaining({
+            phase: "restore",
+            status: "failed",
+            message:
+              "Target embedded PostgreSQL shut down during restore. Stop any competing worktree service and retry the seed.",
+          }),
+        ]),
       });
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(false);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(false);

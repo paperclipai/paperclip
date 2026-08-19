@@ -55,6 +55,7 @@ import {
   workspaceRuntimeServices,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
+  loadWithoutEmbeddedPostgresExitHooks,
   prepareEmbeddedPostgresNativeRuntime,
 } from "@paperclipai/db";
 import type { Command } from "commander";
@@ -1105,11 +1106,15 @@ export function copySeededSecretsKey(input: {
   }
 }
 
-async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): Promise<EmbeddedPostgresHandle> {
+export async function ensureEmbeddedPostgres(
+  dataDir: string,
+  preferredPort: number,
+  options: { allowExisting?: boolean } = {},
+): Promise<EmbeddedPostgresHandle> {
   const moduleName = "embedded-postgres";
   let EmbeddedPostgres: EmbeddedPostgresCtor;
   try {
-    const mod = await import(moduleName);
+    const mod = await loadWithoutEmbeddedPostgresExitHooks(() => import(moduleName));
     EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
   } catch {
     throw new Error(
@@ -1121,6 +1126,12 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
   if (runningPid) {
+    if (options.allowExisting === false) {
+      throw new Error(
+        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running (pid=${runningPid}). `
+        + "Stop the worktree service that owns this database, then retry the seed.",
+      );
+    }
     return {
       port: readPidFilePort(postmasterPidFile) ?? preferredPort,
       startedByThisProcess: false,
@@ -1632,13 +1643,14 @@ async function seedWorktreeDatabase(input: {
     });
     input.onPhase?.("snapshot", "succeeded", `Created ${path.basename(backup.backupFile)}.`);
 
+    input.onPhase?.("restore", "started");
     targetHandle = await ensureEmbeddedPostgres(
       input.targetConfig.database.embeddedPostgresDataDir,
       input.targetConfig.database.embeddedPostgresPort,
+      { allowExisting: false },
     );
 
     const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${targetHandle.port}/postgres`;
-    input.onPhase?.("restore", "started");
     await resetPostgresDatabase(adminConnectionString, "paperclip");
     const targetConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${targetHandle.port}/paperclip`;
     await runDatabaseRestore({
@@ -1702,6 +1714,23 @@ async function seedWorktreeDatabase(input: {
 const WORKTREE_SEED_DIAGNOSTIC_LIMIT = 32;
 const WORKTREE_SEED_DIAGNOSTIC_MESSAGE_LIMIT = 512;
 const activeSeedInterruptHandlers = new Map<string, (signal: NodeJS.Signals) => void>();
+
+export function formatWorktreeSeedFailureDiagnostic(
+  phase: WorktreeSeedPhase,
+  error: unknown,
+): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (
+    phase === "restore"
+    && /database system is shutting down|terminating connection due to administrator command/i.test(message)
+  ) {
+    return "Target embedded PostgreSQL shut down during restore. Stop any competing worktree service and retry the seed.";
+  }
+  if (phase === "restore" && /Cannot seed target embedded PostgreSQL.+already running/i.test(message)) {
+    return "Target embedded PostgreSQL is owned by a running worktree service. Stop that service and retry the seed.";
+  }
+  return `Seed failed during ${phase}.`;
+}
 
 function dispatchSeedInterruption(signal: NodeJS.Signals): void {
   for (const handler of activeSeedInterruptHandlers.values()) {
@@ -2096,7 +2125,7 @@ async function runVerifiedWorktreeSeed(input: {
       state: "failed",
       // Do not persist the underlying error: database/driver errors may contain
       // connection credentials. The CLI still returns the exact error to its caller.
-      message: `Seed failed during ${activePhase}.`,
+      message: formatWorktreeSeedFailureDiagnostic(activePhase, error),
     });
     throw error;
   } finally {
