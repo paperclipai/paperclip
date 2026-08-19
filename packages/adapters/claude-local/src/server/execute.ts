@@ -74,7 +74,9 @@ import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   resolveManagedClaudeRuntimeStateDir,
+  resolvePaperclipMcpServerStdioEntry,
   resolveSharedClaudeConfigDir,
+  resolveTsxLoaderEntry,
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
@@ -511,9 +513,45 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onLog,
   });
   const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
-  const runtimeMcpIdentity = JSON.stringify(
-    runtimeMcpServers.map(({ name, url, connectionId }) => ({ name, url, connectionId })),
-  );
+  // v1 is local execution targets only — the mcp-server package isn't shipped
+  // to remote/sandbox hosts yet (see AMC-4028 Decision 1, "G3").
+  const paperclipMcpToolsRequested = asBoolean(config.paperclipMcpTools, false) && !executionTargetIsRemote;
+  let paperclipMcpTool: { args: string[]; sandboxReadDirs: string[]; env: Record<string, string> } | null = null;
+  if (paperclipMcpToolsRequested) {
+    const resolvedEntry = resolvePaperclipMcpServerStdioEntry();
+    // This monorepo's own packages resolve each other via package.json "exports"
+    // pointed at TS source (in-repo hot-reload), so plain `node dist/stdio.js`
+    // can't resolve @paperclipai/mcp-server's own @paperclipai/shared import.
+    // Run it through tsx's ESM loader, exactly like this repo's Dockerfile CMD
+    // and dev scripts already do for server/dist/index.js.
+    const resolvedTsxLoader = resolvedEntry ? resolveTsxLoaderEntry() : null;
+    if (resolvedEntry && resolvedTsxLoader) {
+      paperclipMcpTool = {
+        args: ["--import", resolvedTsxLoader.loaderPath, resolvedEntry.entryPath],
+        sandboxReadDirs: [resolvedEntry.sandboxReadDir, resolvedTsxLoader.sandboxReadDir],
+        env: {
+          PAPERCLIP_API_URL: env.PAPERCLIP_API_URL ?? "",
+          PAPERCLIP_API_KEY: env.PAPERCLIP_API_KEY ?? "",
+          PAPERCLIP_COMPANY_ID: env.PAPERCLIP_COMPANY_ID ?? "",
+          PAPERCLIP_AGENT_ID: env.PAPERCLIP_AGENT_ID ?? "",
+          PAPERCLIP_RUN_ID: env.PAPERCLIP_RUN_ID ?? runId,
+        },
+      };
+      await onLog(
+        "stdout",
+        `[paperclip] Attached paperclip MCP tools (stdio, v${resolvedEntry.version}).\n`,
+      );
+    } else {
+      await onLog(
+        "stderr",
+        "[paperclip] paperclipMcpTools is enabled but the @paperclipai/mcp-server stdio entry point or its tsx loader could not be resolved; skipping MCP tool attach.\n",
+      );
+    }
+  }
+  const runtimeMcpIdentity = JSON.stringify({
+    gateway: runtimeMcpServers.map(({ name, url, connectionId }) => ({ name, url, connectionId })),
+    paperclipTool: paperclipMcpTool ? { args: paperclipMcpTool.args } : null,
+  });
   const claudeRuntimeStateDir = resolveManagedClaudeRuntimeStateDir(
     process.env,
     agent.companyId,
@@ -523,6 +561,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     stateDir: claudeRuntimeStateDir,
     runId,
     servers: runtimeMcpServers,
+    paperclipMcpTool,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
@@ -538,6 +577,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
             { path: promptBundle.addDir, access: "ro" },
             { path: localMcpConfigDir, access: "ro" },
+            ...(paperclipMcpTool
+              ? paperclipMcpTool.sandboxReadDirs.map((dir) => ({ path: dir, access: "ro" as const }))
+              : []),
           ],
           extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
@@ -730,7 +772,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
   const hasMatchingMcpServers =
     runtimeMcpServerIdentity.length === 0
-      ? runtimeMcpServers.length === 0
+      ? runtimeMcpServers.length === 0 && !paperclipMcpTool
       : runtimeMcpServerIdentity === runtimeMcpIdentity;
   const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
@@ -857,7 +899,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
-    if (runtimeMcpServers.length > 0) {
+    if (runtimeMcpServers.length > 0 || paperclipMcpTool) {
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);

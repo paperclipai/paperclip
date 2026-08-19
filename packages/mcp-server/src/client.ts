@@ -1,4 +1,7 @@
+import { createRequire } from "node:module";
 import type { PaperclipMcpConfig } from "./config.js";
+
+const packageVersion = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 export class PaperclipApiError extends Error {
   readonly status: number;
@@ -84,6 +87,7 @@ export class PaperclipApiClient {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.config.apiKey}`,
       Accept: "application/json",
+      "X-Paperclip-Client": `paperclip-mcp-server/${packageVersion}`,
     };
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";

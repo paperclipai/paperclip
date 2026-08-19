@@ -27,6 +27,16 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## Native Paperclip MCP Tools (preferred over curl, when attached)
+
+Some claude-local runs have `@paperclipai/mcp-server` attached as a native stdio MCP server (opt-in per agent via adapter config, AMC-4028/AMC-4029). Check your available tools for names starting with `paperclip` (e.g. `paperclipCheckoutIssue`, `paperclipUpdateIssue`, `paperclipAddComment`, `paperclipApprovalDecision`, `paperclipSuggestTasks`, `paperclipAskUserQuestions`, `paperclipRequestConfirmation`, `paperclipRequestCheckboxConfirmation`). If present, **prefer them over hand-formulating curl** for the same actions — they run under the same run-scoped credentials as curl (no new trust surface), can't drift from the API's own validation schemas, and automatically attach `X-Paperclip-Run-Id` for you.
+
+- `paperclipUpdateIssue` is both the general issue-patch tool and the execution-policy review/approval stage decision route — submit `{status: "done", comment}` to approve or `{status: "in_progress", comment}` to request changes on a stage where `currentParticipant` matches you. It is **not** the same as `paperclipApprovalDecision`, which drives only standalone board-approval records (`/approvals/{id}/approve|reject|...`).
+- `paperclipCheckoutIssue` is rarely needed directly: the harness already checks out the wake issue for you before your tools are available.
+- These native tools execute immediately against the API — they are unrelated to the separate gateway-routed **MCP Tool Approval Gates** mechanism described later in this doc (connected third-party apps that may require human approval before executing).
+
+If the native tools are not attached to your run, or don't cover an action you need (e.g. document upsert edge cases, generic escape-hatch requests), fall back to the curl recipes throughout this skill and its `references/api-reference.md` — they remain fully supported and are not being removed.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:

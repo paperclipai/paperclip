@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -154,10 +156,81 @@ export function resolveManagedClaudeRuntimeStateDir(
   return path.join(instanceRoot, "companies", companyId, "agents", agentId, "claude-runtime");
 }
 
+/**
+ * Locates a file inside a workspace package without going through require()/import()
+ * module resolution — several workspace packages' "exports" maps only expose "."
+ * (pointed at their own TS source for in-repo hot-reload), so a subpath require.resolve
+ * of e.g. "package/dist/foo.js" throws ERR_PACKAGE_PATH_NOT_EXPORTED. Walking the plain
+ * node_modules search paths and reading the file directly sidesteps that.
+ */
+function resolveWorkspacePackageFile(
+  packageName: string,
+  relativeFilePath: string,
+): { filePath: string; packageRoot: string } | null {
+  const require = createRequire(import.meta.url);
+  const searchPaths = require.resolve.paths(packageName) ?? [];
+  for (const base of searchPaths) {
+    const packageRoot = path.join(base, ...packageName.split("/"));
+    const filePath = path.join(packageRoot, relativeFilePath);
+    if (!existsSync(filePath)) continue;
+    return { filePath, packageRoot };
+  }
+  return null;
+}
+
+/** Broadest real (symlink-resolved) directory a spawned process needs read access to under sandboxing — the pnpm store root when pnpm-managed, else the package directory itself. */
+function resolveSandboxReadDir(packageRoot: string): string {
+  try {
+    const realPackageRoot = realpathSync(packageRoot);
+    const pnpmStoreIndex = realPackageRoot.split(path.sep).indexOf(".pnpm");
+    return pnpmStoreIndex >= 0
+      ? realPackageRoot.split(path.sep).slice(0, pnpmStoreIndex + 1).join(path.sep)
+      : realPackageRoot;
+  } catch {
+    return packageRoot;
+  }
+}
+
+export function resolvePaperclipMcpServerStdioEntry(): {
+  entryPath: string;
+  version: string;
+  sandboxReadDir: string;
+} | null {
+  const resolved = resolveWorkspacePackageFile("@paperclipai/mcp-server", path.join("dist", "stdio.js"));
+  if (!resolved) return null;
+  let version = "0.0.0";
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(resolved.packageRoot, "package.json"), "utf8"));
+    if (typeof pkg.version === "string" && pkg.version.trim().length > 0) version = pkg.version;
+  } catch {
+    // Missing/unreadable package.json shouldn't block attach; fall back to "0.0.0".
+  }
+  return {
+    entryPath: resolved.filePath,
+    version,
+    sandboxReadDir: resolveSandboxReadDir(resolved.packageRoot),
+  };
+}
+
+/**
+ * This monorepo's own packages resolve workspace deps via package.json "exports"
+ * fields pointed at TS source (for in-repo hot-reload), so plain `node dist/stdio.js`
+ * cannot resolve @paperclipai/mcp-server's own `@paperclipai/shared` import — the
+ * same reason this repo's Dockerfile CMD and dev scripts run `server/dist/index.js`
+ * through the tsx ESM loader rather than plain node. Do the same for the spawned
+ * paperclip-mcp-server stdio process.
+ */
+export function resolveTsxLoaderEntry(): { loaderPath: string; sandboxReadDir: string } | null {
+  const resolved = resolveWorkspacePackageFile("tsx", path.join("dist", "loader.mjs"));
+  if (!resolved) return null;
+  return { loaderPath: resolved.filePath, sandboxReadDir: resolveSandboxReadDir(resolved.packageRoot) };
+}
+
 export async function writePaperclipClaudeMcpConfig(input: {
   stateDir: string;
   runId: string;
   servers: AdapterRuntimeMcpServer[];
+  paperclipMcpTool?: { args: string[]; env: Record<string, string> } | null;
 }): Promise<string> {
   const configDir = path.join(input.stateDir, "runs", input.runId, "mcp");
   const configPath = path.join(configDir, "mcp-config.json");
@@ -176,6 +249,21 @@ export async function writePaperclipClaudeMcpConfig(input: {
       type: "http",
       url: server.url,
       headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  if (input.paperclipMcpTool) {
+    let name = "paperclip";
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `paperclip-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    mcpServers[name] = {
+      type: "stdio",
+      command: "node",
+      args: input.paperclipMcpTool.args,
+      env: input.paperclipMcpTool.env,
     };
   }
   await fs.mkdir(configDir, { recursive: true });
