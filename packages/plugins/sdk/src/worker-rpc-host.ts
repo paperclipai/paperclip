@@ -104,6 +104,10 @@ import type {
   PluginSetupTokenPtyInputParams,
   PluginSetupTokenPtyStopParams,
   PluginSetupTokenPtyCloseParams,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -1624,6 +1628,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "setupTokenPtyClose":
         return handleSetupTokenPtyClose(params as PluginSetupTokenPtyCloseParams);
 
+      case "duplexChannelOpen":
+        return handleDuplexChannelOpen(params as PluginDuplexChannelOpenParams);
+
+      case "duplexChannelWrite":
+        return handleDuplexChannelWrite(params as PluginDuplexChannelWriteParams);
+
+      case "duplexChannelStop":
+        return handleDuplexChannelStop(params as PluginDuplexChannelStopParams);
+
+      case "duplexChannelClose":
+        return handleDuplexChannelClose(params as PluginDuplexChannelCloseParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1679,6 +1695,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onSetupTokenPtyInput) supportedMethods.push("setupTokenPtyInput");
     if (plugin.definition.onSetupTokenPtyStop) supportedMethods.push("setupTokenPtyStop");
     if (plugin.definition.onSetupTokenPtyClose) supportedMethods.push("setupTokenPtyClose");
+    if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
+    if (plugin.definition.onDuplexChannelWrite) supportedMethods.push("duplexChannelWrite");
+    if (plugin.definition.onDuplexChannelStop) supportedMethods.push("duplexChannelStop");
+    if (plugin.definition.onDuplexChannelClose) supportedMethods.push("duplexChannelClose");
 
     return { ok: true, supportedMethods };
   }
@@ -2053,6 +2073,34 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("setupTokenPtyClose");
     }
     return plugin.definition.onSetupTokenPtyClose(params);
+  }
+
+  async function handleDuplexChannelOpen(params: PluginDuplexChannelOpenParams) {
+    if (!plugin.definition.onDuplexChannelOpen) {
+      throw methodNotImplemented("duplexChannelOpen");
+    }
+    return plugin.definition.onDuplexChannelOpen(params);
+  }
+
+  async function handleDuplexChannelWrite(params: PluginDuplexChannelWriteParams) {
+    if (!plugin.definition.onDuplexChannelWrite) {
+      throw methodNotImplemented("duplexChannelWrite");
+    }
+    return plugin.definition.onDuplexChannelWrite(params);
+  }
+
+  async function handleDuplexChannelStop(params: PluginDuplexChannelStopParams) {
+    if (!plugin.definition.onDuplexChannelStop) {
+      throw methodNotImplemented("duplexChannelStop");
+    }
+    return plugin.definition.onDuplexChannelStop(params);
+  }
+
+  async function handleDuplexChannelClose(params: PluginDuplexChannelCloseParams) {
+    if (!plugin.definition.onDuplexChannelClose) {
+      throw methodNotImplemented("duplexChannelClose");
+    }
+    return plugin.definition.onDuplexChannelClose(params);
   }
 
   // -----------------------------------------------------------------------

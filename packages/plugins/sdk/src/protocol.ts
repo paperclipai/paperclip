@@ -1082,6 +1082,102 @@ export const SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION = "setupTokenPty.output";
 /** The worker→host notification method for one pseudo-terminal exit. */
 export const SETUP_TOKEN_PTY_EXIT_NOTIFICATION = "setupTokenPty.exit";
 
+// ---------------------------------------------------------------------------
+// Generic duplex channel worker methods.
+// ---------------------------------------------------------------------------
+// The host drives one persistent duplex channel inside a sandbox provider
+// worker. The channel replaces the file transport of the sandbox callback bridge
+// with one live bidirectional stream. These messages are generic. They model the
+// setup-token pseudo-terminal contract above, but they carry no login command
+// allowlist. The host owns the route. It mints an opaque host route identifier,
+// carries that identifier in the open request, and keys the close on that
+// identifier. The worker registers the channel under the host route identifier
+// and returns a worker session identifier for the data and the exit notification
+// binding only. The worker never keys a close on the worker session identifier,
+// so the host closes a worker-created channel even when the open reply was lost
+// and no worker session identifier arrived. The worker sends data and exit as
+// notifications, never as a reply, so the host binds them by the worker session
+// identifier while the route is open.
+
+/** The open request for one persistent duplex channel. The worker registers the channel by `hostRouteId`. */
+export interface PluginDuplexChannelOpenParams {
+  /** The host-owned opaque route identifier. The worker registers the channel by it. */
+  hostRouteId: string;
+  /** The environment driver key, for the worker sandbox scope. */
+  driverKey: string;
+  /** The company that owns the channel. */
+  companyId: string;
+  /** The environment the channel runs in. */
+  environmentId: string;
+  /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
+  providerLeaseId: string;
+  /** The command the worker runs on the channel. */
+  command: string;
+}
+
+/** The open reply. It returns the worker session identifier for data binding only. */
+export interface PluginDuplexChannelOpenResult {
+  /** The worker session identifier. It binds the data and the exit notification only. */
+  workerSessionId: string;
+}
+
+/** The write request. It carries the worker session identifier and the raw input bytes. */
+export interface PluginDuplexChannelWriteParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw input bytes to write to the channel. */
+  data: string;
+}
+
+/** The stop request. It carries the worker session identifier. */
+export interface PluginDuplexChannelStopParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+}
+
+/** The close request. The host route identifier is the authoritative key. */
+export interface PluginDuplexChannelCloseParams {
+  /**
+   * The host-owned opaque route identifier. This is the authoritative close key,
+   * so the host closes the channel even when no worker session identifier arrived
+   * after a lost open reply.
+   */
+  hostRouteId: string;
+  /**
+   * A non-authoritative worker session identifier. The worker never keys the
+   * close on it. The field is optional, so a close with only the host route
+   * identifier is a valid request for this lifecycle.
+   */
+  workerSessionId?: string;
+}
+
+/** The close reply. It acknowledges the close and carries the same host route identifier. */
+export interface PluginDuplexChannelCloseResult {
+  /** The close acknowledgement. It carries the same host route identifier the close sent. */
+  hostRouteId: string;
+}
+
+/** The worker→host duplex channel data notification parameters. */
+export interface PluginDuplexChannelDataParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw channel output bytes. */
+  chunk: string;
+}
+
+/** The worker→host duplex channel exit notification parameters. */
+export interface PluginDuplexChannelExitParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The child exit code, or null when the child ended with no code. */
+  exitCode: number | null;
+}
+
+/** The worker→host notification method for one duplex channel data chunk. */
+export const DUPLEX_CHANNEL_DATA_NOTIFICATION = "duplexChannel.data";
+/** The worker→host notification method for one duplex channel exit. */
+export const DUPLEX_CHANNEL_EXIT_NOTIFICATION = "duplexChannel.exit";
+
 /**
  * Map of host→worker RPC method names to their `[params, result]` types.
  *
@@ -1200,6 +1296,20 @@ export interface HostToWorkerMethods {
     params: PluginSetupTokenPtyCloseParams,
     result: PluginSetupTokenPtyCloseResult,
   ];
+  /** Open one persistent duplex channel keyed by a host-owned route identifier. */
+  duplexChannelOpen: [
+    params: PluginDuplexChannelOpenParams,
+    result: PluginDuplexChannelOpenResult,
+  ];
+  /** Write raw input to a persistent duplex channel, keyed by the worker session identifier. */
+  duplexChannelWrite: [params: PluginDuplexChannelWriteParams, result: void];
+  /** Stop a persistent duplex channel child, keyed by the worker session identifier. */
+  duplexChannelStop: [params: PluginDuplexChannelStopParams, result: void];
+  /** Close a persistent duplex channel by the host route identifier and return a bound acknowledgement. */
+  duplexChannelClose: [
+    params: PluginDuplexChannelCloseParams,
+    result: PluginDuplexChannelCloseResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -1245,6 +1355,10 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "setupTokenPtyInput",
   "setupTokenPtyStop",
   "setupTokenPtyClose",
+  "duplexChannelOpen",
+  "duplexChannelWrite",
+  "duplexChannelStop",
+  "duplexChannelClose",
 ] as const;
 
 // ---------------------------------------------------------------------------
