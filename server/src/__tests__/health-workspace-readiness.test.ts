@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import {
+  WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY,
   WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY,
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
@@ -19,6 +20,7 @@ const envKeys = [
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
   WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY,
+  WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY,
 ] as const;
 const previousEnv = new Map<string, string | undefined>();
 
@@ -95,6 +97,7 @@ describe("GET /api/health workspace readiness", () => {
       PAPERCLIP_CONFIG: createSeededWorkspace(),
       [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "handoff-key",
       [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
+      [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: "company-1",
     });
     const response = await request(createApp("board")).get("/api/health").expect(200);
     expect(response.body.workspace).toMatchObject({
@@ -113,6 +116,7 @@ describe("GET /api/health workspace readiness", () => {
       [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "handoff-key",
       [WORKSPACE_READINESS_TOKEN_ENV_KEY]: "probe-token",
       [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
+      [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: "company-1",
     });
     const response = await request(createApp("none")).get("/api/health").expect(200);
     expect(response.body.status).toBe("ok");
@@ -126,6 +130,7 @@ describe("GET /api/health workspace readiness", () => {
       [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "handoff-key",
       [WORKSPACE_READINESS_TOKEN_ENV_KEY]: "probe-token",
       [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
+      [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: "company-1",
     });
     const response = await request(createApp("none"))
       .get("/api/health")
@@ -142,6 +147,7 @@ describe("GET /api/health workspace readiness", () => {
       [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "handoff-key",
       [WORKSPACE_READINESS_TOKEN_ENV_KEY]: "probe-token",
       [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
+      [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: "company-1",
     });
     const response = await request(createApp("none"))
       .get("/api/health")

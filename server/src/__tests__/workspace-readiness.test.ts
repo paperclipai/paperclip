@@ -21,6 +21,7 @@ import {
   type ManagedWorkspaceIdentity,
 } from "../services/managed-workspace-identity.js";
 import {
+  WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY,
   WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY,
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
@@ -70,6 +71,16 @@ function readyDb() {
   } as unknown as Db;
 }
 
+function readyGuestEnv(configPath: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    PAPERCLIP_CONFIG: configPath,
+    [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key",
+    [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
+    [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: "company-1",
+    ...overrides,
+  };
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   resetManagedWorkspaceInstanceCacheForTests();
@@ -111,11 +122,7 @@ describe("resolveWorkspaceReadiness", () => {
     const { configPath } = createMarkerDir({ "seed-manifest.json": verifiedManifest() });
     const readiness = await resolveWorkspaceReadiness({
       db: readyDb(),
-      env: {
-        PAPERCLIP_CONFIG: configPath,
-        [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key",
-        [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
-      },
+      env: readyGuestEnv(configPath),
     });
     expect(readiness).toMatchObject({
       state: "ready",
@@ -133,11 +140,45 @@ describe("resolveWorkspaceReadiness", () => {
     const { configPath } = createMarkerDir({ "seed-manifest.json": verifiedManifest() });
     const readiness = await resolveWorkspaceReadiness({
       db: readyDb(),
-      env: { PAPERCLIP_CONFIG: configPath },
+      env: readyGuestEnv(configPath, { [WORKSPACE_HANDOFF_KEY_ENV_KEY]: undefined }),
     });
     expect(readiness.authHandoffReady).toBe(false);
     expect(readiness.state).toBe("degraded");
     expect(readiness.failurePhase).toBe("auth_handoff_not_configured");
+  });
+
+  it("fails closed when the guest has no company binding", async () => {
+    const { configPath } = createMarkerDir({ "seed-manifest.json": verifiedManifest() });
+    const db = readyDb();
+    const readiness = await resolveWorkspaceReadiness({
+      db,
+      env: readyGuestEnv(configPath, {
+        [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: undefined,
+      }),
+    });
+    expect(readiness).toMatchObject({
+      state: "degraded",
+      cloneDataReady: false,
+      authHandoffReady: false,
+      failurePhase: "workspace_company_not_configured",
+    });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("does not claim handoff readiness without the execution-workspace identity", async () => {
+    const { configPath } = createMarkerDir({ "seed-manifest.json": verifiedManifest() });
+    const readiness = await resolveWorkspaceReadiness({
+      db: readyDb(),
+      env: readyGuestEnv(configPath, {
+        [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: undefined,
+      }),
+    });
+    expect(readiness).toMatchObject({
+      state: "degraded",
+      cloneDataReady: true,
+      authHandoffReady: false,
+      failurePhase: "workspace_identity_not_configured",
+    });
   });
 
   it("surfaces the failing seed phase instead of an inferred one", async () => {
@@ -146,7 +187,7 @@ describe("resolveWorkspaceReadiness", () => {
     });
     const readiness = await resolveWorkspaceReadiness({
       db: readyDb(),
-      env: { PAPERCLIP_CONFIG: configPath, [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key" },
+      env: readyGuestEnv(configPath),
     });
     expect(readiness).toMatchObject({ state: "failed", seedState: "failed", failurePhase: "restore" });
   });
@@ -155,7 +196,7 @@ describe("resolveWorkspaceReadiness", () => {
     const { configPath } = createMarkerDir({ "seed-manifest.json": "{ truncated" });
     const readiness = await resolveWorkspaceReadiness({
       db: readyDb(),
-      env: { PAPERCLIP_CONFIG: configPath, [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key" },
+      env: readyGuestEnv(configPath),
     });
     expect(readiness).toMatchObject({ state: "failed", failurePhase: "seed_manifest_unreadable" });
   });
@@ -164,7 +205,7 @@ describe("resolveWorkspaceReadiness", () => {
     const { configPath } = createMarkerDir({ "seed-pending": "{}" });
     const readiness = await resolveWorkspaceReadiness({
       db: readyDb(),
-      env: { PAPERCLIP_CONFIG: configPath, [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key" },
+      env: readyGuestEnv(configPath),
     });
     expect(readiness).toMatchObject({ state: "provisioning", seedState: "pending" });
   });
@@ -173,7 +214,7 @@ describe("resolveWorkspaceReadiness", () => {
     const { configPath } = createMarkerDir({ "seed-complete": "" });
     const readiness = await resolveWorkspaceReadiness({
       db: readyDb(),
-      env: { PAPERCLIP_CONFIG: configPath, [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key" },
+      env: readyGuestEnv(configPath),
     });
     expect(readiness).toMatchObject({ state: "validating", seedState: "unknown" });
   });
@@ -186,7 +227,7 @@ describe("resolveWorkspaceReadiness", () => {
     } as unknown as Db;
     const readiness = await resolveWorkspaceReadiness({
       db,
-      env: { PAPERCLIP_CONFIG: configPath, [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "key" },
+      env: readyGuestEnv(configPath),
     });
     expect(readiness).toMatchObject({
       state: "degraded",

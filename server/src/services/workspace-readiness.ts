@@ -205,7 +205,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
       probeFailurePhase = "database_unreachable";
     }
 
-    if (databaseReady) {
+    if (databaseReady && companyId) {
       try {
         // One representative cloned company/issue pair proves the restore carried
         // product rows, not just an empty migrated schema.
@@ -213,7 +213,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
           .select({ companyId: companies.id })
           .from(companies)
           .innerJoin(issues, eq(issues.companyId, companies.id))
-          .where(companyId ? eq(companies.id, companyId) : undefined)
+          .where(eq(companies.id, companyId))
           .limit(1)
           .then((rows) => rows.length);
         cloneDataReady = clonedRows > 0;
@@ -239,7 +239,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
               eq(companyMemberships.principalType, "user"),
               eq(companyMemberships.principalId, authUsers.id),
               eq(companyMemberships.status, "active"),
-              ...(companyId ? [eq(companyMemberships.companyId, companyId)] : []),
+              eq(companyMemberships.companyId, companyId),
             ),
           )
           .limit(1)
@@ -255,7 +255,14 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
     probeFailurePhase = "database_not_configured";
   }
 
-  const authHandoffReady = handoffKeyPresent && clonedAdminPresent;
+  const authHandoffReady = Boolean(
+    handoffKeyPresent
+    && executionWorkspaceId
+    && companyId
+    && clonedAdminPresent,
+  );
+  if (!companyId) probeFailurePhase ??= "workspace_company_not_configured";
+  if (!executionWorkspaceId) probeFailurePhase ??= "workspace_identity_not_configured";
   if (!handoffKeyPresent) probeFailurePhase ??= "auth_handoff_not_configured";
 
   const state = resolveWorkspaceReadinessState({
