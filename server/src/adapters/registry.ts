@@ -107,6 +107,7 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import { openAiCompatibleAdapter } from "./openai-compatible/index.js";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -446,6 +447,7 @@ function registerBuiltInAdapters() {
     hermesGatewayAdapter,
     hermesLocalAdapter,
     openclawGatewayAdapter,
+    openAiCompatibleAdapter,
     processAdapter,
     httpAdapter,
   ]) {

@@ -14,6 +14,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
+    expect(getAdapterLabel("openai_compatible")).toBe("OpenAI Compatible");
 
     expect(getAdapterLabels()).toMatchObject({
       codex_local: "Codex",
@@ -26,6 +27,7 @@ describe("adapter display registry", () => {
       hermes_gateway: "Hermes Gateway",
       opencode_local: "OpenCode",
       pi_local: "Pi",
+      openai_compatible: "OpenAI Compatible",
     });
   });
 

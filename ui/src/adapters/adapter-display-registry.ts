@@ -128,6 +128,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     disabledLabel: "Invite external agents from the add-agent modal",
     hideFromVisualSelection: true,
   },
+  openai_compatible: {
+    label: "OpenAI Compatible",
+    description: "OpenAI-compatible chat completions endpoint",
+    icon: Cpu,
+  },
   process: {
     label: "Process",
     description: "Internal process adapter",
