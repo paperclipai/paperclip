@@ -63,3 +63,54 @@ printf '%s\\n' '{"id":"agent-other","companyId":"other-company","name":"Cloud Re
     rmSync(fixtureDir, { recursive: true, force: true });
   }
 });
+
+test("Cloud Reviewer apply repoints the agent default to Claude", () => {
+  const fixtureDir = mkdtempSync(path.join(os.tmpdir(), "paperclip-model-routing-"));
+  const fakeBinDir = path.join(fixtureDir, "bin");
+  const curlPath = path.join(fakeBinDir, "curl");
+  const callsPath = path.join(fixtureDir, "curl-calls.log");
+
+  try {
+    mkdirSync(fakeBinDir);
+    writeFileSync(curlPath, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${callsPath}"
+if [[ " $* " == *" -X PATCH "* ]]; then
+  printf '%s\\n' '{"id":"reviewer-1","companyId":"expected-company","name":"Cloud Reviewer (Claude)","adapterType":"claude_local","adapterConfig":{"model":"claude-opus-4-8"}}'
+else
+  printf '%s\\n' '{"id":"reviewer-1","companyId":"expected-company","name":"Cloud Reviewer (GPT)","adapterType":"codex_local","adapterConfig":{"model":"gpt-5.6-luna"}}'
+fi
+`);
+    chmodSync(curlPath, 0o755);
+
+    const output = execFileSync(
+      "bash",
+      [path.join(repoRoot, "scripts/configure-cloud-reviewer-default.sh"), "--apply", "--agent-id", "reviewer-1"],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBinDir}:${process.env.PATH}`,
+          PAPERCLIP_API_URL: "http://paperclip.test",
+          PAPERCLIP_API_KEY: "test-key",
+          PAPERCLIP_COMPANY_ID: "expected-company",
+          PAPERCLIP_RUN_ID: "sample-run",
+        },
+        encoding: "utf8",
+      },
+    );
+
+    const calls = readFileSync(callsPath, "utf8");
+    if (!calls.includes("-X PATCH")) {
+      throw new Error("Cloud Reviewer helper did not send the guarded PATCH request");
+    }
+    if (!calls.includes('{"adapterType":"claude_local","adapterConfig":{"model":"claude-opus-4-8"}}')) {
+      throw new Error(`Cloud Reviewer helper sent the wrong default: ${calls}`);
+    }
+    if (!output.includes("Applied and verified: claude_local / claude-opus-4-8")) {
+      throw new Error(`Cloud Reviewer helper did not verify the Claude default: ${output}`);
+    }
+  } finally {
+    rmSync(fixtureDir, { recursive: true, force: true });
+  }
+});
