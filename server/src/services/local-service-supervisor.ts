@@ -312,6 +312,46 @@ function normalizeCommandToken(value: string) {
 }
 
 /**
+ * Return whether the configured shell command has a stable argv that can be
+ * compared with the operating system's process command line.
+ *
+ * Managed local services are started through `shell -lc`. Once a command uses
+ * shell control syntax, the surviving process-group leader can be the result of
+ * that program rather than the configured shell expression. In that case a
+ * literal argv comparison is not evidence that the process belongs to a
+ * different service; adoption instead relies on the listener, process group,
+ * and workspace cwd checks.
+ */
+export function isLocalServiceCommandLineComparable(recordedCommand: string) {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (const character of recordedCommand) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if ([";", "|", "&", "<", ">", "\n"].includes(character)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Compare a configured service command with the argv exposed by the OS.
  *
  * Package-manager launchers commonly replace `pnpm dev` with
@@ -346,6 +386,7 @@ export function doesLocalServiceCommandLineMatch(input: {
 
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
   if (process.platform === "win32") return true;
+  if (!isLocalServiceCommandLineComparable(record.command)) return true;
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(record.pid)]);
     const commandLine = stdout.trim();
@@ -624,6 +665,9 @@ async function doesLocalServiceRecordMatchCwd(record: LocalServiceRegistryRecord
   if (!record.port) return true;
   const ownerPid = await readLocalServicePortOwner(record.port);
   if (!ownerPid) return false;
+  if (!(await isLocalServiceProcessOwnedBy(ownerPid, record.processGroupId ?? record.pid))) {
+    return false;
+  }
   const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
   return isLocalServiceRegistryCwdCompatible(ownerCwd, record.cwd);
 }

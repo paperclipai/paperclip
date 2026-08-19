@@ -11,6 +11,7 @@ import {
 } from "../services/workspace-runtime.js";
 import {
   doesLocalServiceCommandLineMatch,
+  isLocalServiceCommandLineComparable,
   listLocalServiceRegistryRecords,
   readLocalServicePortOwner,
   resolveLocalServiceLogPath,
@@ -135,6 +136,15 @@ describe("local service supervision", () => {
       recordedCommand: "pnpm dev -- --bind custom --bind-host 127.0.0.1",
       serviceName: "paperclip-dev",
     })).toBe(true);
+  });
+
+  it("does not compare shell expressions with the surviving process argv", () => {
+    expect(isLocalServiceCommandLineComparable(
+      "env | sort > /tmp/service.env; exec pnpm dev --bind loopback",
+    )).toBe(false);
+    expect(isLocalServiceCommandLineComparable(
+      "node -e \"process.stdout.write('left | right')\"",
+    )).toBe(true);
   });
 
   it("does not accept a different command merely because it uses node", () => {

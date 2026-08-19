@@ -7412,7 +7412,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await expect(fetch(service!.url!)).rejects.toThrow();
   });
 
-  it("re-adopts a desired service when pnpm is represented as the pnpm.cjs launcher", async () => {
+  it("re-adopts a live service whose shell command differs from the surviving process argv", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pnpm-reconcile-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
@@ -7433,7 +7433,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const projectId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const runtimeServiceId = randomUUID();
-    const command = "pnpm dev";
+    const command = "env | sort > /tmp/guest-$$.env; exec pnpm dev --bind loopback";
     const service = {
       name: "web",
       command,
