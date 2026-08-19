@@ -380,7 +380,10 @@ describe("adapter device-login routes", () => {
     expect(row?.startedByUserId).toBe(OWNER_A);
   });
 
-  it("rejects a non-codex adapter", async () => {
+  it("rejects an adapter whose login capability drives a different transport", async () => {
+    // The Claude adapter declares a pseudo-terminal login, not a streamed-exec
+    // device login. The guard reads the capability transport, so it rejects the
+    // adapter with a fixed 400 before any lease.
     const app = await createApp();
 
     const res = await request(app)
@@ -389,6 +392,44 @@ describe("adapter device-login routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect(harness.acquisitions).toHaveLength(0);
+  });
+
+  it("starts a device login for a third adapter that declares the streamed-exec capability", async () => {
+    // A third adapter, not the Codex adapter, declares a streamed-exec login
+    // capability. The guard reads the registry capability, not the adapter name,
+    // so the adapter passes the guard and starts a session. This proves no
+    // adapter-name branch remains in the guard path. The test overrides an
+    // existing adapter type so the strict request schema accepts it.
+    const app = await createApp();
+    const { registerServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      type: "gemini_local",
+      execute: async () => {
+        throw new Error("not used");
+      },
+      testEnvironment: async () => {
+        throw new Error("not used");
+      },
+      loginCapability: {
+        panelMode: "displayed_code",
+        sandboxTransport: "streamed_exec",
+        timeoutPolicy: "caller_bounded",
+        getCommand: () => "vendor login",
+        parsePrompt: () => null,
+      },
+    });
+    try {
+      const res = await request(app)
+        .post(loginPath(COMPANY_1, "gemini_local"))
+        .send({ environmentId: SANDBOX_ENV_1 });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body).toMatchObject({ environmentId: SANDBOX_ENV_1, status: "starting" });
+      expect(harness.acquisitions).toHaveLength(1);
+      expect(harness.acquisitions[0]).toMatchObject({ adapterType: "gemini_local" });
+    } finally {
+      unregisterServerAdapter("gemini_local");
+    }
   });
 
   it("rejects a malformed start body with the strict schema before any side effect", async () => {

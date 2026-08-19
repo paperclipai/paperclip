@@ -142,7 +142,6 @@ import {
 } from "@paperclipai/adapter-codex-local/server";
 import {
   AdapterAuthSessionConflictError,
-  CODEX_DEVICE_LOGIN_ADAPTER_TYPE,
   createCodexDeviceLoginService,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
@@ -1168,9 +1167,20 @@ export function agentRoutes(
     return userId;
   }
 
-  // The device-login flow supports only the Codex adapter. Reject any other type.
-  function assertCodexLoginAdapter(type: string): void {
-    if (type !== CODEX_DEVICE_LOGIN_ADAPTER_TYPE) {
+  // Read the interactive login capability the registry declares for an adapter
+  // type. Return null when the adapter declares no capability, so a guard fails
+  // closed on the absent case.
+  function getRegistryLoginCapability(type: string) {
+    return findActiveServerAdapter(type)?.loginCapability ?? null;
+  }
+
+  // The device-login route drives a login over the streamed exec channel. It
+  // serves any adapter whose registry login capability declares that transport.
+  // The guard reads the capability, not the adapter name, so a new adapter with
+  // the same transport passes with no code change. It rejects an adapter with no
+  // matching capability with a fixed 400.
+  function assertStreamedExecLoginAdapter(type: string): void {
+    if (getRegistryLoginCapability(type)?.sandboxTransport !== "streamed_exec") {
       throw badRequest(`Adapter "${type}" does not support a device login.`);
     }
   }
@@ -2506,7 +2516,7 @@ export function agentRoutes(
         req,
         res,
         deriveOwner: () => assertCanManageAdapterLogin(req, companyId),
-        guardBeforeValidate: () => assertCodexLoginAdapter(type),
+        guardBeforeValidate: () => assertStreamedExecLoginAdapter(type),
         requestSchema: startAdapterAuthSessionRequestSchema,
         invalidRequestError: "The device login start request is invalid.",
         requestOverrides: { adapterType: type },
@@ -2559,7 +2569,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertCodexLoginAdapter(type);
+      assertStreamedExecLoginAdapter(type);
 
       const owner = await readOwnerLoginSession(companyId, type, sessionId, ownerUserId);
       if (!owner) {
@@ -2579,7 +2589,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertCodexLoginAdapter(type);
+      assertStreamedExecLoginAdapter(type);
 
       // Scope the cancel to this company, adapter, and owner. A non-owner and a
       // cross-company caller both receive a 404 and cannot cancel a session.
@@ -4661,8 +4671,18 @@ export function agentRoutes(
       requestSchema: startClaudeSetupTokenSessionRequestSchema,
       invalidRequestError: "The Claude login start request is invalid.",
       guardAfterValidate: (data) => {
-        if (data.adapterType !== CLAUDE_SETUP_TOKEN_ADAPTER_TYPE) {
-          res.status(400).json({ error: "Only the claude_local adapter supports a setup-token login." });
+        // The setup-token route drives a login on a pseudo-terminal and records a
+        // stored session identifier on success. It serves any adapter whose
+        // registry login capability declares that transport and that claim. The
+        // guard reads the capability, not the adapter name, so a new adapter with
+        // the same capability passes with no code change. It rejects an adapter
+        // with no matching capability with a fixed 400.
+        const capability = getRegistryLoginCapability(data.adapterType);
+        if (
+          capability?.sandboxTransport !== "pseudo_terminal" ||
+          capability.completionClaim !== "storedSessionId"
+        ) {
+          res.status(400).json({ error: "This adapter does not support a setup-token login." });
           return true;
         }
         if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
@@ -4688,16 +4708,21 @@ export function agentRoutes(
       environmentId,
       confirmedOverwrite,
     };
+    // Read the panel mode from the adapter capability. The guard already checked
+    // the capability, so it is present here. The client renders the panel from
+    // this value instead of a hard-coded mode.
+    const panelMode =
+      getRegistryLoginCapability(adapterType)?.panelMode ?? "submitted_browser_code";
     try {
       const started = await setupTokenLoginService.start(scope);
       const descriptor = setupTokenLoginService.describeOwned(started.sessionId, scope);
       // The start response carries the panel mode, so the client renders the
-      // browser-code panel. The full login URL rides only through the
-      // guarded prompt read, not the start response, so the prompt is null here.
-      // The client reads the prompt route for the login URL.
+      // correct panel. The full login URL rides only through the guarded prompt
+      // read, not the start response, so the prompt is null here. The client
+      // reads the prompt route for the login URL.
       const body: ClaudeSetupTokenSessionOwnerResponse = {
         ...toClaudePublicResponse(descriptor),
-        panelMode: "submitted_browser_code",
+        panelMode,
         prompt: null,
       };
       res.status(201).json(body);

@@ -938,16 +938,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     clearClaudeLoginClaimRef.current();
   }, [adapterType, effectiveLoginEnvironmentId]);
 
-  // Show the login affordance only for a current `codex_local` or `claude_local`
-  // sandbox whose most recent Test result carries the canonical auth-missing
-  // check. Both adapters emit the same neutral code. The result keeps its own
-  // `adapterType`, so a result from another adapter never gates the panel.
-  const adapterSupportsSandboxLogin =
-    adapterType === "codex_local" || adapterType === "claude_local";
+  // Show the login affordance only for a current sandbox adapter that declares a
+  // login capability, and whose most recent Test result carries the canonical
+  // auth-missing check. The form reads the projected capability, not the adapter
+  // name. The result keeps its own `adapterType`, so the form reads the
+  // capability for that result adapter; a result from an adapter with no login
+  // capability never gates the panel.
+  const adapterSupportsSandboxLogin = adapterCaps.login != null;
+  const testResult = testEnvironment.data;
+  const testResultSupportsSandboxLogin =
+    testResult != null && getCapabilities(testResult.adapterType).login != null;
   const authMissingCheck =
-    testEnvironment.data?.adapterType === "codex_local" ||
-    testEnvironment.data?.adapterType === "claude_local"
-      ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
+    testResult && testResultSupportsSandboxLogin
+      ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
   // The Claude login runs on a real pseudo-terminal, so it needs a provider that
   // advertises the setup-token login capability. Read the capability for the
@@ -2010,11 +2013,13 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onApplyStored?: () => void;
 };
 
-// The login panel dispatcher. It picks the panel mode from the adapter. The
-// Claude adapter shows the submitted-browser-code panel. Every other adapter
-// shows the displayed-code panel.
+// The login panel dispatcher. It picks the panel from the projected panel mode,
+// not from the adapter name. The `submitted_browser_code` mode shows the
+// submitted-browser-code panel; every other mode shows the displayed-code panel.
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
-  if (props.adapterType === "claude_local") {
+  const getCapabilities = useAdapterCapabilities();
+  const panelMode = getCapabilities(props.adapterType).login?.panelMode;
+  if (panelMode === "submitted_browser_code") {
     return <SubmittedBrowserCodeLoginPanel {...props} />;
   }
   return <DisplayedCodeLoginPanel {...props} />;

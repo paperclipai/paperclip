@@ -102,9 +102,24 @@ vi.mock("../adapters", () => ({
   }),
 }));
 
+// The projected login capability per adapter type. The server projects these
+// safe scalar fields. `codex_local` drives the displayed-code panel; `claude_local`
+// drives the submitted-browser-code panel. A test overrides this map to add a
+// third adapter with a projected login capability.
+const mockLoginProjections = vi.hoisted(
+  () =>
+    new Map<string, { panelMode: string; sandboxTransport: string; timeoutPolicy: string }>([
+      ["codex_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+      ["claude_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
+      // A third adapter, not a built-in, with a projected displayed-code login.
+      ["vendor_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+    ]),
+);
+
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => (adapterType: string) =>
-    adapterType === "hermes_gateway"
+  useAdapterCapabilities: () => (adapterType: string) => {
+    const login = mockLoginProjections.get(adapterType);
+    return adapterType === "hermes_gateway"
       ? {
           supportsInstructionsBundle: false,
           supportsSkills: false,
@@ -120,7 +135,9 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           requiresMaterializedRuntimeSkills: false,
           supportsModelProfiles: true,
           supportsAcp: true,
-        },
+          ...(login ? { login } : {}),
+        };
+  },
 }));
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
@@ -318,6 +335,19 @@ const AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+const VENDOR_AUTH_MISSING_RESULT = {
+  adapterType: "vendor_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
 const CLAUDE_AUTH_MISSING_RESULT = {
   adapterType: "claude_local",
   status: "warn",
@@ -368,6 +398,24 @@ async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
       }),
     ],
     { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+// A third adapter, not a built-in, in a sandbox environment. Its projected login
+// capability drives the login affordance and the displayed-code panel.
+async function renderVendorSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "E2B",
+        driver: "sandbox",
+        config: { provider: "e2b" },
+      }),
+    ],
+    { adapterType: "vendor_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
     { showAdapterTestEnvironmentButton: true },
   );
 }
@@ -933,6 +981,31 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
 
     expect(findButton(result.container, "Log in")).toBeTruthy();
+  });
+
+  it("shows the login affordance and the displayed-code panel for a third adapter with a projected login capability", async () => {
+    // The adapter is not a built-in. Its projected login capability drives the
+    // login affordance and the panel, so the form reads the capability, not the
+    // adapter name. The displayed-code panel shows the server code.
+    mockAgentsApi.testEnvironment.mockResolvedValue(VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderVendorSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    // The projected capability gates the login affordance on for the third
+    // adapter.
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+
+    await startLogin(result.container);
+
+    // The displayed-code panel shows the one-time code and the authentication
+    // URL. It shows no browser-code input, so the dispatcher picked the panel
+    // from the projected `displayed_code` mode.
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
   });
 
   it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Claude sandbox", async () => {
