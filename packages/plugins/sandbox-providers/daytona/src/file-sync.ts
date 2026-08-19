@@ -24,6 +24,10 @@ const SPAN_ATTR = {
   packWallMs: `${SPAN_ATTR_PREFIX}pack.wall_ms`,
   transferWallMs: `${SPAN_ATTR_PREFIX}transfer.wall_ms`,
   transferGuardCount: `${SPAN_ATTR_PREFIX}transfer.guard.count`,
+  // The transfer direction: `inbound` for an upload to the sandbox, `outbound`
+  // for a download from the sandbox. Operation identity comes from the parent
+  // span, so the transfer span never carries an operation label.
+  transferDirection: `${SPAN_ATTR_PREFIX}transfer.direction`,
 } as const;
 
 /** The value of `SpanStatusCode.ERROR` in `@opentelemetry/api`. The plugin stays
@@ -532,7 +536,10 @@ async function syncInFileMappings(input: {
     await withProviderSpan({
       name: "transfer",
       wallMsAttr: SPAN_ATTR.transferWallMs,
-      attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+      attributes: {
+        [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+        [SPAN_ATTR.transferDirection]: "inbound",
+      },
       run: () => sandbox.fs.uploadFiles(uploads, timeoutSeconds),
     });
 
@@ -659,7 +666,10 @@ async function syncInDirectoryMapping(input: {
     await withProviderSpan({
       name: "transfer",
       wallMsAttr: SPAN_ATTR.transferWallMs,
-      attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+      attributes: {
+        [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+        [SPAN_ATTR.transferDirection]: "inbound",
+      },
       run: () =>
         sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds),
     });
@@ -886,7 +896,10 @@ async function syncOutFileMappings(input: {
     responses = await withProviderSpan({
       name: "transfer",
       wallMsAttr: SPAN_ATTR.transferWallMs,
-      attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+      attributes: {
+        [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+        [SPAN_ATTR.transferDirection]: "outbound",
+      },
       run: () => sandbox.fs.downloadFiles(requests, timeoutSeconds),
     });
   } catch (error) {
@@ -976,7 +989,10 @@ async function syncOutDirectoryMapping(input: {
       const responses = await withProviderSpan({
         name: "transfer",
         wallMsAttr: SPAN_ATTR.transferWallMs,
-        attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+        attributes: {
+          [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+          [SPAN_ATTR.transferDirection]: "outbound",
+        },
         run: () =>
           sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
       });

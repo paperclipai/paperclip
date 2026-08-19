@@ -4226,9 +4226,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         stopTransport: () => timedPhase("stop_transport", async () => {
           await stopRunTransport(prepared);
         }),
-        // The site sync-back (the managed-home copy-back).
+        // The site sync-back (the managed-home copy-back). The run-parented span
+        // runner wraps the restore in a `sandbox.syncBack` span. The runner also
+        // publishes the run parent into the runtime-parent store while the restore
+        // runs, so the host mints a `traceparent` for the provider spans, and the
+        // per-task restore spans parent to `sandbox.syncBack`.
         syncBack: () => timedPhase("sync_back", async () => {
-          await syncBackManagedHome(prepared);
+          await runRuntimeSpan("sandbox.syncBack", async () => {
+            await syncBackManagedHome(prepared);
+          });
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
         // reproduces the result, in the run root `finally` below. This step stays a

@@ -2055,14 +2055,17 @@ describe("sandbox managed runtime", () => {
       runtimeSpan,
     });
 
-    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "pack"]);
+    // The workspace stage task opens its own `stage.workspace` span, and the
+    // host tarball build opens the `pack` span inside it. The two pre-task
+    // sub-steps stay ahead of the task.
+    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "stage.workspace", "pack"]);
     // The tarball build still lands the workspace inside the span, so the wrap
     // changes no staging behavior.
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("workspace body\n");
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
-  it("nests the host pack span under the stage.sync step span", async () => {
+  it("nests the host pack span under the stage.workspace task span", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pack-nest-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -2116,13 +2119,16 @@ describe("sandbox managed runtime", () => {
     );
 
     const stageSpan = spans.find((span) => span.name === "stage.sync");
+    const workspaceSpan = spans.find((span) => span.name === "stage.workspace");
     const packSpan = spans.find((span) => span.name === "pack");
     expect(stageSpan).toBeDefined();
+    expect(workspaceSpan).toBeDefined();
     expect(packSpan).toBeDefined();
     expect(packSpan!.ended).toBe(true);
-    // The `pack` span parents to `stage.sync`, not to the root span, so it nests
-    // under the step in a real trace.
-    expect(packSpan!.parentName).toBe("stage.sync");
+    // The workspace stage task opens its own `stage.workspace` span under
+    // `stage.sync`, and the `pack` span nests under `stage.workspace`.
+    expect(workspaceSpan!.parentName).toBe("stage.sync");
+    expect(packSpan!.parentName).toBe("stage.workspace");
 
     // The two pre-`pack` staging sub-steps nest under `stage.sync` the same way,
     // so the previously hidden gap at the head of the step is now attributed.
@@ -2154,6 +2160,29 @@ function defer<T>(): Deferred<T> {
 
 function settleTick(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A span recorder that captures each opened span name and the set of spans that
+// are open right now. `opened` records every span in open order. `openNow` holds
+// the names of the spans that started but did not end yet, so a test proves two
+// concurrent tasks keep their spans open at the same time.
+function makeSpanRecorder(): {
+  runtimeSpan: RuntimeSpanRunner;
+  opened: string[];
+  openNow: Set<string>;
+} {
+  const opened: string[] = [];
+  const openNow = new Set<string>();
+  const runtimeSpan: RuntimeSpanRunner = async (name, work) => {
+    opened.push(name);
+    openNow.add(name);
+    try {
+      return await work();
+    } finally {
+      openNow.delete(name);
+    }
+  };
+  return { runtimeSpan, opened, openNow };
 }
 
 // A controlled `syncIn` client. It labels each inbound operation, records the
@@ -2516,6 +2545,58 @@ describe("sandbox managed runtime inbound coordinator", () => {
     // The serial order stays workspace first, then the asset.
     expect(control.started).toEqual(["workspace", "asset-a"]);
   });
+
+  it("opens one named span per inbound task: stage.workspace, stage.asset.<key>, stage.project.<id>", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["home", "proj"]);
+    const { client } = makeControlledSyncClient({ concurrent: false });
+    const { runtimeSpan, opened } = makeSpanRecorder();
+
+    await prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: dirOf("home") }],
+      additionalSources: [{ localPath: dirOf("proj"), projectId: "proj-1" }],
+      runtimeSpan,
+    });
+
+    // Each inbound task carries its own named span. The workspace task, the home
+    // asset task, and the referenced-project task each open one.
+    expect(opened).toContain("stage.workspace");
+    expect(opened).toContain("stage.asset.home");
+    expect(opened).toContain("stage.project.proj-1");
+  });
+
+  it("with concurrency permitted, the workspace and asset inbound task spans overlap in time", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["home"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    const { runtimeSpan, openNow } = makeSpanRecorder();
+    control.hold("workspace");
+    control.hold("home");
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: dirOf("home") }],
+      runtimeSpan,
+    });
+    prepared.catch(() => undefined);
+
+    // Both uploads are held open at their transfer. Each task span opens before
+    // its transfer and stays open while the transfer is held, so the two spans
+    // are open at the same time.
+    await control.waitForStart("workspace");
+    await control.waitForStart("home");
+    expect(openNow.has("stage.workspace")).toBe(true);
+    expect(openNow.has("stage.asset.home")).toBe(true);
+
+    control.release("workspace");
+    control.release("home");
+    await prepared;
+  });
 });
 
 // A controlled outbound restore. It reuses the deferred-promise fakes. The
@@ -2870,5 +2951,61 @@ describe("sandbox managed runtime outbound coordinator", () => {
     control.release("asset-b");
     await restore;
     expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
+  });
+
+  it("opens one named span per outbound restore task: restore.workspace, restore.asset.<key>", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    const { runtimeSpan, opened } = makeSpanRecorder();
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
+      runtimeSpan,
+    });
+
+    await prepared.restoreWorkspace();
+
+    // Each outbound restore task carries its own named span. The workspace
+    // restore task and the home asset restore task each open one.
+    expect(opened).toContain("restore.workspace");
+    expect(opened).toContain("restore.asset.home");
+  });
+
+  it("with concurrency permitted, the workspace and asset restore task spans overlap in time", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    const { runtimeSpan, openNow } = makeSpanRecorder();
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
+      runtimeSpan,
+    });
+
+    control.hold("workspace");
+    control.hold("home");
+    const restore = prepared.restoreWorkspace();
+    restore.catch(() => undefined);
+
+    // Both restore tasks are held open. Each restore task span opens before its
+    // work and stays open while the work is held, so the two spans are open at
+    // the same time.
+    await control.waitForStart("workspace");
+    await control.waitForStart("home");
+    expect(openNow.has("restore.workspace")).toBe(true);
+    expect(openNow.has("restore.asset.home")).toBe(true);
+
+    control.release("workspace");
+    control.release("home");
+    await restore;
   });
 });

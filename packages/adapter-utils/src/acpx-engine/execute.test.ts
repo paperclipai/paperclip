@@ -3349,14 +3349,27 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(turnSpan!.parent).toBe(runRootSpan);
     expect(turnSpan!.ended).toBe(true);
 
+    // The settlement sync-back opens the `sandbox.syncBack` span. It runs at
+    // teardown, so it parents to the run root span, not to the bring-up span.
+    const syncBackSpan = spans.find((span) => span.name === "sandbox.syncBack");
+    expect(syncBackSpan).toBeTruthy();
+    expect(syncBackSpan!.parent).toBe(runRootSpan);
+    expect(syncBackSpan!.ended).toBe(true);
+
     // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
     // Each boundary span parents to the sandbox bring-up span, not to the run
-    // root or the turn span. The `stage.sync` step also opens three host
-    // sub-step spans — `snapshot.git`, `snapshot.baseline`, and `pack` — around
-    // its git enumeration, baseline content-hash walk, and workspace tarball
-    // build, so those nest one level deeper.
+    // root or the turn span. The `stage.sync` step also opens the two pre-task
+    // sub-step spans — `snapshot.git` and `snapshot.baseline` — plus the
+    // `stage.workspace` inbound task span, and the `pack` span nests one level
+    // deeper under `stage.workspace`.
     const childNames = spans
-      .filter((span) => span !== runRootSpan && span !== startupSpan && span !== turnSpan)
+      .filter(
+        (span) =>
+          span !== runRootSpan &&
+          span !== startupSpan &&
+          span !== turnSpan &&
+          span !== syncBackSpan,
+      )
       .map((span) => span.name)
       .sort();
     expect(childNames).toEqual(
@@ -3370,32 +3383,44 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
         "snapshot.baseline",
         "snapshot.git",
         "stage.sync",
+        "stage.workspace",
         "workspace.resolve",
       ],
     );
 
-    // The three host sub-step spans nest under the `stage.sync` step span (that
-    // host work runs inside the step), not directly under the bring-up span.
+    // The two pre-task sub-step spans and the `stage.workspace` task span nest
+    // under the `stage.sync` step span (that host work runs inside the step), not
+    // directly under the bring-up span. The `pack` span nests under
+    // `stage.workspace`, because the host builds the tarball inside the task.
     const stageSyncSpan = spans.find((span) => span.name === "stage.sync");
+    const stageWorkspaceSpan = spans.find((span) => span.name === "stage.workspace");
     const packSpan = spans.find((span) => span.name === "pack");
     const snapshotGitSpan = spans.find((span) => span.name === "snapshot.git");
     const snapshotBaselineSpan = spans.find((span) => span.name === "snapshot.baseline");
     expect(stageSyncSpan).toBeTruthy();
+    expect(stageWorkspaceSpan).toBeTruthy();
     expect(packSpan).toBeTruthy();
     expect(snapshotGitSpan).toBeTruthy();
     expect(snapshotBaselineSpan).toBeTruthy();
-    expect(packSpan!.parent).toBe(stageSyncSpan);
+    expect(stageWorkspaceSpan!.parent).toBe(stageSyncSpan);
+    expect(packSpan!.parent).toBe(stageWorkspaceSpan);
     expect(snapshotGitSpan!.parent).toBe(stageSyncSpan);
     expect(snapshotBaselineSpan!.parent).toBe(stageSyncSpan);
     expect(packSpan!.ended).toBe(true);
 
     // Every boundary step span parents to the sandbox bring-up span and ends.
-    // The three `stage.sync` sub-step spans are the exceptions: they parent to
-    // `stage.sync` above.
-    const stageSyncChildren = new Set([packSpan, snapshotGitSpan, snapshotBaselineSpan]);
+    // The `stage.sync` sub-step spans and the run-parented `sandbox.syncBack`
+    // span are the exceptions: they parent above.
+    const nonStartupChildren = new Set([
+      packSpan,
+      stageWorkspaceSpan,
+      snapshotGitSpan,
+      snapshotBaselineSpan,
+      syncBackSpan,
+    ]);
     for (const span of spans) {
       if (span === runRootSpan || span === startupSpan || span === turnSpan) continue;
-      if (stageSyncChildren.has(span)) continue;
+      if (nonStartupChildren.has(span)) continue;
       expect(span.parent, `span "${span.name}" must parent to the startup span`).toBe(startupSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }
@@ -4137,6 +4162,78 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     // The four execs are distinct spans with four distinct parents.
     const execParents = new Set([rootRegionExec, syncExec, turnExec, offTurnExec]);
     expect(execParents.size).toBe(4);
+  });
+
+  it("test_sync_back_runs_inside_sandbox_syncback_span", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // The settlement `syncBack` step runs the managed-home teardown. The teardown
+    // issues one exec through the same host-to-sandbox seam the run uses. The
+    // recorder captures the exec parent, so the test proves the teardown runs
+    // inside the run-parented `sandbox.syncBack` span.
+    let teardownExecFired = false;
+    const execute = createAcpxEngineExecutor({
+      prepareRemoteManagedHome: async (input) => {
+        const stagedRuntime = await input.stage([]);
+        return {
+          stagedRuntime,
+          teardown: async () => {
+            if (!teardownExecFired) {
+              teardownExecFired = true;
+              issueSandboxExecFromStore(traceContext);
+            }
+          },
+        };
+      },
+      createRuntime: () => buildRuntime() as never,
+    });
+
+    const result = await execute({
+      runId: "run-sync-back-span",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      startupTraceContext: traceContext,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(teardownExecFired).toBe(true);
+
+    // One `sandbox.syncBack` span opens, ends, and parents to `task.run`. The
+    // settlement runs the teardown after the turn, so the run parent is
+    // `task.run` at that time.
+    const runSpan = spans.find((span) => span.name === "task.run");
+    expect(runSpan).toBeTruthy();
+    const syncBackSpans = spans.filter((span) => span.name === "sandbox.syncBack");
+    expect(syncBackSpans).toHaveLength(1);
+    const syncBackSpan = syncBackSpans[0]!;
+    expect(syncBackSpan.ended).toBe(true);
+    expect(syncBackSpan.parent).toBe(runSpan);
+
+    // The teardown exec parents to `sandbox.syncBack`, so the sync-back copy-back
+    // runs inside the span, not unparented at teardown.
+    const syncBackExec = spans.find(
+      (span) => span.name === "sandbox.exec" && span.parent === syncBackSpan,
+    );
+    expect(syncBackExec, "the teardown exec must parent to sandbox.syncBack").toBeTruthy();
   });
 
   it("test_no_sandbox_exec_parents_to_http_root", async () => {

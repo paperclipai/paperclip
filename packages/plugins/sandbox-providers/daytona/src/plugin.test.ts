@@ -3393,6 +3393,66 @@ describe("daytona native file-sync hooks", () => {
     expect(spans.find((span) => span.name === "pack")).toBeUndefined();
   });
 
+  it("marks the inbound transfer span with the inbound direction attribute", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.(
+        syncInParams({
+          operationId: "sync-op-in-dir",
+          sourcePath: source,
+          targetPath: `${REMOTE_DIR}/config.txt`,
+        }),
+      );
+    } finally {
+      restore();
+    }
+
+    // An upload to the sandbox is an inbound transfer.
+    const transfer = spans.find((span) => span.name === "transfer");
+    expect(transfer).toBeDefined();
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.direction"]).toBe("inbound");
+  });
+
+  it("marks the outbound transfer span with the outbound direction attribute", async () => {
+    const hostDir = await makeHostDir();
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination?: string }>) => {
+      return Promise.all(
+        requests.map(async (req) => {
+          await fs.writeFile(req.destination!, "bytes");
+          return { source: req.source, result: req.destination };
+        }),
+      );
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncOut?.(
+        syncOutParams({
+          operationId: "sync-op-out-dir",
+          sourcePath: `${REMOTE_DIR}/out/result.txt`,
+          targetPath: path.join(hostDir, "result.txt"),
+        }),
+      );
+    } finally {
+      restore();
+    }
+
+    // A download from the sandbox is an outbound transfer.
+    const transfer = spans.find((span) => span.name === "transfer");
+    expect(transfer).toBeDefined();
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.direction"]).toBe("outbound");
+  });
+
   it("opens a pack span and a transfer span around a directory mapping sync", async () => {
     const hostDir = await makeHostDir();
     const sourceDir = path.join(hostDir, "assets");
