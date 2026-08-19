@@ -134,6 +134,17 @@ async function runPnpm(cwd: string, args: string[]) {
   await execFileAsync("pnpm", args, { cwd });
 }
 
+async function writeRegisteredSourceConfig(baseCwd: string, instanceId = "source-instance") {
+  const configDir = path.join(baseCwd, ".paperclip");
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(path.join(configDir, "config.json"), "{}\n", "utf8");
+  await fs.writeFile(
+    path.join(configDir, ".env"),
+    `PAPERCLIP_INSTANCE_ID=${instanceId}\n`,
+    "utf8",
+  );
+}
+
 async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
   await runGit(repoRoot, ["init"]);
@@ -1406,8 +1417,13 @@ describe("realizeExecutionWorkspace", () => {
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
     const repoRoot = await createTempRepo();
+    await writeRegisteredSourceConfig(repoRoot, "worktree-base-source");
     const previousCwd = process.cwd();
     const previousPath = process.env.PATH;
+    const previousConfig = process.env.PAPERCLIP_CONFIG;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousWorktreesDir = process.env.PAPERCLIP_WORKTREES_DIR;
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-home-"));
     const isolatedWorktreeHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktrees-"));
     const isolatedBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bin-"));
@@ -1419,6 +1435,7 @@ describe("realizeExecutionWorkspace", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = instanceId;
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedWorktreeHome;
+    delete process.env.PAPERCLIP_CONFIG;
     // Keep this server-side fixture on provision-worktree.sh's config writer path;
     // CLI/database seeding is covered by the CLI worktree tests.
     await fs.symlink(process.execPath, path.join(isolatedBin, "node"));
@@ -1590,6 +1607,18 @@ describe("realizeExecutionWorkspace", () => {
       } else {
         process.env.PATH = previousPath;
       }
+      for (const [key, value] of [
+        ["PAPERCLIP_CONFIG", previousConfig],
+        ["PAPERCLIP_HOME", previousHome],
+        ["PAPERCLIP_INSTANCE_ID", previousInstanceId],
+        ["PAPERCLIP_WORKTREES_DIR", previousWorktreesDir],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
     }
   }, 15_000);
 
@@ -1597,6 +1626,7 @@ describe("realizeExecutionWorkspace", () => {
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
     const repoRoot = await createTempRepo();
+    await writeRegisteredSourceConfig(repoRoot);
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
@@ -1699,6 +1729,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
     const repoRoot = await createTempRepo();
+    await writeRegisteredSourceConfig(repoRoot);
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "package.json"),
@@ -1781,6 +1812,7 @@ describe("realizeExecutionWorkspace", () => {
 
     try {
       await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await writeRegisteredSourceConfig(baseRoot);
       await fs.mkdir(path.join(worktreeRoot, "node_modules"), { recursive: true });
       await fs.mkdir(path.join(worktreeRoot, "ui"), { recursive: true });
       await fs.mkdir(fakeBin, { recursive: true });
@@ -1873,6 +1905,7 @@ describe("realizeExecutionWorkspace", () => {
 
     try {
       await fs.mkdir(baseRoot, { recursive: true });
+      await writeRegisteredSourceConfig(baseRoot);
       await fs.mkdir(worktreeRoot, { recursive: true });
       await fs.mkdir(fakeBin, { recursive: true });
       await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
@@ -1930,6 +1963,7 @@ describe("realizeExecutionWorkspace", () => {
 
     try {
       await fs.mkdir(baseRoot, { recursive: true });
+      await writeRegisteredSourceConfig(baseRoot);
       await fs.mkdir(paperclipDir, { recursive: true });
       await fs.mkdir(fakeBin, { recursive: true });
       await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
@@ -2020,6 +2054,7 @@ describe("realizeExecutionWorkspace", () => {
 
     try {
       await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await writeRegisteredSourceConfig(baseRoot);
       await fs.mkdir(worktreeRoot, { recursive: true });
       await fs.mkdir(fakeBin, { recursive: true });
       await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
@@ -2089,6 +2124,7 @@ describe("realizeExecutionWorkspace", () => {
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
     const repoRoot = await createTempRepo();
+    await writeRegisteredSourceConfig(repoRoot);
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
