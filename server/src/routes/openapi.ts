@@ -2834,6 +2834,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/routines/{id}/health",
+  tags: ["routines"],
+  summary: "Get routine schedule health",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ days: z.coerce.number().int().min(1).max(31).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/routines/{id}/run",
   tags: ["routines"],
