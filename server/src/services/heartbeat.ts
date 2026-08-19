@@ -151,6 +151,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { resolveHeartbeatManagedInstructionsPatch } from "./agent-instructions.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
@@ -14052,7 +14053,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
     });
-    const config = parseObject(agent.adapterConfig);
+    const config = { ...parseObject(agent.adapterConfig) };
+    const managedInstructionsPatch = await resolveHeartbeatManagedInstructionsPatch(agent);
+    if (Object.keys(managedInstructionsPatch).length > 0) {
+      logger.info(
+        {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          previousInstructionsRootPath: config.instructionsRootPath ?? null,
+          previousInstructionsFilePath: config.instructionsFilePath ?? null,
+          previousInstructionsEntryFile: config.instructionsEntryFile ?? null,
+          instructionsRootPath: managedInstructionsPatch.instructionsRootPath,
+          instructionsFilePath: managedInstructionsPatch.instructionsFilePath,
+          instructionsEntryFile: managedInstructionsPatch.instructionsEntryFile,
+          warnings: managedInstructionsPatch.warnings,
+        },
+        "Corrected stale managed instructions root at heartbeat config-assembly",
+      );
+      config.instructionsRootPath = managedInstructionsPatch.instructionsRootPath;
+      config.instructionsFilePath = managedInstructionsPatch.instructionsFilePath;
+      // Session-freshness fingerprinting (resolveInstructionsConfigFingerprintMetadata below) prefers
+      // instructionsEntryFile over instructionsFilePath, so this must be corrected too or the
+      // fingerprint would keep resolving against the stale entry file name.
+      config.instructionsEntryFile = managedInstructionsPatch.instructionsEntryFile;
+    }
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;

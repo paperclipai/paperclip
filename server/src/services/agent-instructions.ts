@@ -451,6 +451,64 @@ export function syncInstructionsBundleConfigFromFilePath(
   return applyBundleConfig(next, { mode, rootPath, entryFile });
 }
 
+/**
+ * Re-resolves the managed instructions root/entry file/file path for a `mode: "managed"` agent
+ * at run-dispatch time, instead of trusting whatever absolute path was persisted into
+ * `adapterConfig.instructionsRootPath`/`instructionsFilePath` the last time the bundle was written.
+ *
+ * `applyBundleConfig` persists an absolute path computed from `resolveManagedInstructionsRoot(agent)`
+ * at config-write time (see above). That path is derived from the current Paperclip instance root
+ * (`PAPERCLIP_HOME`/`PAPERCLIP_INSTANCE_ID`), so moving the data dir without a symlink shim silently
+ * orphans every managed agent's persisted config even though `deriveBundleState` +
+ * `recoverManagedBundleState` already know how to self-heal it -- those helpers only run on the
+ * bundle read/list HTTP API path today, not on the path that assembles the config actually handed
+ * to an adapter's `execute()`.
+ *
+ * This composes the same `deriveBundleState` + `recoverManagedBundleState` helpers used by the
+ * bundle API and returns a patch to apply to `config` before it flows into
+ * `buildExecutionWorkspaceAdapterConfig`/the runtime config an adapter executes with. Returns `{}`
+ * when there is nothing to correct: the bundle is in `external` mode, or the currently configured
+ * managed root/entry file already match what recovery finds on disk.
+ *
+ * Otherwise returns `{ instructionsRootPath, instructionsFilePath, instructionsEntryFile, warnings }`
+ * where `warnings` carries only the warning strings newly produced by this recovery pass (e.g.
+ * "Recovered managed instructions from disk ... ignoring stale configured root"). `instructionsEntryFile`
+ * is included alongside the resolved file path because `resolveInstructionsConfigFingerprintMetadata`
+ * in heartbeat.ts resolves the session-freshness fingerprint path from `config.instructionsEntryFile`
+ * *in preference to* `config.instructionsFilePath` -- leaving the stale entry file name in place would
+ * silently defeat the path correction for that fingerprint even though the adapter's own
+ * `instructionsFilePath` read is fixed.
+ */
+export async function resolveHeartbeatManagedInstructionsPatch(
+  agent: AgentLike,
+): Promise<
+  | Record<string, never>
+  | {
+      instructionsRootPath: string;
+      instructionsFilePath: string;
+      instructionsEntryFile: string;
+      warnings: string[];
+    }
+> {
+  const derived = deriveBundleState(agent);
+  const recovered = await recoverManagedBundleState(agent, derived);
+
+  if (recovered.mode !== "managed" || !recovered.rootPath || !recovered.resolvedEntryPath) return {};
+
+  const rootUnchanged = derived.rootPath ? path.resolve(derived.rootPath) === path.resolve(recovered.rootPath) : false;
+  const entryUnchanged = derived.entryFile === recovered.entryFile;
+  if (rootUnchanged && entryUnchanged) return {};
+
+  const newWarnings = recovered.warnings.filter((warning) => !derived.warnings.includes(warning));
+
+  return {
+    instructionsRootPath: recovered.rootPath,
+    instructionsFilePath: recovered.resolvedEntryPath,
+    instructionsEntryFile: recovered.entryFile,
+    warnings: newWarnings,
+  };
+}
+
 export function agentInstructionsService() {
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));

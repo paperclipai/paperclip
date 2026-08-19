@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentInstructionsService } from "../services/agent-instructions.js";
+import { agentInstructionsService, resolveHeartbeatManagedInstructionsPatch } from "../services/agent-instructions.js";
 
 type TestAgent = {
   id: string;
@@ -357,5 +357,144 @@ describe("agent instructions service", () => {
       "Recovered managed instructions entry file from disk as AGENTS.md; previous entry docs/MISSING.md was missing.",
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
+  });
+});
+
+describe("resolveHeartbeatManagedInstructionsPatch", () => {
+  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
+  const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+  const cleanupDirs = new Set<string>();
+
+  afterEach(async () => {
+    if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = originalPaperclipHome;
+    if (originalPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
+
+    await Promise.all([...cleanupDirs].map(async (dir) => {
+      await fs.rm(dir, { recursive: true, force: true });
+      cleanupDirs.delete(dir);
+    }));
+  });
+
+  function managedRootFor(paperclipHome: string, instanceId: string) {
+    return path.join(
+      paperclipHome,
+      "instances",
+      instanceId,
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+  }
+
+  it("re-resolves the managed root when the data dir moved out from under a managed config (AGE-168 repro)", async () => {
+    const paperclipHome = await makeTempDir("paperclip-heartbeat-instructions-move-");
+    cleanupDirs.add(paperclipHome);
+
+    // Step 1: agent is configured in managed mode under data-dir A.
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+    const rootA = managedRootFor(paperclipHome, "instance-a");
+    await fs.mkdir(rootA, { recursive: true });
+    await fs.writeFile(path.join(rootA, "AGENTS.md"), "# Instance A Agent\n", "utf8");
+
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: rootA,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(rootA, "AGENTS.md"),
+    });
+
+    // Sanity: with data-dir A still current, nothing needs correcting.
+    await expect(resolveHeartbeatManagedInstructionsPatch(agent)).resolves.toEqual({});
+
+    // Step 2: the data dir is moved to B (`--data-dir ~/B`, no symlink shim), and the real
+    // instructions file lives under the *current* resolveManagedInstructionsRoot(agent) for root B.
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-b";
+    const rootB = managedRootFor(paperclipHome, "instance-b");
+    cleanupDirs.add(rootB);
+    await fs.mkdir(rootB, { recursive: true });
+    await fs.writeFile(path.join(rootB, "AGENTS.md"), "# Instance B Agent\n", "utf8");
+
+    // The agent's persisted adapterConfig still points at stale root A; a heartbeat must resolve
+    // the current root and load the correct instructions file, not the stale persisted absolute path.
+    const patch = await resolveHeartbeatManagedInstructionsPatch(agent);
+
+    expect(patch).toMatchObject({
+      instructionsRootPath: rootB,
+      instructionsFilePath: path.join(rootB, "AGENTS.md"),
+      instructionsEntryFile: "AGENTS.md",
+    });
+    expect((patch as { warnings: string[] }).warnings).toEqual([
+      `Recovered managed instructions from disk at ${rootB}; ignoring stale configured root ${rootA}.`,
+    ]);
+  });
+
+  it("also corrects a stale instructionsEntryFile (fingerprint resolution prefers entryFile over instructionsFilePath)", async () => {
+    const paperclipHome = await makeTempDir("paperclip-heartbeat-instructions-entry-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+
+    // The configured entry file (docs/MISSING.md) no longer exists on disk; only AGENTS.md does,
+    // so recovery must fall back to it as the recovered entry file.
+    const managedRoot = managedRootFor(paperclipHome, "instance-a");
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Recovered Agent\n", "utf8");
+
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "docs/MISSING.md",
+      instructionsFilePath: path.join(managedRoot, "docs", "MISSING.md"),
+    });
+
+    const patch = await resolveHeartbeatManagedInstructionsPatch(agent);
+
+    expect(patch).toMatchObject({
+      instructionsRootPath: managedRoot,
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+      instructionsEntryFile: "AGENTS.md",
+    });
+  });
+
+  it("returns {} for an external-mode config, even if it points at a nonexistent path", async () => {
+    const paperclipHome = await makeTempDir("paperclip-heartbeat-instructions-external-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+
+    const externalRoot = "/nonexistent/external/root";
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    await expect(resolveHeartbeatManagedInstructionsPatch(agent)).resolves.toEqual({});
+  });
+
+  it("returns {} when the managed config is already correct", async () => {
+    const paperclipHome = await makeTempDir("paperclip-heartbeat-instructions-correct-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+
+    const rootA = managedRootFor(paperclipHome, "instance-a");
+    await fs.mkdir(rootA, { recursive: true });
+    await fs.writeFile(path.join(rootA, "AGENTS.md"), "# Instance A Agent\n", "utf8");
+
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: rootA,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(rootA, "AGENTS.md"),
+    });
+
+    await expect(resolveHeartbeatManagedInstructionsPatch(agent)).resolves.toEqual({});
   });
 });
