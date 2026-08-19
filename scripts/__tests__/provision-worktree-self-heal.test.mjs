@@ -37,6 +37,9 @@ test.after(() => {
  */
 function makeBaseWorkspace({ helpExit, initExit, ensureExit = 0 }) {
   const baseCwd = makeTempDir("paperclip-provision-base-");
+  fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", "config.json"), "{}\n");
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", ".env"), "PAPERCLIP_INSTANCE_ID=base-source\n");
   const runnerPath = path.join(baseCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
   const entryPath = path.join(baseCwd, "cli", "src", "index.ts");
   fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
@@ -91,6 +94,8 @@ function runProvision(baseCwd, { pathPrefix } = {}) {
       PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-test",
       PAPERCLIP_WORKTREES_DIR: worktreesHome,
       PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
+      PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
     },
   });
   return { result, worktreeCwd, worktreesHome };
@@ -109,6 +114,8 @@ function runRuntimeProvision(baseCwd, worktreeCwd) {
       PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-runtime-test",
       PAPERCLIP_WORKTREES_DIR: worktreesHome,
       PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
     },
   });
 }
@@ -187,6 +194,9 @@ test("repairs an unhealthy base install under the lock and then uses the CLI", (
   // The CLI's health is controlled by a flag file, and a fake `pnpm install`
   // creates that flag — modeling a forced reinstall that relinks the store.
   const baseCwd = makeTempDir("paperclip-provision-repair-base-");
+  fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", "config.json"), "{}\n");
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", ".env"), "PAPERCLIP_INSTANCE_ID=base-source\n");
   const healthFlag = path.join(baseCwd, "cli-healthy.flag");
   const runnerPath = path.join(baseCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
   const entryPath = path.join(baseCwd, "cli", "src", "index.ts");
@@ -273,7 +283,7 @@ test("runtime provisioning invokes ensure-seeded once and fast-exits after succe
     .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded");
   assert.equal(ensureCallsAfterFirst.length, 1);
   assert.ok(ensureCallsAfterFirst[0].includes("--config"));
-  assert.ok(ensureCallsAfterFirst[0].includes("--from-config"));
+  assert.ok(!ensureCallsAfterFirst[0].includes("--from-config"));
 
   const second = runRuntimeProvision(baseCwd, worktreeCwd);
   assert.equal(second.status, 0, second.stderr);

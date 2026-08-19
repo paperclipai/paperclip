@@ -1451,6 +1451,7 @@ async function inspectVerifiedSeedDatabase(
   connectionString: string,
   expected?: WorktreeSeedValidationExpectation,
   migrationRequirement: "sourcePrefix" | "upToDate" = "upToDate",
+  requiredCompanyId?: string,
 ): Promise<{ summary: WorktreeSeedValidationSummary; expectation: WorktreeSeedValidationExpectation }> {
   const migrationState = await inspectMigrations(connectionString);
   const migrationRevision = resolveWorktreeSeedMigrationRevision(
@@ -1509,7 +1510,10 @@ async function inspectVerifiedSeedDatabase(
           eq(companyMemberships.status, "active"),
         ),
       )
-      .where(expected ? eq(authUsers.id, expected.adminUserId) : undefined)
+      .where(and(
+        expected ? eq(authUsers.id, expected.adminUserId) : undefined,
+        requiredCompanyId ? eq(companyMemberships.companyId, requiredCompanyId) : undefined,
+      ))
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!admin) {
@@ -1523,12 +1527,11 @@ async function inspectVerifiedSeedDatabase(
       .from(companies)
       .innerJoin(issues, eq(issues.companyId, companies.id))
       .where(
-        expected
-          ? and(
-              eq(companies.id, expected.representativeCompanyId),
-              eq(issues.id, expected.representativeIssueId),
-            )
-          : undefined,
+        and(
+          expected ? eq(companies.id, expected.representativeCompanyId) : undefined,
+          expected ? eq(issues.id, expected.representativeIssueId) : undefined,
+          requiredCompanyId ? eq(companies.id, requiredCompanyId) : undefined,
+        ),
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
@@ -1579,17 +1582,12 @@ async function seedWorktreeDatabase(input: {
   instanceId: string;
   seedMode: WorktreeSeedMode;
   preserveLiveWork?: boolean;
+  expectedCompanyId?: string;
   onPhase?: (phase: WorktreeSeedPhase, status: "started" | "succeeded", message?: string) => void;
 }): Promise<SeedWorktreeDatabaseResult> {
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
   const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
   const sourceEnvEntries = readPaperclipEnvEntries(sourceEnvFile);
-  copySeededSecretsKey({
-    sourceConfigPath: input.sourceConfigPath,
-    sourceConfig: input.sourceConfig,
-    sourceEnvEntries,
-    targetKeyFilePath: input.targetPaths.secretsKeyFilePath,
-  });
   let sourceHandle: EmbeddedPostgresHandle | null = null;
   let targetHandle: EmbeddedPostgresHandle | null = null;
 
@@ -1612,12 +1610,19 @@ async function seedWorktreeDatabase(input: {
       sourceConnectionString,
       undefined,
       "sourcePrefix",
+      input.expectedCompanyId,
     );
     input.onPhase?.(
       "source_validation",
       "succeeded",
       `Validated migration ${sourceValidation.summary.migrationRevision}, ${sourceValidation.summary.companyCount} company record(s), and ${sourceValidation.summary.issueCount} issue record(s).`,
     );
+    copySeededSecretsKey({
+      sourceConfigPath: input.sourceConfigPath,
+      sourceConfig: input.sourceConfig,
+      sourceEnvEntries,
+      targetKeyFilePath: input.targetPaths.secretsKeyFilePath,
+    });
 
     const snapshotAt = new Date().toISOString();
     input.onPhase?.("snapshot", "started");
@@ -2024,6 +2029,7 @@ async function runVerifiedWorktreeSeed(input: {
   instanceId: string;
   seedMode: WorktreeSeedMode;
   preserveLiveWork?: boolean;
+  expectedCompanyId?: string;
   seedDatabase: SeedWorktreeDatabase;
 }): Promise<SeedWorktreeDatabaseResult> {
   let activePhase: WorktreeSeedPhase = "pending";
@@ -2058,6 +2064,7 @@ async function runVerifiedWorktreeSeed(input: {
       instanceId: input.instanceId,
       seedMode: input.seedMode,
       preserveLiveWork: input.preserveLiveWork,
+      expectedCompanyId: input.expectedCompanyId,
       onPhase: (phase, status, message) => {
         activePhase = phase;
         updateWorktreeSeedManifest({
@@ -2109,6 +2116,70 @@ export async function ensureWorktreeSeeded(
 ): Promise<EnsureWorktreeSeededResult> {
   const configPath = resolveConfigPath(opts.config);
   const markers = resolveWorktreeSeedMarkerPaths(configPath);
+  let initialManifest = readWorktreeSeedManifest(configPath);
+  if (initialManifest?.state === "verified") {
+    return { seeded: false, reason: "verified_manifest" };
+  }
+  if (!initialManifest && existsSync(markers.complete)) {
+    return { seeded: false, reason: "complete_marker" };
+  }
+  const legacyPending = !initialManifest && existsSync(markers.pending)
+    ? readLegacyWorktreeSeedPendingMarker(markers.pending)
+    : null;
+  if (!initialManifest && !legacyPending) {
+    if (existsSync(markers.lock)) {
+      const releaseExistingLock = await acquireWorktreeSeedLock(markers.lock);
+      await releaseExistingLock();
+    }
+    return { seeded: false, reason: "legacy_unmarked" };
+  }
+
+  const hasExplicitSource = Boolean(opts.fromConfig || opts.fromDataDir || opts.fromInstance);
+  const explicitSourceConfigPath = hasExplicitSource
+    ? resolveSourceConfigPath({
+        fromConfig: opts.fromConfig,
+        fromDataDir: opts.fromDataDir,
+        fromInstance: opts.fromInstance,
+      })
+    : null;
+  const registeredBaseWorkspaceCwd = opts.registeredBaseWorkspaceCwd
+    ?? nonEmpty(process.env.PAPERCLIP_WORKSPACE_BASE_CWD)
+    ?? null;
+  const registeredProjectWorkspaceId = opts.registeredProjectWorkspaceId
+    ?? nonEmpty(process.env.PAPERCLIP_PROJECT_WORKSPACE_ID)
+    ?? null;
+  const expectedCompanyId = opts.expectedCompanyId
+    ?? nonEmpty(process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID)
+    ?? nonEmpty(process.env.PAPERCLIP_COMPANY_ID)
+    ?? undefined;
+  if (!explicitSourceConfigPath && registeredBaseWorkspaceCwd && (!registeredProjectWorkspaceId || !expectedCompanyId)) {
+    throw new Error(
+      "Managed worktree seed registration is incomplete; project workspace and company bindings are required.",
+    );
+  }
+
+  const targetRoot = path.dirname(path.dirname(configPath));
+  const targetPaths = resolveWorktreeReseedTargetPaths({ configPath, rootPath: targetRoot });
+  const resolveSeedSource = (manifest: WorktreeSeedManifest | null) => {
+    const diagnosticSource = manifest?.source ?? (legacyPending
+      ? {
+          configPath: legacyPending.sourceConfigPath,
+          instanceId: resolveSeedInstanceId(legacyPending.sourceConfigPath),
+        }
+      : null);
+    return resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd,
+      explicitSourceConfigPath,
+      targetConfigPath: configPath,
+      expectedTargetInstanceId: targetPaths.instanceId,
+      manifestSource: diagnosticSource,
+      manifestTargetInstanceId: manifest?.targetInstanceId ?? targetPaths.instanceId,
+    });
+  };
+
+  // Fail before creating the seed lock or rewriting a legacy marker. The manifest
+  // is agent-writable diagnostic evidence and can never select this source.
+  let canonicalSource = resolveSeedSource(initialManifest);
   mkdirSync(path.dirname(markers.lock), { recursive: true });
   const releaseLock = await acquireWorktreeSeedLock(markers.lock);
   try {
@@ -2123,10 +2194,14 @@ export async function ensureWorktreeSeeded(
       return { seeded: false, reason: "complete_marker" };
     }
     if (!manifest && existsSync(markers.pending)) {
-      const legacyPending = readLegacyWorktreeSeedPendingMarker(markers.pending);
+      const currentLegacyPending = readLegacyWorktreeSeedPendingMarker(markers.pending);
+      if (currentLegacyPending.sourceConfigPath !== legacyPending?.sourceConfigPath) {
+        throw new Error("Worktree seed source diagnostics changed while waiting for the seed lock.");
+      }
       markWorktreeSeedPending({
         configPath,
-        sourceConfigPath: legacyPending.sourceConfigPath,
+        sourceConfigPath: canonicalSource.configPath,
+        targetInstanceId: targetPaths.instanceId,
         seedMode: "minimal",
       });
       manifest = readWorktreeSeedManifest(configPath);
@@ -2136,20 +2211,8 @@ export async function ensureWorktreeSeeded(
       // have neither marker. Preserve that compatibility without re-cloning.
       return { seeded: false, reason: "legacy_unmarked" };
     }
-
-    const sourceConfigPath = opts.fromConfig || opts.fromDataDir || opts.fromInstance
-      ? resolveSourceConfigPath({
-          fromConfig: opts.fromConfig,
-          fromDataDir: opts.fromDataDir,
-          fromInstance: opts.fromInstance,
-        })
-      : path.resolve(manifest.source.configPath);
-
-    if (path.resolve(sourceConfigPath) === path.resolve(configPath)) {
-      throw new Error(
-        "Source and target Paperclip configs are the same. Pass --from-config for the source instance.",
-      );
-    }
+    canonicalSource = resolveSeedSource(manifest);
+    const sourceConfigPath = canonicalSource.configPath;
 
     const sourceConfig = readConfig(sourceConfigPath);
     if (!sourceConfig) {
@@ -2160,8 +2223,6 @@ export async function ensureWorktreeSeeded(
       throw new Error(`Target config not found at ${configPath}.`);
     }
 
-    const targetRoot = path.dirname(path.dirname(configPath));
-    const targetPaths = resolveWorktreeReseedTargetPaths({ configPath, rootPath: targetRoot });
     const seedDatabase = dependencies.seedDatabase ?? seedWorktreeDatabase;
     const details = await runVerifiedWorktreeSeed({
       configPath,
@@ -2172,6 +2233,7 @@ export async function ensureWorktreeSeeded(
       instanceId: targetPaths.instanceId,
       seedMode: manifest.seedMode,
       preserveLiveWork: opts.preserveLiveWork,
+      expectedCompanyId,
       seedDatabase,
     });
     return { seeded: true, reason: "seeded", details };
@@ -4079,6 +4141,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
       instanceId: targetPaths.instanceId,
       seedMode,
       preserveLiveWork: opts.preserveLiveWork,
+      expectedCompanyId: nonEmpty(process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID) ?? undefined,
       seedDatabase: seedWorktreeDatabase,
     });
     spinner.stop(`Reseeded ${targetEndpoint.label} (${seedMode}).`);

@@ -536,6 +536,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -559,7 +560,7 @@ describe("worktree helpers", () => {
       });
 
       await expect(
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath, fromConfig: sourceConfigPath }, { seedDatabase }),
       ).resolves.toMatchObject({ seeded: true, reason: "seeded" });
       await expect(
         ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
@@ -585,6 +586,114 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("managed ensure-seeded derives a valid source from the registered base workspace", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-managed-seed-"));
+    try {
+      const baseRoot = path.join(tempRoot, "base");
+      const sourceConfigPath = path.join(baseRoot, ".paperclip", "config.json");
+      const targetRoot = path.join(tempRoot, "worktree");
+      const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+      const targetPaths = resolveWorktreeLocalPaths({
+        cwd: targetRoot,
+        homeDir: path.join(tempRoot, "worktree-home"),
+        instanceId: "managed-target",
+      });
+      const sourceConfig = buildSourceConfig();
+      const targetConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths: targetPaths,
+        serverPort: 3195,
+        databasePort: 54995,
+      });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=managed-source\n");
+      fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
+      fs.writeFileSync(
+        path.join(path.dirname(targetConfigPath), ".env"),
+        `PAPERCLIP_HOME=${targetPaths.homeDir}\nPAPERCLIP_INSTANCE_ID=managed-target\n`,
+      );
+      markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
+      const seedDatabase = vi.fn().mockResolvedValue(mockVerifiedSeedResult());
+
+      await expect(ensureWorktreeSeeded({
+        config: targetConfigPath,
+        registeredBaseWorkspaceCwd: baseRoot,
+        registeredProjectWorkspaceId: "project-workspace-1",
+        expectedCompanyId: "company-1",
+      }, { seedDatabase })).resolves.toMatchObject({ seeded: true, reason: "seeded" });
+
+      expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
+        sourceConfigPath,
+        expectedCompanyId: "company-1",
+      }));
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["sibling", "foreign_instance", "symlink", "instance_mismatch"] as const)(
+    "managed ensure-seeded rejects a %s manifest source before lock or seed mutation",
+    async (variant) => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `paperclip-worktree-managed-${variant}-`));
+      try {
+        const baseRoot = path.join(tempRoot, "base");
+        const canonicalSource = path.join(baseRoot, ".paperclip", "config.json");
+        const targetRoot = path.join(tempRoot, "worktree");
+        const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+        const attackerRoot = path.join(tempRoot, variant);
+        const attackerConfig = path.join(attackerRoot, "config.json");
+        fs.mkdirSync(path.dirname(canonicalSource), { recursive: true });
+        fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+        fs.mkdirSync(attackerRoot, { recursive: true });
+        fs.writeFileSync(canonicalSource, `${JSON.stringify(buildSourceConfig())}\n`);
+        fs.writeFileSync(path.join(path.dirname(canonicalSource), ".env"), "PAPERCLIP_INSTANCE_ID=registered-source\n");
+        fs.writeFileSync(targetConfigPath, `${JSON.stringify(buildSourceConfig())}\n`);
+        fs.writeFileSync(
+          path.join(path.dirname(targetConfigPath), ".env"),
+          `PAPERCLIP_HOME=${path.join(tempRoot, "worktree-home")}\nPAPERCLIP_INSTANCE_ID=managed-target\n`,
+        );
+        fs.writeFileSync(attackerConfig, `${JSON.stringify(buildSourceConfig())}\n`);
+        fs.writeFileSync(
+          path.join(attackerRoot, ".env"),
+          `PAPERCLIP_INSTANCE_ID=${variant === "foreign_instance" ? "foreign" : "registered-source"}\n`,
+        );
+        const diagnosticPath = variant === "instance_mismatch"
+          ? canonicalSource
+          : variant === "symlink"
+          ? path.join(attackerRoot, "source-link.json")
+          : attackerConfig;
+        if (variant === "symlink") fs.symlinkSync(canonicalSource, diagnosticPath);
+        markWorktreeSeedPending({
+          configPath: targetConfigPath,
+          sourceConfigPath: diagnosticPath,
+          targetInstanceId: "managed-target",
+        });
+        if (variant === "instance_mismatch") {
+          const manifest = readWorktreeSeedManifest(targetConfigPath)!;
+          fs.writeFileSync(
+            path.join(path.dirname(targetConfigPath), "seed-manifest.json"),
+            JSON.stringify({ ...manifest, source: { ...manifest.source, instanceId: "foreign" } }),
+          );
+        }
+        const seedDatabase = vi.fn();
+
+        await expect(ensureWorktreeSeeded({
+          config: targetConfigPath,
+          registeredBaseWorkspaceCwd: baseRoot,
+          registeredProjectWorkspaceId: "project-workspace-1",
+          expectedCompanyId: "company-1",
+        }, { seedDatabase })).rejects.toThrow();
+
+        expect(seedDatabase).not.toHaveBeenCalled();
+        expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("ensure-seeded keeps the pending marker when seeding fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-failure-"));
     try {
@@ -606,6 +715,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -615,7 +725,7 @@ describe("worktree helpers", () => {
 
       await expect(
         ensureWorktreeSeeded(
-          { config: targetConfigPath },
+          { config: targetConfigPath, fromConfig: sourceConfigPath },
           { seedDatabase: vi.fn().mockRejectedValue(new Error("seed failed")) },
         ),
       ).rejects.toThrow("seed failed");
@@ -653,6 +763,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -666,8 +777,8 @@ describe("worktree helpers", () => {
       });
 
       const results = await Promise.all([
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath, fromConfig: sourceConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath, fromConfig: sourceConfigPath }, { seedDatabase }),
       ]);
 
       expect(results).toEqual(expect.arrayContaining([
@@ -702,6 +813,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -715,7 +827,7 @@ describe("worktree helpers", () => {
       );
 
       await expect(ensureWorktreeSeeded(
-        { config: targetConfigPath },
+        { config: targetConfigPath, fromConfig: sourceConfigPath },
         { seedDatabase: vi.fn().mockResolvedValue(mockVerifiedSeedResult()) },
       )).resolves.toMatchObject({ seeded: true, reason: "seeded" });
 

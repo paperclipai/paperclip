@@ -3,8 +3,6 @@ set -euo pipefail
 
 base_cwd="${PAPERCLIP_WORKSPACE_BASE_CWD:?PAPERCLIP_WORKSPACE_BASE_CWD is required}"
 worktree_cwd="${PAPERCLIP_WORKSPACE_CWD:?PAPERCLIP_WORKSPACE_CWD is required}"
-paperclip_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
-paperclip_instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
 paperclip_dir="$worktree_cwd/.paperclip"
 worktree_config_path="$paperclip_dir/config.json"
 seed_manifest_path="$paperclip_dir/seed-manifest.json"
@@ -60,31 +58,10 @@ if [[ ! -f "$worktree_config_path" ]]; then
   exit 1
 fi
 
-source_config_path="${PAPERCLIP_CONFIG:-}"
-if [[ -e "$seed_manifest_path" ]]; then
-  manifest_source_config_path="$(SEED_MANIFEST_PATH="$seed_manifest_path" node <<'EOF'
-const fs = require("node:fs");
-const value = JSON.parse(fs.readFileSync(process.env.SEED_MANIFEST_PATH, "utf8"));
-process.stdout.write(typeof value?.source?.configPath === "string" ? value.source.configPath : "");
-EOF
-)"
-  if [[ -n "$manifest_source_config_path" ]]; then
-    source_config_path="$manifest_source_config_path"
-  fi
-fi
-if [[ -z "$source_config_path" && ( -e "$base_cwd/.paperclip/config.json" || -L "$base_cwd/.paperclip/config.json" ) ]]; then
-  source_config_path="$base_cwd/.paperclip/config.json"
-fi
-if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
-fi
-source_config_args=(--from-config "$source_config_path")
-if [[ "$source_config_path" == "$worktree_config_path" ]]; then
-  # A human may invoke this after sourcing `worktree env`, which points
-  # PAPERCLIP_CONFIG at the target. In that case the CLI reads the original
-  # source config from the seed manifest or legacy pending marker instead.
-  source_config_args=()
-fi
+# The CLI derives the source from PAPERCLIP_WORKSPACE_BASE_CWD, which the
+# control plane injects from the registered project-workspace row. The seed
+# manifest is diagnostic evidence only and must never choose the clone source.
+source_config_args=()
 
 base_cli_runner_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
 base_cli_entry_path="$base_cwd/cli/src/index.ts"

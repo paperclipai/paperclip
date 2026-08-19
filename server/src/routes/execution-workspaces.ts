@@ -14,6 +14,10 @@ import {
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
+import {
+  resolveCanonicalWorktreeSeedSource,
+  type CanonicalWorktreeSeedSource,
+} from "@paperclipai/shared/worktree-seed-source";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -267,14 +271,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       sourceIssueId: existing.sourceIssueId,
     });
 
-    // Recover any managed runtime-control operation this workspace was stranded with, then
-    // refuse only if one is genuinely still live. Authorization above still gates the caller,
-    // so recovery never widens who may control the workspace.
-    await workspaceOperationsSvc.assertRuntimeControlAvailable({
-      executionWorkspaceId: existing.id,
-      action,
-    });
-
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
       res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can run workspace commands" });
@@ -296,6 +292,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             and(
               eq(projectWorkspaces.id, existing.projectWorkspaceId),
               eq(projectWorkspaces.companyId, existing.companyId),
+              eq(projectWorkspaces.projectId, existing.projectId),
             ),
           )
           .then((rows) => rows[0] ?? null)
@@ -368,6 +365,78 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       res.status(422).json({ error: "Execution workspace has no workspace command configuration or inherited project workspace default" });
       return;
     }
+
+    let repairSeedSource: CanonicalWorktreeSeedSource | null = null;
+    let repairPreviousAttemptId: string | null = null;
+    let repairCliArgs: string[] | null = null;
+    if (action === "repair") {
+      const manifestPath = path.join(workspaceCwd, ".paperclip", "seed-manifest.json");
+      let manifest: {
+        attemptId?: unknown;
+        source?: { configPath?: unknown; instanceId?: unknown };
+        targetInstanceId?: unknown;
+      };
+      try {
+        manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      } catch {
+        throw unprocessable("Workspace seed manifest is malformed; repair source identity cannot be trusted.", {
+          code: "workspace_repair_precondition_failed",
+          reason: "seed_manifest_malformed",
+          repairPhase: "precondition_validation",
+        });
+      }
+
+      try {
+        if (!projectWorkspace?.cwd) {
+          throw new Error("Workspace repair requires a registered base project workspace.");
+        }
+        const expectedTargetInstanceId = resolveManagedWorkspaceInstanceId(workspaceCwd);
+        if (!expectedTargetInstanceId) {
+          throw new Error("Workspace repair cannot resolve the registered target instance.");
+        }
+        repairSeedSource = resolveCanonicalWorktreeSeedSource({
+          registeredBaseWorkspaceCwd: projectWorkspace.cwd,
+          targetConfigPath: path.join(workspaceCwd, ".paperclip", "config.json"),
+          expectedTargetInstanceId,
+          manifestSource: manifest.source,
+          manifestTargetInstanceId: manifest.targetInstanceId,
+        });
+        repairPreviousAttemptId = typeof manifest.attemptId === "string" ? manifest.attemptId : null;
+
+        const baseWorkspaceCwd = repairSeedSource.baseWorkspaceCwd;
+        if (!baseWorkspaceCwd) {
+          throw new Error("Workspace repair source is not bound to a registered base project workspace.");
+        }
+        const cliRunner = path.join(baseWorkspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
+        const cliEntry = path.join(baseWorkspaceCwd, "cli", "src", "index.ts");
+        const cliDist = path.join(baseWorkspaceCwd, "cli", "dist", "index.js");
+        repairCliArgs = isReadableFile(cliRunner) && isReadableFile(cliEntry)
+          ? [cliRunner, cliEntry]
+          : isReadableFile(cliDist)
+            ? [cliDist]
+            : null;
+        if (!repairCliArgs) {
+          throw new Error("Workspace repair cannot find a runnable Paperclip CLI in the base workspace.");
+        }
+      } catch (error) {
+        throw unprocessable(
+          error instanceof Error ? error.message : "Workspace repair source validation failed.",
+          {
+            code: "workspace_repair_precondition_failed",
+            reason: "source_registration_invalid",
+            repairPhase: "precondition_validation",
+          },
+        );
+      }
+    }
+
+    // This check can reconcile a stale operation row, so repair source validation must
+    // precede it. Invalid manifest diagnostics must fail before any operation or service
+    // mutation, not merely before the reseed child process is spawned.
+    await workspaceOperationsSvc.assertRuntimeControlAvailable({
+      executionWorkspaceId: existing.id,
+      action,
+    });
 
     const actor = getActorInfo(req);
     const recorder = workspaceOperationsSvc.createRecorder({
@@ -593,63 +662,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               workspaceCwd,
             });
             await reportRepairPhase("managed_stop", "succeeded");
-            await reportRepairPhase("precondition_validation", "started");
-
+            if (!repairSeedSource?.baseWorkspaceCwd || !repairCliArgs) {
+              throw new Error("Workspace repair source preflight did not complete.");
+            }
             const manifestPath = path.join(workspaceCwd, ".paperclip", "seed-manifest.json");
-            const targetConfigPath = path.join(workspaceCwd, ".paperclip", "config.json");
-            let sourceConfigPath: string | null = null;
-            let previousAttemptId: string | null = null;
-            if (existsSync(manifestPath)) {
-              try {
-                const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-                  attemptId?: unknown;
-                  source?: { configPath?: unknown };
-                };
-                previousAttemptId = typeof manifest.attemptId === "string" ? manifest.attemptId : null;
-                sourceConfigPath = typeof manifest.source?.configPath === "string"
-                  ? path.resolve(manifest.source.configPath)
-                  : null;
-              } catch {
-                throw repairPreconditionError(
-                  422,
-                  "seed_manifest_malformed",
-                  "Workspace seed manifest is malformed; repair source identity cannot be trusted.",
-                );
-              }
-            }
-            const baseWorkspaceCwd = projectWorkspace?.cwd ?? workspaceCwd;
-            const baseConfigPath = path.join(baseWorkspaceCwd, ".paperclip", "config.json");
-            if (!sourceConfigPath && existsSync(baseConfigPath) && path.resolve(baseConfigPath) !== path.resolve(targetConfigPath)) {
-              sourceConfigPath = baseConfigPath;
-            }
-            if (!sourceConfigPath || !isReadableFile(sourceConfigPath)) {
-              throw repairPreconditionError(
-                409,
-                "source_instance_unavailable",
-                "Workspace repair has no readable configured source instance.",
-              );
-            }
-
-            const cliRunner = path.join(baseWorkspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
-            const cliEntry = path.join(baseWorkspaceCwd, "cli", "src", "index.ts");
-            const cliDist = path.join(baseWorkspaceCwd, "cli", "dist", "index.js");
-            const cliArgs = isReadableFile(cliRunner) && isReadableFile(cliEntry)
-              ? [cliRunner, cliEntry]
-              : isReadableFile(cliDist)
-                ? [cliDist]
-                : null;
-            if (!cliArgs) {
-              throw repairPreconditionError(
-                409,
-                "paperclip_cli_unavailable",
-                "Workspace repair cannot find a runnable Paperclip CLI in the base workspace.",
-              );
-            }
-            await reportRepairPhase("precondition_validation", "succeeded");
+            const sourceConfigPath = repairSeedSource.configPath;
+            const baseWorkspaceCwd = repairSeedSource.baseWorkspaceCwd;
 
             await reportRepairPhase("target_backup", "started");
             const child = spawn(process.execPath, [
-              ...cliArgs,
+              ...repairCliArgs,
               "worktree",
               "reseed",
               "--from-config",
@@ -662,7 +684,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               "--backup-target",
             ], {
               cwd: baseWorkspaceCwd,
-              env: process.env,
+              env: {
+                ...process.env,
+                PAPERCLIP_SEED_EXPECTED_COMPANY_ID: existing.companyId,
+                PAPERCLIP_WORKSPACE_BASE_CWD: baseWorkspaceCwd,
+                PAPERCLIP_PROJECT_WORKSPACE_ID: existing.projectWorkspaceId ?? "",
+              },
               stdio: ["ignore", "pipe", "pipe"],
             });
             child.stdout?.on("data", (chunk: Buffer) => {
@@ -691,7 +718,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
                 };
                 if (
                   typeof current.attemptId === "string"
-                  && current.attemptId !== previousAttemptId
+                  && current.attemptId !== repairPreviousAttemptId
                   && (current.state === "pending" || current.state === "running" || current.state === "failed")
                 ) {
                   reseedObserved = true;
@@ -754,6 +781,13 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
                 "Verified seed manifest belongs to a different workspace instance.",
               );
             }
+            resolveCanonicalWorktreeSeedSource({
+              registeredBaseWorkspaceCwd: baseWorkspaceCwd,
+              targetConfigPath: path.join(workspaceCwd, ".paperclip", "config.json"),
+              expectedTargetInstanceId: repairSeedSource.targetInstanceId,
+              manifestSource: manifest.source as { configPath?: unknown; instanceId?: unknown } | undefined,
+              manifestTargetInstanceId: manifest.targetInstanceId,
+            });
             await reportRepairPhase("full_reseed", "succeeded");
 
             await reportRepairPhase("managed_restart", "started");

@@ -40,12 +40,16 @@ if [[ ! -d "$worktree_cwd" ]]; then
   exit 1
 fi
 
-source_config_path="${PAPERCLIP_CONFIG:-}"
-if [[ -z "$source_config_path" && ( -e "$base_cwd/.paperclip/config.json" || -L "$base_cwd/.paperclip/config.json" ) ]]; then
-  source_config_path="$base_cwd/.paperclip/config.json"
+canonical_base_cwd="$(cd "$base_cwd" && pwd -P)"
+source_config_path="$canonical_base_cwd/.paperclip/config.json"
+if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
+  echo "Registered base project workspace has no canonical Paperclip config: $source_config_path" >&2
+  exit 1
 fi
-if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
+canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
+if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
+  echo "Registered base project workspace Paperclip config uses a symlink alias: $source_config_path" >&2
+  exit 1
 fi
 source_env_path="$(dirname "$source_config_path")/.env"
 

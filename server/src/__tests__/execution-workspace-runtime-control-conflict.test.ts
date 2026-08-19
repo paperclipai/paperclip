@@ -77,6 +77,9 @@ vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
 }));
 
 const executionWorkspaceId = "33333333-3333-4333-8333-333333333333";
+const projectId = "44444444-4444-4444-8444-444444444444";
+const projectWorkspaceId = "55555555-5555-4555-8555-555555555555";
+let registeredProjectWorkspace: { id: string; cwd: string; metadata: null } | null = null;
 
 function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
   return {
@@ -134,9 +137,98 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", executionWorkspaceRoutes({} as any));
+  const db = {
+    select: (selection: Record<string, unknown>) => ({
+      from: () => ({
+        where: () => Promise.resolve(
+          Object.prototype.hasOwnProperty.call(selection, "cwd")
+            ? registeredProjectWorkspace ? [registeredProjectWorkspace] : []
+            : [{ executionWorkspacePolicy: null }],
+        ),
+      }),
+    }),
+  };
+  app.use("/api", executionWorkspaceRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+function createRegisteredRepairFixture(
+  prefix: string,
+  options: { targetInstanceId?: string; withCli?: boolean } = {},
+) {
+  const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const baseCwd = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}base-`));
+  const configDir = path.join(workspaceCwd, ".paperclip");
+  const sourceConfigPath = path.join(baseCwd, ".paperclip", "config.json");
+  const targetInstanceId = options.targetInstanceId ?? "repair-target";
+  const cliRunner = path.join(baseCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
+  const cliEntry = path.join(baseCwd, "cli", "src", "index.ts");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+  fs.writeFileSync(sourceConfigPath, "{}\n");
+  fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=repair-source\n");
+  fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
+  fs.writeFileSync(path.join(configDir, ".env"), `PAPERCLIP_INSTANCE_ID=${targetInstanceId}\n`);
+  if (options.withCli !== false) {
+    fs.mkdirSync(path.dirname(cliRunner), { recursive: true });
+    fs.mkdirSync(path.dirname(cliEntry), { recursive: true });
+    fs.writeFileSync(cliRunner, "// test runner\n");
+    fs.writeFileSync(cliEntry, "// test entry\n");
+  }
+  fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+    version: 2,
+    source: { instanceId: "repair-source", configPath: sourceConfigPath },
+    targetInstanceId,
+    state: "failed",
+    attemptId: "previous",
+  }));
+  registeredProjectWorkspace = { id: projectWorkspaceId, cwd: baseCwd, metadata: null };
+  mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({
+    cwd: workspaceCwd,
+    projectId,
+    projectWorkspaceId,
+  }));
+  return { workspaceCwd, baseCwd, configDir, sourceConfigPath, targetInstanceId };
+}
+
+function removeRegisteredRepairFixture(fixture: { workspaceCwd: string; baseCwd: string }) {
+  fs.rmSync(fixture.workspaceCwd, { recursive: true, force: true });
+  fs.rmSync(fixture.baseCwd, { recursive: true, force: true });
+}
+
+function mockVerifiedReseed(
+  fixture: ReturnType<typeof createRegisteredRepairFixture>,
+  targetInstanceId = fixture.targetInstanceId,
+) {
+  mockSpawn.mockImplementation(() => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    queueMicrotask(() => {
+      fs.writeFileSync(path.join(fixture.configDir, "seed-manifest.json"), JSON.stringify({
+        version: 2,
+        source: { instanceId: "repair-source", configPath: fixture.sourceConfigPath },
+        snapshotAt: "2026-08-18T00:00:00.000Z",
+        seedMode: "full",
+        migrationRevision: "0142_test.sql",
+        targetInstanceId,
+        phase: "complete",
+        state: "verified",
+        attemptId: "repair-attempt",
+        startedAt: "2026-08-18T00:00:00.000Z",
+        finishedAt: "2026-08-18T00:01:00.000Z",
+        diagnostics: [{ phase: "complete", status: "succeeded", at: "2026-08-18T00:01:00.000Z" }],
+      }));
+      child.emit("exit", 0);
+    });
+    return child;
+  });
 }
 
 /**
@@ -148,6 +240,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
   beforeEach(() => {
     vi.clearAllMocks();
     mockSpawn.mockReset();
+    registeredProjectWorkspace = null;
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       action: "runtime:manage",
@@ -286,7 +379,60 @@ describe.sequential("execution workspace runtime control conflict and failure re
     }
   });
 
-  it("returns 409 with a stable reason when no repair source is readable", async () => {
+  it.each(["sibling", "foreign_instance", "symlink", "instance_mismatch"] as const)(
+    "rejects a %s repair manifest source before spawn or runtime mutation",
+    async (variant) => {
+      const fixture = createRegisteredRepairFixture(`paperclip-route-repair-${variant}-`);
+      const attackerDir = path.join(path.dirname(fixture.workspaceCwd), `${path.basename(fixture.workspaceCwd)}-attacker`);
+      try {
+        fs.mkdirSync(attackerDir, { recursive: true });
+        const attackerConfig = path.join(attackerDir, "config.json");
+        fs.writeFileSync(attackerConfig, "{}\n");
+        fs.writeFileSync(
+          path.join(attackerDir, ".env"),
+          `PAPERCLIP_INSTANCE_ID=${variant === "foreign_instance" ? "foreign-source" : "repair-source"}\n`,
+        );
+        const diagnosticPath = variant === "instance_mismatch"
+          ? fixture.sourceConfigPath
+          : variant === "symlink"
+          ? path.join(fixture.baseCwd, "source-alias.json")
+          : attackerConfig;
+        if (variant === "symlink") fs.symlinkSync(fixture.sourceConfigPath, diagnosticPath);
+        fs.writeFileSync(path.join(fixture.configDir, "seed-manifest.json"), JSON.stringify({
+          version: 2,
+          source: {
+            instanceId: variant === "foreign_instance" || variant === "instance_mismatch"
+              ? "foreign-source"
+              : "repair-source",
+            configPath: diagnosticPath,
+          },
+          targetInstanceId: fixture.targetInstanceId,
+          state: "failed",
+          attemptId: "attacker-controlled",
+        }));
+
+        const res = await request(await createApp())
+          .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+          .send({});
+
+        expect(res.status).toBe(422);
+        expect(res.body).toMatchObject({
+          code: "workspace_repair_precondition_failed",
+          reason: "source_registration_invalid",
+          repairPhase: "precondition_validation",
+        });
+        expect(mockSpawn).not.toHaveBeenCalled();
+        expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+        expect(mockWorkspaceOperationService.createRecorder).not.toHaveBeenCalled();
+        expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(attackerDir, { recursive: true, force: true });
+        removeRegisteredRepairFixture(fixture);
+      }
+    },
+  );
+
+  it("rejects repair when the execution workspace has no registered base workspace", async () => {
     const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-no-source-"));
     try {
       const configDir = path.join(workspaceCwd, ".paperclip");
@@ -304,100 +450,44 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(422);
       expect(res.body).toMatchObject({
         code: "workspace_repair_precondition_failed",
-        reason: "source_instance_unavailable",
+        reason: "source_registration_invalid",
         repairPhase: "precondition_validation",
       });
       expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+      expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(workspaceCwd, { recursive: true, force: true });
     }
   });
 
-  it("returns 409 with a stable reason when no Paperclip CLI is runnable", async () => {
-    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-no-cli-"));
+  it("rejects repair when the registered base workspace has no runnable Paperclip CLI", async () => {
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-no-cli-", { withCli: false });
     try {
-      const configDir = path.join(workspaceCwd, ".paperclip");
-      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
-      fs.mkdirSync(configDir, { recursive: true });
-      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
-      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
-      fs.writeFileSync(sourceConfigPath, "{}\n");
-      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-        version: 2,
-        source: { instanceId: "source", configPath: sourceConfigPath },
-        state: "failed",
-        attemptId: "previous",
-      }));
-      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
-
       const res = await request(await createApp())
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(422);
       expect(res.body).toMatchObject({
         code: "workspace_repair_precondition_failed",
-        reason: "paperclip_cli_unavailable",
+        reason: "source_registration_invalid",
         repairPhase: "precondition_validation",
       });
       expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
     } finally {
-      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+      removeRegisteredRepairFixture(fixture);
     }
   });
 
   it("returns 422 with a stable reason when the verified manifest names another instance", async () => {
-    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-wrong-instance-"));
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-wrong-instance-");
     try {
-      const configDir = path.join(workspaceCwd, ".paperclip");
-      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
-      const cliRunner = path.join(workspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
-      const cliEntry = path.join(workspaceCwd, "cli", "src", "index.ts");
-      for (const dir of [configDir, path.dirname(sourceConfigPath), path.dirname(cliRunner), path.dirname(cliEntry)]) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
-      fs.writeFileSync(sourceConfigPath, "{}\n");
-      fs.writeFileSync(cliRunner, "// test runner\n");
-      fs.writeFileSync(cliEntry, "// test entry\n");
-      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-        version: 2,
-        source: { instanceId: "source", configPath: sourceConfigPath },
-        state: "failed",
-        attemptId: "previous",
-      }));
-      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
-      mockSpawn.mockImplementation(() => {
-        const child = new EventEmitter() as EventEmitter & {
-          stdout: PassThrough;
-          stderr: PassThrough;
-          kill: ReturnType<typeof vi.fn>;
-        };
-        child.stdout = new PassThrough();
-        child.stderr = new PassThrough();
-        child.kill = vi.fn();
-        queueMicrotask(() => {
-          fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-            version: 2,
-            source: { instanceId: "source", configPath: sourceConfigPath },
-            snapshotAt: "2026-08-18T00:00:00.000Z",
-            seedMode: "full",
-            migrationRevision: "0142_test.sql",
-            targetInstanceId: "another-workspace-instance",
-            phase: "complete",
-            state: "verified",
-            attemptId: "repair-attempt",
-            startedAt: "2026-08-18T00:00:00.000Z",
-            finishedAt: "2026-08-18T00:01:00.000Z",
-            diagnostics: [{ phase: "complete", status: "succeeded", at: "2026-08-18T00:01:00.000Z" }],
-          }));
-          child.emit("exit", 0);
-        });
-        return child;
-      });
+      mockVerifiedReseed(fixture, "another-workspace-instance");
 
       const res = await request(await createApp())
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
@@ -411,61 +501,45 @@ describe.sequential("execution workspace runtime control conflict and failure re
       });
       expect(mockStartRuntimeServices).not.toHaveBeenCalled();
     } finally {
-      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+      removeRegisteredRepairFixture(fixture);
     }
   });
 
   it("uses the recorded instance pointer consistently for readiness, handoff, and repair", async () => {
-    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-success-"));
+    const recordedInstanceId = "recorded-repair-instance";
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-success-", {
+      targetInstanceId: recordedInstanceId,
+    });
     try {
-      const configDir = path.join(workspaceCwd, ".paperclip");
-      const recordedInstanceId = "recorded-repair-instance";
-      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
-      const cliRunner = path.join(workspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
-      const cliEntry = path.join(workspaceCwd, "cli", "src", "index.ts");
-      fs.mkdirSync(configDir, { recursive: true });
-      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
-      fs.mkdirSync(path.dirname(cliRunner), { recursive: true });
-      fs.mkdirSync(path.dirname(cliEntry), { recursive: true });
-      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
-      fs.writeFileSync(
-        path.join(configDir, ".env"),
-        `PAPERCLIP_HOME=/srv/home\nPAPERCLIP_INSTANCE_ID=${recordedInstanceId}\n`,
-      );
-      fs.writeFileSync(sourceConfigPath, "{}\n");
-      fs.writeFileSync(cliRunner, "// test runner\n");
-      fs.writeFileSync(cliEntry, "// test entry\n");
-      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-        version: 2,
-        source: { instanceId: "source", configPath: sourceConfigPath },
-        state: "failed",
-        attemptId: "previous",
-      }));
-
       const { deriveWorktreeInstanceId } = await import("../services/workspace-instance-cleanup.js");
       const {
         resolveManagedWorkspaceIdentity,
         resolveManagedWorkspaceInstanceId,
       } = await import("../services/managed-workspace-identity.js");
-      expect(deriveWorktreeInstanceId(workspaceCwd)).not.toBe(recordedInstanceId);
-      expect(resolveManagedWorkspaceInstanceId(workspaceCwd)).toBe(recordedInstanceId);
+      expect(deriveWorktreeInstanceId(fixture.workspaceCwd)).not.toBe(recordedInstanceId);
+      expect(resolveManagedWorkspaceInstanceId(fixture.workspaceCwd)).toBe(recordedInstanceId);
       expect(resolveManagedWorkspaceIdentity({
-        workspaceCwd,
+        workspaceCwd: fixture.workspaceCwd,
         executionWorkspaceId,
         companyId: "company-1",
         env: { PAPERCLIP_WORKSPACE_HANDOFF_SECRET: "test-root-secret" },
       })?.instanceId).toBe(recordedInstanceId);
-      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
-      mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({ cwd: workspaceCwd });
+      mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({ cwd: fixture.workspaceCwd });
       mockStartRuntimeServices.mockResolvedValue([{
         id: "service-1",
         status: "running",
         healthStatus: "healthy",
       }]);
-      mockSpawn.mockImplementation((_command: string, args: string[]) => {
+      mockSpawn.mockImplementation((_command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
         expect(args).toEqual(expect.arrayContaining([
-          "worktree", "reseed", "--seed-mode", "full", "--yes", "--backup-target",
+          "worktree", "reseed", "--from-config", fixture.sourceConfigPath,
+          "--seed-mode", "full", "--yes", "--backup-target",
         ]));
+        expect(options.env).toMatchObject({
+          PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
+          PAPERCLIP_WORKSPACE_BASE_CWD: fixture.baseCwd,
+          PAPERCLIP_PROJECT_WORKSPACE_ID: projectWorkspaceId,
+        });
         const child = new EventEmitter() as EventEmitter & {
           stdout: PassThrough;
           stderr: PassThrough;
@@ -475,9 +549,9 @@ describe.sequential("execution workspace runtime control conflict and failure re
         child.stderr = new PassThrough();
         child.kill = vi.fn();
         queueMicrotask(() => {
-          fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+          fs.writeFileSync(path.join(fixture.configDir, "seed-manifest.json"), JSON.stringify({
             version: 2,
-            source: { instanceId: "source", configPath: sourceConfigPath },
+            source: { instanceId: "repair-source", configPath: fixture.sourceConfigPath },
             snapshotAt: "2026-08-18T00:00:00.000Z",
             seedMode: "full",
             migrationRevision: "0142_test.sql",
@@ -501,7 +575,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
 
       expect(res.status).toBe(200);
       expect(mockStopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledWith(
-        expect.objectContaining({ executionWorkspaceId, workspaceCwd }),
+        expect.objectContaining({ executionWorkspaceId, workspaceCwd: fixture.workspaceCwd }),
       );
       expect(mockStartRuntimeServices).toHaveBeenCalledTimes(1);
       expect(mockLogActivity).toHaveBeenCalledWith(
@@ -509,65 +583,21 @@ describe.sequential("execution workspace runtime control conflict and failure re
         expect.objectContaining({ action: "execution_workspace.runtime_repair" }),
       );
     } finally {
-      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+      removeRegisteredRepairFixture(fixture);
     }
   });
 
   it("completes database-only repair when no managed runtime service is configured", async () => {
-    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-db-only-"));
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-db-only-");
     try {
-      const configDir = path.join(workspaceCwd, ".paperclip");
-      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
-      const cliRunner = path.join(workspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
-      const cliEntry = path.join(workspaceCwd, "cli", "src", "index.ts");
-      for (const dir of [configDir, path.dirname(sourceConfigPath), path.dirname(cliRunner), path.dirname(cliEntry)]) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
-      fs.writeFileSync(sourceConfigPath, "{}\n");
-      fs.writeFileSync(cliRunner, "// test runner\n");
-      fs.writeFileSync(cliEntry, "// test entry\n");
-      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-        version: 2,
-        source: { instanceId: "source", configPath: sourceConfigPath },
-        state: "failed",
-        attemptId: "previous",
-      }));
-
-      const { deriveWorktreeInstanceId } = await import("../services/workspace-instance-cleanup.js");
       mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({
-        cwd: workspaceCwd,
+        cwd: fixture.workspaceCwd,
+        projectId,
+        projectWorkspaceId,
         config: { desiredState: "stopped" },
       }));
       mockListConfiguredRuntimeServiceEntries.mockReturnValue([]);
-      mockSpawn.mockImplementation(() => {
-        const child = new EventEmitter() as EventEmitter & {
-          stdout: PassThrough;
-          stderr: PassThrough;
-          kill: ReturnType<typeof vi.fn>;
-        };
-        child.stdout = new PassThrough();
-        child.stderr = new PassThrough();
-        child.kill = vi.fn();
-        queueMicrotask(() => {
-          fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-            version: 2,
-            source: { instanceId: "source", configPath: sourceConfigPath },
-            snapshotAt: "2026-08-18T00:00:00.000Z",
-            seedMode: "full",
-            migrationRevision: "0142_test.sql",
-            targetInstanceId: deriveWorktreeInstanceId(workspaceCwd),
-            phase: "complete",
-            state: "verified",
-            attemptId: "repair-attempt",
-            startedAt: "2026-08-18T00:00:00.000Z",
-            finishedAt: "2026-08-18T00:01:00.000Z",
-            diagnostics: [{ phase: "complete", status: "succeeded", at: "2026-08-18T00:01:00.000Z" }],
-          }));
-          child.emit("exit", 0);
-        });
-        return child;
-      });
+      mockVerifiedReseed(fixture);
 
       const app = await createApp();
       const res = await request(app)
@@ -581,32 +611,14 @@ describe.sequential("execution workspace runtime control conflict and failure re
         expect.objectContaining({ action: "stop" }),
       );
     } finally {
-      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+      removeRegisteredRepairFixture(fixture);
     }
   });
 
   it("fails repair at the exact seed phase and leaves managed services stopped", async () => {
-    const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-failure-"));
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-failure-");
     try {
-      const configDir = path.join(workspaceCwd, ".paperclip");
-      const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
-      const cliRunner = path.join(workspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
-      const cliEntry = path.join(workspaceCwd, "cli", "src", "index.ts");
-      for (const dir of [configDir, path.dirname(sourceConfigPath), path.dirname(cliRunner), path.dirname(cliEntry)]) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
-      fs.writeFileSync(sourceConfigPath, "{}\n");
-      fs.writeFileSync(cliRunner, "// test runner\n");
-      fs.writeFileSync(cliEntry, "// test entry\n");
-      fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
-        version: 2,
-        source: { instanceId: "source", configPath: sourceConfigPath },
-        state: "failed",
-        attemptId: "previous",
-      }));
-      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
-      mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({ cwd: workspaceCwd });
+      mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({ cwd: fixture.workspaceCwd });
       mockSpawn.mockImplementation(() => {
         const child = new EventEmitter() as EventEmitter & {
           stdout: PassThrough;
@@ -617,9 +629,10 @@ describe.sequential("execution workspace runtime control conflict and failure re
         child.stderr = new PassThrough();
         child.kill = vi.fn();
         queueMicrotask(() => {
-          fs.writeFileSync(path.join(configDir, "seed-manifest.json"), JSON.stringify({
+          fs.writeFileSync(path.join(fixture.configDir, "seed-manifest.json"), JSON.stringify({
             version: 2,
-            source: { instanceId: "source", configPath: sourceConfigPath },
+            source: { instanceId: "repair-source", configPath: fixture.sourceConfigPath },
+            targetInstanceId: fixture.targetInstanceId,
             state: "failed",
             phase: "restore",
             attemptId: "repair-attempt",
@@ -651,7 +664,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
       expect(mockStartRuntimeServices).not.toHaveBeenCalled();
       expect(mockStopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledTimes(2);
     } finally {
-      fs.rmSync(workspaceCwd, { recursive: true, force: true });
+      removeRegisteredRepairFixture(fixture);
     }
   });
 
