@@ -16,6 +16,7 @@ import { checkDedupSearch } from './check-pr-dedup-search.mjs';
 import { checkTestCoverage } from './check-pr-test-coverage.mjs';
 import { checkLockfile } from './check-pr-lockfile.mjs';
 import { checkDependencies } from './check-pr-dependencies.mjs';
+import { checkReleaseBootstrap } from './check-pr-release-bootstrap.mjs';
 
 const COMMENT_SIGNATURE = '— commitperclip';
 
@@ -111,7 +112,7 @@ async function main() {
 
   // Run all quality gates (pure functions run sync, deps check is async)
   const prTitle = pr.title ?? '';
-  const [templateResult, issueResult, dedupResult, testResult, lockfileResult, depsResult] =
+  const [templateResult, issueResult, dedupResult, testResult, lockfileResult, depsResult, bootstrapResult] =
     await Promise.all([
       Promise.resolve(checkTemplate(prBody)),
       Promise.resolve(checkLinkedIssue(prBody, prTitle)),
@@ -119,6 +120,7 @@ async function main() {
       Promise.resolve(checkTestCoverage(files, prTitle)),
       Promise.resolve(checkLockfile(files, author, branch)),
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
+      checkReleaseBootstrap(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
     ]);
 
   const allFailures = [
@@ -128,7 +130,10 @@ async function main() {
     ...testResult.failures,
     ...lockfileResult.failures,
   ];
-  const informational = depsResult.informational ?? [];
+  const informational = [
+    ...(depsResult.informational ?? []),
+    ...(bootstrapResult.informational ?? []),
+  ];
   const allPassed = allFailures.length === 0;
 
   const commentBody = buildComment(author, allFailures, informational);
