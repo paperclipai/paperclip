@@ -2058,11 +2058,12 @@ registry.registerPath({
   path: "/api/agents/{id}/wakeup",
   tags: ["agents"],
   summary: "Wake up an agent",
+  description: "Board callers require the company-scoped `agents:invoke` permission. An agent may invoke only itself.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(wakeAgentSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

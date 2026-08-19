@@ -90,6 +90,14 @@ Role-based human permission granularity is V1 — see the `humans-and-permission
 plan, the `principal_permission_grants` table, and the `PERMISSION_KEYS` set
 in `packages/shared/src/constants.ts`.
 
+Agent invocation uses a separate least-privilege permission. Board callers of
+`POST /api/agents/:id/wakeup` require the company-scoped `agents:invoke` grant;
+the grant does not authorize agent creation, configuration, login, or any other
+management action. An authenticated agent may invoke only itself. Cross-company
+targets retain the normal non-enumerating `404` boundary. The legacy
+`POST /api/agents/:id/heartbeat/invoke` endpoint keeps its historical
+`agents:create` authorization contract for compatibility.
+
 ## 6. Architecture
 
 ## 6.1 Runtime Components

@@ -83,6 +83,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
+  wakeup: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -333,6 +334,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.cancelInvocationsForAgents.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -408,6 +410,14 @@ describe.sequential("agent permission routes", () => {
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
+    });
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-1",
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
     });
     mockLogActivity.mockResolvedValue(undefined);
   });
@@ -540,8 +550,12 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("blocks wakeups for authenticated company members without agent admin permission", async () => {
-    mockAccessService.canUser.mockResolvedValue(false);
+  it("blocks board wakeups without agents:invoke", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:invoke.",
+    });
 
     const app = await createApp({
       type: "board",
@@ -556,6 +570,138 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(403);
+    expect(res.body.error).toContain("agents:invoke");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agents:invoke",
+      resource: { type: "company", companyId },
+    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows board wakeups with agents:invoke without agents:create", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agents:invoke",
+      reason: input.action === "agents:invoke" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "agents:invoke"
+        ? "Allowed by explicit grant agents:invoke."
+        : `Missing permission: ${input.action}.`,
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "dispatcher-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({ source: "automation", reason: "dispatch_stage" }));
+
+    expect(res.status).toBe(202);
+    expect(mockAccessService.decide).toHaveBeenCalledTimes(1);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agents:invoke",
+    }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      source: "automation",
+      reason: "dispatch_stage",
+      requestedByActorType: "user",
+      requestedByActorId: "dispatcher-user",
+    }));
+  });
+
+  it("keeps the legacy heartbeat invoke route on agents:create", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agents:create",
+      reason: input.action === "agents:create" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "agents:create"
+        ? "Allowed by explicit grant agents:create."
+        : `Missing permission: ${input.action}.`,
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "legacy-admin",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/heartbeat/invoke`)
+      .send({}));
+
+    expect(res.status).toBe(202);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agents:create",
+    }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: "agents:invoke",
+    }));
+  });
+
+  it("allows an agent to wake only itself without agents:invoke", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({ source: "on_demand" }));
+
+    expect(res.status).toBe(202);
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+    }));
+  });
+
+  it("blocks an agent from waking another agent", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({ source: "on_demand" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent can only invoke itself");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("hides cross-company wakeup targets before permission evaluation", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      companyId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "dispatcher-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({ source: "automation" }));
+
+    expect(res.status).toBe(404);
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {
