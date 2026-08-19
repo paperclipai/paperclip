@@ -26,6 +26,7 @@ import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { useEnterToSendPreference } from "../hooks/useEnterToSendPreference";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -756,6 +757,7 @@ export function CommentThread({
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
   const hasScrolledRef = useRef(false);
+  const [enterToSend] = useEnterToSendPreference();
 
   const timeline = useMemo<TimelineItem[]>(() => {
     const followUpCommentIds = new Set(
@@ -1014,6 +1016,7 @@ export function CommentThread({
             placeholder="Leave a comment..."
             mentions={mentions}
             onSubmit={handleSubmit}
+            submitOnEnter={enterToSend}
             imageUploadHandler={imageUploadHandler}
             contentClassName="min-h-(--sz-60px) text-sm"
           />
