@@ -62,7 +62,7 @@ import {
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
-  isCodexUnknownSessionError,
+  isCodexSessionResetRequiredError,
 } from "./parse.js";
 import {
   codexHomeHasUsableAuth,
@@ -1514,7 +1514,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionId &&
         !initial.proc.timedOut &&
         (initial.proc.exitCode ?? 0) !== 0 &&
-        isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+        isCodexSessionResetRequiredError(initial.proc.stdout, initial.rawStderr)
       ) {
         await onLog(
           "stdout",
