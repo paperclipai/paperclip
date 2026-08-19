@@ -190,6 +190,24 @@ describe("resolveServerVersion", () => {
     );
   });
 
+  it("uses embedded commit metadata for packaged source builds", () => {
+    const debugLog = vi.fn();
+    const gitDescribeCommand = vi.fn(() => "v2026.626.0-58-g518fc71ce\n");
+
+    expect(
+      resolveServerVersion({
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        packageVersion: "0.3.1",
+        debugLog,
+        gitDescribeCommand,
+        packageRoot: "/tmp/npm/_npx/example/node_modules/@paperclipai/server",
+      }),
+    ).toBe("0.3.1+0.git.0123456");
+
+    expect(gitDescribeCommand).not.toHaveBeenCalled();
+    expect(debugLog).not.toHaveBeenCalled();
+  });
+
   it("uses git metadata for source checkouts whose path contains node_modules", () => {
     const debugLog = vi.fn();
     const gitDescribeCommand = vi.fn(() => "v2026.626.0-58-g518fc71ce\n");
