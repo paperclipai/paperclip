@@ -382,10 +382,17 @@ export function readBuildStamp(): string | null {
  * SHA, or null on any failure. This covers dev mode, where the process runs
  * from a git checkout. A missing `git` or a checkout with no `.git` returns
  * null and is not fatal.
+ *
+ * The lookup runs in the directory of this module, not the directory the
+ * server process started in. `import.meta.url` points at `src` in dev mode and
+ * `dist` in a built server; both sit inside the Paperclip checkout. A server
+ * launched from an unrelated directory, or from inside another repository,
+ * would otherwise report a wrong commit or fall back.
  */
 export function readGitCommit(): string | null {
   try {
     const out = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: new URL("./", import.meta.url),
       stdio: ["ignore", "pipe", "ignore"],
     })
       .toString()

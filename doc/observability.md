@@ -68,7 +68,11 @@ returns a value:
 
 1. **The build stamp.** The server `build` script writes the commit SHA into
    `dist/build-info.json`. The stamp wins so the reported version tracks the
-   true built commit and cannot go stale across rebuilds.
+   true built commit and cannot go stale across rebuilds. The build script
+   reads the commit from `git rev-parse --short HEAD` first. A Docker image
+   build excludes `.git`, so the build script reads the `PAPERCLIP_BUILD_COMMIT`
+   environment variable instead. Pass the built commit in that variable so the
+   image stamp records the true commit.
 2. **A runtime `git rev-parse --short HEAD`.** This covers `tsx src/index.ts`
    dev mode, where the server runs from the source checkout and writes no
    stamp. A failure here is not fatal.
