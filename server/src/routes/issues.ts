@@ -12316,11 +12316,10 @@ export function issueRoutes(
             action: "issue:comment",
           }, addComment)
         : await addComment();
-      if (isIssueUnblockOwnerComment) {
-        const latestIssue = await svc.getById(id);
-        if (!latestIssue) throw conflict("Issue changed after unblock-owner comment");
-        currentIssue = latestIssue;
-      }
+      // The unblock-owner transaction verified the in-hand snapshot is still
+      // current at insert time; do not re-read afterwards, or a concurrent
+      // mutation in that window would retarget the owner's wake away from the
+      // insert-time assignee.
     }
 
     await issueReferencesSvc.syncComment(comment.id);
@@ -12488,13 +12487,17 @@ export function issueRoutes(
       // the wrong (or no-longer-relevant) agent off stale state. The comment
       // is already committed, so a failed re-fetch is logged and falls back to
       // the in-hand snapshot rather than aborting this best-effort wake block.
-      const wakeIssueSnapshot = (await svc.getById(currentIssue.id).catch((err) => {
-        logger.warn(
-          { err, issueId: currentIssue.id },
-          "failed to re-fetch issue for comment wake decision; falling back to in-hand snapshot",
-        );
-        return null;
-      })) ?? currentIssue;
+      // Unblock-owner comments already carry a transaction-verified snapshot;
+      // re-reading here would let a concurrent mutation retarget the wake.
+      const wakeIssueSnapshot = isIssueUnblockOwnerComment
+        ? currentIssue
+        : (await svc.getById(currentIssue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: currentIssue.id },
+              "failed to re-fetch issue for comment wake decision; falling back to in-hand snapshot",
+            );
+            return null;
+          })) ?? currentIssue;
       const assigneeId = wakeIssueSnapshot.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;

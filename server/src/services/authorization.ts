@@ -2185,30 +2185,40 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
-      if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
-    }
-    const issueUnblockOwnerAction =
-      input.action === "issue:comment" ||
-      (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
-    if (
-      trustResolution.kind === "standard" &&
-      isSimpleAssignableAgentStatus(actorAgent.status) &&
-      issueUnblockOwnerAction &&
-      input.resource.type === "issue" &&
-      input.resource.issueId
-    ) {
-      const issue = await loadIssue(input.resource.issueId);
-      if (
-        issue?.companyId === companyId &&
-        issue.status === "blocked" &&
-        issueUnblockOwnerAgentId(issue.unblockDescriptor) === actorAgentId
-      ) {
-        return allow({
+      const issueUnblockOwnerAction =
+        input.action === "issue:comment" ||
+        (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
+      const unblockGatedIssue =
+        trustResolution.kind === "standard" &&
+        resource?.issueId &&
+        resource.assigneeAgentId &&
+        resource.status === "blocked"
+          ? await loadIssue(resource.issueId)
+          : null;
+      if (unblockGatedIssue) {
+        if (
+          issueUnblockOwnerAction &&
+          isSimpleAssignableAgentStatus(actorAgent.status) &&
+          unblockGatedIssue.companyId === companyId &&
+          unblockGatedIssue.status === "blocked" &&
+          issueUnblockOwnerAgentId(unblockGatedIssue.unblockDescriptor) === actorAgentId
+        ) {
+          return allow({
+            action: input.action,
+            reason: "allow_issue_unblock_owner",
+            explanation: "Allowed because the actor is the current persisted unblock owner.",
+          });
+        }
+        // A blocked assigned issue with a persisted unblock owner stays
+        // owner-gated: the default-open visible-issue write rule must not
+        // bypass the owner boundary.
+        return deny({
           action: input.action,
-          reason: "allow_issue_unblock_owner",
-          explanation: "Allowed because the actor is the current persisted unblock owner.",
+          reason: "deny_missing_grant",
+          explanation: "Blocked assigned issues only accept writes from the assignee or the persisted unblock owner.",
         });
       }
+      if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
     }
     if (
       input.action === "agent_config:update" &&
