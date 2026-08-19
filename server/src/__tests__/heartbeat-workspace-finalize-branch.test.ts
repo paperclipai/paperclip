@@ -116,6 +116,25 @@ async function waitForRuntimeStateLastRun(db: Db, agentId: string, runId: string
   }
 }
 
+async function waitForTaskSessionLastRun(
+  db: Db,
+  agentId: string,
+  taskKey: string,
+  runId: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const session = await db
+      .select({ lastRunId: agentTaskSessions.lastRunId })
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.agentId, agentId), eq(agentTaskSessions.taskKey, taskKey)))
+      .then((rows) => rows[0] ?? null);
+    if (session?.lastRunId === runId) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function deleteHeartbeatRowsAfterActivityLogDrains(db: Db) {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -556,6 +575,10 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     const firstRun = await wakeIssue(heartbeat, agentId, issueId);
     expect(firstRun).not.toBeNull();
     expect(await waitForRunToFinish(heartbeat, firstRun!.id)).toMatchObject({ status: "succeeded" });
+    // The success path persists the task session after the run flips terminal
+    // and the issue execution is released; wait for that write before the
+    // failing run reads its previous-session params.
+    await waitForTaskSessionLastRun(db, agentId, issueId, firstRun!.id);
 
     adapterExecute.mockImplementationOnce(async () => {
       throw new Error("adapter failed after workspace realization");
