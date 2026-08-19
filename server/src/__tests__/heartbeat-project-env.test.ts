@@ -402,6 +402,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
   });
 
   it("fails push-capability preflight when no GitHub write credential is bound at any supported scope", async () => {
+    const getByNameInsensitive = vi.fn().mockResolvedValue(null);
     await expect(resolveExecutionRunAdapterConfig({
       companyId: "company-1",
       agentId: "agent-1",
@@ -413,15 +414,18 @@ describe("resolveExecutionRunAdapterConfig", () => {
         consumerScopes: ["agent", "project", "environment", "routine"],
         reason: "push_write_credential_missing",
         remediation:
-          "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
+          "No GH_TOKEN/GITHUB_TOKEN binding at agent, project, environment, or routine scope; no company secret named GITHUB_TOKEN, GH_TOKEN, or PAPERCLIP_GITHUB_TOKEN.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
       },
       secretsSvc: {
         resolveAdapterConfigForRuntime: vi.fn(),
         resolveEnvBindings: vi.fn(),
+        getByNameInsensitive,
       } as any,
     })).rejects.toMatchObject({
       code: "configuration_incomplete",
-      message: expect.stringContaining("agent, project, environment, or routine scope"),
+      message: expect.stringMatching(/agent, project, environment, or routine scope.*GITHUB_TOKEN, GH_TOKEN, or PAPERCLIP_GITHUB_TOKEN/),
       resultJson: {
         configurationIncomplete: {
           reason: "push_write_credential_missing",
@@ -431,6 +435,11 @@ describe("resolveExecutionRunAdapterConfig", () => {
         },
       },
     });
+    expect(getByNameInsensitive.mock.calls.map((call) => call[1])).toEqual([
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+      "PAPERCLIP_GITHUB_TOKEN",
+    ]);
   });
 
   it("does not accept a lowercase GitHub credential binding key", async () => {
@@ -601,6 +610,348 @@ describe("resolveExecutionRunAdapterConfig", () => {
       consumerType: "routine",
       consumerId: "routine-1",
     });
+  });
+
+  it("auto-injects a lowercase well-known company secret through the audited secret-ref path", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { AGENT_ONLY: "agent-only" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveInjectedEnvBindingForRuntime = vi.fn().mockResolvedValue({
+      env: { GH_TOKEN: "resolved-token" },
+      secretKeys: new Set(["GH_TOKEN"]),
+      manifest: [{
+        configPath: "env.GH_TOKEN",
+        envKey: "GH_TOKEN",
+        secretId: "secret-lowercase",
+        bindingId: null,
+        secretKey: "gh_token",
+        version: 1,
+        provider: "local_encrypted",
+        outcome: "success",
+      }],
+    });
+    const getByNameInsensitive = vi.fn(async (_companyId: string, name: string) =>
+      name === "GH_TOKEN"
+        ? { id: "secret-lowercase", name: "gh_token" }
+        : null,
+    );
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      executionRunConfig: { env: { AGENT_ONLY: "agent-only" } },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive,
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({
+      AGENT_ONLY: "agent-only",
+      GH_TOKEN: "resolved-token",
+    });
+    expect(result.secretKeys).toEqual(new Set(["GH_TOKEN"]));
+    expect(result.secretManifest).toEqual([
+      expect.objectContaining({
+        configPath: "env.GH_TOKEN",
+        secretId: "secret-lowercase",
+        outcome: "success",
+      }),
+    ]);
+    expect(resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+      "company-1",
+      { env: { AGENT_ONLY: "agent-only" } },
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(resolveInjectedEnvBindingForRuntime).toHaveBeenCalledWith(
+      "company-1",
+      "GH_TOKEN",
+      {
+        type: "secret_ref",
+        secretId: "secret-lowercase",
+        version: "latest",
+      },
+      expect.objectContaining({
+        consumerType: "run",
+        consumerId: "run-1",
+        heartbeatRunId: "run-1",
+      }),
+      null,
+    );
+    expect(JSON.stringify(resolveInjectedEnvBindingForRuntime.mock.calls[0]?.[2])).not.toContain("resolved-token");
+  });
+
+  it("does not satisfy the well-known-secret tier outside a low-trust binding allowlist", async () => {
+    const resolveInjectedEnvBindingForRuntime = vi.fn();
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: ["allowed-binding"],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive: vi.fn().mockResolvedValue({ id: "secret-1", name: "gh_token" }),
+        listBindings: vi.fn().mockResolvedValue([{
+          id: "allowed-binding",
+          targetType: "project",
+          targetId: "other-project",
+          configPath: "env.GH_TOKEN",
+        }]),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "push_write_credential_missing",
+        },
+      },
+    });
+    expect(resolveInjectedEnvBindingForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("injects a low-trust fallback only through an allowlisted binding for the active target and env path", async () => {
+    const resolveInjectedEnvBindingForRuntime = vi.fn().mockResolvedValue({
+      env: { GH_TOKEN: "resolved-token" },
+      secretKeys: new Set(["GH_TOKEN"]),
+      manifest: [{ secretId: "secret-1", bindingId: "allowed-binding", outcome: "success" }],
+    });
+    await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: ["allowed-binding"],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive: vi.fn().mockResolvedValue({ id: "secret-1", name: "gh_token" }),
+        listBindings: vi.fn().mockResolvedValue([{
+          id: "allowed-binding",
+          targetType: "agent",
+          targetId: "agent-1",
+          configPath: "env.GH_TOKEN",
+        }]),
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(resolveInjectedEnvBindingForRuntime).toHaveBeenCalledWith(
+      "company-1",
+      "GH_TOKEN",
+      expect.objectContaining({ type: "secret_ref", secretId: "secret-1" }),
+      expect.objectContaining({ consumerType: "run", consumerId: "run-1" }),
+      {
+        bindingId: "allowed-binding",
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.GH_TOKEN",
+      },
+    );
+  });
+
+  it("does not authorize a GH_TOKEN injection with an allowlisted GITHUB_TOKEN binding", async () => {
+    const resolveInjectedEnvBindingForRuntime = vi.fn();
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: ["allowed-binding"],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive: vi.fn().mockResolvedValue({ id: "secret-1", name: "gh_token" }),
+        listBindings: vi.fn().mockResolvedValue([{
+          id: "allowed-binding",
+          targetType: "agent",
+          targetId: "agent-1",
+          configPath: "env.GITHUB_TOKEN",
+        }]),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "push_write_credential_missing",
+        },
+      },
+    });
+    expect(resolveInjectedEnvBindingForRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["agent", "empty string", { executionRunConfig: { env: { GH_TOKEN: "" } } }],
+    ["agent", "empty plain binding", { executionRunConfig: { env: { GITHUB_TOKEN: { type: "plain", value: "" } } } }],
+    ["project", "empty string", { projectEnv: { GH_TOKEN: "" } }],
+    ["project", "empty plain binding", { projectEnv: { GITHUB_TOKEN: { type: "plain", value: "" } } }],
+    ["environment", "empty string", { environmentEnv: { GH_TOKEN: "" } }],
+    ["environment", "empty plain binding", { environmentEnv: { GITHUB_TOKEN: { type: "plain", value: "" } } }],
+    ["routine", "empty string", { routineEnv: { GH_TOKEN: "" } }],
+    ["routine", "empty plain binding", { routineEnv: { GITHUB_TOKEN: { type: "plain", value: "" } } }],
+  ])("fails closed for an explicit %s-scoped %s instead of injecting a company secret", async (_scope, _binding, scopeConfig) => {
+    const getByNameInsensitive = vi.fn().mockResolvedValue({ id: "secret-1", name: "GH_TOKEN" });
+    const resolveInjectedEnvBindingForRuntime = vi.fn();
+
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      projectId: "project-1",
+      environmentId: "environment-1",
+      routineId: "routine-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      ...scopeConfig,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive,
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "push_write_credential_missing",
+        },
+      },
+    });
+    expect(getByNameInsensitive).not.toHaveBeenCalled();
+    expect(resolveInjectedEnvBindingForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("skips well-known-secret injection when a supported-scope binding exists", async () => {
+    const getByNameInsensitive = vi.fn();
+    const resolveInjectedEnvBindingForRuntime = vi.fn();
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      environmentId: "environment-1",
+      environmentEnv: { GH_TOKEN: { type: "plain", value: "environment-token" } },
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project", "environment", "routine"],
+        reason: "push_write_credential_missing",
+        remediation: "No GitHub credential found.",
+        fallbackSecretNames: ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"],
+        fallbackInjectionEnvKey: "GH_TOKEN",
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn().mockResolvedValue({
+          env: { GH_TOKEN: "environment-token" },
+          secretKeys: new Set(["GH_TOKEN"]),
+          manifest: [],
+        }),
+        resolveInjectedEnvBindingForRuntime,
+        getByNameInsensitive,
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({ GH_TOKEN: "environment-token" });
+    expect(getByNameInsensitive).not.toHaveBeenCalled();
+    expect(resolveInjectedEnvBindingForRuntime).not.toHaveBeenCalled();
   });
 });
 

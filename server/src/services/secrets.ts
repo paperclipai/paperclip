@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -950,6 +950,36 @@ export function secretService(db: Db) {
         ne(companySecrets.status, "deleted"),
       ))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getByNameInsensitive(companyId: string, name: string) {
+    const secret = await db
+      .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        sql`lower(${companySecrets.name}) = lower(${name})`,
+        ne(companySecrets.status, "deleted"),
+      ))
+      .orderBy(
+        sql`case when ${companySecrets.name} = ${name} then 0 else 1 end`,
+        asc(companySecrets.createdAt),
+        asc(companySecrets.id),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (secret && secret.name !== name) {
+      logger.info(
+        {
+          companyId,
+          probeName: name,
+          selectedSecretName: secret.name,
+          secretId: secret.id,
+        },
+        "Resolved a case-insensitive company secret name",
+      );
+    }
+    return secret;
   }
 
   async function getByKey(companyId: string, key: string) {
@@ -3865,6 +3895,7 @@ export function secretService(db: Db) {
 
     getById,
     getByName,
+    getByNameInsensitive,
     getByKey,
     resolveSecretValue,
     resolveSecretVersion,
@@ -4887,6 +4918,81 @@ export function secretService(db: Db) {
         );
       }
       return normalized;
+    },
+
+    resolveInjectedEnvBindingForRuntime: async (
+      companyId: string,
+      envKey: string,
+      rawBinding: unknown,
+      context: Omit<SecretConsumerContext, "configPath" | "allowedBindingIds">,
+      authorization?: {
+        bindingId: string;
+        targetType: SecretBindingTargetType;
+        targetId: string;
+        configPath: string;
+      } | null,
+    ): Promise<{ env: Record<string, string>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
+      if (!ENV_KEY_RE.test(envKey)) {
+        throw unprocessable(`Invalid environment variable name: ${envKey}`);
+      }
+      const parsed = envBindingSchema.safeParse(rawBinding);
+      if (!parsed.success) {
+        throw unprocessable(`Invalid environment binding for key: ${envKey}`);
+      }
+      const binding = canonicalizeBinding(parsed.data as EnvBinding);
+      if (binding.type !== "secret_ref") {
+        throw unprocessable(`Injected environment binding must be a company secret reference: ${envKey}`);
+      }
+
+      let bindingContext: SecretBindingContext | undefined;
+      if (authorization) {
+        if (authorization.configPath !== `env.${envKey}`) {
+          throw unprocessable(
+            "Secret binding does not authorize the injected environment key",
+            { code: "binding_not_allowed" },
+          );
+        }
+        const authorizationBinding = await db
+          .select()
+          .from(companySecretBindings)
+          .where(and(
+            eq(companySecretBindings.id, authorization.bindingId),
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.secretId, binding.secretId),
+            eq(companySecretBindings.targetType, authorization.targetType),
+            eq(companySecretBindings.targetId, authorization.targetId),
+            eq(companySecretBindings.configPath, authorization.configPath),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!authorizationBinding) {
+          throw unprocessable(
+            "Secret binding is outside the active low-trust boundary",
+            { code: "binding_not_allowed" },
+          );
+        }
+        bindingContext = {
+          ...context,
+          consumerType: authorizationBinding.targetType as SecretBindingTargetType,
+          consumerId: authorizationBinding.targetId,
+          configPath: authorizationBinding.configPath,
+          allowedBindingIds: [authorizationBinding.id],
+        };
+      }
+
+      const secretResolution = await resolveSecretValueInternal(
+        companyId,
+        binding.secretId,
+        binding.version,
+        {
+          bindingContext,
+          accessContext: { ...context, configPath: `env.${envKey}` },
+        },
+      );
+      return {
+        env: { [envKey]: secretResolution.value },
+        secretKeys: new Set([envKey]),
+        manifest: [secretResolution.manifestEntry],
+      };
     },
 
     resolveEnvBindings: async (

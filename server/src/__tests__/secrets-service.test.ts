@@ -24,6 +24,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
+import { logger } from "../middleware/logger.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -130,6 +131,172 @@ describeEmbeddedPostgres("secretService", () => {
     });
     return { agentId, heartbeatRunId };
   }
+
+  it("selects case-insensitive secret names deterministically and logs case-folded matches", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const lowercase = await svc.create(companyId, {
+      name: "gh_token",
+      provider: "local_encrypted",
+      value: "lowercase-value",
+    });
+    const exactId = randomUUID();
+    await db.insert(companySecrets).values({
+      id: exactId,
+      companyId,
+      key: "gh-token-exact-case",
+      name: "GH_TOKEN",
+      provider: "local_encrypted",
+    });
+    await db
+      .update(companySecrets)
+      .set({ createdAt: new Date("2026-01-01T00:00:00.000Z") })
+      .where(eq(companySecrets.id, lowercase.id));
+    await db
+      .update(companySecrets)
+      .set({ createdAt: new Date("2026-02-01T00:00:00.000Z") })
+      .where(eq(companySecrets.id, exactId));
+    const logSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+
+    await expect(svc.getByNameInsensitive(companyId, "GH_TOKEN")).resolves.toMatchObject({
+      id: exactId,
+      name: "GH_TOKEN",
+    });
+    expect(logSpy).not.toHaveBeenCalled();
+
+    await expect(svc.getByNameInsensitive(companyId, "Gh_ToKeN")).resolves.toMatchObject({
+      id: lowercase.id,
+      name: "gh_token",
+    });
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId,
+        probeName: "Gh_ToKeN",
+        selectedSecretName: "gh_token",
+        secretId: lowercase.id,
+      }),
+      "Resolved a case-insensitive company secret name",
+    );
+  });
+
+  it("resolves an injected secret_ref through the audited runtime path", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: "gh_token",
+      provider: "local_encrypted",
+      value: "runtime-token",
+    });
+
+    const resolved = await svc.resolveInjectedEnvBindingForRuntime(
+      companyId,
+      "GH_TOKEN",
+      { type: "secret_ref", secretId: secret.id, version: "latest" },
+      {
+        consumerType: "run",
+        consumerId: "run-1",
+        actorType: "agent",
+        actorId: null,
+        issueId: null,
+        heartbeatRunId: null,
+      },
+    );
+
+    expect(resolved.env).toEqual({ GH_TOKEN: "runtime-token" });
+    expect(resolved.secretKeys).toEqual(new Set(["GH_TOKEN"]));
+    expect(resolved.manifest).toEqual([
+      expect.objectContaining({
+        configPath: "env.GH_TOKEN",
+        envKey: "GH_TOKEN",
+        secretId: secret.id,
+        bindingId: null,
+        outcome: "success",
+      }),
+    ]);
+    expect(await svc.listAccessEvents(companyId, secret.id)).toEqual([
+      expect.objectContaining({
+        consumerType: "run",
+        consumerId: "run-1",
+        configPath: "env.GH_TOKEN",
+        issueId: null,
+        outcome: "success",
+      }),
+    ]);
+  });
+
+  it("requires an explicitly authorized binding for low-trust injected secret refs", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: "gh_token",
+      provider: "local_encrypted",
+      value: "runtime-token",
+    });
+    const binding = await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.GH_TOKEN",
+    });
+    const context = {
+      consumerType: "run" as const,
+      consumerId: "run-1",
+      actorType: "agent" as const,
+      actorId: "agent-1",
+    };
+
+    await expect(svc.resolveInjectedEnvBindingForRuntime(
+      companyId,
+      "GH_TOKEN",
+      { type: "secret_ref", secretId: secret.id, version: "latest" },
+      context,
+      {
+        bindingId: randomUUID(),
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.GH_TOKEN",
+      },
+    )).rejects.toMatchObject({
+      status: 422,
+      details: { code: "binding_not_allowed" },
+    });
+
+    await expect(svc.resolveInjectedEnvBindingForRuntime(
+      companyId,
+      "GH_TOKEN",
+      { type: "secret_ref", secretId: secret.id, version: "latest" },
+      context,
+      {
+        bindingId: binding.id,
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.GITHUB_TOKEN",
+      },
+    )).rejects.toMatchObject({
+      status: 422,
+      details: { code: "binding_not_allowed" },
+    });
+
+    const resolved = await svc.resolveInjectedEnvBindingForRuntime(
+      companyId,
+      "GH_TOKEN",
+      { type: "secret_ref", secretId: secret.id, version: "latest" },
+      context,
+      {
+        bindingId: binding.id,
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.GH_TOKEN",
+      },
+    );
+    expect(resolved.manifest[0]).toMatchObject({
+      configPath: "env.GH_TOKEN",
+      bindingId: binding.id,
+      secretId: secret.id,
+      outcome: "success",
+    });
+  });
 
   it("rejects cross-company secret references during env normalization", async () => {
     const companyA = await seedCompany("A");

@@ -72,6 +72,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext } from "../instrumentation.js";
 import { logger } from "../middleware/logger.js";
 import {
+  DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
   scrubGitCredentialText,
@@ -798,6 +799,9 @@ type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   | "resolveAdapterConfigForRuntime"
   | "resolveEnvBindings"
+  | "resolveInjectedEnvBindingForRuntime"
+  | "getByNameInsensitive"
+  | "listBindings"
   | "collectMissingRuntimeBindings"
   | "collectMissingAdapterConfigRuntimeBindings"
 >;
@@ -819,7 +823,11 @@ function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string
   return `secret ${secretLabel} not bound at ${missing.consumerType} ${missing.configPath}`;
 }
 
-function isConfiguredEnvBindingValue(binding: unknown) {
+function hasOwnEnvBinding(env: Record<string, unknown> | null, key: string) {
+  return env !== null && Object.prototype.hasOwnProperty.call(env, key);
+}
+
+function isUsableEnvBindingValue(binding: unknown) {
   const parsed = envBindingSchema.safeParse(binding);
   if (!parsed.success) return false;
   const value = parsed.data;
@@ -916,6 +924,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
     consumerScopes: Array<"agent" | "project" | "environment" | "routine">;
     reason: string;
     remediation: string;
+    fallbackSecretNames?: readonly string[];
+    fallbackInjectionEnvKey?: string;
   };
 }) {
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(input.executionRunConfig);
@@ -933,22 +943,84 @@ export async function resolveExecutionRunAdapterConfig(input: {
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
   }
   const requiredScopedEnvBinding = input.requiredScopedEnvBinding ?? null;
+  const requiredScopedBindingPresent = requiredScopedEnvBinding
+    ? requiredScopedEnvBinding.keys.some((key) => (
+      requiredScopedEnvBinding.consumerScopes.includes("agent")
+      && hasOwnEnvBinding(agentEnv, key)
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("project")
+      && hasOwnEnvBinding(projectEnv, key)
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("environment")
+      && hasOwnEnvBinding(environmentEnv, key)
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("routine")
+      && hasOwnEnvBinding(routineEnv, key)
+    ))
+    : false;
   const requiredScopedBindingsConfigured = requiredScopedEnvBinding
     ? requiredScopedEnvBinding.keys.some((key) => (
       requiredScopedEnvBinding.consumerScopes.includes("agent")
-      && isConfiguredEnvBindingValue(agentEnv[key])
+      && isUsableEnvBindingValue(agentEnv[key])
     ) || (
       requiredScopedEnvBinding.consumerScopes.includes("project")
-      && isConfiguredEnvBindingValue(projectEnv?.[key])
+      && isUsableEnvBindingValue(projectEnv?.[key])
     ) || (
       requiredScopedEnvBinding.consumerScopes.includes("environment")
-      && isConfiguredEnvBindingValue(environmentEnv?.[key])
+      && isUsableEnvBindingValue(environmentEnv?.[key])
     ) || (
       requiredScopedEnvBinding.consumerScopes.includes("routine")
-      && isConfiguredEnvBindingValue(routineEnv?.[key])
+      && isUsableEnvBindingValue(routineEnv?.[key])
     ))
     : false;
-  if (requiredScopedEnvBinding && !requiredScopedBindingsConfigured) {
+  let fallbackSecret: Awaited<ReturnType<RuntimeConfigSecretResolver["getByNameInsensitive"]>> | null = null;
+  let fallbackAuthorization: {
+    bindingId: string;
+    targetType: "agent" | "project" | "environment" | "routine";
+    targetId: string;
+    configPath: string;
+  } | null = null;
+  if (
+    requiredScopedEnvBinding
+    && !requiredScopedBindingPresent
+    && requiredScopedEnvBinding.fallbackSecretNames?.length
+    && typeof input.secretsSvc.getByNameInsensitive === "function"
+  ) {
+    for (const secretName of requiredScopedEnvBinding.fallbackSecretNames) {
+      const candidate = await input.secretsSvc.getByNameInsensitive(input.companyId, secretName);
+      if (!candidate) continue;
+      if (lowTrustAllowedBindingIds !== undefined) {
+        const bindings = await input.secretsSvc.listBindings(input.companyId, candidate.id);
+        const activeTargetIds = new Map<string, string | null | undefined>([
+          ["agent", input.agentId],
+          ["project", input.projectId],
+          ["environment", input.environmentId],
+          ["routine", input.routineId],
+        ]);
+        const injectionConfigPath = requiredScopedEnvBinding.fallbackInjectionEnvKey
+          ? `env.${requiredScopedEnvBinding.fallbackInjectionEnvKey}`
+          : null;
+        const bindingsById = new Map(bindings.map((binding) => [binding.id, binding]));
+        const authorizedBinding = lowTrustAllowedBindingIds
+          .map((id) => bindingsById.get(id))
+          .find((binding) =>
+            binding
+            && activeTargetIds.get(binding.targetType) === binding.targetId
+            && binding.configPath === injectionConfigPath,
+          );
+        if (!authorizedBinding) continue;
+        fallbackAuthorization = {
+          bindingId: authorizedBinding.id,
+          targetType: authorizedBinding.targetType as "agent" | "project" | "environment" | "routine",
+          targetId: authorizedBinding.targetId,
+          configPath: authorizedBinding.configPath,
+        };
+      }
+      fallbackSecret = candidate;
+      break;
+    }
+  }
+  if (requiredScopedEnvBinding && !requiredScopedBindingsConfigured && !fallbackSecret) {
     throw new ConfigurationIncompleteFailure(`configuration incomplete: ${requiredScopedEnvBinding.remediation}`, {
       configurationIncomplete: {
         reason: requiredScopedEnvBinding.reason,
@@ -1175,6 +1247,36 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  const injectedEnvResolution = fallbackSecret && requiredScopedEnvBinding?.fallbackInjectionEnvKey
+    ? await input.secretsSvc.resolveInjectedEnvBindingForRuntime(
+        input.companyId,
+        requiredScopedEnvBinding.fallbackInjectionEnvKey,
+        {
+          type: "secret_ref",
+          secretId: fallbackSecret.id,
+          version: "latest",
+        },
+        {
+          consumerType: "run",
+          consumerId: input.heartbeatRunId ?? input.agentId ?? "push-capability-preflight",
+          actorType: "agent",
+          actorId: input.agentId ?? null,
+          responsibleUserId: input.responsibleUserId ?? null,
+          issueId: input.issueId ?? null,
+          heartbeatRunId: input.heartbeatRunId ?? null,
+        },
+        fallbackAuthorization,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
+  if (Object.keys(injectedEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...injectedEnvResolution.env,
+    };
+    for (const key of injectedEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
   // immediately fails with "no Codex credentials provisioned" (adapter_failed),
@@ -1220,6 +1322,19 @@ export async function resolveExecutionRunAdapterConfig(input: {
       );
     }
   }
+  if (requiredScopedEnvBinding) {
+    logger.info(
+      {
+        companyId: input.companyId,
+        agentId: input.agentId ?? null,
+        issueId: input.issueId ?? null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
+        tier: fallbackSecret ? "T3_well_known_company_secret" : "T1_env_binding",
+        selectedSecretName: fallbackSecret?.name ?? null,
+      },
+      "Push-capability preflight satisfied",
+    );
+  }
   return {
     resolvedConfig,
     secretKeys,
@@ -1228,6 +1343,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
+      ...(injectedEnvResolution.manifest ?? []),
     ],
   };
 }
@@ -14605,7 +14721,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             consumerScopes: ["agent", "project", "environment", "routine"],
             reason: "push_write_credential_missing",
             remediation:
-              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at agent, project, environment, or routine scope.",
+              "GitHub PR workflow found no GH_TOKEN/GITHUB_TOKEN binding at agent, project, environment, or routine scope and no company secret named GITHUB_TOKEN, GH_TOKEN, or PAPERCLIP_GITHUB_TOKEN. Bind GH_TOKEN or GITHUB_TOKEN at one of those scopes, or configure one of the well-known company secrets.",
+            fallbackSecretNames: DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+            fallbackInjectionEnvKey: "GH_TOKEN",
           }
         : undefined,
     });

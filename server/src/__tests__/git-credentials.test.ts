@@ -17,9 +17,11 @@ import {
 const fakeDb = null as unknown as Db;
 
 function buildSecretsFake(byName: Record<string, string | Error>) {
-  const getByName = vi.fn(async (_companyId: string, name: string) => {
-    if (!(name in byName)) return null;
-    return { id: `secret-${name}` };
+  const getByNameInsensitive = vi.fn(async (_companyId: string, name: string) => {
+    const matches = Object.keys(byName).filter((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    const selectedName = matches.find((candidate) => candidate === name) ?? matches[0];
+    if (!selectedName) return null;
+    return { id: `secret-${selectedName}`, name: selectedName };
   });
   const resolveSecretValue = vi.fn(async (_companyId: string, secretId: string) => {
     const name = secretId.replace(/^secret-/, "");
@@ -27,7 +29,7 @@ function buildSecretsFake(byName: Record<string, string | Error>) {
     if (value instanceof Error) throw value;
     return value ?? "";
   });
-  return { getByName, resolveSecretValue };
+  return { getByNameInsensitive, resolveSecretValue };
 }
 
 describe("isGitHubHttpsRemoteUrl", () => {
@@ -61,7 +63,24 @@ describe("createGitRemoteAuthProvider", () => {
     expect(invocation?.source).toBe("company_secret");
     expect(invocation?.secretName).toBe("GH_TOKEN");
     // GITHUB_TOKEN is probed first even though only GH_TOKEN exists.
-    expect(secrets.getByName.mock.calls.map((call) => call[1])).toEqual(["GITHUB_TOKEN", "GH_TOKEN"]);
+    expect(secrets.getByNameInsensitive.mock.calls.map((call) => call[1])).toEqual(["GITHUB_TOKEN", "GH_TOKEN"]);
+  });
+
+  it("resolves a lowercase well-known company secret", async () => {
+    const secrets = buildSecretsFake({ gh_token: "lowercase-token" });
+    const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+      secrets,
+      env: {},
+    });
+
+    const invocation = await provider(githubUrl);
+
+    expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("lowercase-token");
+    expect(invocation?.secretName).toBe("gh_token");
+    expect(secrets.getByNameInsensitive.mock.calls.map((call) => call[1])).toEqual([
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+    ]);
   });
 
   it("falls back to the server env, GITHUB_TOKEN before GH_TOKEN", async () => {
@@ -91,7 +110,7 @@ describe("createGitRemoteAuthProvider", () => {
     });
     await expect(provider("git@github.com:example/repo.git")).resolves.toBeNull();
     await expect(provider("https://gitlab.com/example/repo.git")).resolves.toBeNull();
-    expect(secrets.getByName).not.toHaveBeenCalled();
+    expect(secrets.getByNameInsensitive).not.toHaveBeenCalled();
   });
 
   it("memoizes the credential lookup across calls", async () => {
@@ -103,7 +122,7 @@ describe("createGitRemoteAuthProvider", () => {
     await provider(githubUrl);
     await provider(githubUrl);
     await provider("https://github.com/example/another.git");
-    expect(secrets.getByName).toHaveBeenCalledTimes(1);
+    expect(secrets.getByNameInsensitive).toHaveBeenCalledTimes(1);
     expect(secrets.resolveSecretValue).toHaveBeenCalledTimes(1);
   });
 

@@ -134,10 +134,10 @@ export function describeGitAuthFailure(input: {
 type SecretServiceLike = ReturnType<typeof secretService>;
 
 type GitCredentialSecretsDeps = {
-  getByName: (
+  getByNameInsensitive: (
     companyId: string,
     name: string,
-  ) => Promise<{ id: string } | null | undefined> | ReturnType<SecretServiceLike["getByName"]>;
+  ) => Promise<{ id: string; name?: string } | null | undefined> | ReturnType<SecretServiceLike["getByNameInsensitive"]>;
   resolveSecretValue: SecretServiceLike["resolveSecretValue"];
 };
 
@@ -169,7 +169,7 @@ export function createGitRemoteAuthProvider(
 
   const resolveCredential = async (): Promise<GitCredential | null> => {
     for (const secretName of secretNames) {
-      const secret = await Promise.resolve(secrets.getByName(companyId, secretName)).catch(() => null);
+      const secret = await Promise.resolve(secrets.getByNameInsensitive(companyId, secretName)).catch(() => null);
       if (!secret) continue;
       // A resolution failure (inactive secret, provider outage) records its own failure audit
       // event; fall through to the next source instead of failing the whole git operation here.
@@ -186,7 +186,7 @@ export function createGitRemoteAuthProvider(
         })
         .then((value) => value.trim())
         .catch(() => "");
-      if (token) return { token, source: "company_secret", secretName };
+      if (token) return { token, source: "company_secret", secretName: secret.name ?? secretName };
     }
     const envToken = env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || "";
     if (envToken) return { token: envToken, source: "server_env", secretName: null };
