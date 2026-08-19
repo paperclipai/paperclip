@@ -1454,10 +1454,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function workspaceDirectoryExists(workspacePath: string) {
-    return fs
-      .stat(workspacePath)
-      .then((stats) => stats.isDirectory())
-      .catch(() => false);
+    try {
+      return (await fs.stat(workspacePath)).isDirectory();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+      throw err;
+    }
   }
 
   async function assertTerminalCleanupGitStateUnchanged(

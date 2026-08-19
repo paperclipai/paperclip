@@ -5061,6 +5061,39 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
   }, 20_000);
 
+  it("marks cleanup_failed when stat rejects with EACCES on an existing isolated worktree", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const worktreePath = path.resolve(seeded.worktreePath);
+    const originalStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (pathLike) => {
+      const resolved = path.resolve(String(pathLike));
+      if (resolved === worktreePath) {
+        const err = new Error("EACCES: permission denied, stat") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return originalStat(pathLike);
+    });
+
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces();
+      const [workspace] = await db
+        .select({
+          status: executionWorkspaces.status,
+          cleanupReason: executionWorkspaces.cleanupReason,
+        })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+      expect(sweep).toMatchObject({ cleanupFailed: 1 });
+      expect(workspace?.status).toBe("cleanup_failed");
+      expect(workspace?.cleanupReason).toContain("EACCES");
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statSpy.mockRestore();
+    }
+  }, 20_000);
+
   it("cleans up a workspace whose path is already gone instead of refusing on the unknown HEAD", async () => {
     // Readiness clears this close on purpose: there is nothing left to protect.
     // It also reports a null workspaceHeadSha, and the route forwards that to
