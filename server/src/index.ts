@@ -141,6 +141,33 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+// `detect-port` silently returns the next free port when the requested one is
+// busy. Left unguarded, a slow-to-release socket during a crash/restart race
+// makes the process bind to an unrouted port with only a log line to show for
+// it (see PAPERCLIP_PORT_STRICT_MODE below). We always log the mismatch at
+// `error` with a greppable prefix; PAPERCLIP_PORT_STRICT_MODE additionally
+// makes it fatal so supervisors (launchd/systemd KeepAlive) keep restarting
+// until the requested port is actually free, instead of the process quietly
+// serving traffic a reverse proxy never sends it.
+async function resolveListenPort(
+  requestedPort: number,
+  opts: { label: string; strict: boolean },
+): Promise<number> {
+  const selectedPort = await detectPort(requestedPort);
+  if (selectedPort === requestedPort) return selectedPort;
+
+  const detail = `requestedPort=${requestedPort}, selectedPort=${selectedPort}, label=${opts.label}`;
+  if (opts.strict) {
+    throw new Error(
+      `PORT_FALLBACK_REFUSED: ${opts.label} port ${requestedPort} is already in use and ` +
+        `PAPERCLIP_PORT_STRICT_MODE is enabled, so refusing to fall back to port ${selectedPort}. ` +
+        "Free the requested port (check for a lingering process from a fast crash/restart) and retry.",
+    );
+  }
+  logger.error(`PORT_FALLBACK: ${opts.label} port is busy; using next free port (${detail})`);
+  return selectedPort;
+}
+
 export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
@@ -448,11 +475,10 @@ export async function startServer(): Promise<StartedServer> {
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );
       } catch {
-        const detectedPort = await detectPort(configuredPort);
-        if (detectedPort !== configuredPort) {
-          logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
-        }
-        port = detectedPort;
+        port = await resolveListenPort(configuredPort, {
+          label: "Embedded PostgreSQL",
+          strict: config.portStrictMode,
+        });
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         const createEmbeddedPostgres = () => new EmbeddedPostgres({
           databaseDir: dataDir,
@@ -576,7 +602,10 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   const requestedListenPort = config.port;
-  const listenPort = await detectPort(requestedListenPort);
+  const listenPort = await resolveListenPort(requestedListenPort, {
+    label: "server",
+    strict: config.portStrictMode,
+  });
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -805,11 +834,7 @@ export async function startServer(): Promise<StartedServer> {
   // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
-  
-  if (listenPort !== requestedListenPort) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
-  }
-  
+
   const runtimeListenHost = config.host;
   const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,

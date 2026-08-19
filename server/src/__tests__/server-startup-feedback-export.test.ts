@@ -158,6 +158,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     customBindHost: undefined,
     host: "127.0.0.1",
     port: 3210,
+    portStrictMode: false,
     allowedHostnames: [],
     authBaseUrlMode: "auto",
     authPublicBaseUrl: undefined,
@@ -729,5 +730,29 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+});
+
+describe("startServer PAPERCLIP_PORT_STRICT_MODE", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("refuses to fall back to a different port when strict mode is enabled", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ port: 3100, portStrictMode: true }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    await expect(startServer()).rejects.toThrow(/PORT_FALLBACK_REFUSED/);
+  });
+
+  it("still falls back by default when strict mode is not set", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ port: 3100, portStrictMode: false }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3110);
   });
 });
