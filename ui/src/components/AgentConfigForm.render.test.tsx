@@ -1263,6 +1263,73 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Log in")).toBeFalsy();
   });
 
+  it("shows the Login button for an agent with no own environment under the managed-sandbox-only policy", async () => {
+    // The agent has no own environment, so the login target resolves the same
+    // way as the adapter Test target. The managed-sandbox-only policy redirects
+    // that resolution from the hidden local environment to the managed sandbox.
+    // The login affordance must read the managed sandbox, so it shows after the
+    // auth-missing check. A login target that stayed local would hide the panel
+    // for the target the real run uses.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({
+          id: "local-1",
+          name: "Local",
+          driver: "local",
+          metadata: { defaultForInstance: true },
+        }),
+        makeEnvironment({
+          id: "managed-1",
+          name: "Managed",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+          metadata: { managedByPaperclip: true },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: null },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+  });
+
+  it("keeps the Login button hidden under the managed-sandbox-only policy when no managed sandbox is available", async () => {
+    // The policy is on, but no managed sandbox environment exists, so the login
+    // target resolution fails closed. The render catches that failure and
+    // resolves no login environment, so the affordance stays hidden. The Test
+    // surfaces the same case as a fail-closed error.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({
+          id: "local-1",
+          name: "Local",
+          driver: "local",
+          metadata: { defaultForInstance: true },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: null },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
   it("starts a login session for the effective sandbox and shows the code and the authentication URL", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     const result = await renderCodexSandbox();

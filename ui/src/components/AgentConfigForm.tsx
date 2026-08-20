@@ -585,18 +585,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
 
   // The environment a login session runs in. It mirrors the Test resolution: the
-  // agent's own environment wins, otherwise the instance default. The login
-  // affordance shows only when this environment is a sandbox, because the
-  // canonical auth-missing check comes only from a sandbox target.
-  const effectiveLoginEnvironmentId = useMemo(
-    () =>
-      resolveAdapterTestEnvironmentId({
+  // agent's own environment wins, otherwise the instance default, otherwise the
+  // local default. The login affordance shows only when this environment is a
+  // sandbox, because the canonical auth-missing check comes only from a sandbox
+  // target.
+  //
+  // The resolution passes the same managed-sandbox-only policy inputs as the
+  // adapter Test target, so both resolve to the same environment. Under the
+  // policy a resolution that lands on the local environment redirects to the
+  // managed sandbox the real run uses. Without the redirect the login target
+  // stays local while the Test and the real run use the managed sandbox, so the
+  // login affordance reads the wrong target. The resolver throws when the policy
+  // is on but no managed sandbox is available; a render must not throw, so this
+  // resolution catches that case and resolves no login environment. The Test
+  // mutation surfaces the same case as a fail-closed error.
+  const effectiveLoginEnvironmentId = useMemo(() => {
+    try {
+      return resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
-      }),
-    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId, environments],
-  );
+        managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+        // The policy hides the local environment, so an agent default that still
+        // points at the hidden local row names no visible environment. Pass the
+        // visible ids so the resolver redirects that stale local default to the
+        // managed sandbox instead of the hidden local id.
+        visibleEnvironmentIds: environments.map((environment) => environment.id),
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    rawCurrentDefaultEnvironmentId,
+    instanceSettings?.defaultEnvironmentId,
+    environments,
+    experimentalSettings?.enableManagedSandboxOnly,
+  ]);
   const effectiveLoginEnvironment = useMemo(
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
