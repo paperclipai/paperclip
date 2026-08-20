@@ -1120,7 +1120,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
-  it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
+  it("cancels queued comment wakes when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -1136,7 +1136,11 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       companyId,
       agentId,
       issueId,
-      wakeReason: "issue_assigned",
+      wakeReason: "issue_commented",
+      contextExtras: {
+        wakeCommentId: "comment-1",
+        wakeReason: "issue_commented",
+      },
     });
 
     await heartbeat.resumeQueuedRuns();
