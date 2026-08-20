@@ -5596,19 +5596,17 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
-  it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
-    // Regression for PR #2482 checkout-adoption review finding: any adoption
-    // helper that re-locks an existing in_progress issue (e.g. when the prior
-    // checkout/execution run is terminal) must not strip the row's
-    // assigneeUserId. We exercise this via the adoptStaleCheckoutRun path,
-    // which fires when checkoutRunId points at a terminal run while
-    // executionRunId still points at a different, non-terminal run.
+  it("checkout adoption of an unowned stale execution lock assigns the actor", async () => {
+    // Regression for OFM-4569 review finding: the stale execution-lock adoption
+    // path is the one branch where checkout is allowed for an unowned
+    // in_progress issue, so it must explicitly stamp assigneeAgentId for the
+    // actor when executionRunId points at a terminal or missing run.
     const companyId = randomUUID();
     const agentId = randomUUID();
     const userId = randomUUID();
     const issueId = randomUUID();
     const failedCheckoutRunId = randomUUID();
-    const queuedExecutionRunId = randomUUID();
+    const staleExecutionRunId = randomUUID();
     const successorRunId = randomUUID();
 
     await db.insert(companies).values({
@@ -5638,11 +5636,12 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
         finishedAt: new Date("2026-06-10T10:05:00.000Z"),
       },
       {
-        id: queuedExecutionRunId,
+        id: staleExecutionRunId,
         companyId,
         agentId,
-        status: "queued",
+        status: "failed",
         invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:06:00.000Z"),
       },
       {
         id: successorRunId,
@@ -5659,10 +5658,10 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       title: "Stale checkout lock with user co-assignee",
       status: "in_progress",
       priority: "medium",
-      assigneeAgentId: agentId,
+      assigneeAgentId: null,
       assigneeUserId: userId,
       checkoutRunId: failedCheckoutRunId,
-      executionRunId: queuedExecutionRunId,
+      executionRunId: staleExecutionRunId,
       executionAgentNameKey: "codexcoder",
       executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
     });
@@ -5684,7 +5683,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toMatchObject({
       status: "in_progress",
       assigneeAgentId: agentId,
-      assigneeUserId: userId,
+      assigneeUserId: null,
       checkoutRunId: successorRunId,
       executionRunId: successorRunId,
     });
