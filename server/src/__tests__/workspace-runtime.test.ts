@@ -6455,9 +6455,16 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         return result[0]!;
       }));
 
-      expect(first.port).toBe(basePort);
-      expect(second.port).not.toBe(first.port);
-      expect(second.port).toBeGreaterThan(basePort);
+      // The two lanes claim ports concurrently in-process. The allocator guarantees
+      // distinct ports, but not which lane wins the base port. It depends on the
+      // scheduling order. So assert order-independent invariants, not array index.
+      const lowerPort = Math.min(first.port!, second.port!);
+      const upperPort = Math.max(first.port!, second.port!);
+      const maxAllocatablePort = basePort + WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS - 1;
+      expect(first.port).not.toBe(second.port);
+      expect(lowerPort).toBe(basePort);
+      expect(upperPort).toBeGreaterThan(basePort);
+      expect(upperPort).toBeLessThanOrEqual(maxAllocatablePort);
       expect(first.url).toBe(`http://127.0.0.1:${first.port}`);
       expect(second.url).toBe(`http://127.0.0.1:${second.port}`);
       await expect(fetch(first.url!)).resolves.toMatchObject({ ok: true });
