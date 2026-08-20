@@ -310,6 +310,50 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
     });
   });
 
+  it("gates done when the pull request is referenced only from a comment, not the description", async () => {
+    stubGitHubFetch();
+    prFixtures.set("108", {
+      state: "open",
+      merged: false,
+      headSha: "sha-comment-only-108",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Ship PR 108",
+        // Deliberately no PR URL in the description -- it is only ever
+        // mentioned in a follow-up comment below.
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "cloud-user-1",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    const issueId = createRes.body.id as string;
+
+    const commentRes = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Implements https://github.com/acme/app/pull/108" });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    const objectsRes = await request(app).get(`/api/issues/${issueId}/external-objects`);
+    expect(objectsRes.status, JSON.stringify(objectsRes.body)).toBe(200);
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    // The gate's main loop iterates every linked external object regardless
+    // of which source (title, description, comment, document) produced the
+    // mention -- a PR referenced only in a comment must be gated exactly
+    // like one referenced in the description.
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#108");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "open",
+      pullRequest: expect.objectContaining({ number: 108 }),
+    });
+  });
+
   it("does not gate issues with no linked pull request", async () => {
     stubGitHubFetch();
     const createRes = await request(app)

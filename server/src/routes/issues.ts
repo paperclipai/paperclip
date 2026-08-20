@@ -11,6 +11,7 @@ import {
   companyMemberships,
   documents,
   executionWorkspaces,
+  externalObjectMentions,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -337,6 +338,28 @@ function textMightReferenceGitHubPullRequest(...texts: Array<string | null | und
 }
 
 /**
+ * Whether this issue has ever had a GitHub pull-request reference recorded
+ * against it — from its title/description, or from any comment or document
+ * (external_object_mentions covers all of those source kinds, not just the
+ * issue body itself). Used only to decide how to fail when the live
+ * `listForIssue` lookup itself throws: a plain text scan of title/description
+ * alone would miss a PR linked solely from a comment or a document.
+ */
+async function issueHasRecordedPullRequestMention(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  const row = await db
+    .select({ id: externalObjectMentions.id })
+    .from(externalObjectMentions)
+    .where(and(
+      eq(externalObjectMentions.companyId, companyId),
+      eq(externalObjectMentions.sourceIssueId, issueId),
+      eq(externalObjectMentions.objectType, "pull_request"),
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row !== null;
+}
+
+/**
  * Fail-closed guard for the `done` transition (AGE-569): an issue may not be
  * marked `done` while it references a GitHub pull request that is still
  * open/unmerged, merged with red/pending CI, or whose current state could
@@ -346,29 +369,49 @@ function textMightReferenceGitHubPullRequest(...texts: Array<string | null | und
  * guards this ticket is modeled on.
  */
 async function assertNoBlockingLinkedPullRequest(
+  db: Db,
   externalObjectsSvc: ReturnType<typeof externalObjectService>,
   issueId: string,
   companyId: string,
-  mightReferencePullRequest: boolean,
+  textMightReferencePullRequest: boolean,
 ) {
   let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
   try {
     groups = await externalObjectsSvc.listForIssue(issueId);
   } catch (err) {
+    // A plain-text scan of title/description alone would miss a pull request
+    // linked solely from a comment or a document, so also consult the
+    // recorded mention table (covers every source kind) before deciding this
+    // is safe to allow through. That secondary check itself failing falls
+    // back to the text-only signal rather than widening the blast radius of
+    // an unrelated infra fault to every done transition in the company.
+    let mightReferencePullRequest = textMightReferencePullRequest;
+    if (!mightReferencePullRequest) {
+      try {
+        mightReferencePullRequest = await issueHasRecordedPullRequestMention(db, companyId, issueId);
+      } catch (mentionLookupErr) {
+        logger.warn(
+          { err: mentionLookupErr, issueId },
+          "done-transition PR gate: failed to check recorded pull-request mentions; falling back to the text-only signal",
+        );
+      }
+    }
     if (!mightReferencePullRequest) {
       // The gate itself must not turn an unrelated external-objects
       // misconfiguration/outage into a hard failure of every `done`
-      // transition. This issue's own text does not look like it references a
-      // GitHub pull request at all, so there is nothing plausible to gate on.
+      // transition. Nothing on this issue (title, description, or any
+      // recorded comment/document mention) looks like a GitHub pull request,
+      // so there is nothing plausible to gate on.
       logger.warn(
         { err, issueId },
         "done-transition PR gate: failed to resolve linked external objects; issue has no PR-like reference, allowing the transition",
       );
       return;
     }
-    // This issue's title/description looks like it references a GitHub pull
-    // request, and we failed to resolve its current state at all. Fail
-    // closed rather than silently letting an unverifiable PR reference pass.
+    // This issue (its title/description, or a comment/document mention)
+    // looks like it references a GitHub pull request, and we failed to
+    // resolve its current state at all. Fail closed rather than silently
+    // letting an unverifiable PR reference pass.
     logger.warn(
       { err, issueId },
       "done-transition PR gate: failed to resolve linked external objects for an issue with a PR-like reference; blocking the transition",
@@ -9472,7 +9515,7 @@ export function issueRoutes(
         typeof updateFields.title === "string" ? updateFields.title : null,
         typeof updateFields.description === "string" ? updateFields.description : null,
       );
-      await assertNoBlockingLinkedPullRequest(externalObjectsSvc, existing.id, existing.companyId, mightReferencePullRequest);
+      await assertNoBlockingLinkedPullRequest(db, externalObjectsSvc, existing.id, existing.companyId, mightReferencePullRequest);
     }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
