@@ -4143,7 +4143,11 @@ describe("ensureRuntimeServicesForRun", () => {
           },
           adapterEnv: {},
         }),
-      ).rejects.toThrow(/Readiness check failed for http:\/\/127\.0\.0\.1:\d+\/api\/health: received HTTP 503/);
+        // The 503 health server must never pass readiness. Assert only that the
+        // readiness check fails for the health URL. Do not assert the exact reason
+        // string: under load the last probe near the deadline can get a small
+        // budget and abort with a timeout before it reads the HTTP 503 response.
+      ).rejects.toThrow(/Readiness check failed for http:\/\/127\.0\.0\.1:\d+\/api\/health/);
     } finally {
       await releaseRuntimeServicesForRun(runId);
     }
