@@ -5871,10 +5871,12 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       updatedAt: now,
     });
 
-    expect(buildStaleExecutionLockAdoptionSet({
+    const ownedAdoptionSet = buildStaleExecutionLockAdoptionSet({
       assigneeAgentId: agentId,
       status: "in_progress",
-    }, randomUUID(), checkoutRunId, now)).toMatchObject({
+    }, randomUUID(), checkoutRunId, now);
+
+    expect(ownedAdoptionSet).toMatchObject({
       checkoutRunId,
       executionRunId: checkoutRunId,
       executionAgentNameKey: null,
@@ -5882,6 +5884,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       status: "in_progress",
       updatedAt: now,
     });
+    expect(ownedAdoptionSet).not.toHaveProperty("assigneeAgentId");
   });
 });
 
@@ -6122,6 +6125,8 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(persistedClaims).toHaveLength(1);
     expect(persistedClaims[0]?.requestedChildCount).toBe(2);
     expect(persistedClaims[0]?.childIssueIds).toEqual(first.childIssueIds);
+    expect((persistedClaims[0]?.requestedChildren as Array<Record<string, unknown>> | undefined)?.[1])
+      .not.toHaveProperty("assigneeAgentId");
 
     const childrenRows = await db
       .select({ id: issues.id, title: issues.title })
