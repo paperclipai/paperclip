@@ -331,10 +331,27 @@ function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransiti
   return checksState === "failure" ? "checks red" : "checks pending";
 }
 
-const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/i;
+const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([^\s/]+)\/([^\s/]+)\/pull\/(\d+)/gi;
 
 function textMightReferenceGitHubPullRequest(...texts: Array<string | null | undefined>): boolean {
-  return texts.some((text) => typeof text === "string" && GITHUB_PULL_REQUEST_URL_PATTERN.test(text));
+  return texts.some((text) => typeof text === "string" && new RegExp(GITHUB_PULL_REQUEST_URL_PATTERN).test(text));
+}
+
+type GitHubPullRequestRef = { owner: string; repo: string; number: number };
+
+function extractGitHubPullRequestRefs(text: string | null | undefined): GitHubPullRequestRef[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const refs: GitHubPullRequestRef[] = [];
+  const pattern = new RegExp(GITHUB_PULL_REQUEST_URL_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    refs.push({ owner: match[1]!, repo: match[2]!, number: Number(match[3]) });
+  }
+  return refs;
+}
+
+function githubPullRequestRefKey(owner: string, repo: string, number: number): string {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
 }
 
 /**
@@ -374,6 +391,7 @@ async function assertNoBlockingLinkedPullRequest(
   issueId: string,
   companyId: string,
   textMightReferencePullRequest: boolean,
+  candidateNewPullRequestRefs: GitHubPullRequestRef[],
 ) {
   let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
   try {
@@ -385,7 +403,7 @@ async function assertNoBlockingLinkedPullRequest(
     // is safe to allow through. That secondary check itself failing falls
     // back to the text-only signal rather than widening the blast radius of
     // an unrelated infra fault to every done transition in the company.
-    let mightReferencePullRequest = textMightReferencePullRequest;
+    let mightReferencePullRequest = textMightReferencePullRequest || candidateNewPullRequestRefs.length > 0;
     if (!mightReferencePullRequest) {
       try {
         mightReferencePullRequest = await issueHasRecordedPullRequestMention(db, companyId, issueId);
@@ -488,6 +506,37 @@ async function assertNoBlockingLinkedPullRequest(
         },
       },
     );
+  }
+
+  if (candidateNewPullRequestRefs.length > 0) {
+    // This same PATCH may be introducing a brand-new PR reference in its
+    // title/description update alongside the `done` status change. listForIssue
+    // above only reflects mentions already synced from the *previously*
+    // persisted text -- a reference that only exists in this request's new
+    // text has not been resolved/verified at all yet. Block on any such
+    // reference we can't already account for among the known linked PRs.
+    const knownPullRequestKeys = new Set(
+      groups
+        .filter((group) => group.object?.objectType === "pull_request")
+        .map((group) => (group.object!.data ?? {}) as Record<string, unknown>)
+        .filter((data) => data.provider === "github")
+        .map((data) => githubPullRequestRefKey(
+          typeof data.owner === "string" ? data.owner : "",
+          typeof data.repo === "string" ? data.repo : "",
+          typeof data.number === "number" ? data.number : -1,
+        )),
+    );
+    for (const ref of candidateNewPullRequestRefs) {
+      if (knownPullRequestKeys.has(githubPullRequestRefKey(ref.owner, ref.repo, ref.number))) continue;
+      throw unprocessable(
+        `Cannot mark issue done: this update newly references pull request ${ref.owner}/${ref.repo}#${ref.number}, which has not been verified as merged and green yet`,
+        {
+          code: "done_transition_pr_gate",
+          reason: "unverified",
+          pullRequest: { owner: ref.owner, repo: ref.repo, number: ref.number, state: null, merged: null, checksState: null },
+        },
+      );
+    }
   }
 }
 
@@ -9515,7 +9564,18 @@ export function issueRoutes(
         typeof updateFields.title === "string" ? updateFields.title : null,
         typeof updateFields.description === "string" ? updateFields.description : null,
       );
-      await assertNoBlockingLinkedPullRequest(db, externalObjectsSvc, existing.id, existing.companyId, mightReferencePullRequest);
+      const candidateNewPullRequestRefs = [
+        ...extractGitHubPullRequestRefs(typeof updateFields.title === "string" ? updateFields.title : null),
+        ...extractGitHubPullRequestRefs(typeof updateFields.description === "string" ? updateFields.description : null),
+      ];
+      await assertNoBlockingLinkedPullRequest(
+        db,
+        externalObjectsSvc,
+        existing.id,
+        existing.companyId,
+        mightReferencePullRequest,
+        candidateNewPullRequestRefs,
+      );
     }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");

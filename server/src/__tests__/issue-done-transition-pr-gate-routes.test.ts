@@ -354,6 +354,46 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
     });
   });
 
+  it("refuses done when the same PATCH newly adds a pull-request reference to the description", async () => {
+    stubGitHubFetch();
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Ship PR 109",
+        // No PR reference at creation time -- listForIssue has nothing to
+        // find yet, and this test never calls /external-objects/refresh.
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "cloud-user-1",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    const issueId = createRes.body.id as string;
+
+    // A single PATCH both introduces the PR reference (in the description)
+    // and requests `done` in the same request. The reference has never been
+    // synced or resolved, so it must not slip through unverified just
+    // because listForIssue (which only reflects previously-persisted text)
+    // doesn't know about it yet.
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        description: "Implements https://github.com/acme/app/pull/109",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#109");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "unverified",
+      pullRequest: expect.objectContaining({ owner: "acme", repo: "app", number: 109 }),
+    });
+
+    // Confirm the issue was in fact NOT persisted as done.
+    const getRes = await request(app).get(`/api/issues/${issueId}`);
+    expect(getRes.body.status).toBe("in_progress");
+  });
+
   it("does not gate issues with no linked pull request", async () => {
     stubGitHubFetch();
     const createRes = await request(app)
