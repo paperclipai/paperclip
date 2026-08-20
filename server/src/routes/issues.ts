@@ -2906,8 +2906,19 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
+    options: {
+      activeRecoveryAction?: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
+    // A recovery action's return/previous owner writing back to the very issue the
+    // recovery action is tracking is never "cross-issue" influence — it is the
+    // return path the recovery action itself names. Read+comment must never be
+    // blocked by recovery-action bookkeeping (only status/patch writes that would
+    // fight the recovery owner's disposition are gated, in assertRecoveryActionAuthority).
+    if (isRecoveryReturnPathAgent(options.activeRecoveryAction ?? null, req.actor.agentId ?? null)) {
+      return true;
+    }
     if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
 
     // The counter transaction locks and validates the persisted run before it
@@ -5111,6 +5122,16 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (isDefaultOpenIssueWriteDecision(boundaryDecision)) return true;
+    // A recovery action's return/previous owner resuming the very issue the
+    // recovery action is tracking is not "another agent's issue" — it is
+    // exactly the return path the recovery action names. See
+    // isRecoveryReturnPathAgent.
+    const activeRecoveryActionForResume = await getActiveRecoveryActionBestEffort(
+      issue.companyId,
+      issue.id,
+      "issue_resume_intent",
+    );
+    if (isRecoveryReturnPathAgent(activeRecoveryActionForResume, actorAgentId)) return true;
 
     res.status(403).json({
       error: "Agent cannot request follow-up for another agent's issue",
@@ -5121,6 +5142,46 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  /**
+   * Best-effort recovery-action lookup for gates that only ever *widen* access
+   * (letting a recovery action's return/previous owner past the cross-issue
+   * run-cap check). A transient read failure here must never turn into a
+   * request failure — it just falls back to "no known recovery action", which
+   * is exactly today's behavior before this lookup existed.
+   */
+  async function getActiveRecoveryActionBestEffort(
+    companyId: string,
+    issueId: string,
+    trigger: string,
+  ) {
+    try {
+      return await recoveryActionsSvc.getActiveForIssue(companyId, issueId);
+    } catch (err) {
+      logger.warn({ err, issueId, trigger }, "failed to resolve active recovery action for return-owner write gate");
+      return null;
+    }
+  }
+
+  /**
+   * The recovery action names two agents besides its current owner: the agent
+   * who held the issue before the recovery takeover (`previousOwnerAgentId`) and
+   * the agent recovery intends to hand the issue back to once resolved
+   * (`returnOwnerAgentId`). Both are first-class parties to the recovery, not
+   * bystanders — they should never be treated as "another owner" for the
+   * purposes of resolving or commenting on their own stranded issue.
+   */
+  function isRecoveryReturnPathAgent(
+    activeRecoveryAction: Pick<
+      NonNullable<Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>>,
+      "returnOwnerAgentId" | "previousOwnerAgentId"
+    > | null,
+    actorAgentId: string | null,
+  ) {
+    if (!activeRecoveryAction || !actorAgentId) return false;
+    return activeRecoveryAction.returnOwnerAgentId === actorAgentId ||
+      activeRecoveryAction.previousOwnerAgentId === actorAgentId;
   }
 
   async function assertRecoveryActionAuthority(
@@ -5146,6 +5207,11 @@ export function issueRoutes(
       return true;
     }
     if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
+    // The return/previous owner is who the recovery action itself says this work
+    // should come back to once resolved. Locking them out of their own return path
+    // is backwards: they are exactly who should be able to resume or hand the
+    // recovery back, not just the current recovery owner.
+    if (isRecoveryReturnPathAgent(activeRecoveryAction, actorAgentId)) return true;
     if (
       activeRecoveryAction.ownerAgentId &&
       await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.ownerAgentId)
@@ -9123,8 +9189,15 @@ export function issueRoutes(
       Array.isArray(req.body.blockedByIssueIds) ||
       req.body.executionPolicy !== undefined ||
       explicitMoveToTodoRequested;
-    const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested
-      ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
+    // Also resolve the active recovery action when this update carries a
+    // comment, even if it isn't otherwise a recovery-relevant status/assignee
+    // mutation. The cross-issue-influence run-cap check right below needs to
+    // know the recovery action's return/previous owner so it never blocks a
+    // comment from either of them (see assertCrossIssueInfluenceWithinRunCap).
+    const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested || !!commentBody
+      ? recoveryRelevantSourceMutationRequested
+        ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
+        : await getActiveRecoveryActionBestEffort(existing.companyId, existing.id, "issue_update.comment_only")
       : null;
     if (
       recoveryRelevantSourceMutationRequested &&
@@ -9200,11 +9273,15 @@ export function issueRoutes(
 
     if (
       isAgentWorkUpdate &&
-      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update", {
+        activeRecoveryAction: activeRecoveryActionBeforeUpdate,
+      }))
     ) return;
     if (
       commentBody &&
-      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment"))
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment", {
+        activeRecoveryAction: activeRecoveryActionBeforeUpdate,
+      }))
     ) return;
 
     if (interruptRequested) {
@@ -11870,7 +11947,18 @@ export function issueRoutes(
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
     }
-    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
+    // Resolve the active recovery action so the run-cap check below can
+    // recognize the recovery action's return/previous owner and never block
+    // their comment on the issue the recovery action is tracking (plan: comments
+    // are never gated by recovery-action ownership, only status/patch writes are).
+    const activeRecoveryActionForComment = req.actor.type === "agent"
+      ? await getActiveRecoveryActionBestEffort(issue.companyId, issue.id, "issue_comment")
+      : null;
+    if (
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment", {
+        activeRecoveryAction: activeRecoveryActionForComment,
+      }))
+    ) return;
     // Reopen the closed isolated workspace only after every access, resume-intent,
     // blocker, and run-cap gate passes. A rejected comment must not rebuild and
     // republish the workspace as active, because the issue stays terminal and the

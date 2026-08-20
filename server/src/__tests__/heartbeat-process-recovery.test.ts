@@ -118,6 +118,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   noticeMetadataReferencesRecoveryAction,
+  recoveryService,
 } from "../services/recovery/index.ts";
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
@@ -5895,6 +5896,60 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(commentMetadataRows(comments[0]).some((row) =>
       row.type === "agent_link" && row.label === "Recovery owner" && row.name === longRecoveryOwnerName.slice(0, 160),
     )).toBe(true);
+  });
+
+  // reconcileStrandedAssignedIssues checks hasActiveExecutionPath
+  // once near the top of its per-candidate loop, but the scan then does
+  // meaningful async work (recovery-action lookups, agent lookups, blocker
+  // reads) before it actually reassigns the issue. A legitimate new checkout
+  // landing in that window must not be stomped by a recovery takeover that was
+  // decided against stale evidence. escalateStrandedAssignedIssue re-verifies
+  // hasActiveExecutionPath immediately before touching anything; this proves
+  // that guard aborts the escalation instead of racing the live run.
+  it("does not escalate a stranded assigned issue when a fresh execution path appears after the recovery scan", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+
+    // Simulate the race: after reconcileStrandedAssignedIssues's initial
+    // hasActiveExecutionPath check passed (no live run yet), a fresh heartbeat
+    // run started on this same issue — e.g. the agent's next legitimate
+    // checkout — before the escalation actually commits.
+    const racingRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: racingRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date("2026-03-19T00:10:00.000Z"),
+    });
+
+    const issueBeforeEscalation = await db.select().from(issues).where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    const latestRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+
+    const recovery = recoveryService(db, { enqueueWakeup: async () => null });
+    const escalated = await recovery.escalateStrandedAssignedIssue({
+      issue: issueBeforeEscalation,
+      previousStatus: "todo",
+      latestRun: latestRun ?? null,
+    });
+
+    expect(escalated).toBeNull();
+
+    const issueAfter = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issueAfter?.status).toBe("todo");
+    expect(issueAfter?.assigneeAgentId).toBe(agentId);
+
+    const recoveryActions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {

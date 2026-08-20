@@ -109,11 +109,26 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // A run's source issue is the one it was scoped to at wake time (an explicit
+    // task id, or the comment/mention that woke it). A write back to that same
+    // issue is never cross-issue influence.
+    //
+    // A run can also have no recorded source issue at all: the plain
+    // `heartbeat_timer` scheduler wake (services/heartbeat.js `enqueueWakeup`)
+    // never sets `contextSnapshot.issueId`/`.taskId`, because the scheduler does
+    // not know which issue the agent will pick until its own inbox/checkout logic
+    // runs. That run is not exempt from the cap, but it must not be refused
+    // outright either — refusing it here blocks every write for the run's entire
+    // life, including writes to the issue it legitimately checked out on. Treat a
+    // missing source issue as "no home issue": every write for that run, starting
+    // with the first, counts against the same per-run cross-issue cap below.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (
+        sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      )
     ) {
       return null;
     }
