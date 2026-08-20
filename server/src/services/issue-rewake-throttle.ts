@@ -31,8 +31,14 @@ export const ISSUE_REWAKE_BASE_COOLDOWN_MS = 120_000;
 /** Upper bound for the escalating cooldown. */
 export const ISSUE_REWAKE_MAX_COOLDOWN_MS = 30 * 60_000;
 
-/** Only runs newer than this feed the streak; older history is ignored. */
-export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
+/** Only runs newer than this feed the streak; older history is ignored.
+ * 2026-08-20: shrunk from 6h to 90min — the churn-era no-progress runs
+ * seeded max-cooldown streaks fleet-wide, and a 6h memory kept throttling
+ * cards for hours after the machinery that caused the no-progress was
+ * fixed (measured: 6 of 12 idle-with-work lanes blanket-throttled at
+ * 17:37). A 90min window still catches genuine loops (threshold 2 +
+ * exponential cooldown) while letting the system exit a bad era fast. */
+export const ISSUE_REWAKE_LOOKBACK_MS = 90 * 60_000;
 
 /** How many recent terminal runs to sample when computing the streak. */
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
