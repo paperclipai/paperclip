@@ -6,6 +6,7 @@ export const RECOVERY_ORIGIN_KINDS = {
 } as const;
 
 export const RECOVERY_REASON_KINDS = {
+  cheapRecoveryDeliverableHandoff: "cheap_recovery_deliverable_handoff",
   runLivenessContinuation: "run_liveness_continuation",
 } as const;
 

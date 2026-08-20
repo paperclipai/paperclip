@@ -10,6 +10,7 @@ import {
   runLinkRow,
   systemNoticePresentation,
 } from "./notice-format.js";
+import { RECOVERY_REASON_KINDS } from "./origins.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
@@ -318,8 +319,12 @@ function fenceUntrustedText(value: string) {
 
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
+  const wakeReason = readString(context.wakeReason);
+  const livenessContinuationReason = readString(context.livenessContinuationReason);
   return context.handoffRequired === true ||
-    readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
+    wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON ||
+    wakeReason === RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff ||
+    livenessContinuationReason === RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff;
 }
 
 // A run woken by source_scoped_recovery_action must not become the source of another
