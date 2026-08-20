@@ -85,6 +85,10 @@ export {
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
+  isApiErrorEnvelope,
+  withApiErrorDiscriminator,
+} from "./api-error-envelope.js";
+export {
   ISSUE_WRITE_DENIAL_CODES,
   describeIssueWriteDenial,
   isIssueWriteDenialCode,

@@ -78,6 +78,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "Paperclip API access note:",
     "Use shell commands with curl to make Paperclip API requests when needed.",
     "Include X-Paperclip-Run-Id on mutating requests.",
+    "Always pass --fail-with-body: without it curl exits 0 on 4xx and a rejected write reads as a success.",
     "",
     "",
   ].join("\n");

@@ -2174,4 +2174,151 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * RBR-882 AC3 + RBR-924. The genuinely-missing acceptance criterion: an actor
+   * writing to an out-of-boundary issue must get an *unambiguous* error on
+   * **both** write paths, and nothing may be persisted.
+   *
+   * The two paths are separate code paths with separate guards — `PATCH` carrying
+   * a `comment` goes through `assertAgentIssueMutationAllowed`, while
+   * `POST .../comments` goes through `assertAgentIssueCommentAllowed`. RBR-882
+   * recorded two live repros of an agent losing a write to a denial it never
+   * noticed, so the assertions here are deliberately the ones a hand-rolled
+   * `curl | jq` client would make:
+   *
+   *   - status is non-2xx,
+   *   - `error` is a populated string (not `null`, not `""`),
+   *   - `ok` is exactly `false` — the one positive field a parsed body can be
+   *     tested on, since a success body is distinguishable from `{error}` only
+   *     by the *absence* of keys and `jq '.id'` renders absence as `null`,
+   *   - and the comment list, re-read through the API afterwards, is empty.
+   *
+   * The comment store below is stateful on purpose: `addComment` appends and
+   * `listComments` returns what was appended, so "nothing was persisted" is a
+   * behavioural assertion about the read-back rather than a spy assertion.
+   */
+  describe("AC3: out-of-boundary writes fail loudly on both write paths (RBR-882/RBR-924)", () => {
+    let persistedComments: Record<string, unknown>[];
+
+    beforeEach(() => {
+      persistedComments = [];
+      mockIssueService.addComment.mockImplementation(async (id: string, input: { body?: string }) => {
+        const row = {
+          id: `comment-${persistedComments.length + 1}`,
+          issueId: id,
+          body: input?.body ?? "",
+        };
+        persistedComments.push(row);
+        return row;
+      });
+      mockIssueService.listComments.mockImplementation(async () => persistedComments.slice());
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    });
+
+    /**
+     * Reads stay allowed so the wall under test is unambiguously the *write*
+     * boundary, and so the same actor can re-read the comment list to prove the
+     * denied writes left no trace.
+     */
+    function denyWritesAllowReads() {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+        const allowed = input.action === "issue:read" || input.action === "company_scope:read";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_low_trust_boundary",
+          explanation: allowed
+            ? "Reads allowed by test default."
+            : "Issue is outside this actor's authorization boundary.",
+        };
+      });
+    }
+
+    async function readBackComments(app: express.Express) {
+      const res = await request(app).get(`/api/issues/${issueId}/comments`);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return res.body as unknown[];
+    }
+
+    it("returns ok:false plus a populated error on PATCH /issues/:id carrying a comment, and persists nothing", async () => {
+      denyWritesAllowReads();
+      const app = await createApp(peerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "Out-of-boundary status change with a comment." });
+
+      expect(res.status, JSON.stringify(res.body)).toBeGreaterThanOrEqual(400);
+      expect(typeof res.body.error).toBe("string");
+      expect(res.body.error.length).toBeGreaterThan(0);
+      // The whole point of the discriminator: a parsed body alone is enough.
+      expect(res.body.ok).toBe(false);
+
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(await readBackComments(app)).toHaveLength(0);
+    });
+
+    it("returns ok:false plus a populated error on POST /issues/:id/comments, and persists nothing", async () => {
+      denyWritesAllowReads();
+      const app = await createApp(peerActor());
+
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Out-of-boundary comment." });
+
+      expect(res.status, JSON.stringify(res.body)).toBeGreaterThanOrEqual(400);
+      expect(typeof res.body.error).toBe("string");
+      expect(res.body.error.length).toBeGreaterThan(0);
+      expect(res.body.ok).toBe(false);
+
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(await readBackComments(app)).toHaveLength(0);
+    });
+
+    it("leaves the comment list empty after the same actor tries both write paths in sequence", async () => {
+      // The production signature from RBR-882 was an agent that retried on the
+      // other path after the first silent failure. Both must fail, and the
+      // combination must still leave zero persisted comments.
+      denyWritesAllowReads();
+      const app = await createApp(peerActor());
+
+      const patchRes = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "First attempt via PATCH." });
+      const commentRes = await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Second attempt via the comments route." });
+
+      for (const res of [patchRes, commentRes]) {
+        expect(res.status, JSON.stringify(res.body)).toBeGreaterThanOrEqual(400);
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(500);
+        expect(res.body.ok).toBe(false);
+        expect(typeof res.body.error).toBe("string");
+        expect(res.body.error.length).toBeGreaterThan(0);
+      }
+
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(await readBackComments(app)).toHaveLength(0);
+    });
+
+    it("keeps success bodies unchanged — no ok field is added to a permitted write", async () => {
+      // The additive guarantee. `jq '.ok // true'` must degrade to `true` here,
+      // which requires the key to be genuinely absent rather than `ok: true`.
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: peerAgentId }));
+
+      const app = await createApp(peerActor());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "In-boundary comment." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body).not.toHaveProperty("ok");
+      expect(res.body).not.toHaveProperty("error");
+      expect(persistedComments).toHaveLength(1);
+      expect(await readBackComments(app)).toHaveLength(1);
+    });
+  });
 });
