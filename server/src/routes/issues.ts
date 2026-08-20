@@ -339,7 +339,20 @@ async function assertNoBlockingLinkedPullRequest(
   externalObjectsSvc: ReturnType<typeof externalObjectService>,
   issueId: string,
 ) {
-  const groups = await externalObjectsSvc.listForIssue(issueId);
+  let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
+  try {
+    groups = await externalObjectsSvc.listForIssue(issueId);
+  } catch (err) {
+    // The gate itself must not turn an unrelated external-objects
+    // misconfiguration/outage into a hard failure of every `done`
+    // transition. Only a resolved bad PR state (open/unmerged/red/pending)
+    // blocks below; a failure to even determine that state does not.
+    logger.warn(
+      { err, issueId },
+      "done-transition PR gate: failed to resolve linked external objects; allowing the transition",
+    );
+    return;
+  }
   for (const group of groups) {
     const object = group.object;
     if (!object || object.objectType !== "pull_request") continue;
