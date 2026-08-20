@@ -2245,6 +2245,7 @@ function buildExecutionStageWakeup(input: {
   issueId: string;
   previousState: ParsedExecutionState | null;
   nextState: ParsedExecutionState | null;
+  commentId?: string | null;
   interruptedRunId: string | null;
   requestedByActorType: "user" | "agent";
   requestedByActorId: string;
@@ -2277,6 +2278,7 @@ function buildExecutionStageWakeup(input: {
         reason,
         payload: {
           issueId,
+          ...(input.commentId ? { commentId: input.commentId } : {}),
           mutation: "update",
           executionStage,
           ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -2286,7 +2288,54 @@ function buildExecutionStageWakeup(input: {
         contextSnapshot: {
           issueId,
           taskId: issueId,
+          ...(input.commentId
+            ? { commentId: input.commentId, wakeCommentId: input.commentId }
+            : {}),
           wakeReason: reason,
+          source: "issue.execution_stage",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      },
+    };
+  }
+
+  if (nextState.status === "execution_pending") {
+    const agentId = nextState.returnAssignee?.type === "agent" ? (nextState.returnAssignee.agentId ?? null) : null;
+    const becameExecutionPending =
+      previousState?.status !== "execution_pending" ||
+      previousState?.lastDecisionId !== nextState.lastDecisionId ||
+      !executionPrincipalsEqual(previousState?.returnAssignee ?? null, nextState.returnAssignee ?? null);
+    if (!agentId || !becameExecutionPending) return null;
+
+    const executionStage = buildExecutionStageWakeContext({
+      state: nextState,
+      wakeRole: "executor",
+      allowedActions: ["execute", "complete"],
+    });
+
+    return {
+      agentId,
+      wakeup: {
+        source: "assignment" as const,
+        triggerDetail: "system" as const,
+        reason: "execution_resumed",
+        payload: {
+          issueId,
+          ...(input.commentId ? { commentId: input.commentId } : {}),
+          mutation: "update",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          ...(input.commentId
+            ? { commentId: input.commentId, wakeCommentId: input.commentId }
+            : {}),
+          wakeReason: "execution_resumed",
           source: "issue.execution_stage",
           executionStage,
           ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -2317,6 +2366,7 @@ function buildExecutionStageWakeup(input: {
         reason: "execution_changes_requested",
         payload: {
           issueId,
+          ...(input.commentId ? { commentId: input.commentId } : {}),
           mutation: "update",
           executionStage,
           ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -2326,6 +2376,9 @@ function buildExecutionStageWakeup(input: {
         contextSnapshot: {
           issueId,
           taskId: issueId,
+          ...(input.commentId
+            ? { commentId: input.commentId, wakeCommentId: input.commentId }
+            : {}),
           wakeReason: "execution_changes_requested",
           source: "issue.execution_stage",
           executionStage,
@@ -2336,6 +2389,69 @@ function buildExecutionStageWakeup(input: {
   }
 
   return null;
+}
+
+type IssueWakeupRequest = NonNullable<Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1]>;
+type MergedIssueWakeups = Map<string, { agentId: string; wakeup: IssueWakeupRequest }>;
+
+function isExecutionStageWakeup(wakeup: IssueWakeupRequest) {
+  return (
+    wakeup.reason === "execution_review_requested" ||
+    wakeup.reason === "execution_approval_requested" ||
+    wakeup.reason === "execution_changes_requested" ||
+    wakeup.reason === "execution_resumed"
+  );
+}
+
+function mergeIssueWakeComment(preferred: IssueWakeupRequest, secondary: IssueWakeupRequest): IssueWakeupRequest {
+  const secondaryPayload = secondary.payload && typeof secondary.payload === "object"
+    ? secondary.payload
+    : null;
+  const commentId = secondaryPayload && typeof secondaryPayload.commentId === "string"
+    ? secondaryPayload.commentId
+    : null;
+  if (!commentId) return preferred;
+  return {
+    ...preferred,
+    payload: {
+      ...(preferred.payload && typeof preferred.payload === "object" ? preferred.payload : {}),
+      commentId,
+    },
+    contextSnapshot: {
+      ...(preferred.contextSnapshot ?? {}),
+      commentId,
+      wakeCommentId: commentId,
+    },
+  };
+}
+
+function addMergedIssueWakeup(input: {
+  wakeups: MergedIssueWakeups;
+  defaultIssueId: string;
+  agentId: string;
+  wakeup: IssueWakeupRequest;
+}) {
+  const wakeIssueId =
+    input.wakeup.payload &&
+    typeof input.wakeup.payload === "object" &&
+    typeof input.wakeup.payload.issueId === "string"
+      ? input.wakeup.payload.issueId
+      : input.defaultIssueId;
+  const key = `${input.agentId}:${wakeIssueId}`;
+  const existingWake = input.wakeups.get(key);
+  if (existingWake && isExecutionStageWakeup(existingWake.wakeup) && !isExecutionStageWakeup(input.wakeup)) {
+    input.wakeups.set(key, {
+      agentId: input.agentId,
+      wakeup: mergeIssueWakeComment(existingWake.wakeup, input.wakeup),
+    });
+    return;
+  }
+  input.wakeups.set(key, {
+    agentId: input.agentId,
+    wakeup: existingWake && isExecutionStageWakeup(input.wakeup)
+      ? mergeIssueWakeComment(input.wakeup, existingWake.wakeup)
+      : input.wakeup,
+  });
 }
 
 class AutoApprovalIssueMissingError extends Error {
@@ -10176,6 +10292,7 @@ export function issueRoutes(
       issueId: issue.id,
       previousState: previousExecutionState,
       nextState: nextExecutionState,
+      commentId: comment?.id ?? null,
       interruptedRunId,
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
@@ -10183,19 +10300,17 @@ export function issueRoutes(
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
-      type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       type DependencyReadinessProvider = {
         getDependencyReadiness?: typeof svc.getDependencyReadiness;
       };
       const dependencyReadinessSvc = svc as DependencyReadinessProvider;
-      const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
-      const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
-        const wakeIssueId =
-          wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
-            ? wakeup.payload.issueId
-            : issue.id;
-        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
-      };
+      const wakeups: MergedIssueWakeups = new Map();
+      const addWakeup = (agentId: string, wakeup: IssueWakeupRequest) => addMergedIssueWakeup({
+        wakeups,
+        defaultIssueId: issue.id,
+        agentId,
+        wakeup,
+      });
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;
         dependentIssueId: string;
@@ -12131,6 +12246,7 @@ export function issueRoutes(
         issueId: currentIssue.id,
         previousState: currentExecutionState,
         nextState: parseIssueExecutionState(currentIssue.executionState),
+        commentId: comment.id,
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
@@ -12240,17 +12356,13 @@ export function issueRoutes(
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
-      type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
-      const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
-      const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
-        const wakeIssueId =
-          wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
-            ? wakeup.payload.issueId
-            : currentIssue.id;
-        const key = `${agentId}:${wakeIssueId}`;
-        if (wakeups.has(key)) return;
-        wakeups.set(key, { agentId, wakeup });
-      };
+      const wakeups: MergedIssueWakeups = new Map();
+      const addWakeup = (agentId: string, wakeup: IssueWakeupRequest) => addMergedIssueWakeup({
+        wakeups,
+        defaultIssueId: currentIssue.id,
+        agentId,
+        wakeup,
+      });
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;
         dependentIssueId: string;

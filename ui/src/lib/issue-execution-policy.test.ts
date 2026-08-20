@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { issueExecutionPolicySchema } from "@paperclipai/shared";
+import { issueExecutionPolicySchema, type IssueExecutionPolicy } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "./issue-execution-policy";
 
 const AGENT_ID = "00000000-0000-4000-8000-000000000001";
@@ -35,5 +35,112 @@ describe("buildExecutionPolicy", () => {
       expect(stage.participants).toHaveLength(1);
       expect(stage.participants[0]?.id).toMatch(UUID_PATTERN);
     }
+  });
+
+  it("configures an approved review to return to the executor before approval", () => {
+    const policy = buildExecutionPolicy({
+      existingPolicy: null,
+      reviewerValues: [`agent:${AGENT_ID}`],
+      approverValues: ["user:local-board"],
+      reviewOnApprove: "return_to_executor",
+    });
+
+    expect(policy?.stages[0]).toMatchObject({
+      type: "review",
+      onApprove: "return_to_executor",
+    });
+    expect(issueExecutionPolicySchema.safeParse(policy).success).toBe(true);
+  });
+
+  it("resets return-to-executor when the following approval stage is removed", () => {
+    const existingPolicy = buildExecutionPolicy({
+      existingPolicy: null,
+      reviewerValues: [`agent:${AGENT_ID}`],
+      approverValues: ["user:local-board"],
+      reviewOnApprove: "return_to_executor",
+    });
+    const policy = buildExecutionPolicy({
+      existingPolicy,
+      reviewerValues: [`agent:${AGENT_ID}`],
+      approverValues: [],
+    });
+
+    expect(policy?.stages[0]).toMatchObject({
+      type: "review",
+      onApprove: "advance",
+    });
+  });
+
+  it("preserves issue-level authorization and review controls", () => {
+    const reviewPreset = {
+      id: "low_trust_review" as const,
+      version: 1 as const,
+      rawOutputDisposition: "quarantine" as const,
+    };
+    const authorizationPolicy = {
+      trustPreset: "low_trust_review" as const,
+      reviewPreset,
+      trustBoundary: {
+        mode: "low_trust_review" as const,
+        companyId: "company-1",
+      },
+    };
+    const existingPolicy: IssueExecutionPolicy = {
+      mode: "normal",
+      commentRequired: false,
+      reviewPreset,
+      authorizationPolicy,
+      stages: [
+        {
+          id: "00000000-0000-4000-8000-000000000010",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{
+            id: "00000000-0000-4000-8000-000000000011",
+            type: "agent",
+            agentId: AGENT_ID,
+            userId: null,
+          }],
+        },
+        {
+          id: "00000000-0000-4000-8000-000000000012",
+          type: "approval",
+          approvalsNeeded: 1,
+          participants: [{
+            id: "00000000-0000-4000-8000-000000000013",
+            type: "user",
+            agentId: null,
+            userId: "local-board",
+          }],
+        },
+      ],
+    };
+
+    const policy = buildExecutionPolicy({
+      existingPolicy,
+      reviewerValues: [`agent:${AGENT_ID}`],
+      approverValues: ["user:local-board"],
+      reviewOnApprove: "return_to_executor",
+    });
+
+    expect(policy).toMatchObject({
+      commentRequired: false,
+      reviewPreset,
+      authorizationPolicy,
+      stages: [
+        { type: "review", onApprove: "return_to_executor" },
+        { type: "approval" },
+      ],
+    });
+
+    expect(buildExecutionPolicy({
+      existingPolicy,
+      reviewerValues: [],
+      approverValues: [],
+    })).toMatchObject({
+      stages: [],
+      reviewPreset,
+      authorizationPolicy,
+    });
   });
 });

@@ -119,6 +119,15 @@ vi.mock("../lib/recent-assignees", () => ({
 }));
 
 vi.mock("../lib/assignees", () => ({
+  parseAssigneeValue: (value: string) => {
+    if (value.startsWith("agent:")) {
+      return { assigneeAgentId: value.slice("agent:".length) || null, assigneeUserId: null };
+    }
+    if (value.startsWith("user:")) {
+      return { assigneeAgentId: null, assigneeUserId: value.slice("user:".length) || null };
+    }
+    return { assigneeAgentId: null, assigneeUserId: null };
+  },
   formatAssigneeUserLabel: (userId: string | null | undefined, currentUserId?: string | null, userLabelMap?: Map<string, string>) => {
     if (!userId) return null;
     return userLabelMap?.get(userId) ?? (userId === currentUserId ? "You" : "User");
@@ -2198,6 +2207,50 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("configures reviewer approval to return to the executor from the web properties pane", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-2", type: "user", agentId: null, userId: "user-1" }],
+            },
+          ],
+        }),
+      }),
+      onUpdate,
+    });
+
+    const control = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Continue to approval",
+    );
+    expect(control).toBeTruthy();
+    await act(async () => {
+      control?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionPolicy: expect.objectContaining({
+        stages: [
+          expect.objectContaining({ id: "review-stage", onApprove: "return_to_executor" }),
+          expect.objectContaining({ id: "approval-stage" }),
+        ],
+      }),
+    });
+
+    act(() => root.unmount());
+  });
+
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
@@ -2316,11 +2369,26 @@ describe("IssueProperties", () => {
   it("renders monitor controls and clears an existing monitor", async () => {
     const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-04-11T10:00:00.000Z").getTime());
     const onUpdate = vi.fn();
+    const reviewPreset = {
+      id: "low_trust_review" as const,
+      version: 1 as const,
+      rawOutputDisposition: "quarantine" as const,
+    };
+    const authorizationPolicy = {
+      trustPreset: "low_trust_review" as const,
+      reviewPreset,
+      trustBoundary: {
+        mode: "low_trust_review" as const,
+        companyId: "company-1",
+      },
+    };
     const root = renderProperties(container, {
       issue: createIssue({
         status: "in_progress",
         assigneeAgentId: "agent-1",
         executionPolicy: createExecutionPolicy({
+          reviewPreset,
+          authorizationPolicy,
           monitor: {
             nextCheckAt: "2026-04-11T12:30:00.000Z",
             notes: "Check deployment",
@@ -2369,24 +2437,44 @@ describe("IssueProperties", () => {
     const inputs = Array.from(container.querySelectorAll("input"));
     const datetimeInput = inputs.find((input) => input.getAttribute("type") === "datetime-local");
     const textInput = inputs.find((input) => input.getAttribute("placeholder") === "What should the agent re-check?");
-    const clearButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Clear"));
+    const scheduleButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Schedule"));
 
     expect(datetimeInput).toBeTruthy();
     expect(textInput).toBeTruthy();
-    expect(clearButton).toBeTruthy();
+    expect(scheduleButton).toBeTruthy();
     expect(datetimeInput!.value).toBeTruthy();
     expect(textInput!.value).toBe("Check deployment");
 
     act(() => {
+      scheduleButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onUpdate).toHaveBeenLastCalledWith({
+      executionPolicy: expect.objectContaining({
+        reviewPreset,
+        authorizationPolicy,
+        monitor: expect.objectContaining({ notes: "Check deployment" }),
+      }),
+    });
+
+    await act(async () => {
+      monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clear"));
+    expect(clearButton).toBeTruthy();
+    act(() => {
       clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onUpdate).toHaveBeenCalledWith({
+    expect(onUpdate).toHaveBeenLastCalledWith({
       executionPolicy: {
         mode: "normal",
         commentRequired: true,
         stages: [],
+        reviewPreset,
+        authorizationPolicy,
       },
     });
 

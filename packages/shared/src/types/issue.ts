@@ -12,6 +12,7 @@ import type {
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
+  IssueExecutionStageApprovalAction,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueHarnessKind,
@@ -664,6 +665,7 @@ export interface IssueExecutionStageParticipant extends IssueExecutionStagePrinc
 export interface IssueExecutionStage {
   id: string;
   type: IssueExecutionStageType;
+  onApprove?: IssueExecutionStageApprovalAction;
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
 }
@@ -725,6 +727,7 @@ export interface IssueExecutionState {
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest: IssueReviewRequest | null;
   completedStageIds: string[];
+  continuationStageIds?: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;

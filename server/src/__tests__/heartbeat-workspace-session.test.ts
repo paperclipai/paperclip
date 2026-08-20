@@ -18,6 +18,7 @@ import {
   buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
+  fingerprintExecutionWorkspaceSessionBinding,
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
@@ -1803,6 +1804,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(false);
   });
 
+  it("preserves the executor task session when approved execution resumes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_resumed" })).toBe(false);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
@@ -2211,6 +2216,186 @@ describe("effective run session config freshness", () => {
     expect(decision.reasons).toEqual([]);
   });
 
+  it("preserves first workspace materialization but resets execution-resumed sessions after persisted binding drift", async () => {
+    const base = await buildSessionConfigMetadata();
+    const workspaceBinding = {
+      id: "workspace-1",
+      mode: "shared",
+      strategyType: "managed",
+      projectId: "project-1",
+      projectWorkspaceId: null,
+      cwd: "/srv/workspaces/paperclip",
+      providerRef: "/srv/workspaces/paperclip",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName: "paperclip/issue-1",
+      config: { desiredState: "running" },
+    };
+    const realizedWorkspace = await buildSessionConfigMetadata({
+      workspaceRealization: {
+        existingExecutionWorkspace: {
+          ...workspaceBinding,
+        },
+      },
+    });
+
+    const realizationDecision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: realizedWorkspace,
+      ignoredChangedCategories: ["workspaceRealization"],
+      executionWorkspaceBindingFingerprint: fingerprintExecutionWorkspaceSessionBinding(workspaceBinding),
+    });
+
+    expect(realizationDecision).toMatchObject({
+      reset: false,
+      changedCategories: [],
+    });
+
+    for (const changedBinding of [
+      { ...workspaceBinding, id: "workspace-2" },
+      { ...workspaceBinding, cwd: "/srv/workspaces/paperclip-rebound" },
+      { ...workspaceBinding, providerRef: "/srv/providers/paperclip" },
+      { ...workspaceBinding, repoUrl: "https://github.com/paperclipai/fork.git" },
+      { ...workspaceBinding, baseRef: "release/1.2" },
+      { ...workspaceBinding, branchName: "paperclip/issue-1-rebased" },
+      { ...workspaceBinding, config: { desiredState: "stopped" } },
+    ]) {
+      const changedRealization = await buildSessionConfigMetadata({
+        workspaceRealization: {
+          existingExecutionWorkspace: changedBinding,
+        },
+      });
+      const decision = resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          ...sessionParamsWithConfigMetadata(realizedWorkspace),
+          __paperclipExecutionWorkspaceBindingFingerprint: fingerprintExecutionWorkspaceSessionBinding(workspaceBinding),
+        },
+        configMetadata: changedRealization,
+        ignoredChangedCategories: ["workspaceRealization"],
+        executionWorkspaceBindingFingerprint: fingerprintExecutionWorkspaceSessionBinding(changedBinding),
+      });
+
+      expect(decision.reset).toBe(true);
+      expect(decision.changedCategories).toEqual(["workspaceRealization"]);
+    }
+
+    const changedWorkspaceConfig = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "isolated_workspace",
+        effectiveMode: "isolated_workspace",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+      },
+      workspaceRealization: {
+        existingExecutionWorkspace: {
+          ...workspaceBinding,
+          mode: "isolated_workspace",
+        },
+      },
+    });
+    const settingsDecision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(realizedWorkspace),
+      configMetadata: changedWorkspaceConfig,
+      ignoredChangedCategories: ["workspaceRealization"],
+      executionWorkspaceBindingFingerprint: fingerprintExecutionWorkspaceSessionBinding(workspaceBinding),
+    });
+
+    expect(settingsDecision).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig", "workspaceRealization"],
+    });
+  });
+
+  it("migrates an unrealized pre-split workspace fingerprint without masking workspace settings drift", async () => {
+    const workspaceBinding = {
+      id: "workspace-legacy-1",
+      mode: "shared",
+      strategyType: "managed",
+      projectId: "project-1",
+      projectWorkspaceId: null,
+      cwd: "/srv/workspaces/paperclip",
+      providerRef: "/srv/workspaces/paperclip",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName: "paperclip/issue-1",
+      config: { desiredState: "running" },
+    };
+    const legacyUnrealizedMetadata = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        existingExecutionWorkspace: null,
+      },
+    });
+    const { workspaceRealization: _unusedWorkspaceRealization, ...legacyCategoryFingerprints } =
+      legacyUnrealizedMetadata.categoryFingerprints;
+    const legacyTaskSessionParams = {
+      ...sessionParamsWithConfigMetadata(legacyUnrealizedMetadata),
+      __paperclipConfigCategories: legacyUnrealizedMetadata.categories.filter(
+        (category) => category !== "workspaceRealization",
+      ),
+      __paperclipConfigCategoryFingerprints: legacyCategoryFingerprints,
+    };
+    const realizedMetadata = await buildSessionConfigMetadata({
+      workspaceRealization: {
+        existingExecutionWorkspace: workspaceBinding,
+      },
+      legacyUnrealizedWorkspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        existingExecutionWorkspace: null,
+      },
+    });
+    const migrationInput = {
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: legacyTaskSessionParams,
+      configMetadata: realizedMetadata,
+      ignoredChangedCategories: ["workspaceRealization"] as const,
+      legacyUnrealizedWorkspaceConfigFingerprint:
+        realizedMetadata.legacyUnrealizedWorkspaceConfigFingerprint,
+    };
+
+    expect(resolveTaskSessionConfigFreshness(migrationInput)).toMatchObject({
+      reset: false,
+      changedCategories: [],
+    });
+
+    const changedSettingsMetadata = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "isolated_workspace",
+        effectiveMode: "isolated_workspace",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+      },
+      workspaceRealization: {
+        existingExecutionWorkspace: { ...workspaceBinding, mode: "isolated_workspace" },
+      },
+      legacyUnrealizedWorkspaceConfig: {
+        requestedMode: "isolated_workspace",
+        effectiveMode: "isolated_workspace",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        existingExecutionWorkspace: null,
+      },
+    });
+
+    expect(resolveTaskSessionConfigFreshness({
+      ...migrationInput,
+      configMetadata: changedSettingsMetadata,
+      legacyUnrealizedWorkspaceConfigFingerprint:
+        changedSettingsMetadata.legacyUnrealizedWorkspaceConfigFingerprint,
+    })).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig", "workspaceRealization"],
+    });
+  });
+
   it("names safe categories for model profile, issue override, env, secret, and runtime skill drift", async () => {
     const base = await buildSessionConfigMetadata();
     const cases: Array<{
@@ -2414,6 +2599,7 @@ describe("stripPaperclipSessionMetadataFromSessionParams", () => {
         __paperclipConfigFingerprintVersion: 1,
         __paperclipConfigCategories: ["adapterConfig"],
         __paperclipConfigCategoryFingerprints: { adapterConfig: "v1:sha256:def" },
+        __paperclipExecutionWorkspaceBindingFingerprint: "v1:sha256:workspace-binding",
       }),
     ).toEqual({
       sessionId: "thread-1",

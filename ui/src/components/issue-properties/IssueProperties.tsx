@@ -765,6 +765,7 @@ export function IssueProperties({
   );
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
+  const reviewOnApprove = issue.executionPolicy?.stages.find((stage) => stage.type === "review")?.onApprove ?? "advance";
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const actualUserLabel = (userId: string | null | undefined) => formatUserLabel(userId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
@@ -826,12 +827,17 @@ export function IssueProperties({
     }
     applyAssignee(next, track);
   };
-  const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
+  const updateExecutionPolicy = (
+    nextReviewers: string[],
+    nextApprovers: string[],
+    nextReviewOnApprove: "advance" | "return_to_executor" = reviewOnApprove,
+  ) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
         existingPolicy: issue.executionPolicy ?? null,
         reviewerValues: nextReviewers,
         approverValues: nextApprovers,
+        reviewOnApprove: nextReviewOnApprove,
       }),
     });
   };
@@ -887,6 +893,9 @@ export function IssueProperties({
     </PropertyRow>
   );
   const currentExecutionLabel = (() => {
+    if (issue.executionState?.status === "execution_pending") {
+      return "Execution gate approved; execution resumed";
+    }
     if (!issue.executionState?.currentStageType) return null;
     const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
     const participant = issue.executionState.currentParticipant;
@@ -1086,11 +1095,14 @@ export function IssueProperties({
       onUpdate({ executionPolicy: null });
       return;
     }
+    const { monitor: _monitor, ...policyWithoutMonitor } = basePolicy ?? issue.executionPolicy ?? {
+      mode: "normal" as const,
+      commentRequired: true,
+      stages: [],
+    };
     onUpdate({
       executionPolicy: {
-        mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
-        commentRequired: true,
-        stages: basePolicy?.stages ?? [],
+        ...policyWithoutMonitor,
         ...(nextMonitor ? { monitor: nextMonitor } : {}),
       },
     });
@@ -2348,6 +2360,21 @@ export function IssueProperties({
           )}
         </PropertyPicker>
         {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
+        {reviewerValues.length > 0 && approverValues.length > 0 ? (
+          <PropertyRow label="After review">
+            <button
+              type="button"
+              className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              onClick={() => updateExecutionPolicy(
+                reviewerValues,
+                approverValues,
+                reviewOnApprove === "return_to_executor" ? "advance" : "return_to_executor",
+              )}
+            >
+              {reviewOnApprove === "return_to_executor" ? "Return to executor" : "Continue to approval"}
+            </button>
+          </PropertyRow>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

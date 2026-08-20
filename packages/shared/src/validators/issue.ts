@@ -6,6 +6,7 @@ import {
   ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES,
   ISSUE_EXECUTION_MONITOR_STATE_STATUSES,
   ISSUE_EXECUTION_POLICY_MODES,
+  ISSUE_EXECUTION_STAGE_APPROVAL_ACTIONS,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_COMMENT_AUTHOR_TYPES,
@@ -233,6 +234,7 @@ export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipal
 export const issueExecutionStageSchema = z.object({
   id: z.string().uuid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
+  onApprove: z.enum(ISSUE_EXECUTION_STAGE_APPROVAL_ACTIONS).optional().default("advance"),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
 });
@@ -289,6 +291,7 @@ export const issueExecutionStateSchema = z.object({
   returnAssignee: issueExecutionStagePrincipalSchema.nullable(),
   reviewRequest: issueReviewRequestSchema.nullable().optional().default(null),
   completedStageIds: z.array(z.string().uuid()).default([]),
+  continuationStageIds: z.array(z.string().uuid()).optional(),
   lastDecisionId: z.string().uuid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),

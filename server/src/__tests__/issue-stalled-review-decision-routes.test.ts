@@ -11,6 +11,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -21,6 +22,8 @@ import {
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,12 +50,14 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
 
   afterEach(async () => {
     enqueueWakeup.mockClear();
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(issueThreadInteractions);
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(issueComments);
     await db.delete(issueRecoveryActions);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueInboxArchives);
@@ -251,7 +256,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     expect(selfApproval.body).toMatchObject({ id: issueId, status: "done" });
   });
 
-  it("still lets the pending execution-policy stage participant sign off as done", async () => {
+  it("returns a terminal execution-policy stage to its executor after the participant signs off", async () => {
     // Execution-policy signoff reassigns the issue to each stage's participant, so
     // the reviewer/approver *is* the assignee. Their `done` PATCH is a stage advance
     // governed by the policy, not a self-approval, and must not hit the guard above.
@@ -269,6 +274,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
         stages: [{
           id: stageId,
           type: "review",
+          onApprove: "return_to_executor",
           approvalsNeeded: 1,
           participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }],
         }],
@@ -292,8 +298,18 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .send({ status: "done", comment: "Stage signoff." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({ id: issueId, status: "done" });
-  });
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: seeded.peerAgentId,
+      executionState: {
+        status: "execution_pending",
+        returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+        completedStageIds: [stageId],
+      },
+    });
+
+  }, 30_000);
 
   it("enforces not_creator for status verdicts and admits another agent", async () => {
     const seeded = await seedCompany("NCR");
