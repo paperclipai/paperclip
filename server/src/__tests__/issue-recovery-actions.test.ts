@@ -1368,6 +1368,58 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("preserves existing blockers when takeover recovery adds its own blocking edge", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, sourceIssue, prefix } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    const externalBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: externalBlockerId,
+      companyId,
+      title: "External blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: externalBlockerId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "worker exited unexpectedly",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(1);
+
+    const blockerEdges = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, sourceIssueId)));
+    expect(blockerEdges.map((row) => row.blockerIssueId).sort()).toEqual(
+      [externalBlockerId, recoveryIssues[0]!.id].sort(),
+    );
+  });
+
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
     const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
     const recoveryIssueId = randomUUID();
