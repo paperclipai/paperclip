@@ -596,26 +596,24 @@ export function CompanyExport() {
   const navigate = useNavigate();
   const location = useLocation();
   const initialFileFromUrl = useRef(filePathFromLocation(location.pathname));
-  const [previewRequested, setPreviewRequested] = useState(() => initialFileFromUrl.current !== null);
   const { data: session, isFetched: isSessionFetched } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: previewRequested,
   });
   const { data: agents = [], isFetched: areAgentsFetched } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: previewRequested && !!selectedCompanyId,
+    enabled: !!selectedCompanyId,
   });
   const { data: projects = [], isFetched: areProjectsFetched } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: previewRequested && !!selectedCompanyId,
+    enabled: !!selectedCompanyId,
   });
   const { data: fidelityReport } = useQuery({
     queryKey: queryKeys.companies.exportFidelity(selectedCompanyId!),
     queryFn: () => companiesApi.exportFidelity(selectedCompanyId!),
-    enabled: previewRequested && !!selectedCompanyId,
+    enabled: !!selectedCompanyId,
   });
 
   const [exportData, setExportData] = useState<CompanyPortabilityExportPreviewResult | null>(null);
@@ -708,7 +706,7 @@ export function CompanyExport() {
   const exportPreviewMutation = useMutation({
     mutationFn: (withIssues: boolean) =>
       companiesApi.exportPreview(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: withIssues },
+        include: { company: true, agents: true, projects: true, issues: withIssues, skills: true },
         sidebarOrder,
       }),
     onSuccess: (result) => {
@@ -749,7 +747,7 @@ export function CompanyExport() {
   const downloadMutation = useMutation({
     mutationFn: () =>
       companiesApi.exportBundle(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: includeIssues },
+        include: { company: true, agents: true, projects: true, issues: includeIssues, skills: true },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,
       }),
@@ -772,12 +770,12 @@ export function CompanyExport() {
   });
 
   useEffect(() => {
-    if (!previewRequested || !selectedCompanyId || exportPreviewMutation.isPending) return;
+    if (!selectedCompanyId || exportPreviewMutation.isPending) return;
     if (!isSessionFetched || !areAgentsFetched || !areProjectsFetched) return;
     setExportData(null);
     exportPreviewMutation.mutate(includeIssues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewRequested, selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey, includeIssues]);
+  }, [selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey, includeIssues]);
 
   const tree = useMemo(
     () => (exportData ? buildFileTree(exportData.files) : []),
@@ -957,22 +955,6 @@ export function CompanyExport() {
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Package} message="Select a company to export." />;
-  }
-
-  if (!previewRequested) {
-    return (
-      <div className="max-w-6xl">
-        <EmptyState
-          icon={Package}
-          title={`${selectedCompany?.name ?? "Company"} export`}
-          message="Prepare a preview when you are ready to choose and download company files."
-          description="Agents, projects, and skills load on demand. Task and routine history stays off unless you select it."
-          action="Prepare export preview"
-          onAction={() => setPreviewRequested(true)}
-          hideActionIcon
-        />
-      </div>
-    );
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
