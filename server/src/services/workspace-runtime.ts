@@ -4276,6 +4276,19 @@ async function hasLoopbackPortListener(port: number): Promise<boolean> {
   return !(await canBindRuntimePort(port));
 }
 
+/**
+ * True when an EADDRINUSE failure text names the given port as the address.
+ *
+ * Node formats a bind address as `host:port`, so the failing port always
+ * follows a colon (for example `127.0.0.1:42000` or `:::42000`). The match
+ * requires that colon and a full-number boundary. So an auxiliary-port
+ * conflict — a different port that the guest also tried to bind — cannot look
+ * like the assigned app or HMR port, and port 4200 never matches `:42000`.
+ */
+function eaddrinuseTextNamesPort(text: string, port: number): boolean {
+  return new RegExp(`:${port}(?![0-9])`).test(text);
+}
+
 async function readReservedRuntimePorts(input: {
   db?: Db;
   ports: number[];
@@ -5986,18 +5999,29 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${serviceOutputExcerpt}`),
       )
     );
-    // An exposed guest that exits with EADDRINUSE on its assigned port lost the
-    // port after allocation. Capture who holds it now, so the failure self-explains
-    // rather than leaving an unidentified owner (the runtime exposure port flake).
+    // An exposed guest that exits with EADDRINUSE on its ASSIGNED port lost the
+    // port after allocation. Only the assigned app or HMR port is re-allocatable
+    // from the dedicated broker range, so quarantine and re-allocation apply only
+    // when the failure names one of those ports. An unrelated auxiliary-port
+    // conflict (a different port the guest also bound) leaves the valid pair
+    // intact and surfaces as a terminal error, not a quarantine that burns the
+    // bounded retries. Capture who holds the assigned port now, so the failure
+    // self-explains rather than leaving an unidentified owner (the runtime
+    // exposure port flake).
+    const exposureAssignedPorts: number[] =
+      exposureConfig && port
+        ? [port, ...(exposureConfig.includePaperclipViteHmr ? [deriveViteHmrPort(port)] : [])]
+        : [];
+    const collisionText = `${failureMessage}\n${serviceOutputExcerpt}`;
     const exposureEaddrinuse = Boolean(
       exposureConfig
       && port
-      && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${serviceOutputExcerpt}`),
+      && exposureAssignedPorts.some((candidate) => eaddrinuseTextNamesPort(collisionText, candidate)),
     );
-    const exposureCollisionPorts: number[] =
-      exposureEaddrinuse && port
-        ? [port, ...(exposureConfig?.includePaperclipViteHmr ? [deriveViteHmrPort(port)] : [])]
-        : [];
+    // Quarantine the whole assigned pair, not only the named port. The broker
+    // allocates the app and HMR ports as one unit, so a re-allocation must skip
+    // both to land on the next free pair.
+    const exposureCollisionPorts: number[] = exposureEaddrinuse ? exposureAssignedPorts : [];
     let exposureCollisionDiagnosis: string | null = null;
     if (exposureEaddrinuse) {
       const facts: string[] = [];

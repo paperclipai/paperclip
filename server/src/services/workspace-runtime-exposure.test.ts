@@ -135,6 +135,19 @@ for (const q of [p, p + 10000]) {
 setInterval(() => {}, 1000);
 `;
 
+/**
+ * A guest that exits with `EADDRINUSE` on an unrelated auxiliary port, never on
+ * its assigned app or HMR port. It models a fixed helper listener (for example an
+ * inspector or metrics port) that an external process already holds. The managed
+ * start must not quarantine the valid exposure pair; it must surface the failure
+ * terminally after a single allocation.
+ */
+const EADDRINUSE_ON_AUXILIARY_PORT_GUEST = `
+import http from "node:http";
+process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address already in use 127.0.0.1:39999\\n");
+process.exit(1);
+`;
+
 beforeAll(async () => {
   guestDir = await fs.mkdtemp(path.join(os.tmpdir(), "pap-17256-guest-"));
   await fs.writeFile(path.join(guestDir, "dev-runner.mjs"), PRE_MANAGED_EXPOSURE_GUEST);
@@ -152,6 +165,13 @@ beforeAll(async () => {
   await fs.writeFile(
     path.join(guestDir, "dev-runner-eaddrinuse-once.mjs"),
     EADDRINUSE_ON_BASE_PORT_GUEST,
+  );
+  // A guest that fails on a fixed auxiliary port, not on its assigned app or HMR
+  // port. It models an unrelated helper listener that an external process holds.
+  // The assigned exposure pair stays valid, so the start must not quarantine it.
+  await fs.writeFile(
+    path.join(guestDir, "dev-runner-eaddrinuse-auxiliary.mjs"),
+    EADDRINUSE_ON_AUXILIARY_PORT_GUEST,
   );
 });
 
@@ -712,5 +732,43 @@ describe("recovers when a guest loses its assigned exposure port during startup 
     const diagnosis = logs.join("");
     expect(diagnosis).toContain("exposure port 42000 collided during startup (EADDRINUSE)");
     expect(diagnosis).toContain("Quarantined pair 42000/52000");
+  }, 25_000);
+
+  it("does not quarantine the pair for an EADDRINUSE on an unrelated auxiliary port", async () => {
+    const { broker } = createBroker();
+    const reservedAppPorts: number[] = [];
+    const recordingBroker: BrokerClient = {
+      ...broker,
+      async reserve(runtimeId, requested) {
+        reservedAppPorts.push(requested[0]!.port);
+        return broker.reserve(runtimeId, requested);
+      },
+    };
+    installDeps({ broker: recordingBroker });
+
+    const logs: string[] = [];
+    const error = await startRuntimeServicesForWorkspaceControl({
+      ...startInput({
+        serviceName: "paperclip-dev",
+        command: `${guestCommand("dev-runner-eaddrinuse-auxiliary.mjs")} --bind lan`,
+        expose: LEGACY_HTTP_EXPOSE,
+        port: { type: "auto", envKey: "PORT" },
+      }),
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    }).then(() => null, (err: unknown) => err as Error);
+
+    // The failure names an unrelated port, so the assigned pair is not a
+    // collision. The start fails terminally after ONE allocation, and never
+    // burns the bounded retries on a valid pair.
+    expect(error).not.toBeNull();
+    expect(error!.message).toContain("39999");
+    expect(reservedAppPorts).toEqual([42_000]);
+
+    // No quarantine and no re-allocation happened for the auxiliary conflict.
+    const diagnosis = logs.join("");
+    expect(diagnosis).not.toContain("Quarantined pair");
+    expect(diagnosis).not.toContain("collided during startup");
   }, 25_000);
 });
