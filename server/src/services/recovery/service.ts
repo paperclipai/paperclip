@@ -3339,10 +3339,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const executionState = parseIssueExecutionState(input.issue.executionState);
+    const stageParticipantAgentId = executionState?.status === "pending" && executionState.currentParticipant?.type === "agent"
+      ? executionState.currentParticipant.agentId
+      : null;
     const preservesSourceAssignee =
       Boolean(recoveryAction.ownerAgentId) &&
       Boolean(input.issue.assigneeAgentId) &&
-      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
+      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId &&
+      recoveryAction.ownerAgentId !== stageParticipantAgentId;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
