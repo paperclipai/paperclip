@@ -83,6 +83,7 @@ const routine: RoutineDetailType = {
   description:
     "Compile last week's shipped work and email a digest to {{customer_name}} by {{deadline}}.\n\nKeep it to five bullets.",
   assigneeAgentId: storybookAgents[0]?.id ?? null,
+  assigneeAdapterOverrides: null,
   priority: "medium",
   status: "active",
   concurrencyPolicy: "coalesce_if_active",

@@ -295,6 +295,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     title: "Routine title",
     description: null,
     assigneeAgentId: "agent-1",
+    assigneeAdapterOverrides: null,
     priority: "medium",
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
