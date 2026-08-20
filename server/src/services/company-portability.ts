@@ -72,7 +72,14 @@ import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/serv
 import { findServerAdapter } from "../adapters/index.js";
 import { normalizeIssueAttachmentMaxBytes } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import {
+  ghFetch,
+  gitHubApiBase,
+  readGitHubResponseBytes,
+  readGitHubResponseJson,
+  readGitHubResponseText,
+  resolveRawGitHubUrl,
+} from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
@@ -2811,7 +2818,7 @@ async function fetchText(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  return readGitHubResponseText(response, url);
 }
 
 async function fetchOptionalText(url: string) {
@@ -2820,7 +2827,7 @@ async function fetchOptionalText(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  return readGitHubResponseText(response, url);
 }
 
 async function fetchBinary(url: string) {
@@ -2828,7 +2835,7 @@ async function fetchBinary(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return Buffer.from(await response.arrayBuffer());
+  return readGitHubResponseBytes(response, url);
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -2840,7 +2847,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return readGitHubResponseJson<T>(response, url);
 }
 
 function dedupeEnvInputs(values: CompanyPortabilityManifest["envInputs"]) {
@@ -3654,21 +3661,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const companyRelativePath = parsed.companyPath === "COMPANY.md"
       ? [parsed.basePath, "COMPANY.md"].filter(Boolean).join("/")
       : parsed.companyPath;
-    let companyMarkdown: string | null = null;
-    try {
+    // A missing ref is reported by fetchOptionalText as null (its 404 case), not
+    // as a throw, so key the master fallback off that. Keying it off a thrown
+    // error instead meant it never fired for an absent ref, while every real
+    // transport failure — a timeout, a response over the size limit, an
+    // unreachable host — was relabelled "ref main not found" and retried against
+    // master, which cannot fix it and hides the original cause.
+    let companyMarkdown = await fetchOptionalText(
+      resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
+    );
+    if (companyMarkdown === null && ref === "main") {
+      ref = "master";
+      warnings.push("GitHub ref main not found; falling back to master.");
       companyMarkdown = await fetchOptionalText(
         resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
       );
-    } catch (err) {
-      if (ref === "main") {
-        ref = "master";
-        warnings.push("GitHub ref main not found; falling back to master.");
-        companyMarkdown = await fetchOptionalText(
-          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
-        );
-      } else {
-        throw err;
-      }
     }
     if (!companyMarkdown) {
       throw unprocessable("GitHub company package is missing COMPANY.md");

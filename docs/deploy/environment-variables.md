@@ -19,6 +19,8 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_GITHUB_REQUEST_TIMEOUT_MS` | `30000` | Timeout for each GitHub / GitHub Enterprise request (skill imports, company exports). Raise it for slow GitHub Enterprise instances. |
+| `PAPERCLIP_GITHUB_MAX_RESPONSE_BYTES` | `10485760` | Maximum size of a single GitHub / GitHub Enterprise response body. Raise it if a legitimate import exceeds 10 MiB. |
 
 ## Secrets
 
