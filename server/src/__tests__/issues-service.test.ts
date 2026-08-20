@@ -32,7 +32,6 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
-  buildStaleExecutionLockAdoptionSet,
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
@@ -5851,40 +5850,6 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       checkoutRunId: successorRunId,
       executionRunId: successorRunId,
     });
-  });
-
-  it("buildStaleExecutionLockAdoptionSet stamps the actor only for unowned issues", () => {
-    const now = new Date("2026-06-10T10:07:00.000Z");
-    const checkoutRunId = randomUUID();
-    const agentId = randomUUID();
-
-    expect(buildStaleExecutionLockAdoptionSet({
-      assigneeAgentId: null,
-      status: "in_progress",
-    }, agentId, checkoutRunId, now)).toMatchObject({
-      assigneeAgentId: agentId,
-      checkoutRunId,
-      executionRunId: checkoutRunId,
-      executionAgentNameKey: null,
-      executionLockedAt: now,
-      status: "in_progress",
-      updatedAt: now,
-    });
-
-    const ownedAdoptionSet = buildStaleExecutionLockAdoptionSet({
-      assigneeAgentId: agentId,
-      status: "in_progress",
-    }, randomUUID(), checkoutRunId, now);
-
-    expect(ownedAdoptionSet).toMatchObject({
-      checkoutRunId,
-      executionRunId: checkoutRunId,
-      executionAgentNameKey: null,
-      executionLockedAt: now,
-      status: "in_progress",
-      updatedAt: now,
-    });
-    expect(ownedAdoptionSet).not.toHaveProperty("assigneeAgentId");
   });
 
   it("checkout adoption of a stale executionRunId preserves the issue's assigneeAgentId", async () => {

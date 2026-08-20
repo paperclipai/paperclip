@@ -164,29 +164,6 @@ const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
-export function buildStaleExecutionLockAdoptionSet(
-  current: Pick<typeof issues.$inferSelect, "assigneeAgentId" | "status">,
-  agentId: string,
-  checkoutRunId: string,
-  now: Date,
-): Record<string, unknown> {
-  const adoptionSet: Record<string, unknown> = {
-    checkoutRunId,
-    executionRunId: checkoutRunId,
-    executionAgentNameKey: null,
-    executionLockedAt: now,
-    status: "in_progress",
-    updatedAt: now,
-  };
-  if (current.assigneeAgentId == null) {
-    adoptionSet.assigneeAgentId = agentId;
-  }
-  if (current.status !== "in_progress") {
-    adoptionSet.startedAt = now;
-  }
-  return adoptionSet;
-}
-
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
     ${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}
@@ -8202,8 +8179,8 @@ export function issueService(db: Db) {
       }
 
       // Adopt stale executionRunId — if the execution lock points to a terminal/missing run, clear it and proceed.
-      // Only adopts when the caller's expectedStatuses guard still holds, stamps an assignee for previously
-      // unowned issues, and preserves the original startedAt when the issue is already in_progress.
+      // Only adopts when the caller's expectedStatuses guard still holds; preserves any existing assigneeUserId
+      // and preserves the original startedAt when the issue is already in_progress.
       if (
         checkoutRunId &&
         current.executionRunId &&
@@ -8213,7 +8190,18 @@ export function issueService(db: Db) {
         const stale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
         if (stale) {
           const now = new Date();
-          const adoptionSet = buildStaleExecutionLockAdoptionSet(current, agentId, checkoutRunId, now);
+          const adoptionSet: Record<string, unknown> = {
+            assigneeAgentId: agentId,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            executionAgentNameKey: null,
+            executionLockedAt: now,
+            status: "in_progress",
+            updatedAt: now,
+          };
+          if (current.status !== "in_progress") {
+            adoptionSet.startedAt = now;
+          }
           const adopted = await db
             .update(issues)
             .set(adoptionSet)

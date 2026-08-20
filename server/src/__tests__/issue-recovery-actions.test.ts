@@ -272,7 +272,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
   });
 
-  it("escalates stranded assigned work into a source action instead of a recovery issue", async () => {
+  it("escalates stranded assigned work into a manager-owned recovery issue without stealing the source assignee", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
@@ -317,15 +317,22 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     expect(updatedIssue).toMatchObject({
       status: "blocked",
+      assigneeAgentId: coderId,
     });
     const recoveryIssues = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
-    expect(recoveryIssues).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(recoveryIssues).toHaveLength(1);
+    expect(recoveryIssues[0]).toMatchObject({
+      parentId: sourceIssue.id,
+      assigneeAgentId: managerId,
+      originId: sourceIssue.id,
+      status: "todo",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
-      issueId: sourceIssue.id,
+      issueId: recoveryIssues[0]!.id,
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
     });
@@ -371,15 +378,36 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
       expect(action?.ownerAgentId).toBe(expectedOwnerId);
-      expect(enqueueWakeup).toHaveBeenCalledWith(
-        expectedOwnerId,
-        expect.objectContaining({
-          reason: "source_scoped_recovery_action",
-          payload: expect.objectContaining({
-            recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
+      const expectedCause = explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode);
+      if (expectedOwner === "coder") {
+        expect(enqueueWakeup).toHaveBeenCalledWith(
+          expectedOwnerId,
+          expect.objectContaining({
+            reason: "source_scoped_recovery_action",
+            payload: expect.objectContaining({
+              recoveryCause: expectedCause,
+            }),
           }),
-        }),
-      );
+        );
+      } else {
+        const recoveryIssues = await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, sourceIssue.id)));
+        expect(recoveryIssues).toHaveLength(1);
+        expect(recoveryIssues[0]?.assigneeAgentId).toBe(expectedOwnerId);
+        expect(enqueueWakeup).toHaveBeenCalledWith(
+          expectedOwnerId,
+          expect.objectContaining({
+            reason: "issue_assigned",
+            payload: expect.objectContaining({
+              issueId: recoveryIssues[0]!.id,
+              sourceIssueId: sourceIssue.id,
+              recoveryCause: expectedCause,
+            }),
+          }),
+        );
+      }
     },
   );
 
@@ -415,6 +443,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       },
     });
 
+    const [updatedIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
+
     const [action] = await db
       .select()
       .from(issueRecoveryActions)
@@ -435,6 +472,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         }),
       }),
     );
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(ceoId, expect.anything());
   });
 
   it("stands down while the latest run was cancelled by a board operator", async () => {
@@ -1100,11 +1138,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[1]?.[1]?.payload).toMatchObject({
-      issueId: sourceIssue.id,
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(1);
+    expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
+      issueId: recoveryIssues[0]!.id,
       sourceIssueId: sourceIssue.id,
-      strandedRunId: secondLatestRun.id,
       recoveryCause: "stranded_assigned_issue",
     });
   });
@@ -1216,12 +1258,21 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       tone: "danger",
       title: "Workspace validation failed",
     });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(1);
     expect(enqueueWakeup).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
-        reason: "source_scoped_recovery_action",
-        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: recoveryIssues[0]!.id,
+          sourceIssueId: sourceIssue.id,
+          recoveryCause: "workspace_validation_failed",
+        }),
       }),
     );
   });
