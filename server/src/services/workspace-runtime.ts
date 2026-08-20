@@ -4301,6 +4301,48 @@ function eaddrinuseTextNamesPort(text: string, port: number): boolean {
     .some((line) => eaddrinusePattern.test(line) && portPattern.test(line));
 }
 
+/** Live host listener state for one assigned exposure port, read after a failure. */
+export interface ExposurePortHostState {
+  port: number;
+  /** True when the failure text reports EADDRINUSE for this port on one line. */
+  named: boolean;
+  /** True when a real listener holds the port now (from /proc or lsof). */
+  listenerPresent: boolean;
+  /** The listener pid, or null when unknown. */
+  ownerPid: number | null;
+}
+
+/**
+ * Decide which assigned exposure ports a real host listener owns after a guest
+ * start failure.
+ *
+ * The guest owns its own output, so an assigned-port EADDRINUSE line is a claim,
+ * not proof. A managed guest can print a synthetic EADDRINUSE line for its
+ * assigned port with no host listener behind it. A quarantine on that text alone
+ * would drain the shared exposure-port pool across repeated starts. So a port
+ * counts as a host collision only when all of the following hold:
+ * - the failure text names the port with EADDRINUSE, and
+ * - a real listener is present on the port now, and
+ * - the listener owner is not the guest process the runtime just launched.
+ *
+ * An unknown owner with a present listener counts as a host owner: the /proc read
+ * proves a listener, and a guest that lost its assigned port does not hold it.
+ */
+export function classifyExposureHostCollisions(input: {
+  childPid: number | null;
+  ports: ExposurePortHostState[];
+}): { hostCollisionPorts: number[]; hostCollision: boolean } {
+  const hostCollisionPorts: number[] = [];
+  for (const state of input.ports) {
+    const guestOwnsPort =
+      state.ownerPid != null && input.childPid != null && state.ownerPid === input.childPid;
+    if (state.named && state.listenerPresent && !guestOwnsPort) {
+      hostCollisionPorts.push(state.port);
+    }
+  }
+  return { hostCollisionPorts, hostCollision: hostCollisionPorts.length > 0 };
+}
+
 async function readReservedRuntimePorts(input: {
   db?: Db;
   ports: number[];
@@ -6017,34 +6059,54 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     // when the failure names one of those ports. An unrelated auxiliary-port
     // conflict (a different port the guest also bound) leaves the valid pair
     // intact and surfaces as a terminal error, not a quarantine that burns the
-    // bounded retries. Capture who holds the assigned port now, so the failure
-    // self-explains rather than leaving an unidentified owner (the runtime
-    // exposure port flake).
+    // bounded retries.
     const exposureAssignedPorts: number[] =
       exposureConfig && port
         ? [port, ...(exposureConfig.includePaperclipViteHmr ? [deriveViteHmrPort(port)] : [])]
         : [];
     const collisionText = `${failureMessage}\n${serviceOutputExcerpt}`;
-    const exposureEaddrinuse = Boolean(
-      exposureConfig
-      && port
-      && exposureAssignedPorts.some((candidate) => eaddrinuseTextNamesPort(collisionText, candidate)),
+    const exposureNamedPorts = exposureAssignedPorts.filter((candidate) =>
+      eaddrinuseTextNamesPort(collisionText, candidate),
     );
-    // Quarantine the whole assigned pair, not only the named port. The broker
-    // allocates the app and HMR ports as one unit, so a re-allocation must skip
-    // both to land on the next free pair.
-    const exposureCollisionPorts: number[] = exposureEaddrinuse ? exposureAssignedPorts : [];
+    // The guest owns its own output, so an assigned-port EADDRINUSE line is a
+    // claim, not proof. A managed guest can print a synthetic EADDRINUSE line for
+    // its assigned port with no host listener behind it. A quarantine on that text
+    // alone would burn the shared exposure-port pool across repeated starts. So the
+    // runtime reads live host listener state and quarantines only after it confirms
+    // that a real host listener owns the port.
+    const exposureTextNamesAssignedPort = Boolean(
+      exposureConfig && port && exposureNamedPorts.length > 0,
+    );
     let exposureCollisionDiagnosis: string | null = null;
-    if (exposureEaddrinuse) {
+    let exposureHostCollision = false;
+    if (exposureTextNamesAssignedPort) {
       const facts: string[] = [];
-      for (const collisionPort of exposureCollisionPorts) {
+      const hostStates: ExposurePortHostState[] = [];
+      for (const collisionPort of exposureAssignedPorts) {
+        // `readLocalServicePortOwner` reads lsof and returns the listener pid, so a
+        // non-null pid also proves a present listener. `readListenerBindFacts` reads
+        // /proc for the same presence signal and the bound addresses.
         const ownerPid = await readLocalServicePortOwner(collisionPort).catch(() => null);
         const bind = await readListenerBindFacts(collisionPort).catch(() => null);
+        hostStates.push({
+          port: collisionPort,
+          named: exposureNamedPorts.includes(collisionPort),
+          listenerPresent: Boolean(bind?.present) || ownerPid != null,
+          ownerPid,
+        });
         const boundTo = bind?.present ? bind.addresses.join(", ") : "no listener";
         facts.push(`port ${collisionPort} bound to ${boundTo}, owner pid ${ownerPid ?? "none"}`);
       }
+      exposureHostCollision = classifyExposureHostCollisions({
+        childPid: child.pid ?? null,
+        ports: hostStates,
+      }).hostCollision;
       exposureCollisionDiagnosis = facts.join("; ");
     }
+    // Quarantine the whole assigned pair, not only the named port. The broker
+    // allocates the app and HMR ports as one unit, so a re-allocation must skip
+    // both to land on the next free pair.
+    const exposureCollisionPorts: number[] = exposureHostCollision ? exposureAssignedPorts : [];
     if (child.pid) {
       await terminateLocalService({
         pid: child.pid,
@@ -6062,9 +6124,9 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
     }
     if (bindCollision && port) throw new RuntimeServicePortBindCollision(port);
-    if (exposureEaddrinuse && port) {
-      // The guest could not bind its assigned exposure port. Quarantine the pair
-      // so the bounded re-allocation never re-offers it, then throw a retryable
+    if (exposureHostCollision && port) {
+      // A verified host listener holds the assigned exposure port. Quarantine the
+      // pair so the bounded re-allocation never re-offers it, then throw a retryable
       // collision. `startLocalRuntimeService` re-runs allocation, which skips the
       // quarantined pair and takes the next free pair inside the dedicated range.
       // This hardens a real host that races an external process for a range port.
@@ -6084,9 +6146,15 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     const deploymentBindConflict = /local_trusted requires server\.bind=loopback/i.test(
       `${failureMessage}\n${serviceOutputExcerpt}`,
     );
+    // The guest reported an assigned-port EADDRINUSE, but no host listener owned
+    // the port. Explain that the runtime did not quarantine the pair, so a future
+    // occurrence needs no diagnostic cycle and the pool stays intact.
+    const unverifiedExposureCollision = exposureTextNamesAssignedPort && !exposureHostCollision;
     const actionableFailure = deploymentBindConflict
       ? `${failureMessage} | deployment/bind conflict: local_trusted requires server.bind=loopback; the managed runtime requested an incompatible bind mode`
-      : failureMessage;
+      : unverifiedExposureCollision
+        ? `${failureMessage} | exposure port collision not verified: the guest reported EADDRINUSE on assigned port ${exposureNamedPorts.join("/")}, but no host listener owns it (${exposureCollisionDiagnosis ?? "owner unavailable"}); the runtime did not quarantine the pair`
+        : failureMessage;
     throw new Error(
       `Failed to start runtime service "${serviceName}": ${actionableFailure}${serviceOutputExcerpt ? ` | output: ${serviceOutputExcerpt.trim()}` : ""}`,
     );

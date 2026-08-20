@@ -11,6 +11,8 @@ import {
   readListenerBindFacts,
 } from "./runtime-exposure/loopback-listener.js";
 import {
+  classifyExposureHostCollisions,
+  type ExposurePortHostState,
   resetRuntimeServicesForTests,
   setWorkspaceRuntimeExposureDepsForTests,
   startRuntimeServicesForWorkspaceControl,
@@ -116,12 +118,14 @@ setInterval(() => {}, 1000);
 `;
 
 /**
- * A guest that fails to bind the base dedicated-range app port and binds any
- * other assigned port normally. It reproduces the deployed failure shape: the
- * guest exits during startup with `EADDRINUSE` on its assigned port. The managed
- * start must quarantine that pair and re-allocate the next free pair.
+ * A guest that prints a synthetic `EADDRINUSE` line for its assigned port with no
+ * host listener behind it, then exits. It models guest-controlled output that
+ * claims a collision the host cannot confirm. The runtime must not quarantine the
+ * pair on the printed line alone. Otherwise repeated starts drain the shared
+ * exposure-port pool. The start must surface the failure terminally after a single
+ * allocation.
  */
-const EADDRINUSE_ON_BASE_PORT_GUEST = `
+const SYNTHETIC_EADDRINUSE_ON_BASE_PORT_GUEST = `
 import http from "node:http";
 const p = Number(process.env.PORT);
 if (p === 42000) {
@@ -174,14 +178,12 @@ beforeAll(async () => {
     path.join(guestDir, "dev-runner-bind-conflict.mjs"),
     'process.stderr.write("local_trusted requires server.bind=loopback\\n"); process.exit(1);\n',
   );
-  // A guest that loses the race for the FIRST dedicated-range app port (42000)
-  // and binds any other port normally. It models a real host where an external
-  // process grabs the assigned port in the window between allocation and the
-  // guest's own listen(): the guest exits with EADDRINUSE on 42000, and the
-  // managed start must quarantine that pair and take the next free one.
+  // A guest that prints a synthetic EADDRINUSE line for its assigned port with no
+  // host listener behind it. It models guest-controlled output that claims a
+  // collision the host cannot confirm. The start must not quarantine the pair.
   await fs.writeFile(
-    path.join(guestDir, "dev-runner-eaddrinuse-once.mjs"),
-    EADDRINUSE_ON_BASE_PORT_GUEST,
+    path.join(guestDir, "dev-runner-eaddrinuse-synthetic.mjs"),
+    SYNTHETIC_EADDRINUSE_ON_BASE_PORT_GUEST,
   );
   // A guest that fails on a fixed auxiliary port, not on its assigned app or HMR
   // port. It models an unrelated helper listener that an external process holds.
@@ -714,8 +716,13 @@ describe("the deployed failure shape: loopback app port, wildcard HMR (PAP-17256
 });
 
 describe("recovers when a guest loses its assigned exposure port during startup (PAP-17256)", () => {
-  it("quarantines the collided pair, re-allocates the next free pair, and completes the exposure", async () => {
-    const { broker, calls } = createBroker();
+  // The quarantine decision itself is unit-tested through
+  // `classifyExposureHostCollisions` below. A deterministic end-to-end quarantine
+  // test is not reachable here: a real host listener that holds the assigned port
+  // is intercepted earlier, either by the pre-spawn ownership guard or by the
+  // allocated-port bind wait, before the EADDRINUSE-text quarantine branch runs.
+  it("does not quarantine the pair when the guest fabricates an assigned-port EADDRINUSE with no host listener", async () => {
+    const { broker } = createBroker();
     const reservedAppPorts: number[] = [];
     const recordingBroker: BrokerClient = {
       ...broker,
@@ -727,36 +734,29 @@ describe("recovers when a guest loses its assigned exposure port during startup 
     installDeps({ broker: recordingBroker });
 
     const logs: string[] = [];
-    const [runtime] = await startRuntimeServicesForWorkspaceControl({
+    const error = await startRuntimeServicesForWorkspaceControl({
       ...startInput({
         serviceName: "paperclip-dev",
-        command: `${guestCommand("dev-runner-eaddrinuse-once.mjs")} --bind lan`,
+        command: `${guestCommand("dev-runner-eaddrinuse-synthetic.mjs")} --bind lan`,
         expose: LEGACY_HTTP_EXPOSE,
         port: { type: "auto", envKey: "PORT" },
       }),
       onLog: async (_stream, chunk) => {
         logs.push(chunk);
       },
-    });
+    }).then(() => null, (err: unknown) => err as Error);
 
-    // The base pair collided, so the runtime landed on a later pair inside the
-    // dedicated range — never the quarantined 42000.
-    expect(runtime.exposure?.state).toBe("ready");
-    expect(runtime.port).toBeGreaterThan(42_000);
-    expect(runtime.port).toBeLessThanOrEqual(42_999);
-    expect(runtime.url).toBe(`https://runner.tail123.ts.net:${runtime.port}`);
+    // No host listener owns 42000, so the printed EADDRINUSE line is unverified.
+    // The start fails terminally after ONE allocation and never burns the pool.
+    expect(error).not.toBeNull();
+    expect(error!.message).toContain("42000");
+    expect(error!.message).toContain("not verified");
+    expect(reservedAppPorts).toEqual([42_000]);
 
-    // Allocation was attempted twice: the collided base pair, then the survivor.
-    expect(reservedAppPorts[0]).toBe(42_000);
-    expect(reservedAppPorts.length).toBeGreaterThanOrEqual(2);
-    expect(reservedAppPorts.at(-1)).toBe(runtime.port);
-    expect(calls).toContain("expose");
-
-    // The failure self-identifies: the log names the collided port and the
-    // quarantine action, so a future occurrence needs no diagnostic cycle.
+    // No quarantine and no re-allocation happened for the unverified claim.
     const diagnosis = logs.join("");
-    expect(diagnosis).toContain("exposure port 42000 collided during startup (EADDRINUSE)");
-    expect(diagnosis).toContain("Quarantined pair 42000/52000");
+    expect(diagnosis).not.toContain("Quarantined pair");
+    expect(diagnosis).not.toContain("collided during startup");
   }, 25_000);
 
   it("does not quarantine the pair for an EADDRINUSE on an unrelated auxiliary port", async () => {
@@ -834,4 +834,62 @@ describe("recovers when a guest loses its assigned exposure port during startup 
     expect(diagnosis).not.toContain("Quarantined pair");
     expect(diagnosis).not.toContain("collided during startup");
   }, 25_000);
+});
+
+describe("classifyExposureHostCollisions gates quarantine on verified host state", () => {
+  const state = (over: Partial<ExposurePortHostState> & { port: number }): ExposurePortHostState => ({
+    named: false,
+    listenerPresent: false,
+    ownerPid: null,
+    ...over,
+  });
+
+  it("reports a host collision when a named port has a present listener owned by another process", () => {
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [
+        state({ port: 42_000, named: true, listenerPresent: true, ownerPid: 9999 }),
+        state({ port: 52_000, named: false, listenerPresent: false, ownerPid: null }),
+      ],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [42_000], hostCollision: true });
+  });
+
+  it("treats a present listener with an unknown owner as a host collision", () => {
+    // /proc proves a listener, and a guest that lost its assigned port does not
+    // hold it, so an unknown owner still counts as the host.
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [state({ port: 42_000, named: true, listenerPresent: true, ownerPid: null })],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [42_000], hostCollision: true });
+  });
+
+  it("does not report a collision when the named port has no listener", () => {
+    // A synthetic EADDRINUSE line with no host listener behind it. Quarantine here
+    // would drain the shared exposure-port pool across repeated starts.
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [state({ port: 42_000, named: true, listenerPresent: false, ownerPid: null })],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [], hostCollision: false });
+  });
+
+  it("does not report a collision when the guest itself owns the present listener", () => {
+    // The guest bound and holds its own port, so this is not a host collision.
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [state({ port: 42_000, named: true, listenerPresent: true, ownerPid: 4242 })],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [], hostCollision: false });
+  });
+
+  it("ignores a present listener on a port the failure text did not name", () => {
+    // An auxiliary-port conflict leaves the assigned pair valid.
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [state({ port: 42_000, named: false, listenerPresent: true, ownerPid: 9999 })],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [], hostCollision: false });
+  });
 });
