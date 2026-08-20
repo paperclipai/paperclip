@@ -12727,6 +12727,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -12745,6 +12746,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isInteractionWake = allowsIssueInteractionWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    // An unblock-owner wake is intentionally addressed to the blocked issue's
+    // descriptor owner rather than its assignee. Preserve only that exact,
+    // still-blocked agent wake through the ordinary claim-time staleness gate.
+    const unblockOwner = issue.unblockDescriptor?.owner;
+    const isExactBlockedUnblockOwnerWake =
+      wakeReason === "issue_unblock_requested" &&
+      issue.status === "blocked" &&
+      unblockOwner != null &&
+      unblockOwner !== "board" &&
+      typeof unblockOwner === "object" &&
+      "agentId" in unblockOwner &&
+      unblockOwner.agentId === run.agentId;
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
     const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
@@ -12790,7 +12803,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue.assigneeAgentId !== run.agentId &&
       !isInteractionWake &&
       !isCurrentReviewParticipant &&
-      !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
+      !isNonAssigneeWorkspaceBusyRetry(retryReason, context) &&
+      !isExactBlockedUnblockOwnerWake
     ) {
       return {
         stale: true,
@@ -17021,6 +17035,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        const deferredRetryReason = readNonEmptyString(deferredContextSeed.retryReason);
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
@@ -17093,6 +17108,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             };
           }
+        }
+
+        // Staleness guard: a deferred wake whose target lost the issue while it
+        // was parked must not consume this finalization's promotion. Judge with
+        // the same predicates claimQueuedRun applies when a queued run claims;
+        // skipping a stale head here (instead of promoting it into a run that
+        // is immediately stale-cancelled) lets a fresh handoff wake parked
+        // behind it promote in the same pass rather than starving until
+        // unrelated issue activity.
+        const deferredResumeIntent =
+          deferredContextSeed.resumeIntent === true || deferredContextSeed.followUpRequested === true;
+        const deferredIsInteractionWake = allowsIssueInteractionWake(deferredContextSeed);
+        // Comment/mention wakes are issue-scoped rather than ownership-bound
+        // (see the promotion lock update below): they promote even when the
+        // issue is assigned to another agent, exactly as before this guard —
+        // the claim-time staleness gate remains their judge.
+        const deferredIsCommentDrivenWake =
+          deferredCommentIds.length > 0 ||
+          deferred.source === "comment" ||
+          deferred.triggerDetail === "mention" ||
+          deferredWakeReason === "issue_mention" ||
+          deferredWakeReason === "issue_commented" ||
+          deferredWakeReason === "issue_reopened_via_comment";
+        const deferredReviewExecutionState =
+          issue.status === "in_review" ? parseIssueExecutionState(issue.executionState) : null;
+        const deferredReviewParticipant = deferredReviewExecutionState?.currentParticipant ?? null;
+        const deferredIsCurrentReviewParticipant =
+          deferredReviewParticipant?.type === "agent" &&
+          deferredReviewParticipant.agentId === deferred.agentId;
+        // An unblock-owner wake targets the unblockDescriptor owner, who is
+        // deliberately not the assignee. Never cancel such a wake on assignee
+        // mismatch while the issue is still blocked under that same owner;
+        // its staleness is judged at claim time, like any other promoted wake.
+        const deferredOwner = issue.unblockDescriptor?.owner;
+        const deferredIsUnblockOwnerWake =
+          deferredWakeReason === "issue_unblock_requested" &&
+          issue.status === "blocked" &&
+          deferredOwner != null &&
+          deferredOwner !== "board" &&
+          typeof deferredOwner === "object" &&
+          "agentId" in deferredOwner &&
+          deferredOwner.agentId === deferred.agentId;
+
+        const deferredStaleError =
+          issue.assigneeAgentId !== deferred.agentId &&
+          !deferredIsInteractionWake &&
+          !deferredIsCurrentReviewParticipant &&
+          !deferredIsCommentDrivenWake &&
+          !isNonAssigneeWorkspaceBusyRetry(deferredRetryReason, deferredContextSeed) &&
+          !deferredIsUnblockOwnerWake
+            ? "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead"
+            : (issue.status === "done" || issue.status === "cancelled") &&
+                !deferredResumeIntent &&
+                deferredCommentIds.length === 0
+              ? `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`
+              : issue.status === "in_review" &&
+                  deferredReviewParticipant &&
+                  !deferredIsCurrentReviewParticipant &&
+                  deferredCommentIds.length === 0
+                ? "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead"
+                : null;
+
+        if (deferredStaleError) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: new Date(),
+              error: deferredStaleError,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
         }
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
