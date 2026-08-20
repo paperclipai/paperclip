@@ -5500,6 +5500,97 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row?.executionLockedAt).toBeInstanceOf(Date);
   });
 
+  it("preserves the original assignee when checkout adopts a stale execution lock", async () => {
+    const companyId = randomUUID();
+    const originalAssigneeId = randomUUID();
+    const recoveryAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const recoveryRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: originalAssigneeId,
+        companyId,
+        name: "OriginalOwner",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: recoveryAgentId,
+        companyId,
+        name: "RecoveryAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: originalAssigneeId,
+        status: "failed",
+        invocationSource: "manual",
+      },
+      {
+        id: recoveryRunId,
+        companyId,
+        agentId: recoveryAgentId,
+        status: "running",
+        invocationSource: "manual",
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Sticky assignee survives recovery",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: originalAssigneeId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "originalowner",
+      executionLockedAt: new Date("2026-08-20T20:00:00.000Z"),
+    });
+
+    const checkedOut = await svc.checkout(issueId, recoveryAgentId, ["in_progress"], recoveryRunId);
+
+    expect(checkedOut.assigneeAgentId).toBe(originalAssigneeId);
+    expect(checkedOut.checkoutRunId).toBe(recoveryRunId);
+    expect(checkedOut.executionRunId).toBe(recoveryRunId);
+
+    const row = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+
+    expect(row).toEqual({
+      assigneeAgentId: originalAssigneeId,
+      checkoutRunId: recoveryRunId,
+      executionRunId: recoveryRunId,
+      executionAgentNameKey: null,
+    });
+  });
+
   it("does not update issues without an execution lock", async () => {
     const { issueId } = await seedIssueWithRun(null);
 
