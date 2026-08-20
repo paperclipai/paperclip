@@ -10690,10 +10690,9 @@ export function issueRoutes(
         updated = postCheckout;
         finalStatusForReopenGuard = postCheckout.status;
       } else {
-        if (postCheckout) {
-          updated = postCheckout;
-          finalStatusForReopenGuard = postCheckout.status;
-        }
+        // Keep the checkout return for ownership/mutation tracking; only the
+        // status gate/fence reads the live row when it is still nonterminal.
+        if (postCheckout) finalStatusForReopenGuard = postCheckout.status;
         const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(updated);
         if (closedExecutionWorkspace) {
           const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
