@@ -496,6 +496,20 @@ export interface ServerAdapterModule {
    * rather than reading config.paperclipRuntimeSkills.
    */
   requiresMaterializedRuntimeSkills?: boolean;
+
+  /**
+   * The run is carried by exactly one long-lived local child process that the
+   * server owns: it lives in `runningProcesses` and its pid reaches
+   * `heartbeat_runs.process_pid` through a single `onSpawn` call. Only then is
+   * a dead recorded pid evidence that the run itself died, so only then may
+   * recovery use pid liveness as a process-death authority.
+   *
+   * Leave this false (the default for anything outside the legacy list below)
+   * when the adapter does its work in-process and reports transient children —
+   * one per tool call, say. Those pids are expected to die while the run keeps
+   * going, so reading them as run liveness terminalizes live runs.
+   */
+  tracksLocalChildProcess?: boolean;
   /**
    * Optional: describe how this adapter's runtime command should be launched
    * and provisioned in fresh remote environments such as sandboxes.
