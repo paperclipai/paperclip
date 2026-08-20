@@ -6686,8 +6686,20 @@ export function issueRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    const recoveryOwnerAgentId = activeRecoveryAction?.ownerAgentId ?? null;
+    const actorHasRecoveryOwnerGrant = Boolean(
+      actorAgentId &&
+      recoveryOwnerAgentId &&
+      (
+        recoveryOwnerAgentId === actorAgentId ||
+        await hasActiveCheckoutManagementOverride(actorAgentId, existing.companyId, recoveryOwnerAgentId)
+      ),
+    );
+    // Recovery ownership is a grant for this resolution endpoint only. Keep
+    // every other caller behind the ordinary source-issue mutation boundary.
+    if (!actorHasRecoveryOwnerGrant && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (
       !(await assertRecoveryActionAuthority(
         req,
