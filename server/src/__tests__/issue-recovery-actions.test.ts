@@ -1328,7 +1328,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const relations = await db
       .select()
       .from(issueRelations)
-      .where(and(eq(issueRelations.issueId, sourceIssue.id), eq(issueRelations.relatedIssueId, recoveryIssues[0]!.id)));
+      .where(and(eq(issueRelations.issueId, recoveryIssues[0]!.id), eq(issueRelations.relatedIssueId, sourceIssue.id)));
     expect(relations.some((row) => row.type === "blocks")).toBe(true);
 
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
