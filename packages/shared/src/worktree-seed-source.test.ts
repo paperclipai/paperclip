@@ -96,6 +96,23 @@ describe("resolveCanonicalWorktreeSeedSource", () => {
     })).toThrow(/Registered source Paperclip config does not exist/);
   });
 
+  it("fails closed when the declared config cannot be inspected", () => {
+    const baseCwd = makePlainCheckout();
+    // `.paperclip` as a regular file makes lstat report ENOTDIR, not ENOENT.
+    fs.writeFileSync(path.join(baseCwd, ".paperclip"), "not a directory\n");
+    const source = makeInstanceRoot("default");
+    const target = makeInstance("paperclip-seed-unreadable-target-", "target-instance");
+
+    expect(() => resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: baseCwd,
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: { configPath: source.configPath, instanceId: source.instanceId },
+      manifestTargetInstanceId: target.instanceId,
+    })).toThrow(/cannot be inspected \(ENOTDIR\)/);
+  });
+
   it("fails closed when the base workspace carries no config and none is named", () => {
     const baseCwd = makePlainCheckout();
     const target = makeInstance("paperclip-seed-unnamed-target-", "target-instance");

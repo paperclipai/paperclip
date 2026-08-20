@@ -52,11 +52,19 @@ function readInstanceId(configPath: string, label: "source" | "target"): string 
  * source instead of falling back to another one.
  */
 export function baseWorkspaceDeclaresInstanceConfig(baseWorkspaceCwd: string): boolean {
+  const configPath = path.join(baseWorkspaceCwd, ".paperclip", "config.json");
   try {
-    lstatSync(path.join(baseWorkspaceCwd, ".paperclip", "config.json"));
+    lstatSync(configPath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only a genuinely absent entry lets the caller name another source. Any other
+    // error means the declared config is unreadable or its path is malformed, and a
+    // guess there would silently seed from a different instance.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") return false;
+    throw new Error(
+      `Registered base project workspace Paperclip config at ${configPath} cannot be inspected (${code ?? "unknown error"}).`,
+    );
   }
 }
 
