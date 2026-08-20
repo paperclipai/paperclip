@@ -45,6 +45,7 @@ import {
 import {
   createDuplexBridgeBroker,
   DEFAULT_DUPLEX_BROKER_BUDGETS,
+  isSafeBridgeMethod,
   type DuplexBridgeBroker,
   type DuplexBrokerBudgets,
   type DuplexBrokerForwardResult,
@@ -2816,19 +2817,34 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
       );
     }
-    // The host delivered response headers, so a mutating request may have
-    // committed on the host. A later response-body read failure (a body over the
-    // size limit, or a stream read error) must not surface as a retryable status.
-    // A retryable status makes the caller repeat the request with a new request
-    // id outside the broker deduplication set, so the host applies the mutation
-    // twice. Return a non-retryable 504 and mark the outcome indeterminate,
-    // exactly like an aborted in-flight forward. The in-sandbox server maps the
-    // indeterminate 504 to a non-retryable 409 for both the file bridge and the
-    // duplex broker.
+    // The host delivered response headers, so the response-body read starts after
+    // the host processed the request. A later response-body read failure (a body
+    // over the size limit, or a stream read error) needs a classification by
+    // method safety. A safe method (GET, HEAD, OPTIONS, TRACE) never changes host
+    // state, so a retry cannot double-apply a mutation and the failure stays
+    // retryable. A mutating or otherwise unsafe method may have committed on the
+    // host, so a retryable status is unsafe: it makes the caller repeat the
+    // request with a new request id outside the broker deduplication set, and the
+    // host applies the mutation twice. For an unsafe method the code returns a
+    // non-retryable 504 and marks the outcome indeterminate, exactly like an
+    // aborted in-flight forward. The in-sandbox server maps the indeterminate 504
+    // to a non-retryable 409 for both the file bridge and the duplex broker.
     let responseBody: string;
     try {
       responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
     } catch (error) {
+      if (isSafeBridgeMethod(method)) {
+        // The method is safe, so a retry cannot double-apply a mutation. Return a
+        // retryable 502 with no indeterminate marker, so the gateway passes it
+        // through as a retryable status.
+        return {
+          status: 502,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
       return {
         status: 504,
         headers: {

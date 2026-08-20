@@ -2592,6 +2592,90 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("keeps an oversized host response for a safe method retryable so the read failure does not turn terminal", async () => {
+    // A GET never changes host state, so a retry cannot double-apply a mutation.
+    // The host sends a response body over the size limit, so the forward read
+    // fails after the fetch resolves. For a safe method the forward must return a
+    // retryable 502 with no indeterminate marker, not the non-retryable 504 the
+    // forward returns for a mutating method. The in-sandbox server passes the 502
+    // through, so the caller can retry the safe read.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-safe-limit-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null }> = [];
+    const largeBody = "x".repeat(1024);
+    const apiServer = createServer((req, res) => {
+      requests.push({
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization ?? null,
+        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+      });
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(largeBody, "utf8")),
+      });
+      res.end(largeBody);
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-safe-limit",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+      maxBodyBytes: 512,
+    });
+    try {
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/issues/issue-1`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+        },
+      });
+
+      // The forward returns a retryable 502 with no indeterminate marker, so the
+      // server passes it through instead of mapping it to a terminal 409.
+      expect(response.status).toBe(502);
+      expect(response.headers.get("x-paperclip-bridge-outcome")).toBeNull();
+      await expect(response.json()).resolves.toEqual({
+        error: "Bridge response body exceeded the configured size limit of 512 bytes.",
+      });
+      expect(requests).toEqual([{
+        method: "GET",
+        url: "/api/issues/issue-1",
+        auth: "Bearer real-run-jwt",
+        runId: "run-bridge-safe-limit",
+      }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
   it("forwards the host indeterminate-outcome header so the sandbox server maps the 504 to a non-retryable 409", async () => {
     // The host marks a possibly-committed mutation with a 504 and the
     // `x-paperclip-bridge-outcome: indeterminate` header. The forward must keep

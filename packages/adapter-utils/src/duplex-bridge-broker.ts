@@ -266,7 +266,7 @@ function errorMessage(error: unknown): string {
 const SAFE_BRIDGE_METHODS = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
 
 /** Report whether the method is safe, so a forward failure stays retryable. */
-function isSafeBridgeMethod(method: string): boolean {
+export function isSafeBridgeMethod(method: string): boolean {
   return SAFE_BRIDGE_METHODS.has(method.trim().toUpperCase());
 }
 
