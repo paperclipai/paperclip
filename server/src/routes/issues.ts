@@ -179,8 +179,8 @@ import {
 } from "../services/onboarding-greeting.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-  buildIssueBlockersResolvedWakeIdempotencyKey,
-  findExistingIssueBlockersResolvedWake,
+  buildIssueBlockersResolvedWakeStateKey,
+  findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
@@ -10204,14 +10204,15 @@ export function issueRoutes(
         source: string;
         mutation: string;
       }) => {
-        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+        const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.dependentIssueId,
-          resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+          blockerIssueIds: input.blockerIssueIds,
         });
         try {
-          const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+          const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId: issue.companyId,
-            idempotencyKey,
+            dependentIssueId: input.dependentIssueId,
+            blockerIssueIds: input.blockerIssueIds,
           });
           if (existingWake) return;
         } catch (err) {
@@ -12256,14 +12257,15 @@ export function issueRoutes(
         resolvedBlockerIssueId: string;
         blockerIssueIds: string[];
       }) => {
-        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+        const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.dependentIssueId,
-          resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+          blockerIssueIds: input.blockerIssueIds,
         });
         try {
-          const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+          const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId: currentIssue.companyId,
-            idempotencyKey,
+            dependentIssueId: input.dependentIssueId,
+            blockerIssueIds: input.blockerIssueIds,
           });
           if (existingWake) return;
         } catch (err) {

@@ -120,6 +120,10 @@ beforeAll(async () => {
   await fs.writeFile(path.join(guestDir, "dev-runner.mjs"), PRE_MANAGED_EXPOSURE_GUEST);
   await fs.writeFile(path.join(guestDir, "dev-runner-legacy.mjs"), ALWAYS_WILDCARD_GUEST);
   await fs.writeFile(path.join(guestDir, "dev-runner-wildcard-hmr.mjs"), WILDCARD_HMR_GUEST);
+  await fs.writeFile(
+    path.join(guestDir, "dev-runner-bind-conflict.mjs"),
+    'process.stderr.write("local_trusted requires server.bind=loopback\\n"); process.exit(1);\n',
+  );
 });
 
 afterAll(async () => {
@@ -474,7 +478,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     }));
 
     // The launched command carries the loopback bind, replacing `--bind lan`.
-    expect(runtime.command).toContain("--bind custom --bind-host 127.0.0.1");
+    expect(runtime.command).toContain("--bind loopback");
     expect(runtime.command).not.toContain("--bind lan");
 
     // And because the guest honoured it, both listeners are loopback-only, so
@@ -530,7 +534,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     // The bare code alone is what cost PAP-17254 three diagnostic cycles.
     expect(error!.message).toContain("listener_ownership_mismatch");
     expect(error!.message).toContain("loopback");
-    expect(error!.message).toContain("--bind custom --bind-host 127.0.0.1");
+    expect(error!.message).toContain("--bind loopback");
   }, 20_000);
 
   it("leaves a non-Paperclip service's --bind argument alone", async () => {
@@ -547,7 +551,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     }));
 
     expect(runtime.command).toBe(declared);
-    expect(runtime.command).not.toContain("--bind custom");
+    expect(runtime.command).not.toContain("--bind loopback");
     expect(calls.slice(0, 2)).toEqual(["reserve", "expose"]);
     expect(runtime.exposure?.state).toBe("ready");
   }, 20_000);
@@ -566,6 +570,20 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
 
     expect(calls).toEqual([]);
     expect(runtime.command).toBe(declared);
+  }, 20_000);
+
+  it("surfaces a deployment/bind conflict from a guest that exits during startup", async () => {
+    const { broker } = createBroker();
+    installDeps({ broker });
+
+    await expect(startRuntimeServicesForWorkspaceControl(startInput({
+      serviceName: "paperclip-dev",
+      command: guestCommand("dev-runner-bind-conflict.mjs"),
+      expose: LEGACY_HTTP_EXPOSE,
+      port: { type: "auto", envKey: "PORT" },
+    }))).rejects.toThrow(
+      /deployment\/bind conflict: local_trusted requires server\.bind=loopback.*output: local_trusted requires server\.bind=loopback/s,
+    );
   }, 20_000);
 });
 

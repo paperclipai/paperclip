@@ -72,6 +72,7 @@ import {
   createCodexDeviceLoginReaper,
   createProductionLoginSessionReaperRuntime,
 } from "./services/codex-device-login-reaper.js";
+import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -1166,6 +1167,32 @@ export async function startServer(): Promise<StartedServer> {
         }));
     };
 
+    // The restart-safe cleanup backstop for the Claude setup-token login flow. It
+    // runs on startup and on the scheduler interval, so a sandbox lease survives a
+    // server restart and a release failure. It releases any lease whose login
+    // session is terminal, past its deadline, or already consumed.
+    const setupTokenReaper = createProductionSetupTokenReaper({
+      db: db as any,
+      environmentRuntime: environmentRuntimeService(db as any, { pluginWorkerManager }),
+      log: (line) => logger.info(line),
+    });
+    const logSetupTokenReaperResult = (
+      result: Awaited<ReturnType<typeof setupTokenReaper.sweep>>,
+    ) => {
+      if (result.released > 0 || result.failed > 0) {
+        logger.info(result, "setup-token login reaper released leases");
+      }
+    };
+    const scheduleSetupTokenReaperSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(setupTokenReaper
+        .sweep()
+        .then(logSetupTokenReaperResult)
+        .catch((err) => {
+          logger.error({ err }, "setup-token login reaper sweep failed");
+        }));
+    };
+
     const tools = toolAccessService(db as any, {
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -1303,6 +1330,15 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "startup adapter login reaper sweep failed");
       });
 
+    // Run the setup-token login reaper once at startup, so a login sandbox lease
+    // that outlived a server restart releases before timer ticks start.
+    await setupTokenReaper
+      .sweep()
+      .then(logSetupTokenReaperResult)
+      .catch((err) => {
+        logger.error({ err }, "startup setup-token login reaper sweep failed");
+      });
+
     // Retry any orphan sandbox teardown left by a failed acquire before a server
     // restart, so a leaked sandbox does not stay allocated across the restart.
     await runEnvironmentLeaseCleanupSweep(0);
@@ -1366,6 +1402,7 @@ export async function startServer(): Promise<StartedServer> {
         scheduleMergedPullRequestConfirmationSweep();
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
+        scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
 
         if (heartbeatSchedulerStopped) return;

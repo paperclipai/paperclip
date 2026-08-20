@@ -14,6 +14,13 @@ export type CanonicalWorktreeSeedSource = {
   targetInstanceId: string;
 };
 
+export type RegisteredWorktreeSeedSourceInput = {
+  registeredBaseWorkspaceCwd?: string | null;
+  explicitSourceConfigPath?: string | null;
+  targetConfigPath: string;
+  expectedTargetInstanceId: string;
+};
+
 function readInstanceId(configPath: string, label: "source" | "target"): string {
   const envPath = path.join(path.dirname(configPath), ".env");
   if (!existsSync(envPath)) {
@@ -47,23 +54,10 @@ function canonicalRegularFile(filePath: string, label: string): string {
   return canonical;
 }
 
-/**
- * Resolve a worktree seed source without granting authority to the seed manifest.
- *
- * A managed caller supplies the project-workspace cwd from its server-owned row.
- * An operator may instead supply an explicit source config. When both are present,
- * the explicit path must still equal the registered project-workspace config.
- * Manifest source fields are diagnostic assertions only and can only make this
- * validation fail; they never select the returned source.
- */
-export function resolveCanonicalWorktreeSeedSource(input: {
-  registeredBaseWorkspaceCwd?: string | null;
-  explicitSourceConfigPath?: string | null;
-  targetConfigPath: string;
-  expectedTargetInstanceId: string;
-  manifestSource: WorktreeSeedSourceDiagnostic | null | undefined;
-  manifestTargetInstanceId?: unknown;
-}): CanonicalWorktreeSeedSource {
+/** Resolve the authoritative source and target identities without consulting diagnostics. */
+export function resolveRegisteredWorktreeSeedSource(
+  input: RegisteredWorktreeSeedSourceInput,
+): CanonicalWorktreeSeedSource {
   const registeredCwd = input.registeredBaseWorkspaceCwd?.trim();
   const explicitSource = input.explicitSourceConfigPath?.trim();
   if (!registeredCwd && !explicitSource) {
@@ -120,6 +114,29 @@ export function resolveCanonicalWorktreeSeedSource(input: {
     throw new Error("Source and target Paperclip configs name the same instance.");
   }
 
+  return {
+    baseWorkspaceCwd: canonicalBaseCwd,
+    configPath: canonicalSourceConfigPath,
+    instanceId: sourceInstanceId,
+    targetConfigPath: canonicalTargetConfigPath,
+    targetInstanceId,
+  };
+}
+
+/**
+ * Resolve a worktree seed source without granting authority to the seed manifest.
+ *
+ * A managed caller supplies the project-workspace cwd from its server-owned row.
+ * An operator may instead supply an explicit source config. When both are present,
+ * the explicit path must still equal the registered project-workspace config.
+ * Manifest source fields are diagnostic assertions only and never select the
+ * returned source.
+ */
+export function resolveCanonicalWorktreeSeedSource(input: RegisteredWorktreeSeedSourceInput & {
+  manifestSource: WorktreeSeedSourceDiagnostic | null | undefined;
+  manifestTargetInstanceId?: unknown;
+}): CanonicalWorktreeSeedSource {
+  const registered = resolveRegisteredWorktreeSeedSource(input);
   const diagnosticPath = typeof input.manifestSource?.configPath === "string"
     ? input.manifestSource.configPath.trim()
     : "";
@@ -130,21 +147,14 @@ export function resolveCanonicalWorktreeSeedSource(input: {
     diagnosticPath,
     "Worktree seed manifest source diagnostic",
   );
-  if (path.resolve(diagnosticPath) !== canonicalSourceConfigPath || canonicalDiagnosticPath !== canonicalSourceConfigPath) {
+  if (path.resolve(diagnosticPath) !== registered.configPath || canonicalDiagnosticPath !== registered.configPath) {
     throw new Error("Worktree seed manifest source path does not match the registered canonical source.");
   }
-  if (input.manifestSource?.instanceId !== sourceInstanceId) {
+  if (input.manifestSource?.instanceId !== registered.instanceId) {
     throw new Error("Worktree seed manifest source instance does not match the registered source instance.");
   }
-  if (input.manifestTargetInstanceId !== targetInstanceId) {
+  if (input.manifestTargetInstanceId !== registered.targetInstanceId) {
     throw new Error("Worktree seed manifest target instance does not match the registered target instance.");
   }
-
-  return {
-    baseWorkspaceCwd: canonicalBaseCwd,
-    configPath: canonicalSourceConfigPath,
-    instanceId: sourceInstanceId,
-    targetConfigPath: canonicalTargetConfigPath,
-    targetInstanceId,
-  };
+  return registered;
 }

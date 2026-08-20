@@ -242,6 +242,51 @@ for (const rawValue of runtimePaths) {
 EOF
 }
 
+reconcile_worktree_deployment_mode() {
+  SOURCE_CONFIG_PATH="$source_config_path" \
+  WORKTREE_CONFIG_PATH="$worktree_config_path" \
+  node <<'EOF'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const sourceConfigPath = path.resolve(process.env.SOURCE_CONFIG_PATH);
+const worktreeConfigPath = path.resolve(process.env.WORKTREE_CONFIG_PATH);
+const sourceConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8"));
+const worktreeConfig = JSON.parse(fs.readFileSync(worktreeConfigPath, "utf8"));
+const deploymentMode = sourceConfig?.server?.deploymentMode ?? "local_trusted";
+if (deploymentMode !== "local_trusted" && deploymentMode !== "authenticated") {
+  throw new Error(`Registered source has unsupported server.deploymentMode: ${deploymentMode}`);
+}
+const exposure = deploymentMode === "local_trusted"
+  ? "private"
+  : (sourceConfig?.server?.exposure ?? "private");
+const currentServer = worktreeConfig?.server && typeof worktreeConfig.server === "object"
+  ? worktreeConfig.server
+  : {};
+if (currentServer.deploymentMode === deploymentMode && currentServer.exposure === exposure) {
+  process.exit(0);
+}
+
+worktreeConfig.server = {
+  ...currentServer,
+  deploymentMode,
+  exposure,
+};
+if (worktreeConfig.$meta && typeof worktreeConfig.$meta === "object") {
+  worktreeConfig.$meta.updatedAt = new Date().toISOString();
+}
+
+const temporaryPath = `${worktreeConfigPath}.deployment-mode-${process.pid}`;
+try {
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(worktreeConfig, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryPath, worktreeConfigPath);
+} finally {
+  fs.rmSync(temporaryPath, { force: true });
+}
+console.error(`Reconciled isolated Paperclip worktree deployment mode from ${sourceConfigPath}: ${deploymentMode}/${exposure}`);
+EOF
+}
+
 write_seed_pending_manifest() {
   SEED_MANIFEST_PATH="$seed_manifest_path" \
   SEED_PENDING_MARKER_PATH="$seed_pending_marker_path" \
@@ -578,6 +623,12 @@ else
   fi
   created_worktree_config=1
 fi
+
+# The target config can predate a deployment-mode change on the registered
+# source, and older/fallback CLI writers may default this field independently.
+# Reconcile it after either create or reuse so the final guest config always
+# carries the source's deployment/auth contract without replacing its database.
+reconcile_worktree_deployment_mode
 
 if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_manifest_path" && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
   write_seed_pending_manifest

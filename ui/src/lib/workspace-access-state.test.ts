@@ -45,7 +45,7 @@ function operation(overrides: Partial<WorkspaceOperation> = {}): WorkspaceOperat
     executionWorkspaceId: "ews-1",
     heartbeatRunId: null,
     issueId: null,
-    phase: "workspace_runtime_provision",
+    phase: "workspace_seed",
     command: null,
     cwd: null,
     status: "succeeded",
