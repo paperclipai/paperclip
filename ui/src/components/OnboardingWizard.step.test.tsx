@@ -41,6 +41,15 @@ const mockAgentsApi = vi.hoisted(() => ({
   testEnvironment: vi.fn(),
 }));
 const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
+// The hire path resolves the Test environment before it probes: it reads the
+// environment list, the instance settings, and the experimental settings. The
+// test stubs these so the resolution settles on the local default, the same as
+// a real run with no instance default.
+const mockEnvironmentsApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+}));
 
 const routerState = vi.hoisted(() => ({ pathname: "/" }));
 const dialogState = vi.hoisted(() => ({
@@ -66,6 +75,8 @@ vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
 vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
 vi.mock("../api/projects", () => ({ projectsApi: { list: vi.fn(), create: vi.fn() } }));
+vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: routerState.pathname }),
@@ -191,6 +202,11 @@ describe("OnboardingWizard — which step it lands on", () => {
       status: "pass",
       checks: [],
       testedAt: new Date("2026-03-02T00:00:00Z").toISOString(),
+    });
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableManagedSandboxOnly: false,
     });
   });
 
