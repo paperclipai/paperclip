@@ -315,6 +315,60 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
   }));
 }
 
+type DoneTransitionPrGateReason = "open" | "unmerged" | "checks red" | "checks pending";
+
+function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransitionPrGateReason | null {
+  const state = typeof data.state === "string" ? data.state : "unknown";
+  const merged = data.merged === true;
+  const checksState = typeof data.checksState === "string" ? data.checksState : null;
+  if (!merged) return state === "open" ? "open" : "unmerged";
+  if (checksState === "failure") return "checks red";
+  if (checksState === "pending") return "checks pending";
+  return null;
+}
+
+/**
+ * Fail-closed guard for the `done` transition (AGE-569): an issue may not be
+ * marked `done` while it references a GitHub pull request that is still
+ * open/unmerged, or merged with red/pending CI. Board and agent actors are
+ * both subject to this gate — there is no bypass flag, matching the
+ * fail-closed shape of `scripts/require-issue-claim.sh` and the `.claude/hooks`
+ * guards this ticket is modeled on.
+ */
+async function assertNoBlockingLinkedPullRequest(
+  externalObjectsSvc: ReturnType<typeof externalObjectService>,
+  issueId: string,
+) {
+  const groups = await externalObjectsSvc.listForIssue(issueId);
+  for (const group of groups) {
+    const object = group.object;
+    if (!object || object.objectType !== "pull_request") continue;
+    const data = (object.data ?? {}) as Record<string, unknown>;
+    if (data.provider !== "github") continue;
+    const reason = doneTransitionPrGateReason(data);
+    if (!reason) continue;
+    const owner = typeof data.owner === "string" ? data.owner : "unknown";
+    const repo = typeof data.repo === "string" ? data.repo : "unknown";
+    const number = typeof data.number === "number" ? data.number : null;
+    const label = number !== null ? `${owner}/${repo}#${number}` : `${owner}/${repo}`;
+    throw unprocessable(
+      `Cannot mark issue done: linked pull request ${label} is ${reason}`,
+      {
+        code: "done_transition_pr_gate",
+        reason,
+        pullRequest: {
+          owner,
+          repo,
+          number,
+          state: typeof data.state === "string" ? data.state : "unknown",
+          merged: data.merged === true,
+          checksState: typeof data.checksState === "string" ? data.checksState : null,
+        },
+      },
+    );
+  }
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
@@ -9332,6 +9386,9 @@ export function issueRoutes(
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
+    if (nextStatus === "done" && existing.status !== "done") {
+      await assertNoBlockingLinkedPullRequest(externalObjectsSvc, existing.id);
+    }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }

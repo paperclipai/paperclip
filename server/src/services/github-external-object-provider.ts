@@ -188,7 +188,12 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
   };
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  checksState: ChecksState | null,
+): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -256,6 +261,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
+      ...(checksState ? { checksState } : {}),
     },
   };
 }
@@ -305,6 +311,75 @@ async function safeJson(response: Response) {
   } catch {
     return null;
   }
+}
+
+type ChecksState = "success" | "failure" | "pending";
+
+const FAILING_CHECK_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+
+function checksStateFromCheckRuns(checkRuns: Array<Record<string, unknown>>): ChecksState | null {
+  if (checkRuns.length === 0) return null;
+  let sawIncomplete = false;
+  let sawFailure = false;
+  for (const run of checkRuns) {
+    const status = asString(run.status);
+    if (status !== "completed") {
+      sawIncomplete = true;
+      continue;
+    }
+    const conclusion = asString(run.conclusion);
+    if (conclusion && FAILING_CHECK_CONCLUSIONS.has(conclusion)) sawFailure = true;
+  }
+  if (sawFailure) return "failure";
+  if (sawIncomplete) return "pending";
+  return "success";
+}
+
+function checksStateFromCombinedStatus(body: Record<string, unknown> | null): ChecksState | null {
+  if (!body) return null;
+  const state = asString(body.state);
+  if (state === "success" || state === "failure" || state === "pending") return state;
+  return null;
+}
+
+async function fetchChecksState(input: {
+  fetchImpl: FetchLike;
+  headers: Record<string, string>;
+  host: string;
+  owner: string;
+  repo: string;
+  headSha: string | null;
+}): Promise<ChecksState | null> {
+  const { fetchImpl, headers, host, owner, repo, headSha } = input;
+  if (!headSha) return null;
+  const base = `${gitHubApiBase(host)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+
+  try {
+    const checkRunsResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/check-runs`, { headers });
+    if (checkRunsResponse.ok) {
+      const body = await safeJson(checkRunsResponse);
+      const checkRuns = Array.isArray(body?.check_runs) ? (body!.check_runs as Array<Record<string, unknown>>) : [];
+      const fromCheckRuns = checksStateFromCheckRuns(checkRuns);
+      if (fromCheckRuns) return fromCheckRuns;
+    }
+  } catch {
+    // Fall through to the combined status endpoint below.
+  }
+
+  try {
+    const statusResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/status`, { headers });
+    if (statusResponse.ok) {
+      const body = await safeJson(statusResponse);
+      const fromStatus = checksStateFromCombinedStatus(body);
+      if (fromStatus) return fromStatus;
+    }
+  } catch {
+    // No combined status available either — treat as unknown (no CI signal).
+  }
+
+  // Neither check-runs nor commit statuses reported anything: there is no CI
+  // configured for this commit, so there is nothing to gate on.
+  return "success";
 }
 
 async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
@@ -430,11 +505,23 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
+        if (objectType !== "pull_request") {
+          return { ok: true, snapshot: issueSnapshot(identity, body, etag) };
+        }
+
+        const headSha = asNestedString(body, "head", "sha");
+        const checksState = await fetchChecksState({
+          fetchImpl,
+          headers,
+          host: identity.host,
+          owner: identity.owner,
+          repo: identity.repo,
+          headSha,
+        });
+
         return {
           ok: true,
-          snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
-            : issueSnapshot(identity, body, etag),
+          snapshot: pullRequestSnapshot(identity, body, etag, checksState),
         };
       },
     };

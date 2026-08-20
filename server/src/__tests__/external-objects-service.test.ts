@@ -314,6 +314,124 @@ describe("GitHub external object provider", () => {
     expect(JSON.stringify(result)).not.toContain("ghp_secret");
   });
 
+  function checkRunsResponse(checkRuns: Array<Record<string, unknown>>) {
+    return response({ check_runs: checkRuns });
+  }
+
+  it.each([
+    [
+      "pending",
+      [{ status: "in_progress", conclusion: null }],
+      "pending",
+    ],
+    [
+      "failure",
+      [
+        { status: "completed", conclusion: "success" },
+        { status: "completed", conclusion: "failure" },
+      ],
+      "failure",
+    ],
+    [
+      "success",
+      [
+        { status: "completed", conclusion: "success" },
+        { status: "completed", conclusion: "skipped" },
+      ],
+      "success",
+    ],
+  ])("resolves an open pull request with %s checksState from check-runs", async (_name, checkRuns, expectedChecksState) => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) return checkRunsResponse(checkRuns);
+      if (url.endsWith("/status")) return response({ state: "success" });
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs",
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: expectedChecksState }),
+      }),
+    });
+  });
+
+  it("falls back to the combined commit status endpoint when there are no check-runs", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) return checkRunsResponse([]);
+      if (url.endsWith("/status")) return response({ state: "failure" });
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/deadbeef/status",
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("defaults checksState to success when neither check-runs nor commit status report anything", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) return checkRunsResponse([]);
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "success" }),
+      }),
+    });
+  });
+
   it.each([
     [
       "auth-required",
