@@ -16,14 +16,27 @@ function pathContains(directory: string): boolean {
     .some((entry) => path.resolve(entry) === normalized);
 }
 
+function isManagedShim(shimPath: string): boolean {
+  try {
+    return fs.readFileSync(shimPath, "utf8").includes(MANAGED_SHIM_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 function hasManagedArtifacts(paths: InstallStorePaths): boolean {
   const persistentArtifacts = [
     paths.manifestPath,
     paths.markerPath,
     paths.currentPath,
-    paths.shimPath,
   ].some((entry) => fs.existsSync(entry));
   if (persistentArtifacts) return true;
+  // `shimPath` is `~/.local/bin/paperclipai`. A global npm install with
+  // `npm config set prefix ~/.local` writes its own binary to that exact path,
+  // so the file existing is not evidence of a managed install. Read the marker
+  // the managed installer puts in the shim instead. The paths above live under
+  // `~/.paperclip/cli/`, which only the managed installer creates.
+  if (isManagedShim(paths.shimPath)) return true;
   try {
     return fs.readdirSync(paths.installsRoot).length > 0;
   } catch (error) {
@@ -112,12 +125,7 @@ export function managedInstallChecks(
         },
   );
 
-  let shimValid = false;
-  try {
-    shimValid = fs.readFileSync(paths.shimPath, "utf8").includes(MANAGED_SHIM_MARKER);
-  } catch {
-    shimValid = false;
-  }
+  const shimValid = isManagedShim(paths.shimPath);
   results.push(
     shimValid
       ? { name: "Managed install shim", status: "pass", message: paths.shimPath }
