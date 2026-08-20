@@ -2584,7 +2584,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
     preferredOwnerAgentId?: string | null;
   }) {
-    const originalAgentId = input.latestRun?.agentId ?? input.issue.assigneeAgentId;
+    // The issue assignee remains the owner of record even if a helper run
+    // executes under another agent during recovery.
+    const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId;
     const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
@@ -3336,23 +3338,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    let blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const preservesSourceAssignee =
       Boolean(recoveryAction.ownerAgentId) &&
       Boolean(input.issue.assigneeAgentId) &&
       recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
-    const takeoverRecoveryIssue = preservesSourceAssignee
-      ? await ensureStrandedIssueRecoveryIssue({
-        issue: input.issue,
-        latestRun: input.latestRun,
-        previousStatus: input.previousStatus,
-        recoveryCause,
-        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-      })
-      : null;
-    if (takeoverRecoveryIssue) {
-      blockerIds = [...new Set([...blockerIds, takeoverRecoveryIssue.id])];
-    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
@@ -3491,16 +3481,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     });
 
-    if (!takeoverRecoveryIssue) {
-      await enqueueSourceScopedStrandedRecoveryWake({
-        action: recoveryAction,
-        issue: input.issue,
-        latestRun: input.latestRun,
-        recoveryCause,
-      });
-    }
+    await enqueueSourceScopedStrandedRecoveryWake({
+      action: recoveryAction,
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+    });
 
-    if (!takeoverRecoveryIssue && recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
         .select({
           status: issues.status,

@@ -383,6 +383,70 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("keeps the current source assignee as the recovery return owner when the latest run came from another agent", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const ceoId = randomUUID();
+    await db.insert(agents).values({
+      id: ceoId,
+      companyId,
+      name: "Claude CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: ceoId,
+        status: "failed",
+        error: "helper recovery run lost the process",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const [updatedIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      ownerAgentId: coderId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "process_lost",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      coderId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({
+          issueId: sourceIssue.id,
+          sourceIssueId: sourceIssue.id,
+          recoveryCause: "process_lost",
+        }),
+      }),
+    );
+  });
+
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({
@@ -1228,67 +1292,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // Dedupe for structured notices is metadata-based: the short body no longer
     // carries the `Recovery action: \`id\`` marker line.
     expect(comments[0]?.body).not.toContain("Recovery action:");
-  expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, actionRows[0]!.id)).toBe(true);
-  expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
-  });
-
-  it("preserves the source assignee and creates a recovery issue for manager fallback", async () => {
-    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
-    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
-    const enqueueWakeup = vi.fn(async () => null);
-    const recovery = recoveryService(db, { enqueueWakeup });
-
-    await recovery.escalateStrandedAssignedIssue({
-      issue: sourceIssue,
-      previousStatus: "in_progress",
-      latestRun: {
-        id: randomUUID(),
-        agentId: coderId,
-        status: "failed",
-        error: "worker exited unexpectedly",
-        errorCode: "process_lost",
-        contextSnapshot: { retryReason: "issue_continuation_needed" },
-        livenessState: "needs_followup",
-      },
-      comment: "Automatic continuation recovery failed.",
-    });
-
-    const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(updatedSource).toMatchObject({
-      status: "blocked",
-      assigneeAgentId: coderId,
-    });
-
-    const recoveryIssues = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
-    expect(recoveryIssues).toHaveLength(1);
-    expect(recoveryIssues[0]).toMatchObject({
-      parentId: sourceIssue.id,
-      assigneeAgentId: managerId,
-      originId: sourceIssue.id,
-      status: "todo",
-    });
-
-    const relations = await db
-      .select()
-      .from(issueRelations)
-      .where(and(eq(issueRelations.issueId, recoveryIssues[0]!.id), eq(issueRelations.relatedIssueId, sourceIssue.id)));
-    expect(relations.some((row) => row.type === "blocks")).toBe(true);
-
-    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
-    expect(enqueueWakeup).toHaveBeenCalledWith(
-      managerId,
-      expect.objectContaining({
-        reason: "issue_assigned",
-        payload: expect.objectContaining({
-          issueId: recoveryIssues[0]!.id,
-          sourceIssueId: sourceIssue.id,
-          recoveryCause: "process_lost",
-        }),
-      }),
-    );
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, actionRows[0]!.id)).toBe(true);
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
