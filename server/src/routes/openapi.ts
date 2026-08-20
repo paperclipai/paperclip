@@ -30,6 +30,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  conditionalQueueClaimSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -2383,6 +2384,18 @@ registry.registerPath({
     body: jsonBody(checkoutIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/conditional-queue-claim",
+  tags: ["issues"],
+  summary: "Atomically claim an approved queue issue for an idle agent",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(conditionalQueueClaimSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 409: r.conflict, 412: r.preconditionFailed },
 });
 
 registry.registerPath({

@@ -29,6 +29,10 @@ export function conflict(message: string, details?: unknown) {
   return new HttpError(409, message, details);
 }
 
+export function preconditionFailed(message: string, details?: unknown) {
+  return new HttpError(412, message, details);
+}
+
 export function unprocessable(message: string, details?: unknown) {
   return new HttpError(422, message, details);
 }
