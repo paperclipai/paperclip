@@ -11,6 +11,7 @@ import {
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import { asNumber, asString, ensurePathInEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { classifyCodeBuddyAuthProbe } from "./parse.js";
 
 function status(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -90,21 +91,50 @@ export async function testEnvironment(
           onLog: async () => {},
         },
       );
-      const authCombined = `${authProbe.stdout}\n${authProbe.stderr}`;
-      if (/authentication\s+required|please\s+(?:use\s+)?\/login|not\s+logged\s+in/i.test(authCombined)) {
-        checks.push({
-          code: "codebuddy_auth_required",
-          level: "error",
-          message: "CodeBuddy CLI is not authenticated.",
-          detail: "Authentication required. Please use /login to sign in.",
-          hint: "On the Paperclip host, run `codebuddy login`, complete browser auth, then retry the agent.",
-        });
-      } else {
-        checks.push({
-          code: "codebuddy_auth_probe_passed",
-          level: "info",
-          message: "CodeBuddy authentication probe did not report a login requirement.",
-        });
+      const authOutcome = classifyCodeBuddyAuthProbe({
+        stdout: authProbe.stdout,
+        stderr: authProbe.stderr,
+        exitCode: authProbe.exitCode,
+        timedOut: authProbe.timedOut,
+      });
+      switch (authOutcome.kind) {
+        case "timed_out":
+          checks.push({
+            code: "codebuddy_auth_probe_timed_out",
+            level: "error",
+            message: "CodeBuddy authentication probe timed out.",
+            hint: "Retry the probe. If this persists, verify CodeBuddy can run a short `--print` prompt from this directory.",
+          });
+          break;
+        case "auth_required":
+          checks.push({
+            code: "codebuddy_auth_required",
+            level: "error",
+            message: "CodeBuddy CLI is not authenticated.",
+            detail: authOutcome.message,
+            hint: "On the Paperclip host, run `codebuddy login`, complete browser auth, then retry the agent.",
+          });
+          break;
+        case "failed":
+          checks.push({
+            code: "codebuddy_auth_probe_failed",
+            level: "error",
+            message: "CodeBuddy authentication probe failed.",
+            ...(authOutcome.detail ? { detail: authOutcome.detail } : {}),
+            hint: "Run `codebuddy --print - --output-format stream-json --permission-mode bypassPermissions` manually and prompt `Reply with exactly: ok`.",
+          });
+          break;
+        case "passed":
+          checks.push({
+            code: "codebuddy_auth_probe_passed",
+            level: "info",
+            message: "CodeBuddy authentication probe succeeded.",
+          });
+          break;
+        default: {
+          const _exhaustive: never = authOutcome;
+          throw new Error(`Unhandled CodeBuddy auth probe outcome: ${JSON.stringify(_exhaustive)}`);
+        }
       }
     }
   } catch (error) {

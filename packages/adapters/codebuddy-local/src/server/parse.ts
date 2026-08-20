@@ -22,6 +22,42 @@ export function detectCodeBuddyLoginRequired(input: {
   return { requiresLogin: false, message: null };
 }
 
+export type CodeBuddyAuthProbeOutcome =
+  | { kind: "timed_out" }
+  | { kind: "auth_required"; message: string }
+  | { kind: "failed"; detail: string }
+  | { kind: "passed" };
+
+function summarizeProbeDetail(stdout: string, stderr: string): string {
+  return `${stdout}\n${stderr}`.trim().replace(/\s+/g, " ").slice(0, 240);
+}
+
+export function classifyCodeBuddyAuthProbe(input: {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}): CodeBuddyAuthProbeOutcome {
+  const loginMeta = detectCodeBuddyLoginRequired({
+    stdout: input.stdout,
+    stderr: input.stderr,
+  });
+  const detail = summarizeProbeDetail(input.stdout, input.stderr);
+  if (input.timedOut) {
+    return { kind: "timed_out" };
+  }
+  if (loginMeta.requiresLogin) {
+    return {
+      kind: "auth_required",
+      message: loginMeta.message ?? "Authentication required. Please use /login to sign in to CodeBuddy.",
+    };
+  }
+  if ((input.exitCode ?? 1) !== 0) {
+    return { kind: "failed", detail };
+  }
+  return { kind: "passed" };
+}
+
 export function parseCodeBuddyStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";

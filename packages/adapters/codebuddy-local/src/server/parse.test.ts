@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyCodeBuddyAuthProbe,
   detectCodeBuddyLoginRequired,
   isCodeBuddyUnknownSessionError,
   parseCodeBuddyStreamJson,
@@ -55,7 +56,56 @@ describe("detectCodeBuddyLoginRequired", () => {
         stderr: "Authentication required. Please use /login to sign in to CodeBuddy.",
       }).requiresLogin,
     ).toBe(true);
+    expect(detectCodeBuddyLoginRequired({ stdout: "", stderr: "unauthorized" }).requiresLogin).toBe(true);
+    expect(detectCodeBuddyLoginRequired({ stdout: "", stderr: "login required" }).requiresLogin).toBe(true);
+    expect(detectCodeBuddyLoginRequired({ stdout: "", stderr: "invalid api key" }).requiresLogin).toBe(true);
     expect(detectCodeBuddyLoginRequired({ stdout: "ok", stderr: "" }).requiresLogin).toBe(false);
+  });
+});
+
+describe("classifyCodeBuddyAuthProbe", () => {
+  it("does not treat timeout or nonzero exit as success", () => {
+    expect(
+      classifyCodeBuddyAuthProbe({
+        stdout: "",
+        stderr: "",
+        exitCode: null,
+        timedOut: true,
+      }).kind,
+    ).toBe("timed_out");
+    expect(
+      classifyCodeBuddyAuthProbe({
+        stdout: "",
+        stderr: "command failed",
+        exitCode: 1,
+        timedOut: false,
+      }).kind,
+    ).toBe("failed");
+  });
+
+  it("classifies auth phrases as login required even when exit is nonzero", () => {
+    expect(
+      classifyCodeBuddyAuthProbe({
+        stdout: "",
+        stderr: "unauthorized",
+        exitCode: 1,
+        timedOut: false,
+      }),
+    ).toEqual({
+      kind: "auth_required",
+      message: "Authentication required. Please use /login to sign in to CodeBuddy.",
+    });
+  });
+
+  it("passes only when the probe exits successfully without auth errors", () => {
+    expect(
+      classifyCodeBuddyAuthProbe({
+        stdout: "ok",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      }).kind,
+    ).toBe("passed");
   });
 });
 
