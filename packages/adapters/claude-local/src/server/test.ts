@@ -16,7 +16,6 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
-  describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -34,9 +33,11 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
+  buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
   logRedactedSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
+import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -108,18 +109,13 @@ export async function testEnvironment(
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
-  const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
-    : null;
   const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  if (targetLabel) {
-    checks.push({
-      code: "claude_environment_target",
-      level: "info",
-      message: `Probing inside environment: ${targetLabel}`,
-    });
-  }
+  // Always name the target the Test probed, so a pass result never hides which
+  // target it checked. A local probe reports the fixed host label.
+  checks.push(
+    buildAdapterTestTargetCheck({ targetIsRemote, environmentName: ctx.environmentName }),
+  );
 
   try {
     await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
@@ -146,6 +142,14 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  // For a local probe, resolve the trusted `claude` executable and a
+  // deny-by-default child env from the shared builder, so a hostile caller
+  // value can neither select the executable nor reach the child. A remote
+  // target keeps the caller command and env; the remote transport owns its own
+  // env sanitization.
+  const localProbe = targetIsRemote
+    ? null
+    : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
   checks.push(
     ...(await prepareSandboxClaudeProbeRuntime({
       runId,
@@ -254,6 +258,15 @@ export async function testEnvironment(
         detail: command,
         hint: "Use the `claude` CLI command to run the automatic login and installation probe.",
       });
+    } else if (localProbe && !localProbe.command) {
+      // The trusted server PATH holds no `claude`, so the local probe cannot
+      // run. Report a warn, never a silent pass.
+      checks.push({
+        code: "claude_hello_probe_skipped_unresolved_command",
+        level: "warn",
+        message: "Skipped the Claude hello probe because `claude` is not installed on the Paperclip host.",
+        hint: "Install the `claude` CLI on the Paperclip host, then retry the Test.",
+      });
     } else {
       const model = asString(config.model, "").trim();
       const effort = asString(config.effort, "").trim();
@@ -312,14 +325,19 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
+      // A local probe uses the trusted resolved executable and the
+      // deny-by-default child env. A remote probe uses the caller command and
+      // env, because the remote transport owns its own env sanitization.
+      const probeCommand = localProbe?.command ?? command;
+      const probeEnv = localProbe ? localProbe.env : env;
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
-        command,
+        probeCommand,
         args,
         {
           cwd,
-          env,
+          env: probeEnv,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           stdin: "Respond with hello.",

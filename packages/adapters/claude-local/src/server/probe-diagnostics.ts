@@ -1,4 +1,12 @@
+import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils";
+
+/**
+ * The fixed label a Test result shows when the probe runs on the local
+ * Paperclip host. The label is a constant, so a local target check never
+ * carries an environment ID, a config value, or a credential-derived string.
+ */
+export const ADAPTER_TEST_HOST_TARGET_LABEL = "Paperclip host";
 
 // The server log keeps a bounded diagnostic. The bound stops a very large probe
 // output from filling the log.
@@ -84,4 +92,40 @@ export function buildClaudeLoginRequiredHint(loginUrl: string | null | undefined
   return safeUrl
     ? `Run \`claude login\` and complete sign-in at ${safeUrl}, then retry.`
     : "Run `claude login` in this environment, then retry the probe.";
+}
+
+/**
+ * Resolve the label a Test result shows for the probed target. A remote target
+ * uses the authorized environment name. A remote target with no name uses a
+ * fixed generic label. A local target uses the fixed host label. The function
+ * never returns an environment ID, a config value, or a credential-derived
+ * string.
+ */
+export function resolveAdapterTestTargetLabel(input: {
+  targetIsRemote: boolean;
+  environmentName: string | null | undefined;
+}): string {
+  if (!input.targetIsRemote) return ADAPTER_TEST_HOST_TARGET_LABEL;
+  const name = typeof input.environmentName === "string" ? input.environmentName.trim() : "";
+  return name.length > 0 ? name : "the selected environment";
+}
+
+/**
+ * Build the target check every Test result carries, so the result names the
+ * target it probed. Both the Claude CLI Test lane and the Claude ACP Test lane
+ * use this builder. The check text carries only the authorized environment
+ * label or the fixed host label.
+ */
+export function buildAdapterTestTargetCheck(input: {
+  targetIsRemote: boolean;
+  environmentName: string | null | undefined;
+}): AdapterEnvironmentCheck {
+  const label = resolveAdapterTestTargetLabel(input);
+  return {
+    code: "claude_environment_target",
+    level: "info",
+    message: input.targetIsRemote
+      ? `Probing inside environment: ${label}`
+      : "Probing on the Paperclip host.",
+  };
 }
