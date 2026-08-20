@@ -403,6 +403,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runUpdatedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -458,8 +459,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
-      startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      startedAt: input?.runUpdatedAt ?? now,
+      updatedAt: input?.runUpdatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -937,6 +938,143 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("keeps a freshly started off-box run alive through the zero-threshold startup sweep", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      runUpdatedAt: new Date(Date.now() - 200),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+  });
+
+  it("queues exactly one retry when a stale off-box run has no probeable local process", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({
+      agentId,
+      processLossRetryCount: 1,
+    });
+    // The retry is queued; an idle agent may have already started it.
+    expect(["queued", "running"]).toContain(retries[0]?.status);
+    expect(retries[0]?.contextSnapshot).toMatchObject({ retryReason: "process_lost" });
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retries[0]?.id ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("reaps a stale off-box run without another process-loss retry once its budget is spent", async () => {
+    const { companyId, runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    // The bounded continuation-recovery path may still queue one run; what must
+    // never happen is a second process-loss retry (that is the infinite loop).
+    const followUps = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(followUps.filter((row) => (row.processLossRetryCount ?? 0) > 1)).toHaveLength(0);
+    expect(
+      followUps.filter((row) => (row.contextSnapshot as Record<string, unknown> | null)?.retryReason === "process_lost"),
+    ).toHaveLength(0);
+  });
+
+  it("records a rolling failure count on the agent runtime state when runs are reaped", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const state = await db
+      .select()
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(state?.consecutiveFailureCount).toBe(1);
+    expect(state?.lastFailureAt).toBeTruthy();
+    expect(runId).toBeTruthy();
+  });
+
+  it("clears the rolling failure count once the agent completes a run successfully", async () => {
+    const { companyId, agentId } = await seedAssignedTodoNoRunFixture();
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      stateJson: {},
+      consecutiveFailureCount: 4,
+      lastFailureAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(1);
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!run?.id) throw new Error("Expected a dispatched run");
+    const settled = await waitForRunToSettle(heartbeat, run.id);
+    expect(settled?.status).toBe("succeeded");
+
+    const state = await waitForValue(async () =>
+      db
+        .select()
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, agentId))
+        .then((rows) => (rows[0]?.consecutiveFailureCount === 0 ? rows[0] : null))
+    );
+    expect(state?.consecutiveFailureCount).toBe(0);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

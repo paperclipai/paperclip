@@ -675,6 +675,10 @@ export async function startServer(): Promise<StartedServer> {
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
+    // No staleness threshold is passed: runs with a probeable local child are
+    // decided immediately, and runs we cannot probe (off-box adapters) fall back
+    // to reapOrphanedRuns' own grace period so a restart does not instantly fail
+    // a remote session that may still be running.
     void heartbeat
       .reapOrphanedRuns()
       .then(() => heartbeat.promoteDueScheduledRetries())

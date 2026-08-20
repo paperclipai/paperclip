@@ -318,6 +318,13 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+// Runs we cannot probe (no local child process to check) need a grace period
+// before we call them lost: a missing pid is the normal case off-box, not
+// evidence of death, and the remote session may still be running. The periodic
+// reaper still catches them once they are genuinely stale.
+const UNPROBEABLE_RUN_STALE_THRESHOLD_MS = 2 * 60 * 1000;
+// Log loudly once an agent's consecutive-failure streak reaches this length.
+const RUNTIME_FAILURE_STREAK_WARN_THRESHOLD = 3;
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -2162,7 +2169,7 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; unprobeableAdapterType?: string }) {
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -2171,6 +2178,9 @@ function buildProcessLossMessage(run: {
   }
   if (run.processGroupId) {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
+  }
+  if (options?.unprobeableAdapterType) {
+    return `Run lost -- ${options.unprobeableAdapterType} has no local process to probe and the run went stale after the control plane lost its handle`;
   }
   return "Process lost -- server may have restarted";
 }
@@ -5896,12 +5906,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  // Rolling consecutive-failure counter on the agent's runtime state. Runs
+  // reaped as process_lost never reach updateRuntimeState, so without this a
+  // stall-prone agent leaves no trace on its own record.
+  async function recordRuntimeFailureOutcome(
+    agent: typeof agents.$inferSelect,
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+  ) {
+    if (outcome === "cancelled") return;
+    const failed = outcome === "failed" || outcome === "timed_out";
+    const now = new Date();
+
+    const [state] = await db
+      .insert(agentRuntimeState)
+      .values({
+        agentId: agent.id,
+        companyId: agent.companyId,
+        adapterType: agent.adapterType,
+        stateJson: {},
+        consecutiveFailureCount: failed ? 1 : 0,
+        lastFailureAt: failed ? now : null,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: agentRuntimeState.agentId,
+        set: failed
+          ? {
+            consecutiveFailureCount: sql`${agentRuntimeState.consecutiveFailureCount} + 1`,
+            lastFailureAt: now,
+            updatedAt: now,
+          }
+          : {
+            consecutiveFailureCount: 0,
+            updatedAt: now,
+          },
+      })
+      .returning();
+
+    if (failed && (state?.consecutiveFailureCount ?? 0) >= RUNTIME_FAILURE_STREAK_WARN_THRESHOLD) {
+      logger.warn(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          adapterType: agent.adapterType,
+          consecutiveFailureCount: state?.consecutiveFailureCount,
+        },
+        "agent has a streak of consecutive failed heartbeat runs",
+      );
+    }
+    return state ?? null;
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
+
+    // Record the failure streak before the paused/terminated early return: a
+    // paused agent's failures are exactly the ones we need to be able to see.
+    await recordRuntimeFailureOutcome(existing, outcome);
 
     if (existing.status === "paused" || existing.status === "terminated") {
       return;
@@ -6165,8 +6230,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: {
+    staleThresholdMs?: number;
+    unprobeableStaleThresholdMs?: number;
+  }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const unprobeableStaleThresholdMs =
+      opts?.unprobeableStaleThresholdMs ?? UNPROBEABLE_RUN_STALE_THRESHOLD_MS;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -6185,13 +6255,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
-      // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      // Only a tracked local child gives us a liveness probe that can succeed.
+      // Everything else (off-box adapters, or a local run reaped before spawn)
+      // is unprobeable, so absence of a pid proves nothing.
+      const hasProbeableLocalProcess = tracksLocalChild && (!!run.processPid || !!run.processGroupId);
+
+      // Apply staleness threshold to avoid false positives. Unprobeable runs get
+      // a grace period even on the zero-threshold startup sweep.
+      const effectiveStaleThresholdMs = hasProbeableLocalProcess
+        ? staleThresholdMs
+        : Math.max(staleThresholdMs, unprobeableStaleThresholdMs);
+      if (effectiveStaleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        if (now.getTime() - refTime < effectiveStaleThresholdMs) continue;
       }
 
-      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
@@ -6225,8 +6304,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      // Retry unless we already spent the single automatic retry. Previously this
+      // also required a tracked local child, which meant off-box adapter runs
+      // were failed as process_lost with no probe that could ever succeed and no
+      // retry at all. Absence of a pid we never recorded is not evidence of death.
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 1;
+      const baseMessage = buildProcessLossMessage(
+        run,
+        descendantOnlyCleanup
+          ? { descendantOnly: true }
+          : hasProbeableLocalProcess
+            ? undefined
+            : { unprobeableAdapterType: adapterType },
+      );
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -6279,6 +6369,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(hasProbeableLocalProcess ? {} : { livenessProbe: "unavailable", adapterType }),
         },
       });
 
