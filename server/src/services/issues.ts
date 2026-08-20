@@ -4,6 +4,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray,
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentApiKeys,
   agentWakeupRequests,
   agents,
   authUsers,
@@ -32,6 +33,7 @@ import {
   issueThreadInteractions,
   issues,
   labels,
+  principalPermissionGrants,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -62,7 +64,9 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueUnblockDescriptorSchema,
   isUuidLike,
+  normalizeAgentApiKeyScope,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -131,6 +135,7 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { authorizationService, type AuthorizationAction, type AuthorizationActor } from "./authorization.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -519,6 +524,20 @@ export function deriveIssueCommentRunLogAttribution(
   }
 
   return derivedByCommentId;
+}
+
+function isStrictBlockedUnblockOwner(
+  issue: { status: string; unblockDescriptor: unknown } | null,
+  expectedOwnerAgentId: string,
+) {
+  if (!issue || issue.status !== "blocked") return false;
+  const parsed = issueUnblockDescriptorSchema.safeParse(issue.unblockDescriptor);
+  return Boolean(
+    parsed.success &&
+    typeof parsed.data.owner === "object" &&
+    "agentId" in parsed.data.owner &&
+    parsed.data.owner.agentId === expectedOwnerAgentId,
+  );
 }
 
 // Express's default `qs` parser binds repeated query keys to a `string[]`,
@@ -5411,6 +5430,238 @@ export function issueService(db: Db) {
     return { comment, parent };
   }
 
+  async function runBlockedUnblockOwnerTransaction<T>(
+    input: {
+      issueId: string;
+      expectedUpdatedAt: Date | string;
+      actor: AuthorizationActor;
+      action: Extract<AuthorizationAction, "issue:comment" | "issue:mutate">;
+      assignment?: {
+        projectId: string | null;
+        parentIssueId: string | null;
+        assigneeAgentId: string | null;
+        assigneeUserId: string | null;
+      };
+    },
+    operation: (tx: any) => Promise<T>,
+  ): Promise<T> {
+    const actorAgentId = input.actor.type === "agent" ? input.actor.agentId?.trim() : null;
+    if (!actorAgentId) throw conflict("Unblock owner authorization became stale");
+
+    return db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const expectedUpdatedAt = new Date(input.expectedUpdatedAt).getTime();
+      if (
+        !isStrictBlockedUnblockOwner(lockedIssue, actorAgentId) ||
+        !Number.isFinite(expectedUpdatedAt) ||
+        lockedIssue!.updatedAt.getTime() !== expectedUpdatedAt
+      ) {
+        throw conflict("Unblock owner authorization became stale");
+      }
+
+      const lockedOwner = await tx
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(eq(agents.id, actorAgentId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedOwner ||
+        lockedOwner.companyId !== lockedIssue!.companyId ||
+        lockedOwner.status === "pending_approval" ||
+        lockedOwner.status === "terminated"
+      ) {
+        throw conflict("Unblock owner authorization became stale");
+      }
+
+      if (input.actor.source === "agent_key") {
+        const keyId = input.actor.keyId?.trim();
+        if (!keyId) throw conflict("Unblock owner authorization became stale");
+        const lockedKey = await tx
+          .select({
+            id: agentApiKeys.id,
+            agentId: agentApiKeys.agentId,
+            companyId: agentApiKeys.companyId,
+            responsibleUserId: agentApiKeys.responsibleUserId,
+            scopeConfig: agentApiKeys.scopeConfig,
+            revokedAt: agentApiKeys.revokedAt,
+          })
+          .from(agentApiKeys)
+          .where(eq(agentApiKeys.id, keyId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (
+          !lockedKey ||
+          lockedKey.agentId !== actorAgentId ||
+          lockedKey.companyId !== lockedIssue!.companyId ||
+          lockedKey.revokedAt ||
+          lockedKey.responsibleUserId !== (input.actor.onBehalfOfUserId ?? null) ||
+          JSON.stringify(normalizeAgentApiKeyScope(lockedKey.scopeConfig)) !==
+            JSON.stringify(normalizeAgentApiKeyScope(input.actor.keyScope))
+        ) {
+          throw conflict("Unblock owner authorization became stale");
+        }
+      }
+
+      // Scoped assignment grants can depend on the company hierarchy, so lock
+      // the full hierarchy before evaluating grant scope in this transaction.
+      await tx
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.companyId, lockedIssue!.companyId))
+        .for("update");
+
+      await tx
+        .select({ companyId: companyMemberships.companyId })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, lockedIssue!.companyId),
+          eq(companyMemberships.principalType, "agent"),
+          eq(companyMemberships.principalId, actorAgentId),
+        ))
+        .for("update");
+
+      if (lockedIssue!.projectId) {
+        await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(
+            eq(projects.id, lockedIssue!.projectId),
+            eq(projects.companyId, lockedIssue!.companyId),
+          ))
+          .for("update");
+      }
+      if (lockedIssue!.parentId && lockedIssue!.parentId !== lockedIssue!.id) {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.id, lockedIssue!.parentId),
+            eq(issues.companyId, lockedIssue!.companyId),
+          ))
+          .for("update");
+      }
+      if (input.actor.runId) {
+        await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, input.actor.runId),
+            eq(heartbeatRuns.companyId, lockedIssue!.companyId),
+          ))
+          .for("update");
+      }
+
+      const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
+      if (responsibleUserId) {
+        await tx
+          .select({ id: authUsers.id })
+          .from(authUsers)
+          .where(eq(authUsers.id, responsibleUserId))
+          .for("update");
+        await tx
+          .select({ companyId: companyMemberships.companyId })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, lockedIssue!.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, responsibleUserId),
+          ))
+          .for("update");
+      }
+
+      const grantPrincipals = [
+        and(
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, actorAgentId),
+        ),
+        ...(responsibleUserId
+          ? [and(
+              eq(principalPermissionGrants.principalType, "user"),
+              eq(principalPermissionGrants.principalId, responsibleUserId),
+            )]
+          : []),
+      ];
+      await tx
+        .select({ id: principalPermissionGrants.id })
+        .from(principalPermissionGrants)
+        .where(and(
+          eq(principalPermissionGrants.companyId, lockedIssue!.companyId),
+          or(...grantPrincipals),
+        ))
+        .for("update");
+
+      const actor = { ...input.actor, onBehalfOfMemberships: undefined } as AuthorizationActor & {
+        __responsibleUserSnapshotMemo?: unknown;
+      };
+      delete actor.__responsibleUserSnapshotMemo;
+      const lockedAuthorization = authorizationService(tx as unknown as Db);
+      const decision = await lockedAuthorization.decide({
+        actor,
+        action: input.action,
+        resource: {
+          type: "issue",
+          companyId: lockedIssue!.companyId,
+          issueId: lockedIssue!.id,
+          projectId: lockedIssue!.projectId,
+          parentIssueId: lockedIssue!.parentId,
+          assigneeAgentId: lockedIssue!.assigneeAgentId,
+          assigneeUserId: lockedIssue!.assigneeUserId,
+          status: lockedIssue!.status,
+        },
+        scope: {
+          issueId: lockedIssue!.id,
+          projectId: lockedIssue!.projectId,
+          parentIssueId: lockedIssue!.parentId,
+          assigneeAgentId: lockedIssue!.assigneeAgentId,
+          assigneeUserId: lockedIssue!.assigneeUserId,
+          allowIssueUnblockOwner: true,
+          requireFreshResponsibleUser: true,
+          forceResponsibleUserEnforcement: true,
+        },
+      });
+      if (!decision.allowed || decision.reason !== "allow_issue_unblock_owner") {
+        throw conflict("Unblock owner authorization became stale");
+      }
+
+      if (input.assignment) {
+        const assignmentDecision = await lockedAuthorization.decide({
+          actor,
+          action: "tasks:assign",
+          resource: {
+            type: "issue",
+            companyId: lockedIssue!.companyId,
+            issueId: lockedIssue!.id,
+            projectId: input.assignment.projectId,
+            parentIssueId: input.assignment.parentIssueId,
+            assigneeAgentId: input.assignment.assigneeAgentId,
+            assigneeUserId: input.assignment.assigneeUserId,
+          },
+          scope: {
+            issueId: lockedIssue!.id,
+            ...input.assignment,
+            requireFreshResponsibleUser: true,
+            forceResponsibleUserEnforcement: true,
+          },
+        });
+        if (!assignmentDecision.allowed) {
+          throw conflict("Unblock owner assignment authorization became stale");
+        }
+      }
+
+      return operation(tx);
+    });
+  }
+
   async function archiveInbox(
     companyId: string,
     issueId: string,
@@ -5453,6 +5704,7 @@ export function issueService(db: Db) {
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    runBlockedUnblockOwnerTransaction,
     addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
@@ -8709,104 +8961,110 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ) => {
-      const issue = await dbOrTx
-        .select({ companyId: issues.companyId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+      const runAddComment = async (executor: any) => {
+        const issue = await executor
+          .select({
+            companyId: issues.companyId,
+            status: issues.status,
+            unblockDescriptor: issues.unblockDescriptor,
+          })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows: Array<{ companyId: string; status: string; unblockDescriptor: unknown }>) => rows[0] ?? null);
+        if (!issue) throw notFound("Issue not found");
 
-      if (!issue) throw notFound("Issue not found");
-
-      const currentUserRedactionOptions = {
-        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
-      };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      const authorType = issueCommentAuthorTypeSchema.parse(
-        options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
-      );
-      assertIssueCommentAuthorTypeAllowed(actor, authorType);
-      const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
-      const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      // Invalid/stale run ids must not 500 the insert — null out unknowns.
-      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
-      if (actor.runId && !createdByRunId) {
-        logger.warn(
-          { issueId, companyId: issue.companyId, runId: actor.runId },
-          "dropping invalid createdByRunId for issue comment insert",
+        const currentUserRedactionOptions = {
+          enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        };
+        const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+        const authorType = issueCommentAuthorTypeSchema.parse(
+          options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
         );
-      }
-      const onBehalfOfUserId = actor.agentId
-        ? await resolveCommentResponsibleUserId(
-            dbOrTx,
-            issue.companyId,
-            createdByRunId,
-            actor.onBehalfOfUserId,
-          )
-        : null;
-      const metadata = issueCommentMetadataSchema.nullable().parse(
-        actor.agentId
-          ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
-          : options?.metadata ?? null,
-      );
-      const [comment] = await dbOrTx
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          onBehalfOfUserId,
-          authorType,
-          createdByRunId,
-          body: redactedBody,
-          presentation,
-          metadata,
-          sourceTrust: options?.sourceTrust ?? null,
-          ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
-        })
-        .returning();
-
-      // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await dbOrTx
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-
-      if (
-        authorType === "user" &&
-        actor.userId &&
-        actor.userId !== "board-concierge" &&
-        !createdByRunId
-      ) {
-        const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
-        const expiredInteractions = await issueThreadInteractionService(dbOrTx)
-          .expireRequestConfirmationsSupersededByComment(
-            { id: issueId, companyId: issue.companyId },
-            comment,
-            { agentId: actor.agentId, userId: actor.userId },
+        assertIssueCommentAuthorTypeAllowed(actor, authorType);
+        const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
+        const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+        // Invalid/stale run ids must not 500 the insert — null out unknowns.
+        const createdByRunId = await resolveCommentCreatedByRunId(executor, issue.companyId, actor.runId);
+        if (actor.runId && !createdByRunId) {
+          logger.warn(
+            { issueId, companyId: issue.companyId, runId: actor.runId },
+            "dropping invalid createdByRunId for issue comment insert",
           );
-        for (const interaction of expiredInteractions) {
-          await logActivity(dbOrTx, {
-            companyId: issue.companyId,
-            actorType: "user",
-            actorId: actor.userId,
-            agentId: actor.agentId ?? null,
-            runId: createdByRunId,
-            action: "issue.thread_interaction_expired",
-            entityType: "issue",
-            entityId: issueId,
-            details: {
-              interactionId: interaction.id,
-              interactionKind: interaction.kind,
-              interactionStatus: interaction.status,
-              source: "issue.comment.service",
-              result: interaction.result ?? null,
-            },
-          });
         }
-      }
+        const onBehalfOfUserId = actor.agentId
+          ? await resolveCommentResponsibleUserId(
+              executor,
+              issue.companyId,
+              createdByRunId,
+              actor.onBehalfOfUserId,
+            )
+          : null;
+        const metadata = issueCommentMetadataSchema.nullable().parse(
+          actor.agentId
+            ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
+            : options?.metadata ?? null,
+        );
+        const [comment] = await executor
+          .insert(issueComments)
+          .values({
+            companyId: issue.companyId,
+            issueId,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            onBehalfOfUserId,
+            authorType,
+            createdByRunId,
+            body: redactedBody,
+            presentation,
+            metadata,
+            sourceTrust: options?.sourceTrust ?? null,
+            ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+          })
+          .returning();
 
-      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        await executor
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+
+        if (
+          authorType === "user" &&
+          actor.userId &&
+          actor.userId !== "board-concierge" &&
+          !createdByRunId
+        ) {
+          const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+          const expiredInteractions = await issueThreadInteractionService(executor)
+            .expireRequestConfirmationsSupersededByComment(
+              { id: issueId, companyId: issue.companyId },
+              comment,
+              { agentId: actor.agentId, userId: actor.userId },
+            );
+          for (const interaction of expiredInteractions) {
+            await logActivity(executor, {
+              companyId: issue.companyId,
+              actorType: "user",
+              actorId: actor.userId,
+              agentId: actor.agentId ?? null,
+              runId: createdByRunId,
+              action: "issue.thread_interaction_expired",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                interactionId: interaction.id,
+                interactionKind: interaction.kind,
+                interactionStatus: interaction.status,
+                source: "issue.comment.service",
+                result: interaction.result ?? null,
+              },
+            });
+          }
+        }
+
+        return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      };
+
+      return runAddComment(dbOrTx);
     },
 
     createAttachment: async (input: {

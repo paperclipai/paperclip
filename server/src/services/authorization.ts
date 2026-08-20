@@ -20,7 +20,12 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  issueUnblockDescriptorSchema,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -107,6 +112,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_issue_unblock_owner"
     | "allow_direct_parent_report"
     | "allow_visible_issue_write"
     | "allow_self"
@@ -221,6 +227,12 @@ function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function issueUnblockOwnerAgentId(value: unknown) {
+  const parsed = issueUnblockDescriptorSchema.safeParse(value);
+  if (!parsed.success || typeof parsed.data.owner !== "object" || !("agentId" in parsed.data.owner)) return null;
+  return parsed.data.owner.agentId;
+}
+
 type AssignmentPolicyEffect =
   | { kind: "none" }
   | { kind: "restricted"; explanation: string }
@@ -254,6 +266,7 @@ type IssueAuthorizationRow = {
   executionPolicy: unknown;
   originKind: string | null;
   originId: string | null;
+  unblockDescriptor: unknown;
 };
 
 function evaluateAuthorizationPolicyForAssignment(
@@ -594,7 +607,11 @@ export function authorizationService(db: Db) {
     actor: AuthorizationActor;
     companyId: string;
     userId: string;
+    fresh?: boolean;
   }): Promise<ResponsibleUserSnapshot> {
+    if (input.fresh) {
+      return loadResponsibleUserSnapshot(input.companyId, input.userId);
+    }
     const actorWithMemo = input.actor as ResponsibleUserActorWithMemo;
     const key = `${input.companyId}:${input.userId}`;
     actorWithMemo.__responsibleUserSnapshotMemo ??= new Map();
@@ -743,6 +760,7 @@ export function authorizationService(db: Db) {
         executionPolicy: issues.executionPolicy,
         originKind: issues.originKind,
         originId: issues.originId,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -1927,7 +1945,6 @@ export function authorizationService(db: Db) {
       });
     }
 
-
     if (input.action === "inbox:manage") {
       if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
         return deny({
@@ -2168,6 +2185,39 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
+      const issueUnblockOwnerAction =
+        input.action === "issue:comment" ||
+        (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
+      const unblockGatedIssue =
+        trustResolution.kind === "standard" &&
+        resource?.issueId &&
+        resource.assigneeAgentId &&
+        resource.status === "blocked"
+          ? await loadIssue(resource.issueId)
+          : null;
+      if (unblockGatedIssue) {
+        if (
+          issueUnblockOwnerAction &&
+          isSimpleAssignableAgentStatus(actorAgent.status) &&
+          unblockGatedIssue.companyId === companyId &&
+          unblockGatedIssue.status === "blocked" &&
+          issueUnblockOwnerAgentId(unblockGatedIssue.unblockDescriptor) === actorAgentId
+        ) {
+          return allow({
+            action: input.action,
+            reason: "allow_issue_unblock_owner",
+            explanation: "Allowed because the actor is the current persisted unblock owner.",
+          });
+        }
+        // A blocked assigned issue with a persisted unblock owner stays
+        // owner-gated: the default-open visible-issue write rule must not
+        // bypass the owner boundary.
+        return deny({
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Blocked assigned issues only accept writes from the assignee or the persisted unblock owner.",
+        });
+      }
       if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
     }
     if (
@@ -2278,6 +2328,7 @@ export function authorizationService(db: Db) {
       actor: input.actor,
       companyId,
       userId: responsibleUserId,
+      fresh: scopeBoolean(input.scope, "requireFreshResponsibleUser"),
     });
     const denyCode: AuthorizationDecision["code"] =
       snapshot.userExists && snapshot.activeMembership
@@ -2339,8 +2390,11 @@ export function authorizationService(db: Db) {
       grant: userDecision.grant,
     });
 
+    const shadowMode =
+      responsibleUserAuthzShadowMode() &&
+      !scopeBoolean(input.scope, "forceResponsibleUserEnforcement");
     logger.warn({
-      authzMode: responsibleUserAuthzShadowMode() ? "shadow" : "enforce",
+      authzMode: shadowMode ? "shadow" : "enforce",
       code: denied.code,
       reason: userDecision.reason,
       action: input.action,
@@ -2350,7 +2404,7 @@ export function authorizationService(db: Db) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return shadowMode ? agentDecision : denied;
   }
 
   async function decide(input: {

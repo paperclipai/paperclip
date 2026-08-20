@@ -31,6 +31,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
   removeAttachment: vi.fn(),
+  runBlockedUnblockOwnerTransaction: vi.fn(),
   update: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
@@ -524,6 +525,10 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
+    mockIssueService.runBlockedUnblockOwnerTransaction.mockReset();
+    mockIssueService.runBlockedUnblockOwnerTransaction.mockImplementation(
+      async (_input: unknown, callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    );
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockLogActivity.mockClear();
@@ -823,6 +828,90 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("binds unblock-owner comments to the current blocked owner at insert time", async () => {
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Perform the unblock action",
+      },
+    });
+    const latestIssue = {
+      ...blockedIssue,
+      assigneeAgentId: "88888888-8888-4888-8888-888888888888",
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValue(latestIssue);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment" || input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_unblock_owner" : "allow_company_agent",
+      explanation: "Allowed by the current unblock-owner grant.",
+    }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([ownerAgentId]);
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "The unblock action is complete, @owner." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "The unblock action is complete, @owner.",
+      expect.any(Object),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        action: "issue:comment",
+        actor: expect.objectContaining({ type: "agent", agentId: peerAgentId }),
+      }),
+      expect.any(Function),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({
+        reason: "issue_commented",
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({ currentIssueAssigneeGuard: { issueId } }),
+    );
+  });
+
+  it("keeps unblock-owner resume off the comment endpoint", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Perform the unblock action",
+      },
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment" || input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_unblock_owner" : "allow_company_agent",
+      explanation: "Allowed by the current unblock-owner grant.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "The unblock action is complete.", resume: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Unblock owners must use the guarded issue PATCH to resume work");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -1595,6 +1684,299 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     },
   );
+  it("allows the persisted unblock owner to comment and resume a blocked issue assigned to another agent", async () => {
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      updatedAt: new Date("2026-07-31T08:00:00.000Z"),
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    const updatedIssue = {
+      ...blockedIssue,
+      status: "todo",
+      assigneeAgentId: peerAgentId,
+      updatedAt: new Date(blockedIssue.updatedAt.getTime() + 1_000),
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValue(updatedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...updatedIssue,
+      ...patch,
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      const taskAssignment = input.action === "tasks:assign";
+      return {
+        allowed: unblockOwnerMutation || taskAssignment || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : taskAssignment
+            ? "allow_explicit_grant"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "deny_missing_grant",
+        explanation: unblockOwnerMutation
+          ? "Allowed because the actor is the current unblock owner."
+          : input.action === "issue:read"
+            ? "Allowed by same-company visibility."
+            : "Missing permission.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Remediation is complete", resume: true, assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "todo", assigneeAgentId: peerAgentId }),
+      expect.any(Object),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Remediation is complete",
+      expect.any(Object),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ allowIssueUnblockOwner: true }),
+    }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({ assigneeAgentId: peerAgentId }),
+    }));
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        expectedUpdatedAt: blockedIssue.updatedAt,
+        action: "issue:mutate",
+        actor: expect.objectContaining({ type: "agent", agentId: peerAgentId }),
+      }),
+      expect.any(Function),
+    );
+    expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: peerAgentId });
+  });
+
+  it("suppresses a stale owner wake after a post-reread reassignment", async () => {
+    const latestAssigneeAgentId = "88888888-8888-4888-8888-888888888888";
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      updatedAt: new Date("2026-07-31T08:10:00.000Z"),
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    const ownerResult = {
+      ...blockedIssue,
+      status: "todo",
+      assigneeAgentId: peerAgentId,
+      updatedAt: new Date("2026-07-31T08:10:01.000Z"),
+    };
+    const latestIssue = {
+      ...ownerResult,
+      assigneeAgentId: latestAssigneeAgentId,
+      updatedAt: new Date("2026-07-31T08:10:02.000Z"),
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValueOnce(ownerResult)
+      .mockResolvedValue(latestIssue);
+    mockIssueService.update.mockResolvedValue(ownerResult);
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      return {
+        allowed: unblockOwnerMutation || input.action === "tasks:assign" || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "allow_explicit_grant",
+        explanation: "Allowed by the test fixture.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Remediation is complete", resume: true, assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: latestAssigneeAgentId });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      peerAgentId,
+      expect.objectContaining({
+        reason: "issue_assigned",
+        currentIssueAssigneeGuard: { issueId },
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      latestAssigneeAgentId,
+      expect.objectContaining({ reason: "issue_assigned" }),
+    );
+  });
+
+  it("rejects an unblock owner attempting to resume the issue to another agent", async () => {
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(ownerAgentId),
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      return {
+        allowed: unblockOwnerMutation || input.action === "tasks:assign" || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "allow_explicit_grant",
+        explanation: "Allowed by the test fixture.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Remediation is complete", resume: true, assigneeAgentId: ownerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Unblock owners may only claim resumed work for themselves");
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns conflict when unblock-owner authority changes before the issue write", async () => {
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockIssueService.update.mockResolvedValue(null);
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      return {
+        allowed: unblockOwnerMutation || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "deny_missing_grant",
+        explanation: unblockOwnerMutation
+          ? "Allowed because the actor is the current unblock owner."
+          : "Missing permission.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Remediation is complete", resume: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Unblock owner authorization became stale");
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "todo" }),
+      expect.any(Object),
+    );
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId, action: "issue:mutate" }),
+      expect.any(Function),
+    );
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects unblock-owner PATCH fields outside the scoped resume flow", async () => {
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      return {
+        allowed: unblockOwnerMutation || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "deny_missing_grant",
+        explanation: unblockOwnerMutation
+          ? "Allowed because the actor is the current unblock owner."
+          : "Missing permission.",
+      };
+    });
+    const app = await createApp(peerActor());
+
+    for (const body of [
+      { comment: "Done", title: "Unrelated title change" },
+      { comment: "Done", status: "todo" },
+      { comment: "Done", status: "done" },
+      { comment: "Done", status: "cancelled" },
+      { comment: "Done", assigneeAgentId: peerAgentId },
+    ]) {
+      const res = await request(app).patch(`/api/issues/${issueId}`).send(body);
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Unblock owners may only comment and resume blocked issues");
+    }
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));

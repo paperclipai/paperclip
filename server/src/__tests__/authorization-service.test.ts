@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -20,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { authorizationService } from "../services/authorization.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -73,11 +75,13 @@ async function createIssue(
   input: {
     id?: string;
     title?: string;
+    status?: "todo" | "in_progress" | "blocked";
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
     originKind?: string | null;
     originId?: string | null;
+    unblockDescriptor?: Record<string, unknown> | null;
   } = {},
 ) {
   return db
@@ -86,13 +90,14 @@ async function createIssue(
       id: input.id ?? randomUUID(),
       companyId,
       title: input.title ?? `Issue ${randomUUID()}`,
-      status: "todo",
+      status: input.status ?? "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
+      unblockDescriptor: input.unblockDescriptor ?? null,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -1493,6 +1498,451 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_unsupported_action",
     });
+  });
+
+  it("preserves assignee authority when the assignee is also the unblock owner", async () => {
+    const company = await createCompany(db, "IssueAssigneeUnblockOwner");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Blocked issue owned by its assignee",
+      status: "blocked",
+      assigneeAgentId: assigneeAgent.id,
+      unblockDescriptor: {
+        owner: { agentId: assigneeAgent.id },
+        action: "Complete the unblock action",
+      },
+    });
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status,
+    } as const;
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: assigneeAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action,
+        resource,
+        scope: action === "issue:mutate" ? { allowIssueUnblockOwner: true } : null,
+      })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_self",
+      });
+    }
+  });
+
+  it("allows only the persisted unblock owner to comment on and mutate a blocked assigned issue", async () => {
+    const company = await createCompany(db, "IssueUnblockOwner");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const unblockOwnerAgent = await createAgent(db, company.id, { role: "manager" });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Blocked issue awaiting owner action",
+      status: "blocked",
+      assigneeAgentId: assigneeAgent.id,
+      unblockDescriptor: {
+        owner: { agentId: unblockOwnerAgent.id },
+        action: "Choose the remediation path",
+      },
+    });
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status,
+    } as const;
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: unblockOwnerAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action,
+        resource,
+        scope: action === "issue:mutate" ? { allowIssueUnblockOwner: true } : null,
+      })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_issue_unblock_owner",
+      });
+    }
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: unblockOwnerAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: unrelatedAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: false });
+
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issue.id));
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: unblockOwnerAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: false });
+
+    const malformedDescriptors = [
+      { owner: { agentId: unblockOwnerAgent.id } },
+      { owner: { agentId: unblockOwnerAgent.id, userId: "mixed-owner" }, action: "Review" },
+      { owner: { agentId: "not-a-uuid" }, action: "Review" },
+      { owner: { agentId: unblockOwnerAgent.id }, action: "Review", extra: true },
+    ];
+    for (const unblockDescriptor of malformedDescriptors) {
+      await db.update(issues).set({
+        status: "blocked",
+        unblockDescriptor: unblockDescriptor as never,
+      }).where(eq(issues.id, issue.id));
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: unblockOwnerAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action: "issue:mutate",
+        resource,
+        scope: { allowIssueUnblockOwner: true },
+      })).resolves.toMatchObject({ allowed: false });
+    }
+  });
+
+  it("does not let a low-trust unblock owner cross the assignee mutation boundary", async () => {
+    const company = await createCompany(db, "LowTrustIssueUnblockOwner");
+    const project = await createProject(db, company.id, "AllowedProject");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const lowTrustOwner = await createAgent(db, company.id, {
+      role: "reviewer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [project.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Blocked issue with low-trust owner",
+      projectId: project.id,
+      status: "blocked",
+      assigneeAgentId: assigneeAgent.id,
+      unblockDescriptor: {
+        owner: { agentId: lowTrustOwner.id },
+        action: "Choose the remediation path",
+      },
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: lowTrustOwner.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: issue.assigneeAgentId,
+        status: issue.status,
+      },
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("authorizes unblock-owner writes from one locked, fresh transaction snapshot", async () => {
+    const company = await createCompany(db, "UnblockOwnerWriteRace");
+    const assignee = await createAgent(db, company.id);
+    const owner = await createAgent(db, company.id);
+    const replacementOwner = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id, {
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Perform the unblock action",
+      },
+    });
+    const svc = issueService(db);
+    const actor = {
+      type: "agent",
+      agentId: owner.id,
+      companyId: company.id,
+      source: "agent_jwt",
+    } as const;
+
+    const runOwnerTransaction = <T>(
+      expectedUpdatedAt: Date,
+      action: "issue:comment" | "issue:mutate",
+      callback: (tx: ReturnType<typeof createDb>) => Promise<T>,
+      assignment?: {
+        projectId: string | null;
+        parentIssueId: string | null;
+        assigneeAgentId: string | null;
+        assigneeUserId: string | null;
+      },
+    ) => svc.runBlockedUnblockOwnerTransaction({
+      issueId: issue.id,
+      expectedUpdatedAt,
+      actor,
+      action,
+      ...(assignment ? { assignment } : {}),
+    }, callback);
+
+    await db.update(issues).set({
+      unblockDescriptor: {
+        owner: { agentId: replacementOwner.id },
+        action: "Replacement owner action",
+      },
+    }).where(eq(issues.id, issue.id));
+
+    await expect(runOwnerTransaction(issue.updatedAt, "issue:comment", async (tx) => svc.addComment(
+      issue.id,
+      "Stale owner comment",
+      { agentId: owner.id },
+      undefined,
+      tx,
+    ))).rejects.toMatchObject({ status: 409 });
+    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
+      .resolves.toHaveLength(0);
+
+    const [restored] = await db.update(issues).set({
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Current owner action",
+      },
+      updatedAt: new Date(issue.updatedAt.getTime() + 1_000),
+    }).where(eq(issues.id, issue.id)).returning();
+
+    await db.update(issues).set({
+      title: "A stronger concurrent edit",
+      updatedAt: new Date(restored.updatedAt.getTime() + 1_000),
+    }).where(eq(issues.id, issue.id));
+    await expect(runOwnerTransaction(restored.updatedAt, "issue:mutate", async (tx) => svc.update(
+      issue.id,
+      { status: "todo" },
+      tx,
+    ))).rejects.toMatchObject({ status: 409 });
+
+    const currentIssue = await svc.getById(issue.id);
+    expect(currentIssue).not.toBeNull();
+    const result = await runOwnerTransaction(currentIssue!.updatedAt, "issue:mutate", async (tx) => {
+      const updated = await svc.update(issue.id, { status: "todo", assigneeAgentId: owner.id }, tx);
+      const comment = await svc.addComment(
+        issue.id,
+        "Current owner comment",
+        { agentId: owner.id },
+        undefined,
+        tx,
+      );
+      return { updated, comment };
+    }, {
+      projectId: currentIssue!.projectId,
+      parentIssueId: currentIssue!.parentId,
+      assigneeAgentId: owner.id,
+      assigneeUserId: null,
+    });
+    expect(result.updated).toMatchObject({ status: "todo", assigneeAgentId: owner.id });
+    expect(result.comment).toMatchObject({ body: "Current owner comment" });
+
+    const [blockedAgain] = await db.update(issues).set({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Current owner action",
+      },
+      updatedAt: new Date(result.updated!.updatedAt.getTime() + 1_000),
+    }).where(eq(issues.id, issue.id)).returning();
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, owner.id));
+    await expect(runOwnerTransaction(blockedAgain.updatedAt, "issue:comment", async (tx) => svc.addComment(
+      issue.id,
+      "Terminated owner comment",
+      { agentId: owner.id },
+      undefined,
+      tx,
+    ))).rejects.toMatchObject({ status: 409 });
+
+    const bridgeOwner = await createAgent(db, company.id);
+    const bridgeIssue = await createIssue(db, company.id, {
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: bridgeOwner.id },
+        action: "Bridge owner action",
+      },
+    });
+    let bridgeCallbackRan = false;
+    await expect(svc.runBlockedUnblockOwnerTransaction({
+      issueId: bridgeIssue.id,
+      expectedUpdatedAt: bridgeIssue.updatedAt,
+      actor: {
+        type: "agent",
+        agentId: bridgeOwner.id,
+        companyId: company.id,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: {
+          kind: "task_bridge",
+          parentIssueId: issue.id,
+          allowedAssigneeAgentIds: [bridgeOwner.id],
+        },
+      },
+      action: "issue:comment",
+    }, async () => {
+      bridgeCallbackRan = true;
+    })).rejects.toMatchObject({ status: 409 });
+    expect(bridgeCallbackRan).toBe(false);
+
+    const delegatedOwner = await createAgent(db, company.id);
+    const delegatedIssue = await createIssue(db, company.id, {
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: delegatedOwner.id },
+        action: "Delegated owner action",
+      },
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const delegatedActor = {
+      type: "agent" as const,
+      agentId: delegatedOwner.id,
+      companyId: company.id,
+      onBehalfOfUserId: responsibleUserId,
+      source: "agent_jwt" as const,
+    };
+    await expect(authorizationService(db).decide({
+      actor: delegatedActor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: delegatedIssue.id,
+        assigneeAgentId: assignee.id,
+        status: "blocked",
+      },
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: true });
+    await db.update(companyMemberships).set({ status: "inactive" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, responsibleUserId),
+    ));
+    let delegatedCallbackRan = false;
+    await expect(svc.runBlockedUnblockOwnerTransaction({
+      issueId: delegatedIssue.id,
+      expectedUpdatedAt: delegatedIssue.updatedAt,
+      actor: delegatedActor,
+      action: "issue:comment",
+    }, async () => {
+      delegatedCallbackRan = true;
+    })).rejects.toMatchObject({ status: 409 });
+    expect(delegatedCallbackRan).toBe(false);
+  });
+
+  it("rechecks protected self-assignment inside the unblock-owner transaction", async () => {
+    const company = await createCompany(db, "UnblockOwnerAssignmentRace");
+    const project = await createProject(db, company.id);
+    const owner = await createAgent(db, company.id, {
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    const assignee = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, owner.id, "tasks:assign");
+    const issue = await createIssue(db, company.id, {
+      projectId: project.id,
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Perform the unblock action",
+      },
+    });
+    const actor = {
+      type: "agent" as const,
+      agentId: owner.id,
+      companyId: company.id,
+      source: "agent_jwt" as const,
+    };
+    const assignment = {
+      projectId: project.id,
+      parentIssueId: null,
+      assigneeAgentId: owner.id,
+      assigneeUserId: null,
+    };
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, ...assignment },
+      scope: { issueId: issue.id, ...assignment },
+    })).resolves.toMatchObject({ allowed: true });
+
+    await db.delete(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, company.id),
+      eq(principalPermissionGrants.principalType, "agent"),
+      eq(principalPermissionGrants.principalId, owner.id),
+      eq(principalPermissionGrants.permissionKey, "tasks:assign"),
+    ));
+    let callbackRan = false;
+    await expect(issueService(db).runBlockedUnblockOwnerTransaction({
+      issueId: issue.id,
+      expectedUpdatedAt: issue.updatedAt,
+      actor,
+      action: "issue:mutate",
+      assignment,
+    }, async () => {
+      callbackRan = true;
+    })).rejects.toMatchObject({ status: 409 });
+    expect(callbackRan).toBe(false);
   });
 
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {

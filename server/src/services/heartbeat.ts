@@ -2553,6 +2553,22 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  currentIssueAssigneeGuard?: {
+    issueId: string;
+  };
+}
+
+export function shouldSuppressCurrentIssueAssigneeWake(
+  currentIssue: { assigneeAgentId: string | null; status: string } | null | undefined,
+  agentId: string,
+) {
+  return (
+    !currentIssue ||
+    currentIssue.assigneeAgentId !== agentId ||
+    currentIssue.status === "backlog" ||
+    currentIssue.status === "done" ||
+    currentIssue.status === "cancelled"
+  );
 }
 
 type UsageTotals = {
@@ -17883,6 +17899,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source,
             triggerDetail,
             reason: "issue_execution_issue_not_found",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (
+          opts.currentIssueAssigneeGuard &&
+          (
+            opts.currentIssueAssigneeGuard.issueId !== issue.id ||
+            shouldSuppressCurrentIssueAssigneeWake(issue, agentId)
+          )
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_assignee_guard_failed",
             payload,
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
