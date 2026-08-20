@@ -3003,37 +3003,6 @@ function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
-async function listUnresolvedBlockerSummaries(
-  dbOrTx: Pick<Db, "select">,
-  companyId: string,
-  issueId: string,
-  unresolvedBlockerIssueIds: string[],
-) {
-  const ids = [...new Set(unresolvedBlockerIssueIds.filter(Boolean))];
-  if (ids.length === 0) return [];
-  return dbOrTx
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      status: issues.status,
-      priority: issues.priority,
-      assigneeAgentId: issues.assigneeAgentId,
-      assigneeUserId: issues.assigneeUserId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-    .where(
-      and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        eq(issueRelations.relatedIssueId, issueId),
-        inArray(issues.id, ids),
-      ),
-    )
-    .orderBy(asc(issues.title));
-}
-
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
     stream: "stdout" as const,
@@ -10274,7 +10243,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (unresolvedBlockerCount > 0) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -15193,27 +15162,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           tx,
         ).then((rows) => rows.get(issue.id) ?? null);
 
-        // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
-        const blockedInteractionWake =
-          dependencyReadiness &&
-          !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
-
-        if (blockedInteractionWake) {
-          enrichedContextSnapshot.dependencyBlockedInteraction = true;
-          enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
-          enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
-          enrichedContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
-            tx,
-            issue.companyId,
-            issue.id,
-            dependencyReadiness.unresolvedBlockerIssueIds,
-          );
-        }
-
-        if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+        if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
