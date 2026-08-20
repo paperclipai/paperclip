@@ -107,6 +107,7 @@ const checkoutIssueToolSchema = z.object({
   issueId: issueIdSchema,
   agentId: agentIdOptional,
   expectedStatuses: checkoutIssueSchema.shape.expectedStatuses.optional(),
+  resume: z.boolean().optional(),
 });
 
 const addCommentToolSchema = z.object({
@@ -470,13 +471,14 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipCheckoutIssue",
-      "Checkout an issue for an agent",
+      "Checkout an issue for an agent; include resume=true when intentionally reviving done/cancelled work",
       checkoutIssueToolSchema,
-      async ({ issueId, agentId, expectedStatuses }) =>
+      async ({ issueId, agentId, expectedStatuses, resume }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/checkout`, {
           body: {
             agentId: client.resolveAgentId(agentId),
             expectedStatuses: expectedStatuses ?? ["todo", "backlog", "blocked"],
+            ...(resume === true ? { resume: true } : {}),
           },
         }),
     ),

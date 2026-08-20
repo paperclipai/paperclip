@@ -10645,6 +10645,14 @@ export function issueRoutes(
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
 
+    const resumeRequested = req.body.resume === true;
+    if (
+      resumeRequested
+      && !(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true }))
+    ) {
+      return;
+    }
+
     // Reopen the closed isolated workspace only after the run-id gate passes. A
     // rejected checkout must not rebuild and republish the workspace as active.
     let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
@@ -10681,7 +10689,13 @@ export function issueRoutes(
       finalIssueStatus: () => updated?.status,
     });
     try {
-      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+      updated = await svc.checkout(
+        id,
+        req.body.agentId,
+        req.body.expectedStatuses,
+        checkoutRunId,
+        resumeRequested,
+      );
     } catch (error) {
       if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
         res.status(409).json({
@@ -10696,38 +10710,49 @@ export function issueRoutes(
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
     }
 
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.checked_out",
-      entityType: "issue",
-      entityId: issue.id,
-      details: { agentId: req.body.agentId },
-    });
+    const checkoutMutated =
+      updated
+      && (
+        updated.status !== issue.status
+        || updated.checkoutRunId !== issue.checkoutRunId
+        || updated.executionRunId !== issue.executionRunId
+        || updated.assigneeAgentId !== issue.assigneeAgentId
+      );
 
-    if (
-      shouldWakeAssigneeOnCheckout({
-        actorType: req.actor.type,
-        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
-        checkoutAgentId: req.body.agentId,
-        checkoutRunId,
-      })
-    ) {
-      void heartbeat
-        .wakeup(req.body.agentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_checked_out",
-          payload: { issueId: issue.id, mutation: "checkout" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+    if (checkoutMutated) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.checked_out",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { agentId: req.body.agentId, resume: resumeRequested || undefined },
+      });
+
+      if (
+        shouldWakeAssigneeOnCheckout({
+          actorType: req.actor.type,
+          actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+          checkoutAgentId: req.body.agentId,
+          checkoutRunId,
         })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+      ) {
+        void heartbeat
+          .wakeup(req.body.agentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_checked_out",
+            payload: { issueId: issue.id, mutation: "checkout" },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+          })
+          .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+      }
     }
 
     res.json(updated);

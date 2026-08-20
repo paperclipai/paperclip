@@ -5248,7 +5248,10 @@ export function issueService(db: Db) {
     });
   }
 
-  async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
+  async function clearExecutionRunIfTerminal(
+    issueId: string,
+    protectRunId: string | null = null,
+  ): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
@@ -5259,6 +5262,8 @@ export function issueService(db: Db) {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue?.executionRunId) return false;
+      // A run must never reap its own freshly-acquired ownership (DIG-2092).
+      if (protectRunId && issue.executionRunId === protectRunId) return false;
 
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
@@ -5270,6 +5275,13 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
 
+      const clearWhere = [
+        eq(issues.id, issueId),
+        eq(issues.executionRunId, issue.executionRunId),
+      ];
+      if (protectRunId) {
+        clearWhere.push(ne(issues.executionRunId, protectRunId));
+      }
       const updated = await tx
         .update(issues)
         .set({
@@ -5278,12 +5290,7 @@ export function issueService(db: Db) {
           executionLockedAt: null,
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(issues.id, issueId),
-            eq(issues.executionRunId, issue.executionRunId),
-          ),
-        )
+        .where(and(...clearWhere))
         .returning({ id: issues.id })
         .then((rows) => rows[0] ?? null);
 
@@ -5296,7 +5303,10 @@ export function issueService(db: Db) {
   // heartbeat run that is terminal or no longer exists. No assignee/status
   // precondition: a terminal run holds no real claim regardless of who is
   // assigned or what status the issue is currently in.
-  async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
+  async function clearCheckoutRunIfTerminal(
+    issueId: string,
+    protectRunId: string | null = null,
+  ): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
@@ -5307,6 +5317,14 @@ export function issueService(db: Db) {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue?.checkoutRunId) return false;
+      // A run must never reap its own freshly-acquired ownership (DIG-2092).
+      // Clearing checkout also nulls execution*; protect either field.
+      if (
+        protectRunId
+        && (issue.checkoutRunId === protectRunId || issue.executionRunId === protectRunId)
+      ) {
+        return false;
+      }
 
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
@@ -5330,6 +5348,17 @@ export function issueService(db: Db) {
         if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
       }
 
+      const clearWhere = [
+        eq(issues.id, issueId),
+        eq(issues.checkoutRunId, issue.checkoutRunId),
+        issue.executionRunId
+          ? eq(issues.executionRunId, issue.executionRunId)
+          : isNull(issues.executionRunId),
+      ];
+      if (protectRunId) {
+        clearWhere.push(ne(issues.checkoutRunId, protectRunId));
+        clearWhere.push(or(isNull(issues.executionRunId), ne(issues.executionRunId, protectRunId))!);
+      }
       const updated = await tx
         .update(issues)
         .set({
@@ -5339,15 +5368,7 @@ export function issueService(db: Db) {
           executionLockedAt: null,
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(issues.id, issueId),
-            eq(issues.checkoutRunId, issue.checkoutRunId),
-            issue.executionRunId
-              ? eq(issues.executionRunId, issue.executionRunId)
-              : isNull(issues.executionRunId),
-          ),
-        )
+        .where(and(...clearWhere))
         .returning({ id: issues.id })
         .then((rows) => rows[0] ?? null);
 
@@ -8036,7 +8057,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      resume: boolean = false,
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -8044,6 +8071,22 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
+
+      const existingRow = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existingRow) throw notFound("Issue not found");
+
+      // Ordinary terminal wake/checkout is a non-mutating no-op without structured resume.
+      if (
+        (existingRow.status === "done" || existingRow.status === "cancelled")
+        && !resume
+      ) {
+        const [enriched] = await withIssueLabels(db, [existingRow]);
+        return enriched;
+      }
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
@@ -8060,8 +8103,8 @@ export function issueService(db: Db) {
         });
       }
 
-      await clearExecutionRunIfTerminal(id);
-      await clearCheckoutRunIfTerminal(id);
+      await clearExecutionRunIfTerminal(id, checkoutRunId);
+      await clearCheckoutRunIfTerminal(id, checkoutRunId);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const readiness = dependencyReadiness.get(id);
@@ -8076,6 +8119,20 @@ export function issueService(db: Db) {
         throw unprocessable("Issue is blocked by unresolved blockers", {
           unresolvedBlockerIssueIds,
           unresolvedBlockers,
+        });
+      }
+
+      // Without resume, terminal statuses must not promote even if callers list them.
+      const effectiveExpectedStatuses = resume
+        ? expectedStatuses
+        : expectedStatuses.filter((status) => status !== "done" && status !== "cancelled");
+      if (effectiveExpectedStatuses.length === 0) {
+        throw conflict("Issue checkout conflict", {
+          issueId: existingRow.id,
+          status: existingRow.status,
+          assigneeAgentId: existingRow.assigneeAgentId,
+          checkoutRunId: existingRow.checkoutRunId,
+          executionRunId: existingRow.executionRunId,
         });
       }
 
@@ -8102,7 +8159,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
+            inArray(issues.status, effectiveExpectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -8244,8 +8301,8 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
-      await clearExecutionRunIfTerminal(id);
-      await clearCheckoutRunIfTerminal(id);
+      await clearExecutionRunIfTerminal(id, actorRunId);
+      await clearCheckoutRunIfTerminal(id, actorRunId);
       const loadCurrent = () =>
         db
           .select({

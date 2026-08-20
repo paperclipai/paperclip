@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
@@ -19,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -54,7 +56,10 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(actor: Express.Request["actor"]) {
+  async function withAgent(
+    actor: Express.Request["actor"],
+    run: (agent: ReturnType<typeof request>) => Promise<void>,
+  ) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -63,7 +68,22 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
     app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
-    return app;
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected TCP listen address");
+    }
+    try {
+      await run(request(`http://127.0.0.1:${address.port}`));
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
   }
 
   async function seedCompanyAgentAndRuns() {
@@ -151,9 +171,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .set({ contextSnapshot: { issueId } })
       .where(eq(heartbeatRuns.id, currentRunId));
 
-    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
-      .patch(`/api/issues/${issueId}`)
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      res = await agent.patch(`/api/issues/${issueId}`)
       .send({ title: "Recovered execution lock" });
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.title).toBe("Recovered execution lock");
@@ -199,9 +221,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         ...(cancelledAt ? { cancelledAt } : {}),
       });
 
-      const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
-        .post(`/api/issues/${issueId}/release`)
+      let res: any;
+      await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+        res = await agent.post(`/api/issues/${issueId}/release`)
         .send();
+      });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body.status).toBe(status);
@@ -243,9 +267,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: new Date(),
     });
 
-    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
-      .post(`/api/issues/${issueId}/release`)
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/release`)
       .send();
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 
@@ -297,9 +323,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .set({ contextSnapshot: { issueId } })
       .where(eq(heartbeatRuns.id, currentRunId));
 
-    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
-      .patch(`/api/issues/${issueId}`)
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      res = await agent.patch(`/api/issues/${issueId}`)
       .send({ title: "Recovered stale checkout lock" });
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const row = await db
@@ -341,9 +369,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: new Date(),
     });
 
-    const res = await request(createApp(agentActor(companyId, agentId, failedRunId)))
-      .patch(`/api/issues/${issueId}`)
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, failedRunId), async (agent) => {
+      res = await agent.patch(`/api/issues/${issueId}`)
       .send({ title: "Should fail" });
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body?.error).toBe("Issue run ownership conflict");
@@ -374,12 +404,14 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: new Date(),
     });
 
-    const res = await request(createApp(agentActor(companyId, agentId, contenderRunId)))
-      .post(`/api/issues/${issueId}/checkout`)
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, contenderRunId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
         expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
       });
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body).toMatchObject({
@@ -426,23 +458,27 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: new Date(),
     });
 
-    await request(createApp(agentActor(companyId, agentId, currentRunId)))
-      .post(`/api/issues/${issueId}/admin/force-release`)
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      await agent.post(`/api/issues/${issueId}/admin/force-release`)
       .expect(403);
-    await request(createApp({
+    });
+    await withAgent({
       type: "board",
       userId: "outside-user",
       companyIds: [],
       memberships: [],
       isInstanceAdmin: false,
       source: "session",
-    }))
-      .post(`/api/issues/${issueId}/admin/force-release`)
+    }, async (agent) => {
+      await agent.post(`/api/issues/${issueId}/admin/force-release`)
       .expect(404);
+    });
 
-    const res = await request(createApp(boardActor(companyId)))
-      .post(`/api/issues/${issueId}/admin/force-release?clearAssignee=true`)
+    let res: any;
+    await withAgent(boardActor(companyId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/admin/force-release?clearAssignee=true`)
       .send();
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.issue).toMatchObject({
@@ -515,12 +551,14 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: null,
     });
 
-    const res = await request(createApp(agentActor(companyId, otherAgentId, currentRunId)))
-      .post(`/api/issues/${issueId}/checkout`)
+    let res: any;
+    await withAgent(agentActor(companyId, otherAgentId, currentRunId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId: otherAgentId,
         expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
       });
+    });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 
@@ -537,6 +575,219 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(row).toEqual({
       status: "in_progress",
       assigneeAgentId: otherAgentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("DIG-2087 race: assertCheckoutOwner keeps ownership when actor run flips terminal after checkout", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const svc = issueService(db);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fresh checkout ownership",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    let checkout: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      checkout = await agent.post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review", "done"],
+      });
+    });
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(200);
+    expect(checkout.body).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    // Simulate DIG-2092: ownership committed, then actor heartbeat run flips terminal.
+    // clear* inside assertCheckoutOwner must not reap protectRunId.
+    await db.update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    await expect(svc.assertCheckoutOwner(issueId, agentId, currentRunId)).resolves.toMatchObject({
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const owned = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(owned).toEqual({
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("ordinary checkout on a done issue stays terminal and unowned (no activity)", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const completedAt = new Date("2026-08-20T10:00:00.000Z");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already done",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review", "done"],
+      });
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+      completedAt,
+    });
+
+    const checkoutActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checked_out"));
+    expect(checkoutActivity).toHaveLength(0);
+  });
+
+  it("authorized resume:true checkout owns the issue and permits same-run release", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume done work",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date(),
+    });
+
+    let checkout: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      checkout = await agent.post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review", "done"],
+        resume: true,
+      });
+    });
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(200);
+    expect(checkout.body).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    let release: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      release = await agent.post(`/api/issues/${issueId}/release`);
+    });
+    expect(release.status, JSON.stringify(release.body)).toBe(200);
+    expect(release.body.checkoutRunId).toBeNull();
+  });
+
+  it("foreign live run still receives 409 on checkout conflict", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const foreignRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Owned by foreign run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: foreignRunId,
+      executionRunId: foreignRunId,
+      executionLockedAt: new Date(),
+    });
+
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "in_progress"],
+      });
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue checkout conflict");
+  });
+
+  it("genuinely stale foreign checkout ownership is still cleared for a successor", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale foreign checkout",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionLockedAt: new Date(),
+    });
+
+    let res: any;
+    await withAgent(agentActor(companyId, agentId, currentRunId), async (agent) => {
+      res = await agent.post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "in_progress",
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });

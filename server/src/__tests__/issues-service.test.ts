@@ -6864,3 +6864,301 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
   });
 });
+
+describeEmbeddedPostgres("issueService.checkout terminal wake invariant (DIG-2108)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-terminal-checkout-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedTerminalIssue(status: "done" | "cancelled") {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const completedAt = status === "done" ? new Date("2026-08-20T10:00:00.000Z") : null;
+    const cancelledAt = status === "cancelled" ? new Date("2026-08-20T10:00:00.000Z") : null;
+    const startedAt = new Date("2026-08-20T09:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal issue",
+      status,
+      priority: "medium",
+      assigneeAgentId: agentId,
+      startedAt,
+      completedAt,
+      cancelledAt,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    return { companyId, agentId, issueId, runId, startedAt, completedAt, cancelledAt };
+  }
+
+  it.each(["done", "cancelled"] as const)(
+    "ordinary checkout on %s issue is a non-mutating no-op",
+    async (status) => {
+      const seeded = await seedTerminalIssue(status);
+      const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId)).then((rows) => rows[0]!);
+
+      const result = await svc.checkout(
+        seeded.issueId,
+        seeded.agentId,
+        ["todo", "backlog", "blocked", "in_review", "done", "cancelled"],
+        seeded.runId,
+        false,
+      );
+
+      expect(result.status).toBe(status);
+      expect(result.checkoutRunId).toBeNull();
+      expect(result.executionRunId).toBeNull();
+      expect(result.startedAt?.toISOString()).toBe(before.startedAt?.toISOString());
+      expect(result.completedAt?.toISOString() ?? null).toBe(before.completedAt?.toISOString() ?? null);
+      expect(result.cancelledAt?.toISOString() ?? null).toBe(before.cancelledAt?.toISOString() ?? null);
+
+      const after = await db.select().from(issues).where(eq(issues.id, seeded.issueId)).then((rows) => rows[0]!);
+      expect(after.status).toBe(status);
+      expect(after.checkoutRunId).toBeNull();
+      expect(after.executionRunId).toBeNull();
+      expect(after.updatedAt.toISOString()).toBe(before.updatedAt.toISOString());
+    },
+  );
+
+  it("resume:true on a done issue atomically acquires ownership and in_progress", async () => {
+    const seeded = await seedTerminalIssue("done");
+
+    const result = await svc.checkout(
+      seeded.issueId,
+      seeded.agentId,
+      ["todo", "backlog", "blocked", "in_review", "done"],
+      seeded.runId,
+      true,
+    );
+
+    expect(result).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: seeded.agentId,
+      checkoutRunId: seeded.runId,
+      executionRunId: seeded.runId,
+    });
+
+    const after = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]!);
+    expect(after).toEqual({
+      status: "in_progress",
+      checkoutRunId: seeded.runId,
+      executionRunId: seeded.runId,
+    });
+  });
+
+  it("ordinary wake on a terminal blocker does not revive the parent's live blocking set", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent critical path",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: childId,
+        companyId,
+        title: "Terminal blocker child",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        completedAt: new Date("2026-08-20T10:00:00.000Z"),
+        checkoutRunId: null,
+        executionRunId: null,
+      },
+    ]);
+    await svc.update(parentId, { blockedByIssueIds: [childId] });
+
+    await expect(svc.getDependencyReadiness(parentId)).resolves.toMatchObject({
+      unresolvedBlockerIssueIds: [],
+      isDependencyReady: true,
+    });
+
+    await svc.checkout(
+      childId,
+      agentId,
+      ["todo", "backlog", "blocked", "in_review", "done"],
+      runId,
+      false,
+    );
+
+    const child = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, childId))
+      .then((rows) => rows[0]!);
+    expect(child).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    await expect(svc.getDependencyReadiness(parentId)).resolves.toMatchObject({
+      unresolvedBlockerIssueIds: [],
+      isDependencyReady: true,
+    });
+  });
+
+  it("clear* helpers refuse to reap the protected run even when the heartbeat row is terminal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const protectRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: protectRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Protected ownership",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: protectRunId,
+      executionRunId: protectRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    await expect(svc.clearExecutionRunIfTerminal(issueId, protectRunId)).resolves.toBe(false);
+    await expect(svc.clearCheckoutRunIfTerminal(issueId, protectRunId)).resolves.toBe(false);
+    // Background reaper (null protect) still clears a genuinely terminal owner.
+    await expect(svc.clearCheckoutRunIfTerminal(issueId, null)).resolves.toBe(true);
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+});

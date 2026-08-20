@@ -588,6 +588,8 @@ export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
+  /** Explicit structured resume — required to revive done/cancelled via checkout. */
+  resume: z.boolean().optional(),
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
