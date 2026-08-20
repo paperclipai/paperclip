@@ -51,7 +51,7 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokabilityFromDb, type AgentInvokability } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -83,6 +83,18 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+  FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
+  FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+  FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+  STRANDED_FEEDBACK_DELIVERY_BACKSTOP_NEXT_ACTION,
+  STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
+  buildFeedbackDeliveryRetryIdempotencyKey,
+  decideStrandedFeedbackDeliveryBackstop,
+  readFeedbackDeliveryRunContext,
+  type StrandedFeedbackDeliveryBackstopDecision,
+} from "./feedback-delivery.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -3640,6 +3652,366 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
+  async function getLatestFeedbackDeliveryRun(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        livenessState: heartbeatRuns.livenessState,
+        resultJson: heartbeatRuns.resultJson,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function evaluateIssueAssigneeInvokability(
+    issue: typeof issues.$inferSelect,
+  ): Promise<AgentInvokability> {
+    if (!issue.assigneeAgentId) {
+      return { invokable: false, reason: "missing", message: "Issue has no agent assignee", details: {}, invalidOrgChain: false };
+    }
+    const agent = await getAgent(issue.assigneeAgentId);
+    if (!agent || agent.companyId !== issue.companyId) {
+      return { invokable: false, reason: "missing", message: "Agent no longer exists", details: {}, invalidOrgChain: false };
+    }
+    return evaluateAgentInvokabilityFromDb(db, agent);
+  }
+
+  async function hasPendingIssueApproval(companyId: string, issueId: string) {
+    return db
+      .select({ id: issueApprovals.approvalId })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function readRootFeedbackWakeActorType(input: {
+    companyId: string;
+    agentId: string;
+    rootWakeupRequestId: string;
+  }) {
+    return db
+      .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.id, input.rootWakeupRequestId),
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]?.requestedByActorType ?? null);
+  }
+
+  async function hasFeedbackDeliveryWakeForIdempotencyKey(companyId: string, idempotencyKey: string) {
+    return db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  /**
+   * The immediate lane logs `issue.feedback_retry_queued` keyed on the root wake
+   * id. Re-using the same dedupe check keeps the audit trail single-entry per
+   * feedback batch no matter which lane queued the replay.
+   */
+  async function hasFeedbackDeliveryActivity(input: {
+    companyId: string;
+    issueId: string;
+    action: string;
+    rootWakeupRequestId: string;
+  }) {
+    return db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.issueId),
+          eq(activityLog.action, input.action),
+          sql`${activityLog.details} ->> 'rootWakeupRequestId' = ${input.rootWakeupRequestId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function ensureStrandedFeedbackDeliveryRecoveryAction(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: Awaited<ReturnType<typeof getLatestFeedbackDeliveryRun>>;
+    decision: Extract<StrandedFeedbackDeliveryBackstopDecision, { kind: "recovery_action" }>;
+  }) {
+    const delivery = input.decision.delivery;
+    const ownerAgentId = input.decision.reason === "assignee_not_invokable"
+      ? await resolveStrandedIssueRecoveryOwnerAgentId(input.issue)
+      : await resolveInvokableRecoveryAgentId(input.issue, delivery.agentId)
+        ?? await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+    const ownerName = ownerAgentId
+      ? (await getAgent(ownerAgentId))?.name ?? null
+      : null;
+    const routingFallbackReason = ownerAgentId === delivery.agentId
+      ? null
+      : "The original assignee is not invokable; stranded feedback recovery fell through to the manager ladder.";
+
+    const action = await recoveryActionsSvc.upsertSourceScoped({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      kind: FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
+      ownerType: ownerAgentId ? "agent" : "board",
+      ownerAgentId,
+      previousOwnerAgentId: delivery.agentId,
+      returnOwnerAgentId: delivery.agentId,
+      cause: FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+      fingerprint: delivery.fingerprint,
+      evidence: {
+        sourceIssueId: input.issue.id,
+        sourceIdentifier: input.issue.identifier,
+        previousStatus: "in_review",
+        detectedBy: STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
+        backstopReason: input.decision.reason,
+        sourceRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        lastFailureCode: input.latestRun?.errorCode ?? null,
+        rootWakeupRequestId: delivery.rootWakeupRequestId,
+        outstandingCommentIds: delivery.commentIds,
+        retryGeneration: delivery.generation,
+        maxAutomaticRetries: FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+        failureSummary: summarizeRunFailureForIssueComment(input.latestRun ?? null)?.trim() ?? null,
+        routingFallbackReason,
+      },
+      nextAction: [
+        ownerName ? `Owner: ${ownerName}.` : "Owner: the Board (no invokable recovery agent).",
+        STRANDED_FEEDBACK_DELIVERY_BACKSTOP_NEXT_ACTION,
+      ].join(" "),
+      wakePolicy: {
+        type: "manual_repair_required",
+        reason: FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+        ownerAgentId,
+      },
+      maxAttempts: FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+      lastAttemptAt: new Date(),
+    });
+
+    if (
+      !(await hasFeedbackDeliveryActivity({
+        companyId: input.issue.companyId,
+        issueId: input.issue.id,
+        action: "issue.feedback_recovery_exhausted",
+        rootWakeupRequestId: delivery.rootWakeupRequestId,
+      }))
+    ) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: delivery.agentId,
+        action: "issue.feedback_recovery_exhausted",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          recoveryActionId: action.id,
+          detectedBy: STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
+          backstopReason: input.decision.reason,
+          sourceRunId: input.latestRun?.id ?? null,
+          rootWakeupRequestId: delivery.rootWakeupRequestId,
+          sourceCommentIds: delivery.commentIds,
+          retryGeneration: delivery.generation,
+          ownerAgentId,
+        },
+      });
+    }
+
+    return action;
+  }
+
+  /**
+   * PAP-17302: periodic backstop for the narrow review-feedback shape immediate
+   * terminalization can miss — agent-assigned `in_review` with no typed review
+   * participant, no interaction/approval/monitor/user owner, no active run or
+   * queued wake, and a failed latest run that carried user feedback context.
+   *
+   * Dedupes against the immediate retry/recovery lane by sharing its wake
+   * idempotency key, recovery-action fingerprint, and activity keys, so this can
+   * never open a parallel second delivery lane.
+   */
+  async function reconcileStrandedFeedbackDelivery(input: {
+    issue: typeof issues.$inferSelect;
+    hasTypedReviewParticipant: boolean;
+  }): Promise<{ outcome: "requeued" | "recovery_action" | "skipped"; reason?: string }> {
+    const latestRun = await getLatestFeedbackDeliveryRun(input.issue.companyId, input.issue.id);
+    const candidate = latestRun
+      ? readFeedbackDeliveryRunContext({ companyId: input.issue.companyId, run: latestRun })
+      : null;
+    // Cheap pure shape gate first: most `in_review` issues without a typed
+    // participant are legitimate waits, and they must not pay for the probes.
+    if (!latestRun || !candidate || candidate.issueId !== input.issue.id) {
+      return { outcome: "skipped", reason: "not_stranded_feedback_shape" };
+    }
+
+    const retryIdempotencyKey = buildFeedbackDeliveryRetryIdempotencyKey({
+      fingerprint: candidate.fingerprint,
+      generation: candidate.generation + 1,
+    });
+    const [
+      rootWakeRequestedByActorType,
+      activeExecutionPath,
+      pendingWakeInteraction,
+      pendingApproval,
+      durableWaitPath,
+      queuedIssueWake,
+      activeRecoveryAction,
+      existingRetryWake,
+      assigneeInvokability,
+      budgetBlocked,
+    ] = await Promise.all([
+      readRootFeedbackWakeActorType({
+        companyId: input.issue.companyId,
+        agentId: candidate.agentId,
+        rootWakeupRequestId: candidate.rootWakeupRequestId,
+      }),
+      hasActiveExecutionPath(input.issue.companyId, input.issue.id),
+      hasPendingWakeInteraction(input.issue.companyId, input.issue.id),
+      hasPendingIssueApproval(input.issue.companyId, input.issue.id),
+      hasPersistedDurableWaitPath(input.issue),
+      hasQueuedIssueWake(input.issue.companyId, input.issue.id),
+      recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id),
+      hasFeedbackDeliveryWakeForIdempotencyKey(input.issue.companyId, retryIdempotencyKey),
+      evaluateIssueAssigneeInvokability(input.issue),
+      input.issue.assigneeAgentId
+        ? isInvocationBudgetBlocked(input.issue, input.issue.assigneeAgentId)
+        : Promise.resolve(false),
+    ]);
+
+    const decision = decideStrandedFeedbackDeliveryBackstop({
+      companyId: input.issue.companyId,
+      issue: {
+        id: input.issue.id,
+        status: input.issue.status,
+        assigneeAgentId: input.issue.assigneeAgentId,
+        assigneeUserId: input.issue.assigneeUserId,
+      },
+      hasTypedReviewParticipant: input.hasTypedReviewParticipant,
+      latestRun,
+      rootWakeRequestedByActorType,
+      probe: {
+        hasActiveExecutionPath: activeExecutionPath,
+        hasPendingWakeInteraction: pendingWakeInteraction,
+        hasPendingApproval: pendingApproval,
+        hasPersistedDurableWaitPath: durableWaitPath,
+        hasQueuedIssueWake: queuedIssueWake,
+        hasActiveRecoveryAction: Boolean(activeRecoveryAction),
+        hasExistingRetryWake: existingRetryWake,
+        assigneeInvokable: assigneeInvokability.invokable,
+        assigneeHold: !assigneeInvokability.invokable &&
+            (assigneeInvokability.reason === "paused" || assigneeInvokability.reason === "pending_approval")
+          ? assigneeInvokability.reason
+          : null,
+        budgetBlocked,
+        // The caller gates the whole scan on pause holds before reaching here.
+        pauseHeld: false,
+      },
+    });
+
+    if (decision.kind === "skip") {
+      return { outcome: "skipped", reason: decision.reason };
+    }
+
+    if (decision.kind === "recovery_action") {
+      await ensureStrandedFeedbackDeliveryRecoveryAction({
+        issue: input.issue,
+        latestRun,
+        decision,
+      });
+      return { outcome: "recovery_action", reason: decision.reason };
+    }
+
+    const queued = await deps.enqueueWakeup(decision.delivery.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      idempotencyKey: decision.idempotencyKey,
+      payload: decision.payload,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: decision.contextSnapshot,
+    });
+    if (!queued) {
+      return { outcome: "skipped", reason: "replay_wake_not_queued" };
+    }
+
+    await db
+      .update(heartbeatRuns)
+      .set({ retryOfRunId: latestRun.id, updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, queued.id));
+
+    if (
+      !(await hasFeedbackDeliveryActivity({
+        companyId: input.issue.companyId,
+        issueId: input.issue.id,
+        action: "issue.feedback_retry_queued",
+        rootWakeupRequestId: decision.delivery.rootWakeupRequestId,
+      }))
+    ) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: decision.delivery.agentId,
+        runId: queued.id,
+        action: "issue.feedback_retry_queued",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          detectedBy: STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
+          sourceRunId: latestRun.id,
+          sourceWakeupRequestId: latestRun.wakeupRequestId,
+          rootWakeupRequestId: decision.delivery.rootWakeupRequestId,
+          sourceCommentIds: decision.delivery.commentIds,
+          retryRunId: queued.id,
+          retryWakeupRequestId: queued.wakeupRequestId,
+          retryGeneration: decision.generation,
+          disposition: "queued",
+        },
+      });
+    }
+
+    return { outcome: "requeued" };
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
     const candidates = await db
       .select()
@@ -3665,6 +4037,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       reviewParticipantRequeued: 0,
+      strandedFeedbackRequeued: 0,
+      strandedFeedbackRecoveryActions: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
@@ -3895,7 +4269,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (issue.status === "in_review") {
         if (!participantAgentId || !pendingExecutionState) {
-          result.skipped += 1;
+          // PAP-17302: an `in_review` issue with no typed participant used to be
+          // skipped unconditionally, which stranded review feedback whose only
+          // path was a failed comment run. Everything else stays skipped.
+          const feedbackBackstop = await reconcileStrandedFeedbackDelivery({
+            issue,
+            hasTypedReviewParticipant: Boolean(participantAgentId && pendingExecutionState),
+          });
+          if (feedbackBackstop.outcome === "requeued") {
+            result.strandedFeedbackRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else if (feedbackBackstop.outcome === "recovery_action") {
+            result.strandedFeedbackRecoveryActions += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
         const participantLatestRun = participantLatestRunForRecovery;

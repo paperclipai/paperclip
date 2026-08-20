@@ -377,6 +377,7 @@ export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as con
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 
 export const ISSUE_RECOVERY_ACTION_KINDS = [
+  "feedback_delivery",
   "missing_disposition",
   "stranded_assigned_issue",
   "workspace_validation",

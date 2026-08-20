@@ -180,6 +180,18 @@ describe("IssueRecoveryActionCard", () => {
     );
   });
 
+  it("explains exhausted feedback delivery in plain language", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "feedback_delivery", cause: "feedback_delivery_exhausted" })}
+      />,
+    );
+    expect(node.textContent).toContain("Feedback Not Handled");
+    expect(node.textContent).toContain(
+      "Paperclip could not deliver the latest human feedback to this task's agent. Automatic replay is exhausted; handle the outstanding feedback or record what is blocking it.",
+    );
+  });
+
   it("falls back to an em dash when no evidence summary is available", () => {
     const node = render(<IssueRecoveryActionCard action={buildAction({ evidence: {} })} />);
     expect(node.textContent).toContain("—");

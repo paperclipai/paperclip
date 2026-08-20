@@ -115,6 +115,7 @@ export interface IssueRecoveryActionCardProps {
 }
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
+  feedback_delivery: "Feedback Not Handled",
   missing_disposition: "Missing Disposition",
   stranded_assigned_issue: "Stranded Task",
   workspace_validation: "Workspace Validation",
@@ -124,6 +125,8 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
+  feedback_delivery:
+    "Paperclip could not deliver the latest human feedback to this task's agent. Automatic replay is exhausted; handle the outstanding feedback or record what is blocking it.",
   missing_disposition:
     "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
   stranded_assigned_issue:
