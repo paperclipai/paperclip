@@ -598,6 +598,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
+        // An abort is not an engine failure. Without this check, auto mode
+        // treats a cancelled pg_dump as a reason to fall back, opens a new
+        // connection, and runs a full JavaScript dump before the abort is
+        // observed again at the compression step.
+        // An abort is not an engine failure. Without this check, auto mode
+        // treats a cancelled pg_dump as a reason to fall back, opens a new
+        // connection, and runs a full JavaScript dump before the abort is
+        // observed again at the compression step.
+        // An abort is not an engine failure. Without this check, auto mode
+        // treats a cancelled pg_dump as a reason to fall back, opens a new
+        // connection, and runs a full JavaScript dump before the abort is
+        // observed again at the compression step.
+        opts.signal?.throwIfAborted();
         if (backupEngine === "pg_dump") {
           throw error;
         }
