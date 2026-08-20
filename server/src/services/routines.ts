@@ -3175,6 +3175,7 @@ export function routineService(
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          parentId: issues.parentId,
           status: issues.status,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
@@ -3189,10 +3190,8 @@ export function routineService(
           status: routineRuns.status,
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
-          parentIssueId: routines.parentIssueId,
         })
         .from(routineRuns)
-        .innerJoin(routines, eq(routines.id, routineRuns.routineId))
         .where(eq(routineRuns.id, issue.originRunId))
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
@@ -3201,13 +3200,13 @@ export function routineService(
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
         return db.transaction(async (tx) => {
-          if (run.parentIssueId) {
+          if (issue.parentId) {
             await tx
               .delete(issueRelations)
               .where(and(
                 eq(issueRelations.companyId, issue.companyId),
                 eq(issueRelations.issueId, issue.id),
-                eq(issueRelations.relatedIssueId, run.parentIssueId),
+                eq(issueRelations.relatedIssueId, issue.parentId),
                 eq(issueRelations.type, "blocks"),
               ));
           }
