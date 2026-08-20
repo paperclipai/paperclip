@@ -31,6 +31,10 @@ function backupActorId(req: Parameters<typeof assertBoard>[0]): string | null {
   return req.actor.userId ?? (req.actor.source === "local_implicit" ? "local-board" : null);
 }
 
+function safeBackupArchiveFilename(value: string) {
+  return value.replaceAll("\"", "").replace(/[\\/\u0000-\u001F\u007F]/gu, "_") || "backup.tar.gz";
+}
+
 export function backupRoutes(backupManager: BackupManager) {
   const router = Router();
   const uploadDir = path.resolve(resolvePaperclipInstanceRoot(), "tmp", "backup-import-uploads");
@@ -151,7 +155,7 @@ export function backupRoutes(backupManager: BackupManager) {
       });
 
       res.setHeader("Content-Type", "application/gzip");
-      res.setHeader("Content-Disposition", `attachment; filename="${download.archiveName}"`);
+      res.setHeader("Content-Disposition", `attachment; filename="${safeBackupArchiveFilename(download.archiveName)}"`);
       tar.stdout.pipe(res);
     } catch (error) {
       next(error);

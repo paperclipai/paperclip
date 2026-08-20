@@ -94,4 +94,46 @@ describe("portable backup routes", () => {
     await request(app).post("/api/tool-gateway/sessions").expect(201, { reached: true });
     expect(manager.getOverview).not.toHaveBeenCalled();
   });
+
+  it("sanitizes unsafe archive names before placing them in the download header", async () => {
+    const bundleName = "bundle";
+    fs.mkdirSync(path.join(tempHome, bundleName));
+    fs.writeFileSync(path.join(tempHome, bundleName, "manifest.json"), "{}", "utf8");
+    const manager = {
+      ...createManager(),
+      getDownloadDescriptor: vi.fn(async () => ({
+        bundleDirectory: tempHome,
+        bundleName,
+        archiveName: 'backup"\r\nX-Injected: true.tar.gz',
+      })),
+    } as unknown as BackupManager;
+    const app = createApp(instanceAdmin, manager);
+
+    const response = await request(app).get("/api/backups/backup-1/download").buffer(true);
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-disposition"]).toBe('attachment; filename="backup__X-Injected: true.tar.gz"');
+    expect(response.headers["content-disposition"]).not.toContain("\r");
+    expect(response.headers["content-disposition"]).not.toContain("\n");
+  });
+
+  it("keeps a normal archive name unchanged in the download header", async () => {
+    const bundleName = "bundle";
+    fs.mkdirSync(path.join(tempHome, bundleName));
+    fs.writeFileSync(path.join(tempHome, bundleName, "manifest.json"), "{}", "utf8");
+    const manager = {
+      ...createManager(),
+      getDownloadDescriptor: vi.fn(async () => ({
+        bundleDirectory: tempHome,
+        bundleName,
+        archiveName: "portable-backup.tar.gz",
+      })),
+    } as unknown as BackupManager;
+    const app = createApp(instanceAdmin, manager);
+
+    const response = await request(app).get("/api/backups/backup-1/download").buffer(true);
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-disposition"]).toBe('attachment; filename="portable-backup.tar.gz"');
+  });
 });
