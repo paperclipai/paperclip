@@ -10,6 +10,7 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  TRANSIENT_INFRA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -7933,7 +7934,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reviewParticipantAgentId = currentParticipant?.type === "agent"
       ? currentParticipant.agentId
       : null;
-    const isProviderQuotaReviewMonitor = monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
+    const isAdapterFailureRecoveryMonitor = monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME ||
+      monitor?.serviceName === TRANSIENT_INFRA_MONITOR_SERVICE_NAME;
+    // Quota/transient-infra monitors scheduled by recovery target the stalled review
+    // participant, not the issue assignee, when the issue is parked in an execution-review stage.
+    const isProviderQuotaReviewMonitor = isAdapterFailureRecoveryMonitor &&
       Boolean(reviewParticipantAgentId);
     const targetAgentId = isProviderQuotaReviewMonitor
       ? reviewParticipantAgentId
@@ -7949,8 +7954,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           currentStageId: executionState?.currentStageId ?? null,
           currentStageType: executionState?.currentStageType ?? null,
-          reviewRecoveryInstruction:
-            "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
+          reviewRecoveryInstruction: monitor?.serviceName === TRANSIENT_INFRA_MONITOR_SERVICE_NAME
+            ? "The previous reviewer run failed on a transient infrastructure fault. Resume this execution-review stage now that the retry backoff has elapsed."
+            : "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
         }
       : {};
 

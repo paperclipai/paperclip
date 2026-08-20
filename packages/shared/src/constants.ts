@@ -527,6 +527,11 @@ export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[n
 
 export const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
 
+// Monitor service used when an adapter run failed on a transient infrastructure fault
+// (OAuth token refresh blip, DNS/TCP reset, upstream socket hang up). The issue keeps its
+// current status and is retried on a short capped backoff ladder instead of being blocked.
+export const TRANSIENT_INFRA_MONITOR_SERVICE_NAME = "AI provider connectivity";
+
 export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
   "wake_owner",
   "create_recovery_issue",

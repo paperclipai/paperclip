@@ -569,6 +569,156 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("schedules a transient-infra monitor for an OAuth refresh failure instead of blocking", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "OAuth refresh failed for github-copilot: fetch failed",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ transientInfraMonitored: 1, escalated: 0 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorScheduledBy: "assignee",
+      monitorNotes: "Transient adapter/infrastructure failure; retry the original assignee (attempt 1 of 6).",
+    });
+    expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(updatedIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        serviceName: "AI provider connectivity",
+        externalRef: runId,
+        recoveryPolicy: "wake_owner",
+      },
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun).toMatchObject({ errorCode: "transient_infra" });
+    expect(updatedRun?.resultJson).toMatchObject({
+      errorFamily: "transient_infra",
+      transientInfraRecoveryAttempt: 1,
+    });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondResult).toMatchObject({ transientInfraMonitored: 0, skipped: 1 });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("grows the transient-infra backoff across consecutive scheduled retries", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "OAuth refresh failed for github-copilot: fetch failed",
+      errorCode: "transient_infra",
+      resultJson: { recoveryClassification: "transient_infra", transientInfraRecoveryAttempt: 1 },
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      createdAt: new Date("2026-07-15T20:00:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "OAuth refresh failed for github-copilot: fetch failed",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:05:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:06:00.000Z"),
+      createdAt: new Date("2026-07-15T20:05:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const before = Date.now();
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ transientInfraMonitored: 1, escalated: 0 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue?.monitorNotes).toBe(
+      "Transient adapter/infrastructure failure; retry the original assignee (attempt 2 of 6).",
+    );
+    // Second scheduled retry uses the 4 minute rung of the ladder, not the 2 minute base.
+    const delayMs = (updatedIssue?.monitorNextCheckAt?.getTime() ?? 0) - before;
+    expect(delayMs).toBeGreaterThan(3.5 * 60_000);
+    expect(delayMs).toBeLessThanOrEqual(4 * 60_000 + 30_000);
+  });
+
+  it("falls back to blocked after the transient-infra retry cap is exhausted", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const capBaseMs = new Date("2026-07-15T20:00:00.000Z").getTime();
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const startedAt = new Date(capBaseMs + attempt * 30 * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "OAuth refresh failed for github-copilot: fetch failed",
+        errorCode: "transient_infra",
+        resultJson: {
+          recoveryClassification: "transient_infra",
+          transientInfraRecoveryAttempt: attempt,
+        },
+        startedAt,
+        finishedAt: new Date(startedAt.getTime() + 60_000),
+        createdAt: startedAt,
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+    }
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "OAuth refresh failed for github-copilot: fetch failed",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-16T04:00:00.000Z"),
+      finishedAt: new Date("2026-07-16T04:01:00.000Z"),
+      createdAt: new Date("2026-07-16T04:00:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ transientInfraMonitored: 0, escalated: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({ status: "blocked" });
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({ cause: "transient_infra_exhausted", status: "active" });
+    expect(enqueueWakeup).toHaveBeenCalled();
+  });
+
   it("does not create takeover recovery when a quota monitor cannot be scheduled", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, sourceIssueId));

@@ -5,6 +5,7 @@ import {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  TRANSIENT_INFRA_MONITOR_SERVICE_NAME,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
@@ -168,6 +169,7 @@ type StrandedRecoveryCause =
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
+  | "transient_infra_exhausted"
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
@@ -202,6 +204,8 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
       return "workspace validation failed";
     case "configuration_incomplete":
       return "configuration incomplete";
+    case "transient_infra_exhausted":
+      return "transient infrastructure retries exhausted";
     case "execution_review_participant_recovery":
       return "reviewer recovery failed";
     case "provider_quota":
@@ -369,15 +373,46 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
+// Transient adapter/infrastructure faults (OAuth token refresh blips, DNS/TCP resets,
+// upstream socket hang ups) are retried on their own short, capped ladder instead of the
+// generic continuation path (3 attempts, 60s/120s) that escalates to `blocked` after ~3
+// minutes. Ladder: 2m, 4m, 8m, 15m, 15m, 15m — roughly 59 minutes of scheduled retries.
+// After TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES we fall back to the `blocked` +
+// notice backstop so a genuinely dead credential is still surfaced to a human/owner.
+export const TRANSIENT_INFRA_RECOVERY_BASE_BACKOFF_MS = 2 * 60 * 1000;
+export const TRANSIENT_INFRA_RECOVERY_MAX_BACKOFF_MS = 15 * 60 * 1000;
+export const TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES = 6;
+
+export function transientInfraRecoveryBackoffMs(attempt: number) {
+  const normalizedAttempt = Number.isFinite(attempt) ? Math.max(1, Math.trunc(attempt)) : 1;
+  const exponent = Math.min(normalizedAttempt - 1, 20);
+  return Math.min(
+    TRANSIENT_INFRA_RECOVERY_BASE_BACKOFF_MS * 2 ** exponent,
+    TRANSIENT_INFRA_RECOVERY_MAX_BACKOFF_MS,
+  );
+}
+
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+// Deliberately narrow: only network/transport-shaped adapter failures. Anything that
+// smells like bad configuration must keep matching CONFIGURATION_INCOMPLETE_ERROR_RE
+// first (checked before this one) so a dead credential is not retried forever.
+// The 502/503/504 statuses match with or without a reason phrase: the HTTP adapter
+// throws a bare `HTTP invoke failed with status 502` (server/src/adapters/http/execute.ts),
+// so requiring "502 bad gateway" would miss the exact transport fault we want to retry.
+// Word boundaries keep unrelated numbers (`5024ms`, `run 1502`) from matching.
+const TRANSIENT_INFRA_ERROR_RE =
+  /(?:oauth (?:token )?refresh failed|token refresh failed|fetch failed|econnreset|econnrefused|econnaborted|etimedout|enotfound|eai_again|epipe|socket hang up|network (?:error|timeout)|tls (?:handshake|connection) (?:error|failed)|request timed out|\b(?:502|503|504)\b)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
+  | { kind: "transient_infra"; retryAt: Date; attempt: number; exhausted: boolean }
   | { kind: "configuration_incomplete" }
   | null;
+
+export const TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODE = "transient_infra";
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
@@ -450,11 +485,13 @@ function parseProviderQuotaClockReset(error: string, now: Date) {
 export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
+  options: { transientInfraAttempt?: number } = {},
 ): AdapterFailureRecoveryClassification {
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    latestRun.errorCode !== "configuration_incomplete" &&
+    latestRun.errorCode !== TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODE
   ) {
     return null;
   }
@@ -463,7 +500,21 @@ export function classifyAdapterFailureForRecovery(
   if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
     return { kind: "configuration_incomplete" };
   }
-  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
+  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) {
+    if (
+      latestRun.errorCode === TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODE ||
+      TRANSIENT_INFRA_ERROR_RE.test(error)
+    ) {
+      const attempt = Math.max(1, Math.trunc(options.transientInfraAttempt ?? 1));
+      return {
+        kind: "transient_infra",
+        retryAt: new Date(now.getTime() + transientInfraRecoveryBackoffMs(attempt)),
+        attempt,
+        exhausted: attempt > TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES,
+      };
+    }
+    return null;
+  }
 
   const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
     readNonEmptyString(resultJson.transientRetryNotBefore) ??
@@ -3458,6 +3509,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             ? "recovery.reconcile_workspace_validation_failed"
           : input.recoveryCause === "configuration_incomplete"
             ? "recovery.reconcile_configuration_incomplete"
+          : input.recoveryCause === "transient_infra_exhausted"
+            ? "recovery.reconcile_transient_infra_exhausted"
           : input.recoveryCause === "execution_review_participant_recovery"
             ? "recovery.reconcile_execution_review_participant"
           : "recovery.reconcile_stranded_assigned_issue",
@@ -3529,14 +3582,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     classification: NonNullable<AdapterFailureRecoveryClassification>,
   ): NonNullable<LatestIssueRun> {
     const resultJson = parseObject(latestRun.resultJson);
-    const providerQuotaMetadata = classification.kind === "provider_quota"
+    const classificationMetadata = classification.kind === "provider_quota"
       ? {
           errorFamily: "provider_quota",
           retryNotBefore: classification.retryAt.toISOString(),
           transientRetryNotBefore: classification.retryAt.toISOString(),
           providerQuotaRetryNotBefore: classification.retryAt.toISOString(),
         }
-      : { errorFamily: "configuration_incomplete" };
+      : classification.kind === "transient_infra"
+        ? {
+            errorFamily: TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODE,
+            retryNotBefore: classification.retryAt.toISOString(),
+            transientRetryNotBefore: classification.retryAt.toISOString(),
+            transientInfraRecoveryAttempt: classification.attempt,
+          }
+        : { errorFamily: "configuration_incomplete" };
     const errorCode = classification.kind;
 
     return {
@@ -3544,16 +3604,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       errorCode,
       resultJson: {
         ...resultJson,
-        ...providerQuotaMetadata,
+        ...classificationMetadata,
         recoveryClassification: errorCode,
       },
     };
   }
 
-  async function scheduleProviderQuotaRecoveryMonitor(input: {
+  type MonitoredAdapterFailureClassification = Extract<
+    NonNullable<AdapterFailureRecoveryClassification>,
+    { kind: "provider_quota" } | { kind: "transient_infra" }
+  >;
+
+  async function scheduleAdapterFailureRecoveryMonitor(input: {
     issue: typeof issues.$inferSelect;
     latestRun: NonNullable<LatestIssueRun>;
-    classification: Extract<NonNullable<AdapterFailureRecoveryClassification>, { kind: "provider_quota" }>;
+    classification: MonitoredAdapterFailureClassification;
   }) {
     if (input.issue.status !== "in_progress" && input.issue.status !== "in_review") return null;
 
@@ -3564,16 +3629,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const retryTargetDescription = input.issue.status === "in_review"
       ? "the active review participant"
       : "the original assignee";
+    const isTransientInfra = input.classification.kind === "transient_infra";
+    const notes = input.classification.kind === "transient_infra"
+      ? `Transient adapter/infrastructure failure; retry ${retryTargetDescription} (attempt ` +
+        `${input.classification.attempt} of ${TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES}).`
+      : input.classification.parsedResetTime
+        ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
+        : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`;
     const policy = {
       ...(previousPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] }),
       monitor: {
         nextCheckAt: input.classification.retryAt.toISOString(),
-        notes: input.classification.parsedResetTime
-          ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
-          : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`,
+        notes,
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
-        serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+        serviceName: isTransientInfra
+          ? TRANSIENT_INFRA_MONITOR_SERVICE_NAME
+          : PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
         externalRef: input.latestRun.id,
         timeoutAt: null,
         maxAttempts: null,
@@ -3606,11 +3678,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        source: "recovery.provider_quota",
+        source: isTransientInfra ? "recovery.transient_infra" : "recovery.provider_quota",
         latestRunId: input.latestRun.id,
-        errorCode: "provider_quota",
+        errorCode: input.classification.kind,
         nextCheckAt: input.classification.retryAt.toISOString(),
-        parsedResetTime: input.classification.parsedResetTime,
+        ...(input.classification.kind === "transient_infra"
+          ? {
+              transientInfraAttempt: input.classification.attempt,
+              maxScheduledRetries: TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES,
+            }
+          : { parsedResetTime: input.classification.parsedResetTime }),
         targetAgentId,
       },
     });
@@ -3628,15 +3705,75 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return participant?.type === "agent" ? participant.agentId : null;
   }
 
-  function hasPendingProviderQuotaRecoveryMonitor(
+  function hasPendingAdapterFailureRecoveryMonitor(
     issue: typeof issues.$inferSelect,
     latestRun: LatestIssueRun,
     now: Date,
   ) {
     if (!latestRun || !issue.monitorNextCheckAt || issue.monitorNextCheckAt.getTime() <= now.getTime()) return false;
     const monitor = parseObject(parseObject(issue.executionPolicy).monitor);
-    return readNonEmptyString(monitor.serviceName) === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
-      readNonEmptyString(monitor.externalRef) === latestRun.id;
+    const serviceName = readNonEmptyString(monitor.serviceName);
+    const isAdapterFailureMonitor = serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME ||
+      serviceName === TRANSIENT_INFRA_MONITOR_SERVICE_NAME;
+    return isAdapterFailureMonitor && readNonEmptyString(monitor.externalRef) === latestRun.id;
+  }
+
+  // Counts how many scheduled transient-infra retries this issue/agent pair has already
+  // burned, so the backoff ladder keeps growing across runs instead of restarting at 2m
+  // every time the monitor produces a fresh failing run.
+  async function countPriorTransientInfraRecoveryRuns(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    currentRunId: string,
+  ) {
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES * 2 + 2);
+
+    let count = 0;
+    for (const row of rows) {
+      const classified = readNonEmptyString(parseObject(row.resultJson).recoveryClassification) ===
+        TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODE;
+      if (row.id === currentRunId) {
+        if (classified) count += 1;
+        continue;
+      }
+      if (!classified) break;
+      count += 1;
+    }
+    return count;
+  }
+
+  async function classifyAdapterFailureWithTransientAttempt(
+    issue: typeof issues.$inferSelect,
+    latestRun: NonNullable<LatestIssueRun>,
+    now: Date,
+  ) {
+    const firstPass = classifyAdapterFailureForRecovery(latestRun, now);
+    if (firstPass?.kind !== "transient_infra" || !latestRun.agentId) return firstPass;
+
+    const priorRetries = await countPriorTransientInfraRecoveryRuns(
+      issue.companyId,
+      issue.id,
+      latestRun.agentId,
+      latestRun.id,
+    );
+    return classifyAdapterFailureForRecovery(latestRun, now, {
+      transientInfraAttempt: priorRetries + 1,
+    });
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
@@ -3667,6 +3804,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
+      transientInfraMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
       skipped: 0,
@@ -3734,7 +3872,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const providerQuotaMonitorRun = issue.status === "in_review"
         ? participantLatestRunForRecovery
         : latestRun;
-      if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
+      if (hasPendingAdapterFailureRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
         result.skipped += 1;
         continue;
       }
@@ -3754,7 +3892,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
-        ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
+        ? await classifyAdapterFailureWithTransientAttempt(issue, latestRun, recoveryNow)
         : null;
       if (latestRun && adapterFailureClassification) {
         const targetAgentId = getAdapterFailureRecoveryTargetAgentId(issue);
@@ -3763,15 +3901,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (adapterFailureClassification.kind === "provider_quota") {
-          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+        if (
+          adapterFailureClassification.kind === "provider_quota" ||
+          (adapterFailureClassification.kind === "transient_infra" && !adapterFailureClassification.exhausted)
+        ) {
+          const monitored = await scheduleAdapterFailureRecoveryMonitor({
             issue,
             latestRun,
             classification: adapterFailureClassification,
           });
           if (monitored) {
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
-            result.providerQuotaMonitored += 1;
+            if (adapterFailureClassification.kind === "transient_infra") {
+              result.transientInfraMonitored += 1;
+            } else {
+              result.providerQuotaMonitored += 1;
+            }
             result.issueIds.push(issue.id);
             continue;
           }
@@ -3782,10 +3927,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
-            recoveryCause: "configuration_incomplete",
-            comment:
-              "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
-              "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
+            recoveryCause: adapterFailureClassification.kind === "transient_infra"
+              ? "transient_infra_exhausted"
+              : "configuration_incomplete",
+            comment: adapterFailureClassification.kind === "transient_infra"
+              ? `Paperclip retried this adapter failure on the transient-infrastructure backoff ladder ` +
+                `${TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES} times and it kept failing. ` +
+                "Moving the issue to `blocked` so a persistent credential/network fault is visible for intervention."
+              : "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
+                "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
@@ -3922,10 +4072,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         const participantAdapterFailureClassification = isUnsuccessfulTerminalIssueRun(participantLatestRun)
-          ? classifyAdapterFailureForRecovery(participantLatestRun, recoveryNow)
+          ? await classifyAdapterFailureWithTransientAttempt(issue, participantLatestRun, recoveryNow)
           : null;
-        if (participantAdapterFailureClassification?.kind === "provider_quota") {
-          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+        if (
+          participantAdapterFailureClassification?.kind === "provider_quota" ||
+          (participantAdapterFailureClassification?.kind === "transient_infra" &&
+            !participantAdapterFailureClassification.exhausted)
+        ) {
+          const monitored = await scheduleAdapterFailureRecoveryMonitor({
             issue,
             latestRun: participantLatestRun,
             classification: participantAdapterFailureClassification,
@@ -3935,24 +4089,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               participantLatestRun,
               participantAdapterFailureClassification,
             );
-            result.providerQuotaMonitored += 1;
+            if (participantAdapterFailureClassification.kind === "transient_infra") {
+              result.transientInfraMonitored += 1;
+            } else {
+              result.providerQuotaMonitored += 1;
+            }
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
           }
           continue;
         }
-        if (participantAdapterFailureClassification?.kind === "configuration_incomplete") {
+        if (
+          participantAdapterFailureClassification?.kind === "configuration_incomplete" ||
+          participantAdapterFailureClassification?.kind === "transient_infra"
+        ) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_review",
             latestRun: participantLatestRun,
-            recoveryCause: "configuration_incomplete",
+            recoveryCause: participantAdapterFailureClassification.kind === "transient_infra"
+              ? "transient_infra_exhausted"
+              : "configuration_incomplete",
             recoveryOwnerAgentId: participantAgentId,
-            comment:
-              "Paperclip classified the active review participant's latest adapter failure as " +
-              "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
-              "recorded instead of repeatedly requeueing the reviewer.",
+            comment: participantAdapterFailureClassification.kind === "transient_infra"
+              ? "Paperclip retried the active review participant's adapter failure on the " +
+                `transient-infrastructure backoff ladder ${TRANSIENT_INFRA_RECOVERY_MAX_SCHEDULED_RETRIES} times ` +
+                "and it kept failing. Moving the issue to `blocked` so a persistent credential/network fault " +
+                "is visible for intervention."
+              : "Paperclip classified the active review participant's latest adapter failure as " +
+                "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
+                "recorded instead of repeatedly requeueing the reviewer.",
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(
