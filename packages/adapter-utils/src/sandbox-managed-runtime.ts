@@ -277,26 +277,51 @@ export interface SandboxManagedRuntimeClient {
 }
 
 /**
+ * Which path grammar one side of a sync mapping speaks. Sandbox paths are always
+ * POSIX. Host paths follow the platform the server runs on, which is Win32 when
+ * Paperclip runs on Windows.
+ */
+export type SyncPathFlavour = "posix" | "host";
+
+/** Path helpers for a flavour. `host` is platform-native (`path`), not POSIX. */
+const pathFlavour = (flavour: SyncPathFlavour): path.PlatformPath =>
+  flavour === "host" ? path : path.posix;
+
+/**
  * Host-side complete-mediation guard for native sync operations. The orchestrator
  * authors every `targetPath`, but the native transport crosses the host↔sandbox
  * trust boundary, so we canonicalize and confine each mapping's source and target
  * to an orchestrator-owned root before handing the operation to a provider.
- * Absolute escapes and `..` traversal are rejected fail-closed. Sandbox and host
- * paths on the server are POSIX.
+ * Absolute escapes and `..` traversal are rejected fail-closed.
+ *
+ * Sandbox paths are POSIX. Host paths are platform-native, so on Windows they are
+ * Win32 (`C:\\Users\\...`), which `path.posix.isAbsolute` rejects. Each caller declares
+ * the flavour of each side. The parameter defaults to POSIX on both sides, so
+ * existing callers and their tests do not change.
  */
 export function assertSyncOperationsConfined(
   operations: SandboxSyncOperation[],
   roots: { sourceRoots: string[]; targetRoots: string[] },
+  flavours: { source: SyncPathFlavour; target: SyncPathFlavour } = { source: "posix", target: "posix" },
 ): void {
-  const confine = (candidate: string, allowed: string[], label: string): void => {
-    const normalized = path.posix.normalize(candidate);
-    if (!path.posix.isAbsolute(normalized) || normalized === ".." || normalized.includes("/../") || normalized.endsWith("/..")) {
+  const confine = (candidate: string, allowed: string[], label: string, flavour: SyncPathFlavour): void => {
+    const p = pathFlavour(flavour);
+    const normalized = p.normalize(candidate);
+    // A confined absolute path keeps no `..` segment after normalization. Any
+    // segment that survives escapes its root. Win32 accepts both separators.
+    const hasTraversal = normalized.split(/[\\/]/).includes("..");
+    if (!p.isAbsolute(normalized) || hasTraversal) {
       throw new Error(`sync operation ${label} path is not a confined absolute path: ${candidate}`);
     }
+    // Windows paths are case-insensitive. A case-sensitive compare rejects a
+    // legitimate root that differs only in case.
+    const caseInsensitive = flavour === "host" && path.sep === "\\";
+    const fold = (value: string): string => (caseInsensitive ? value.toLowerCase() : value);
+    const folded = fold(normalized);
     const within = allowed.some((root) => {
-      const normalizedRoot = path.posix.normalize(root);
-      const prefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
-      return normalized === normalizedRoot || normalized.startsWith(prefix);
+      const normalizedRoot = fold(p.normalize(root));
+      const prefix = normalizedRoot.endsWith(p.sep) ? normalizedRoot : `${normalizedRoot}${p.sep}`;
+      return folded === normalizedRoot || folded.startsWith(prefix);
     });
     if (!within) {
       throw new Error(`sync operation ${label} path escapes its confinement root: ${candidate}`);
@@ -304,8 +329,8 @@ export function assertSyncOperationsConfined(
   };
   for (const operation of operations) {
     for (const mapping of operation.files) {
-      confine(mapping.sourcePath, roots.sourceRoots, "source");
-      confine(mapping.targetPath, roots.targetRoots, "target");
+      confine(mapping.sourcePath, roots.sourceRoots, "source", flavours.source);
+      confine(mapping.targetPath, roots.targetRoots, "target", flavours.target);
     }
   }
 }
@@ -900,10 +925,11 @@ export async function prepareSandboxManagedRuntime(input: {
           ? { postUploadCommands: withRunTimeout(params.postUploadCommands) }
           : {}),
       }];
+      // Inbound: the source is a host path, the target is in the sandbox.
       assertSyncOperationsConfined(operations, {
         sourceRoots: params.sourceRoots,
         targetRoots: params.targetRoots,
-      });
+      }, { source: "host", target: "posix" });
       const upload = makeTransferProgress(
         input.onProgress,
         "Syncing",
@@ -1286,10 +1312,11 @@ export async function prepareSandboxManagedRuntime(input: {
                           kind: "file",
                         }],
                       }];
+                      // Outbound: the source is in the sandbox, the target is a host path.
                       assertSyncOperationsConfined(operations, {
                         sourceRoots: [runtimeRootDir],
                         targetRoots: [tempDir],
-                      });
+                      }, { source: "posix", target: "host" });
                       await input.client.syncOut!(operations);
                       await gitExport.finish(0, 0);
                     } else {
@@ -1340,10 +1367,11 @@ export async function prepareSandboxManagedRuntime(input: {
                       exclude: restoreExclude,
                     }],
                   }];
+                  // Outbound: the source is in the sandbox, the target is a host path.
                   assertSyncOperationsConfined(operations, {
                     sourceRoots: [workspaceRemoteDir],
                     targetRoots: [extractedDir],
-                  });
+                  }, { source: "posix", target: "host" });
                   await fs.mkdir(extractedDir, { recursive: true });
                   const workspaceRestore = makeTransferProgress(
                     restoreSink,

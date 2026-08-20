@@ -1851,6 +1851,82 @@ describe("sandbox managed runtime", () => {
     ).toThrow(/escapes its confinement root|not a confined absolute path/);
   });
 
+  // A Windows host stages its inbound tar in the platform temp directory. That is a
+  // Win32 absolute path. POSIX confinement rejected Paperclip's own staging path and
+  // stopped every sandbox run on a Windows host:
+  // "sync operation source path is not a confined absolute path:
+  //  C:\Users\...\Temp\paperclip-sandbox-sync-XXXXXX\workspace.tar".
+  it("confines a platform-native HOST source path for an inbound operation", () => {
+    const win32 = process.platform === "win32";
+    const hostRoot = win32
+      ? "C:\\Users\\example\\AppData\\Local\\Temp\\paperclip-sandbox-sync-Tx5GSy"
+      : "/tmp/paperclip-sandbox-sync-Tx5GSy";
+    const hostTar = win32 ? `${hostRoot}\\workspace.tar` : `${hostRoot}/workspace.tar`;
+    const sandboxRoot = "/opt/paperclip/runtime";
+
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{
+          operationId: "inbound",
+          files: [{ sourcePath: hostTar, targetPath: `${sandboxRoot}/workspace.tar`, kind: "file" as const }],
+        }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "host", target: "posix" },
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects a host escape and rejects traversal in each flavour", () => {
+    const win32 = process.platform === "win32";
+    const hostRoot = win32 ? "C:\\temp\\stage" : "/tmp/stage";
+    const sep = win32 ? "\\" : "/";
+    const outsideHost = win32 ? "C:\\Windows\\System32\\config\\SAM" : "/etc/passwd";
+    const sandboxRoot = "/opt/paperclip/runtime";
+
+    // The host source is outside its declared root.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: outsideHost, targetPath: `${sandboxRoot}/x.tar`, kind: "file" as const }] }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "host", target: "posix" },
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+
+    // The host source uses `..` traversal.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: `${hostRoot}${sep}..${sep}..${sep}secrets.tar`, targetPath: `${sandboxRoot}/x.tar`, kind: "file" as const }] }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "host", target: "posix" },
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+
+    // The sandbox source of an outbound operation uses `..` traversal.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: `${sandboxRoot}/../../etc/passwd`, targetPath: `${hostRoot}${sep}out.tar`, kind: "file" as const }] }],
+        { sourceRoots: [sandboxRoot], targetRoots: [hostRoot] },
+        { source: "posix", target: "host" },
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+  });
+
+  it("keeps POSIX rules on both sides when the caller gives no flavours", () => {
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: "/a/x.tar", targetPath: "/b/x.tar", kind: "file" as const }] }],
+        { sourceRoots: ["/a"], targetRoots: ["/b"] },
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: "/etc/passwd", targetPath: "/b/x.tar", kind: "file" as const }] }],
+        { sourceRoots: ["/a"], targetRoots: ["/b"] },
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+  });
+
   // Regression lock: a representative `codex_local` start stages its inbound bytes
   // as TWO `syncIn` operations. The git-history and workspace-overlay tars share
   // ONE merged operation (one native `uploadFiles` round-trip that carries both
