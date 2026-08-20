@@ -43,16 +43,57 @@ export function SetupPanel({
           onUpdateConfig={onUpdateConfig}
         />
       )}
+      {appDefinitionSlug(galleryEntry) === "posthog" && (
+        <PostHogConfigurationSection connection={connection} />
+      )}
       {hasOAuthSignIn && (
         <OAuthConnectionSection
           connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          providerName={appDefinitionSlug(galleryEntry) === "notion" ? "Notion" : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
+          providerName={appDefinitionSlug(galleryEntry) === "notion"
+            ? "Notion"
+            : appDefinitionSlug(galleryEntry) === "posthog"
+              ? "PostHog"
+              : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
           disabled={oauthStartDisabled}
           onStart={onStartOAuth}
         />
       )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
+  );
+}
+
+function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
+  const raw = connection.config?.methodConfig;
+  const config = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? "PostHog sign-in" : "Personal API key";
+  const features = typeof config.features === "string" ? config.features : "None";
+  const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
+  const rows = [
+    ["Connection method", method],
+    ["Project ID", typeof config.projectId === "string" ? config.projectId : "Not set"],
+    ["Read-only mode", config.readOnly === true ? "On" : "Off"],
+    ["Feature groups", features],
+    ["Individual tools", tools],
+    ["Response mode", typeof config.mode === "string" ? config.mode : "tools"],
+  ];
+  return (
+    <section className="rounded-xl border border-border bg-card px-5 py-4">
+      <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">
+        This connection is pinned to the project and analytics surface below.
+      </p>
+      <dl className="mt-4 divide-y divide-border">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid gap-1 py-2 sm:grid-cols-3 sm:gap-4">
+            <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+            <dd className="break-words text-sm text-foreground sm:col-span-2">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 

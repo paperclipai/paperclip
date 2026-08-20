@@ -16,12 +16,14 @@ import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
   AppDefinition,
+  ConnectionMethodDef,
   ConnectToolAppResult,
+  FieldDef,
   ToolApplication,
   ToolConnection,
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
-import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod } from "@paperclipai/shared";
+import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods } from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -91,6 +93,15 @@ function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
 
 function isGoogleSheetsEntry(entry: AppDefinition | null): boolean {
   return entry?.slug === "google-sheets";
+}
+
+function defaultMethodConfig(method: ConnectionMethodDef | null): Record<string, string | boolean> {
+  if (!method) return {};
+  return Object.fromEntries(
+    [...(method.tenantFields ?? []), ...(method.extensionFields ?? [])]
+      .filter((field) => field.defaultValue !== undefined)
+      .map((field) => [field.key, field.defaultValue!]),
+  );
 }
 
 function appSourceSlug(application: ToolApplication): string | null {
@@ -165,6 +176,8 @@ export function AppsConnect() {
   const [linkNeedsKey, setLinkNeedsKey] = useState(false);
   const [linkKey, setLinkKey] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [connectionMethodKey, setConnectionMethodKey] = useState("");
+  const [configValues, setConfigValues] = useState<Record<string, string | boolean>>({});
   const [googleSheetsLinks, setGoogleSheetsLinks] = useState("");
   const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null);
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
@@ -186,6 +199,8 @@ export function AppsConnect() {
     setLinkNeedsKey(false);
     setLinkKey("");
     setCredentials({});
+    setConnectionMethodKey("");
+    setConfigValues({});
     setGoogleSheetsLinks("");
     setGoogleSheetsError(null);
     setConnectResult(null);
@@ -274,9 +289,14 @@ export function AppsConnect() {
         const trimmedGalleryName = galleryName.trim();
         return toolsApi.connectApp(selectedCompanyId!, {
           galleryKey: connectEntry.slug,
+          ...(connectionMethodKey ? { connectionMethodKey } : {}),
           name: trimmedGalleryName || connectEntry.name,
           credentialValues: credentials,
-          configValues: isGoogleSheetsEntry(connectEntry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
+          configValues: isGoogleSheetsEntry(connectEntry)
+            ? { allowedSpreadsheetIds: sheetIds }
+            : Object.keys(configValues).length > 0
+              ? configValues
+              : undefined,
           applicationId: prefill.applicationId,
         });
       }
@@ -345,8 +365,9 @@ export function AppsConnect() {
 
     const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.slug === requestedAppKey);
     const method = requestedEntry ? getAvailableConnectionMethod(requestedEntry) : null;
+    const methods = requestedEntry ? getAvailableConnectionMethods(requestedEntry) : [];
     const directOAuth = method?.auth === "oauth" && isMcpDirectOAuthConnectSlug(requestedEntry?.slug);
-    const unsupportedOAuth = method?.auth === "oauth" && !directOAuth;
+    const unsupportedOAuth = methods.length === 1 && method?.auth === "oauth" && !directOAuth;
     if (!requestedEntry || unsupportedOAuth || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
@@ -362,6 +383,10 @@ export function AppsConnect() {
       setLinkNeedsKey(false);
       setLinkKey("");
       setCredentials({});
+      const methods = getAvailableConnectionMethods(requestedEntry);
+      const initialMethod = methods.length === 1 ? methods[0]! : null;
+      setConnectionMethodKey(initialMethod?.key ?? "");
+      setConfigValues(defaultMethodConfig(initialMethod));
       setGoogleSheetsLinks("");
       setGoogleSheetsError(null);
       setConnectResult(null);
@@ -507,6 +532,8 @@ export function AppsConnect() {
     : null;
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
+    : entry && getAvailableConnectionMethods(entry).length > 1
+      ? ["Pick app", "Choose connection", "Choose actions", "Choose access", "Install tools"]
     : isGoogleSheetsEntry(entry)
       ? ["Pick app", "Share sheet", "Choose actions", "Choose access", "Install tools"]
       : STEP_LABELS;
@@ -558,6 +585,10 @@ export function AppsConnect() {
             setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
+            const methods = getAvailableConnectionMethods(picked);
+            const initialMethod = methods.length === 1 ? methods[0]! : null;
+            setConnectionMethodKey(initialMethod?.key ?? "");
+            setConfigValues(defaultMethodConfig(initialMethod));
             setGoogleSheetsLinks("");
             setGoogleSheetsError(null);
             setConnectResult(null);
@@ -593,6 +624,14 @@ export function AppsConnect() {
           onNameChange={setGalleryName}
           values={credentials}
           onChange={setCredentials}
+          methodKey={connectionMethodKey}
+          onMethodChange={(nextMethod) => {
+            setConnectionMethodKey(nextMethod.key);
+            setCredentials({});
+            setConfigValues(defaultMethodConfig(nextMethod));
+          }}
+          configValues={configValues}
+          onConfigChange={setConfigValues}
           googleSheetsLinks={googleSheetsLinks}
           googleSheetsError={googleSheetsError}
           onGoogleSheetsLinksChange={(next) => {
@@ -978,8 +1017,9 @@ function GalleryStep({
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {filtered.map((app) => {
           const copy = appCopyFor(app.slug, app.description);
-          const oauth = getAvailableConnectionMethod(app)?.auth === "oauth";
-          const oauthBlocked = oauth && !isMcpDirectOAuthConnectSlug(app.slug);
+          const methods = getAvailableConnectionMethods(app);
+          const oauth = methods[0]?.auth === "oauth";
+          const oauthBlocked = methods.length === 1 && oauth && !isMcpDirectOAuthConnectSlug(app.slug);
           const unavailable = app.availability?.available === false;
           return (
             <button
@@ -1336,6 +1376,10 @@ function KeyStep({
   onNameChange,
   values,
   onChange,
+  methodKey,
+  onMethodChange,
+  configValues,
+  onConfigChange,
   googleSheetsLinks,
   googleSheetsError,
   onGoogleSheetsLinksChange,
@@ -1348,6 +1392,10 @@ function KeyStep({
   onNameChange: (next: string) => void;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  methodKey: string;
+  onMethodChange: (method: ConnectionMethodDef) => void;
+  configValues: Record<string, string | boolean>;
+  onConfigChange: (next: Record<string, string | boolean>) => void;
   googleSheetsLinks: string;
   googleSheetsError: string | null;
   onGoogleSheetsLinksChange: (next: string) => void;
@@ -1356,7 +1404,10 @@ function KeyStep({
   onConnect: () => void;
 }) {
   const copy = appCopyFor(entry.slug, entry.description);
-  const method = getAvailableConnectionMethod(entry);
+  const methods = getAvailableConnectionMethods(entry);
+  const method = methods.length > 1 && !methodKey
+    ? null
+    : getAvailableConnectionMethod(entry, methodKey || null);
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
     configPath: credentialConfigPath(field),
@@ -1365,6 +1416,18 @@ function KeyStep({
   const allFilled = fields.every(
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
+  const configFields = [...(method?.tenantFields ?? []), ...(method?.extensionFields ?? [])];
+  const configFilled = configFields.every((field) => {
+    if (!field.required) return true;
+    const value = configValues[field.key];
+    return typeof value === "boolean" || (typeof value === "string" && value.trim().length > 0);
+  });
+  const alternativeKeys = method?.configRequirements?.atLeastOneOf ?? [];
+  const configRequirementMet = alternativeKeys.length === 0 || alternativeKeys.some((key) => {
+    const value = configValues[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+  const hasMethodSelection = methods.length <= 1 || Boolean(methodKey);
   const robotEmail = entry.availability?.robotEmail ?? null;
   const unavailable = entry.availability?.available === false;
 
@@ -1455,11 +1518,39 @@ function KeyStep({
       </div>
 
       <div className="mt-8 space-y-6">
+        {methods.length > 1 && (
+          <div>
+            <label className="text-sm font-medium text-foreground">How do you want to connect?</label>
+            <div className="mt-2 inline-flex rounded-lg bg-muted p-1">
+              {methods.map((candidate) => (
+                <SegmentedOption
+                  key={candidate.key}
+                  label={candidate.label ?? (candidate.auth === "oauth" ? `Sign in with ${entry.name}` : "Use an API key")}
+                  selected={candidate.key === methodKey}
+                  onClick={() => onMethodChange(candidate)}
+                />
+              ))}
+            </div>
+            {!method && <p className="mt-2 text-xs text-muted-foreground">Choose a method to continue.</p>}
+          </div>
+        )}
+
         <ConnectionNameField name={name} onNameChange={onNameChange} />
 
-        {fields.length === 0 ? (
+        {configFields.map((field) => (
+          <MethodConfigField
+            key={field.key}
+            field={field}
+            value={configValues[field.key]}
+            onChange={(value) => onConfigChange({ ...configValues, [field.key]: value })}
+          />
+        ))}
+
+        {method && fields.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            This app doesn’t need a key. Just connect to continue.
+            {method.auth === "oauth"
+              ? `You’ll continue to ${entry.name} to sign in securely.`
+              : "This app doesn’t need a key. Just connect to continue."}
           </p>
         ) : (
           fields.map((field) => (
@@ -1490,15 +1581,17 @@ function KeyStep({
           ))
         )}
 
-        <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
-          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          <div>
-            <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
-            <div className="text-xs text-muted-foreground">
-              You can replace it anytime from this app’s page.
+        {method?.auth === "api_key" && (
+          <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
+            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <div>
+              <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
+              <div className="text-xs text-muted-foreground">
+                You can replace it anytime from this app’s page.
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="mt-8 flex items-center justify-between">
@@ -1507,14 +1600,68 @@ function KeyStep({
         </Button>
         <div className="flex items-center gap-3">
           <span className="hidden text-xs text-muted-foreground sm:inline">
-            We’ll check the key before turning anything on.
+            {method?.auth === "oauth"
+              ? "You’ll sign in before anything turns on."
+              : "We’ll check the key before turning anything on."}
           </span>
-          <Button onClick={onConnect} disabled={submitting || !allFilled}>
+          <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !configFilled || !configRequirementMet}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {submitting ? "Checking…" : "Connect"}
+            {submitting ? "Checking…" : method?.auth === "oauth" ? "Continue to sign in" : "Connect"}
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function MethodConfigField({
+  field,
+  value,
+  onChange,
+}: {
+  field: FieldDef;
+  value: string | boolean | undefined;
+  onChange: (value: string | boolean) => void;
+}) {
+  if (field.type === "checkbox") {
+    return (
+      <div className="flex items-start justify-between gap-4 rounded-lg border border-border p-4">
+        <div>
+          <div className="text-sm font-medium text-foreground">{field.label}</div>
+          {field.helperMd && <div className="mt-1 text-xs text-muted-foreground">{field.helperMd}</div>}
+        </div>
+        <ToggleSwitch checked={value === true} onCheckedChange={onChange} />
+      </div>
+    );
+  }
+  return (
+    <div>
+      <label className="text-sm font-medium text-foreground">{field.label}</label>
+      {field.type === "textarea" ? (
+        <Textarea
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.placeholder}
+          className="mt-2 min-h-24"
+        />
+      ) : field.type === "select" ? (
+        <select
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+          className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
+        >
+          <option value="" disabled>Select an option</option>
+          {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      ) : (
+        <Input
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.placeholder}
+          className="mt-2 h-11"
+        />
+      )}
+      {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">{field.helperMd}</p>}
     </div>
   );
 }

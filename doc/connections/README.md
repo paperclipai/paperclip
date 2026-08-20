@@ -2,6 +2,8 @@
 
 Audience: internal engineers and product contributors working on integrations.
 
+Provider notes: [PostHog](./POSTHOG.md).
+
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.
 

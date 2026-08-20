@@ -23,6 +23,7 @@ const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
+const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
 
 vi.mock("@/api/tools", () => ({
@@ -209,6 +210,50 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("requires a PostHog method and submits the selected project scope", async () => {
+    mockParams.appKey = "posthog";
+    listGalleryMock.mockResolvedValueOnce({ apps: [POSTHOG] });
+    await render();
+
+    expect(container.textContent).toContain("How do you want to connect?");
+    expect(buttonByText("Sign in with PostHog")?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttonByText("Use a personal API key")?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      buttonByText("Use a personal API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const projectInput = container.querySelector<HTMLInputElement>('input[placeholder="12345"]');
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(projectInput).toBeTruthy();
+    expect(keyInput).toBeTruthy();
+    await act(async () => {
+      setInputValue(projectInput!, "12345");
+      setInputValue(keyInput!, "phx_test-key");
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", {
+      galleryKey: "posthog",
+      connectionMethodKey: "mcp-api-key",
+      name: "PostHog",
+      credentialValues: { "credentials.authorization": "phx_test-key" },
+      configValues: {
+        projectId: "12345",
+        readOnly: true,
+        features: "insights,error_tracking,flags,experiments",
+        mode: "tools",
+      },
+      applicationId: undefined,
+    });
   });
 
   it("auto-starts the allowlisted Notion source deep link and opens provider sign-in", async () => {

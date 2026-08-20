@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionTokenRequestSchema,
+  connectToolAppSchema,
   createToolConnectionSchema,
   startConnectionAuthorizationSchema,
   toolCredentialSecretRefSchema,
@@ -46,6 +47,18 @@ describe("tool access validators", () => {
     if (!parsed.success) {
       expect(parsed.error.issues[0]?.message).toContain("credentialSecretRefs");
     }
+  });
+
+  it("keeps app method configuration separate from secrets", () => {
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "posthog",
+      connectionMethodKey: "mcp-api-key",
+      configValues: { projectId: "12345", readOnly: true, features: "insights" },
+    }).success).toBe(true);
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "posthog",
+      configValues: { projectId: "12345", apiKey: "phx_raw" },
+    }).success).toBe(false);
   });
 
   it("accepts secret references for connection credentials", () => {

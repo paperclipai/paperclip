@@ -4,7 +4,7 @@ import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { appSourceConnectHref } from "./app-connect-policy";
 
 /** Popular gallery keys surfaced first in the Browse store (PAP-13254, door 1). */
-export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
+export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "posthog", "linear"];
 
 /** Deep-link into the Connect wizard's bring-your-own-tool URL flow. */
 export const BYO_CONNECT_HREF = "/apps/connect?byo=1";

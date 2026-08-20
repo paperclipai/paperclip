@@ -260,11 +260,14 @@ export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCom
 
 export const connectToolAppSchema = z.object({
   galleryKey: z.string().trim().min(1).max(120).optional(),
+  connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().uuid().optional(),
+}).superRefine((value, ctx) => {
+  if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
 }).refine(
   (value) => Boolean(value.galleryKey) !== Boolean(value.link),
   { message: "Provide exactly one of galleryKey or link" },

@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/db";
 import type {
   AppDefinition,
+  ConnectionMethodDef,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
   ConnectionTokenRequest,
@@ -107,7 +108,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
-import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
@@ -452,14 +453,24 @@ export function googleSheetsRobotEmailFromEnv(
   return { available: false, reason: "Google Sheets is not available on this instance yet." };
 }
 
-function connectionMethodFor(app: AppDefinition) {
-  const method = getAvailableConnectionMethod(app);
+function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
+  const method = getAvailableConnectionMethod(app, methodKey);
   if (!method) throw unprocessable("This app does not have an available connection method");
   return method;
 }
 
-function credentialFieldsFor(app: AppDefinition) {
-  const method = connectionMethodFor(app);
+function connectionMethodForConnection(
+  app: AppDefinition,
+  connection: typeof toolConnections.$inferSelect,
+) {
+  const methodKey = typeof connection.config.connectionMethodKey === "string"
+    ? connection.config.connectionMethodKey
+    : null;
+  return connectionMethodFor(app, methodKey);
+}
+
+function credentialFieldsFor(app: AppDefinition, methodKey?: string | null) {
+  const method = connectionMethodFor(app, methodKey);
   return (method.credentialFields ?? []).map((field) => ({
     label: field.label,
     configPath: credentialConfigPath(field),
@@ -469,6 +480,75 @@ function credentialFieldsFor(app: AppDefinition) {
     key: method.keyPlacement?.name,
     prefix: method.keyPlacement?.prefix,
   }));
+}
+
+export function normalizeConnectionMethodConfig(
+  method: ConnectionMethodDef,
+  configValues: Record<string, unknown> | undefined,
+): { values: Record<string, string | boolean>; url?: string; headers?: Record<string, string> } {
+  const fields = [...(method.tenantFields ?? []), ...(method.extensionFields ?? [])];
+  const allowedKeys = new Set(fields.map((field) => field.key));
+  for (const key of Object.keys(configValues ?? {})) {
+    if (!allowedKeys.has(key)) throw badRequest(`Unknown connection setting: ${key}`);
+  }
+
+  const values: Record<string, string | boolean> = {};
+  for (const field of fields) {
+    const raw = configValues?.[field.key] ?? field.defaultValue;
+    if (field.type === "checkbox") {
+      if (raw !== undefined && typeof raw !== "boolean") throw badRequest(`${field.label} must be true or false`);
+      if (raw !== undefined) values[field.key] = raw;
+      continue;
+    }
+    if (raw !== undefined && typeof raw !== "string") throw badRequest(`${field.label} must be text`);
+    let value = raw?.trim() ?? "";
+    if (field.transport?.format === "csv") {
+      value = Array.from(new Set(value.split(/[\n,]/g).map((entry) => entry.trim()).filter(Boolean))).join(",");
+    }
+    if (field.required && !value) throw badRequest(`Missing connection setting: ${field.label}`);
+    if (!value) continue;
+    if (field.validation?.maxLength && value.length > field.validation.maxLength) {
+      throw badRequest(`${field.label} must be at most ${field.validation.maxLength} characters`);
+    }
+    if (field.validation?.pattern && !new RegExp(field.validation.pattern).test(value)) {
+      throw badRequest(`${field.label} has an invalid value`);
+    }
+    if (field.type === "select" && !field.options?.some((option) => option.value === value)) {
+      throw badRequest(`${field.label} has an invalid option`);
+    }
+    values[field.key] = value;
+  }
+  for (const keys of method.configRequirements?.atLeastOneOf ? [method.configRequirements.atLeastOneOf] : []) {
+    if (!keys.some((key) => typeof values[key] === "string" && values[key].length > 0)) {
+      throw badRequest(`Provide at least one of: ${keys.join(", ")}`);
+    }
+  }
+
+  const endpoint = method.defaults?.serverUrl ? new URL(method.defaults.serverUrl) : null;
+  const headers: Record<string, string> = {};
+  for (const field of fields) {
+    const transport = field.transport;
+    const value = values[field.key];
+    if (!transport || value === undefined || (value === false && transport.omitFalse)) continue;
+    const serialized = typeof value === "boolean" ? String(value) : value;
+    if (transport.location === "query") endpoint?.searchParams.set(transport.name, serialized);
+    else headers[transport.name] = serialized;
+  }
+  return {
+    values,
+    ...(endpoint ? { url: endpoint.toString() } : {}),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+export function projectedConnectionHeaders(connection: typeof toolConnections.$inferSelect): Record<string, string> {
+  const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+    ? connection.config.sourceTemplateKey
+    : null;
+  const app = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+  if (!app) return {};
+  const method = connectionMethodForConnection(app, connection);
+  return normalizeConnectionMethodConfig(method, asRecord(connection.config.methodConfig)).headers ?? {};
 }
 
 function googleSheetsAllowedSpreadsheetIds(configValues: Record<string, unknown> | undefined): string[] {
@@ -1273,6 +1353,7 @@ export function classifyRisk(tool: McpToolDescriptor, sourceTemplateKey?: string
   const annotations = tool.annotations ?? {};
   if (annotations.destructiveHint === true || annotations.destructive === true) return "destructive";
   const normalizedToolName = normalizedProviderToolName(tool.name);
+  if (sourceTemplateKey === "posthog" && normalizedToolName === "exec") return "destructive";
   // Notion's hosted MCP catalog contains mutations whose names do not use one
   // of the generic create/update/delete verbs (move, duplicate, and convert).
   // Keep all reviewed tools explicit so provider changes are visible in code,
@@ -1282,6 +1363,9 @@ export function classifyRisk(tool: McpToolDescriptor, sourceTemplateKey?: string
   if (sourceTemplateKey === "notion" && NOTION_READ_TOOLS.has(normalizedToolName)) return "read";
   if (verbMatches(tool.name, "delete|remove|destroy|unpublish")) return "destructive";
   if (verbMatches(tool.name, "create|update|write|set|send|publish|post|mutate|mark|archive")) return "write";
+  // PostHog exposes a broad and evolving catalog. Unknown tools must never be
+  // silently treated as reads; provider annotations can opt known reads in.
+  if (sourceTemplateKey === "posthog") return annotations.readOnlyHint === true ? "read" : "write";
   return "read";
 }
 
@@ -2863,7 +2947,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
-    const headers = await resolveCredentialHeaders(connection);
+    const headers = { ...projectedConnectionHeaders(connection), ...await resolveCredentialHeaders(connection) };
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
     const response = await fetch(endpoint, {
       method: "POST",
@@ -3038,11 +3122,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const existingByName = new Map(existingRows.map((entry) => [entry.toolName, entry]));
     const updatedEntries: ToolCatalogEntry[] = [];
     let quarantinedCount = 0;
-    const quarantineOnRefresh = shouldQuarantineNewEntries(connection) && connection.status === "active";
-    const safeDefault = asRecord(connection.config).safeDefault === true;
     const sourceTemplateKey = typeof asRecord(connection.config).sourceTemplateKey === "string"
       ? String(asRecord(connection.config).sourceTemplateKey)
       : null;
+    const quarantineOnRefresh = shouldQuarantineNewEntries(connection)
+      && (connection.status === "active" || sourceTemplateKey === "posthog");
+    const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
       const riskLevel = classifyRisk(descriptor, sourceTemplateKey);
       const hash = descriptorHash(descriptor, riskLevel);
@@ -4043,8 +4128,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return null;
   }
 
-  async function oauthProviderEndpoints(app: AppDefinition): Promise<OAuthProviderEndpoints> {
-    const method = connectionMethodFor(app);
+  async function oauthProviderEndpoints(app: AppDefinition, methodKey?: string | null): Promise<OAuthProviderEndpoints> {
+    const method = connectionMethodFor(app, methodKey);
     if (method.auth !== "oauth") throw unprocessable("This app does not support sign in");
     let authorizationUrl = method.defaults?.authorizationEndpoint ?? null;
     let tokenUrl = method.defaults?.tokenEndpoint ?? null;
@@ -4070,7 +4155,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const smokeLabEndpoints = smokeLabOAuthEndpoints(connection, redirectUri);
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
-    const galleryMethod = galleryEntry ? connectionMethodFor(galleryEntry) : null;
+    const galleryMethod = galleryEntry ? connectionMethodForConnection(galleryEntry, connection) : null;
     const hasCompleteGalleryEndpointHints = Boolean(
       galleryMethod?.defaults?.authorizationEndpoint && galleryMethod.defaults.tokenEndpoint,
     );
@@ -4079,8 +4164,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       : null;
     const endpoints = smokeLabEndpoints
       ?? discovered
-      ?? (galleryEntry && connectionMethodFor(galleryEntry).auth === "oauth"
-        ? await oauthProviderEndpoints(galleryEntry)
+      ?? (galleryEntry && galleryMethod?.auth === "oauth"
+        ? await oauthProviderEndpoints(galleryEntry, galleryMethod.key)
         : await discoverOAuthEndpoints(connection, challenge));
     if (!endpoints) throw unprocessable("This app connection does not advertise OAuth sign in");
     assertNotSmokeLabOAuthEndpoints(connection, endpoints);
@@ -4091,7 +4176,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     if (!sourceTemplateKey) throw unprocessable("This app connection was not created from the app gallery");
     const galleryEntry = getConnectableAppDefinition(sourceTemplateKey);
-    if (!galleryEntry || connectionMethodFor(galleryEntry).auth !== "oauth") {
+    if (!galleryEntry || connectionMethodForConnection(galleryEntry, connection).auth !== "oauth") {
       throw unprocessable("This app connection does not use sign in");
     }
     return galleryEntry;
@@ -4362,7 +4447,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         client: await oauthClientForConnection(input.connection, input.endpoints.provider, input.actor),
       };
     }
-    const method = input.galleryEntry ? connectionMethodFor(input.galleryEntry) : null;
+    const method = input.galleryEntry ? connectionMethodForConnection(input.galleryEntry, input.connection) : null;
     if (!method?.ownershipModes.includes("dcr")) {
       throw unprocessable(`OAuth client id is not configured for ${input.endpoints.provider}`);
     }
@@ -4839,13 +4924,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
-    const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
+    if (!galleryEntry && input.connectionMethodKey) throw badRequest("Connection method selection requires a gallery app");
+    if (galleryEntry && getAvailableConnectionMethods(galleryEntry).length > 1 && !input.connectionMethodKey) {
+      throw badRequest("Choose a connection method for this app");
+    }
+    const method = galleryEntry ? connectionMethodFor(galleryEntry, input.connectionMethodKey) : null;
     const transport = method?.transport ?? "mcp_remote";
+    const normalizedMethodConfig = galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY || !method
+      ? null
+      : normalizeConnectionMethodConfig(method, input.configValues);
     const baseConfig = transport === "mcp_remote"
-      ? { url: method?.defaults?.serverUrl ?? input.link ?? "" }
+      ? { url: normalizedMethodConfig?.url ?? method?.defaults?.serverUrl ?? input.link ?? "" }
       : { templateId: method?.defaults?.templateKey };
     let config: Record<string, unknown> = galleryEntry
-      ? { ...baseConfig, sourceTemplateKey: galleryEntry.slug, quarantineNewEntries: true }
+      ? {
+          ...baseConfig,
+          sourceTemplateKey: galleryEntry.slug,
+          connectionMethodKey: method?.key,
+          methodConfig: normalizedMethodConfig?.values ?? {},
+          quarantineNewEntries: true,
+          ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
+        }
       : { ...baseConfig, quarantineNewEntries: true };
     if (galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY) {
       const availability = googleSheetsRobotEmailFromEnv();
@@ -4877,7 +4976,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
 
     try {
-      const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : linkCredentialFields(credentialValues);
+      const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry, method?.key) : linkCredentialFields(credentialValues);
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
         if (!value && field.required !== false) {
@@ -4952,6 +5051,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (revivedConnectionPrevious) {
         [connectionRow] = await db.update(toolConnections).set({
           name,
+          authKind: method?.auth ?? "none",
           transport,
           status: "draft",
           enabled: false,
@@ -4970,7 +5070,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           name,
           uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name, connectionId),
           connectionKind: "managed",
-          authKind: galleryEntry ? connectionMethodFor(galleryEntry).auth : "none",
+          authKind: method?.auth ?? "none",
           transport,
           status: "draft",
           enabled: false,
@@ -4985,14 +5085,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await syncCredentialBindings(connectionRow);
       await ensureRuntimeSlot(connectionRow);
 
-      if (galleryEntry && connectionMethodFor(galleryEntry).auth === "oauth") {
+      if (galleryEntry && method?.auth === "oauth") {
         return {
           connectionId: connectionRow.id,
           application: toApplication(applicationRow),
           connection: toConnection(connectionRow),
           catalog: [],
           actions: { readOnly: [], canMakeChanges: [] },
-          suggestedDefaults: recommendedDefaultsForApp(galleryEntry),
+          suggestedDefaults: recommendedDefaultsForApp(galleryEntry, method.key),
           auth: { kind: "oauth", startUrl: null },
         };
       }
@@ -5027,7 +5127,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         connection: refresh.connection,
         catalog: refresh.catalog,
         actions: groupedActions(refresh.catalog),
-        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
+        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry, method?.key) : {
           access: "all_agents",
           askFirstRiskLevels: ["write", "destructive"],
         },
@@ -5401,7 +5501,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
-    const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : [
+    const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key) : [
       {
         label: "App key",
         configPath: "credentials.authorization",
@@ -5736,7 +5836,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         connection: toConnection(connection),
         catalog,
         actions: groupedActions(catalog),
-        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+        suggestedDefaults: galleryEntry
+          ? recommendedDefaultsForApp(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
+          : { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
         auth: null,
       };
     }
@@ -5801,7 +5903,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       connection: refresh.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
-      suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
+      suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(
+        galleryEntry,
+        connectionMethodForConnection(galleryEntry, connection).key,
+      ) : {
         access: "all_agents",
         askFirstRiskLevels: ["write", "destructive"],
       },

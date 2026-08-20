@@ -209,8 +209,8 @@ async function createRemoteMcpTool(
     status: input.connectionStatus ?? "active",
     enabled: input.connectionEnabled ?? true,
     healthStatus: input.healthStatus ?? "ok",
-    config: { url: input.url ?? "https://mcp.example.test/mcp" },
-    transportConfig: { url: input.url ?? "https://mcp.example.test/mcp" },
+    config: { url: input.url ?? "https://mcp.example.test/mcp", ...(input.connectionConfig ?? {}) },
+    transportConfig: { url: input.url ?? "https://mcp.example.test/mcp", ...(input.connectionConfig ?? {}) },
     credentialRefs: input.credentialRefs ?? [],
     credentialSecretRefs: input.credentialSecretRefs ?? [],
   }).returning();
@@ -1455,6 +1455,7 @@ rl.on("line", (line) => {
     });
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {
       expect(fakeRequest.headers.authorization).toBe(`Bearer ${credentialValue}`);
+      expect(fakeRequest.headers["x-posthog-project-id"]).toBe("12345");
       const params = fakeRequest.body?.params as Record<string, unknown>;
       const args = params.arguments as Record<string, unknown>;
       return {
@@ -1490,6 +1491,16 @@ rl.on("line", (line) => {
           required: true,
           label: "Remote MCP token",
         }],
+        connectionConfig: {
+          sourceTemplateKey: "posthog",
+          connectionMethodKey: "mcp-api-key",
+          methodConfig: {
+            projectId: "12345",
+            readOnly: true,
+            features: "insights",
+            mode: "tools",
+          },
+        },
       });
       await allowAllToolsForAgent(db, company.id, agent.id);
       const gateway = createTestToolGatewayService(db);

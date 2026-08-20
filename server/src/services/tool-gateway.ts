@@ -54,6 +54,7 @@ import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-di
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { projectedConnectionHeaders } from "./tool-access.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -3050,7 +3051,13 @@ export function createToolGatewayService(
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
     const endpoint = await assertRemoteEndpointAllowed(connection.config ?? {});
-    const credentialHeaders = await resolveCredentialHeaders(connection);
+    // Method-defined headers are trusted catalog configuration. Treat them as
+    // managed headers so callers cannot override the scope that was reviewed
+    // during tools/list. Credentials remain authoritative on collisions.
+    const credentialHeaders = {
+      ...projectedConnectionHeaders(connection),
+      ...await resolveCredentialHeaders(connection),
+    };
     const { headers, summary: headerSummary } = buildRemoteHeaders({
       session,
       connection,
