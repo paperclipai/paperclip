@@ -461,6 +461,58 @@ describe("plugin worker manager duplex channel route", () => {
   });
 
   // -------------------------------------------------------------------------
+  // The open reply and a frame arrive in one read batch.
+  // -------------------------------------------------------------------------
+
+  it("holds and replays a data frame that arrives in the open-reply read batch", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker writes the open reply and the data and exit frames in one
+          // stdout write. The host reads them in one batch, so the data and exit
+          // frames arrive before the route binds. The host must hold the frames
+          // and replay them after the bind, not drop them.
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          data: [{ chunk: "batched-one" }, { chunk: "batched-two" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["batched-one", "batched-two"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route when a batched frame passes the per-chunk limit before the bind", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxChunkChars: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the data frame with the open reply, so the frame
+          // arrives before the route binds. The replay after the bind applies the
+          // per-chunk limit, so the one large chunk ends the route.
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          data: [{ chunk: "this-one-chunk-is-too-large" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Authoritative closure and worker retirement.
   // -------------------------------------------------------------------------
 

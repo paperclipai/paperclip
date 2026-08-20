@@ -1478,6 +1478,13 @@ export function createPluginWorkerHandle(
     listener: ((chunk: string) => void) | null;
     buffered: string[];
     bufferedChars: number;
+    // Raw data and exit notifications that arrive before the route binds. The
+    // host reads the worker stdout line by line. The open reply and a data or
+    // exit notification can arrive in one read batch, so the host dispatches the
+    // notification before the deferred open-reply continuation flips the state to
+    // `open`. The host holds these frames here and replays them in order right
+    // after it binds the route, so a batched frame is never lost.
+    preOpen: JsonRpcNotification[];
     pendingRequests: number;
     protocolErrors: number;
     totalDataBytes: number;
@@ -1526,6 +1533,7 @@ export function createPluginWorkerHandle(
     route.listener = null;
     route.buffered = [];
     route.bufferedChars = 0;
+    route.preOpen = [];
     clearDuplexChannelLifetimeTimer(route);
     // A terminalized route reports a null exit code, which the caller treats as a
     // failure.
@@ -1550,6 +1558,40 @@ export function createPluginWorkerHandle(
     route.protocolErrors += 1;
     if (route.protocolErrors > maxDuplexChannelProtocolErrors) {
       void terminalizeDuplexChannelRoute(route);
+    }
+  }
+
+  // Hold one data or exit notification that arrives before the route binds. The
+  // host replays the held frames in order after it binds the route. Bound the
+  // hold by the pre-bind frame count, so a worker that floods frames before it
+  // replies to the open cannot make the host hold an unbounded number of frames.
+  // Count one protocol error for each frame past the bound.
+  function bufferPreOpenDuplexChannelNotification(
+    route: DuplexChannelRoute,
+    notification: JsonRpcNotification,
+  ): void {
+    if (route.preOpen.length >= maxDuplexChannelPreBindFrames) {
+      recordDuplexChannelProtocolError(route);
+      return;
+    }
+    route.preOpen.push(notification);
+  }
+
+  // Replay the held pre-open frames in order right after the route binds. The
+  // route is `open` now, so each frame passes through the normal per-frame bounds
+  // and the session-identifier match. A frame that ends the route terminalizes
+  // it, and every later frame in the replay is a no-op, because the routing
+  // functions drop a frame when the route is not `open`.
+  function drainPreOpenDuplexChannelNotifications(route: DuplexChannelRoute): void {
+    if (route.preOpen.length === 0) return;
+    const pending = route.preOpen;
+    route.preOpen = [];
+    for (const notification of pending) {
+      if (notification.method === DUPLEX_CHANNEL_DATA_NOTIFICATION) {
+        routeDuplexChannelData(notification);
+      } else if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
+        routeDuplexChannelExit(notification);
+      }
     }
   }
 
@@ -1581,7 +1623,13 @@ export function createPluginWorkerHandle(
   // attached yet. Never log the raw bytes.
   function routeDuplexChannelData(notification: JsonRpcNotification): void {
     const route = duplexChannelRoute;
-    if (!route || route.state !== "open") return;
+    if (!route || route.terminalized) return;
+    if (route.state === "reserved" || route.state === "opening") {
+      // The route did not bind yet. Hold the frame and replay it after the bind.
+      bufferPreOpenDuplexChannelNotification(route, notification);
+      return;
+    }
+    if (route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     const chunk = params.chunk;
@@ -1633,7 +1681,13 @@ export function createPluginWorkerHandle(
   // session identifier.
   function routeDuplexChannelExit(notification: JsonRpcNotification): void {
     const route = duplexChannelRoute;
-    if (!route || route.state !== "open") return;
+    if (!route || route.terminalized) return;
+    if (route.state === "reserved" || route.state === "opening") {
+      // The route did not bind yet. Hold the frame and replay it after the bind.
+      bufferPreOpenDuplexChannelNotification(route, notification);
+      return;
+    }
+    if (route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
@@ -1653,6 +1707,7 @@ export function createPluginWorkerHandle(
     route.listener = null;
     route.buffered = [];
     route.bufferedChars = 0;
+    route.preOpen = [];
     clearDuplexChannelLifetimeTimer(route);
     settleRouteWait(route, { exitCode: null });
   }
@@ -1681,6 +1736,7 @@ export function createPluginWorkerHandle(
       listener: null,
       buffered: [],
       bufferedChars: 0,
+      preOpen: [],
       pendingRequests: 0,
       protocolErrors: 0,
       totalDataBytes: 0,
@@ -1723,13 +1779,22 @@ export function createPluginWorkerHandle(
     route.workerSessionId = workerSessionId;
     route.state = "open";
 
+    // Replay any data or exit frame that arrived in the open-reply read batch,
+    // before the route bound. The route is `open` now, so each replayed frame
+    // passes through the normal per-frame bounds and the session match.
+    drainPreOpenDuplexChannelNotifications(route);
+
     // Start the route lifetime timer now the route is open. The route ends when
     // the timer expires. Every terminal path and the worker-exit path clears the
     // timer. Unreference the timer so it never blocks the host process shutdown.
-    route.lifetimeTimer = setTimeout(() => {
-      void terminalizeDuplexChannelRoute(route);
-    }, maxDuplexChannelDurationMs);
-    route.lifetimeTimer.unref?.();
+    // A replayed frame can end the route during the drain above, so start the
+    // timer only while the route is still open.
+    if (route.state === "open") {
+      route.lifetimeTimer = setTimeout(() => {
+        void terminalizeDuplexChannelRoute(route);
+      }, maxDuplexChannelDurationMs);
+      route.lifetimeTimer.unref?.();
+    }
 
     // Send one host→worker request under the pending-request bound. End the route
     // when too many requests are in-flight, so a worker that never replies cannot

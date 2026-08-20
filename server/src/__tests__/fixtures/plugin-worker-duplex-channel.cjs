@@ -18,10 +18,36 @@
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
+//   - `batchWithOpenReply`: when true, the fixture writes the open reply and the
+//     scripted data and exit in one stdout write. The host then reads the open
+//     reply and the notifications in one batch, so a test proves the host holds
+//     and replays a frame that arrives before the route binds.
 const readline = require("node:readline");
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+// Serialize the scripted data and exit frames as newline-delimited lines. The
+// batch mode writes these together with the open reply in one stdout write.
+function scriptedFrameLines(directive, workerSessionId) {
+  const data = Array.isArray(directive.data) ? directive.data : [];
+  let lines = "";
+  for (const entry of data) {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "duplexChannel.data",
+      params: { workerSessionId: entry.sid ?? workerSessionId, chunk: entry.chunk },
+    })}\n`;
+  }
+  if (typeof directive.exitCode === "number") {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "duplexChannel.exit",
+      params: { workerSessionId, exitCode: directive.exitCode },
+    })}\n`;
+  }
+  return lines;
 }
 
 // The registered channels, keyed by the host route id. Each entry records the
@@ -84,8 +110,21 @@ rl.on("line", (line) => {
       return;
     }
 
-    const reply = () =>
-      send({ jsonrpc: "2.0", id: message.id, result: { workerSessionId } });
+    const openReplyLine = `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { workerSessionId },
+    })}\n`;
+
+    if (directive.batchWithOpenReply === true) {
+      // Write the open reply and the scripted frames in one stdout write. The
+      // host reads them in one batch, so a data or exit frame arrives before the
+      // route binds. The host must hold and replay the frame after the bind.
+      process.stdout.write(openReplyLine + scriptedFrameLines(directive, workerSessionId));
+      return;
+    }
+
+    const reply = () => process.stdout.write(openReplyLine);
     reply();
     if (mode === "duplicate-open-reply") {
       // Send a second open reply for the same request id. The host drops it.
@@ -95,24 +134,7 @@ rl.on("line", (line) => {
     // Emit the scripted data and the exit after the open reply, so the host
     // binds the route first.
     setImmediate(() => {
-      const data = Array.isArray(directive.data) ? directive.data : [];
-      for (const entry of data) {
-        send({
-          jsonrpc: "2.0",
-          method: "duplexChannel.data",
-          params: {
-            workerSessionId: entry.sid ?? workerSessionId,
-            chunk: entry.chunk,
-          },
-        });
-      }
-      if (typeof directive.exitCode === "number") {
-        send({
-          jsonrpc: "2.0",
-          method: "duplexChannel.exit",
-          params: { workerSessionId, exitCode: directive.exitCode },
-        });
-      }
+      process.stdout.write(scriptedFrameLines(directive, workerSessionId));
     });
     return;
   }
