@@ -110,12 +110,28 @@ fi
 
 if [[ "$CHECK_LIVE_STALE" -eq 1 ]]; then
   LIVE_STALE_HOURS=6
+  # A queued heartbeat run with a future retry deadline is an intentional,
+  # persisted execution path (for example an activity-window or provider-quota
+  # deferral), not a stale wake. The wake's requested_at remains the original
+  # enqueue time, so age alone would otherwise turn a healthy deferral red.
+  # `retryNotBefore` is the canonical persisted value; retain the transient
+  # spelling for rows written by older recovery paths.
   LIVE_STALE_PREDICATE="aw.status IN ('queued','deferred_issue_execution')
     AND aw.requested_at < now() - interval '${LIVE_STALE_HOURS} hours'
     AND NOT EXISTS (
       SELECT 1 FROM issues terminal_issue
       WHERE terminal_issue.id::text = COALESCE(aw.payload->>'issueId', aw.payload->>'taskId')
         AND terminal_issue.status IN ('done','cancelled')
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM heartbeat_runs deferred_run
+      WHERE deferred_run.wakeup_request_id = aw.id
+        AND deferred_run.status = 'queued'
+        AND COALESCE(
+          NULLIF(deferred_run.result_json->>'retryNotBefore', '')::timestamptz,
+          NULLIF(deferred_run.result_json->>'transientRetryNotBefore', '')::timestamptz,
+          deferred_run.scheduled_retry_at
+        ) > now()
     )"
 
   echo "== stale live/missing wakeups (>${LIVE_STALE_HOURS}h) =="
