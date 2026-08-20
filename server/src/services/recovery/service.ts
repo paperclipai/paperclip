@@ -3341,7 +3341,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
       blockedByIssueIds: blockerIds,
     });
     if (!updated) return null;
