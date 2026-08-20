@@ -204,6 +204,8 @@ export interface AgentRuntimeState {
   totalCachedInputTokens: number;
   totalCostCents: number;
   lastError: string | null;
+  consecutiveFailureCount: number;
+  lastFailureAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
