@@ -372,6 +372,56 @@ describe("GitHub external object provider", () => {
     });
   });
 
+  it("gates a merged PR's checksState on the merge commit, not the (green) pre-merge head SHA", async () => {
+    // Regression coverage for AGE-569 follow-up: a PR's head SHA only ever
+    // carries pre-merge CI. A merge-queue/canary gate that only runs against
+    // the merge commit on the base branch (e.g. canary-pr-control-plane) can
+    // fail on that landed commit even though the PR's own head SHA was green.
+    // The done-transition gate must not read this PR as "merged and green"
+    // in that case.
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/mergecommitsha/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "failure" }]);
+      }
+      if (url.includes("/commits/mergecommitsha/status")) return response({ state: "success" });
+      if (url.includes("/commits/deadbeef/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "success" }]);
+      }
+      if (url.includes("/commits/deadbeef/status")) return response({ state: "success" });
+      return response({
+        state: "closed",
+        draft: false,
+        merged: true,
+        merged_at: "2026-08-20T12:00:00Z",
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+        merge_commit_sha: "mergecommitsha",
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/mergecommitsha/check-runs?per_page=100",
+      expect.any(Object),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs?per_page=100",
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ merged: true, checksState: "failure" }),
+      }),
+    });
+  });
+
   it("falls back to the combined commit status endpoint when there are no check-runs", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.includes("/check-runs")) return checkRunsResponse([]);

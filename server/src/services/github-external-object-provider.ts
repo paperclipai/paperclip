@@ -587,13 +587,25 @@ export function createGitHubExternalObjectProvider(
         }
 
         const headSha = asNestedString(body, "head", "sha");
+        // A merged PR's own head SHA only carries the pre-merge CI result. GitHub
+        // (and any merge-queue/canary gate layered on top of it, e.g. a
+        // post-merge-only check against `main`) can report green on that head
+        // SHA while the actual merge commit that landed on the base branch was
+        // never checked at all, or was checked and failed. Once a PR is
+        // reported merged, gate on its `merge_commit_sha` -- the commit that is
+        // actually reachable from the base branch -- so "merged" cannot be
+        // satisfied by a PR whose landed commit was red. Fall back to head SHA
+        // only if GitHub did not report a merge commit SHA for some reason.
+        const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
+        const mergeCommitSha = asString(body.merge_commit_sha);
+        const checksSha = merged ? (mergeCommitSha ?? headSha) : headSha;
         const checksState = await fetchChecksState({
           fetchImpl,
           headers,
           host: identity.host,
           owner: identity.owner,
           repo: identity.repo,
-          headSha,
+          headSha: checksSha,
         });
 
         return {
