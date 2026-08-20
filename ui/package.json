@@ -77,7 +77,7 @@
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^6.0.5",
     "storybook": "10.5.5",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.7.3",
