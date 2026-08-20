@@ -19813,7 +19813,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             (ceilingContinuationScheduled ||
               (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
               isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
-              isRecoverableDevWatchReloadFailure(adapterResult)),
+              isRecoverableDevWatchReloadFailure(adapterResult) ||
+              // Transient silent exits schedule a bounded retry — but the lane
+              // landing in `error` blocked that retry from claiming, so every
+              // occurrence needed a manual clear-error (Athena-Gemini,
+              // GLaD0S-Gemini, Showrunner-Hermes, the grok bench arm —
+              // 2026-08-19/20). Same logic as the ceiling path: a scheduled
+              // retry requires an invokable lane.
+              adapterResult.errorCode === "hermes_transient_silent_exit" ||
+              adapterResult.errorCode === "antigravity_transient_silent_exit"),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );
