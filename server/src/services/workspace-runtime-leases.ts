@@ -28,7 +28,7 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
 ]);
 
 /** Runtime control actions that mutate the workspace and therefore need the lease. */
-export const LEASED_WORKSPACE_RUNTIME_ACTIONS: readonly string[] = ["start", "stop", "restart"];
+export const LEASED_WORKSPACE_RUNTIME_ACTIONS: readonly string[] = ["start", "stop", "restart", "repair"];
 
 /**
  * Upper bound on how long a lease survives without the owner touching it. Recovery

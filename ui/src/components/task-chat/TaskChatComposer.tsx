@@ -336,21 +336,23 @@ export function TaskChatComposer({
     const reassignment = hasReassignment ? parseAssigneeValue(assigneeValue) : undefined;
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue) ? true : undefined;
 
+    // The thread renders the outgoing comment optimistically, so remove its
+    // text from the composer at the same time. The editor remains writable for
+    // the next draft while the request is pending.
+    bodyRef.current = "";
+    if (draftTimer.current) {
+      clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+    }
+    if (draftKey) clearDraft(draftKey);
+    setBody("");
     setSubmitting(true);
     try {
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
       await onAdd(fullBody, reopen, reassignment);
-      if (bodyRef.current === submittedBody) {
-        bodyRef.current = "";
-        if (draftTimer.current) {
-          clearTimeout(draftTimer.current);
-          draftTimer.current = null;
-        }
-        if (draftKey) clearDraft(draftKey);
-        setBody("");
-      } else if (draftKey) {
+      if (draftKey && bodyRef.current) {
         // The editor stays writable while the request is pending. Preserve
         // text entered after this submission started as the next draft.
         saveDraft(draftKey, bodyRef.current);
@@ -362,7 +364,17 @@ export function TaskChatComposer({
         setPendingAssignee(null);
       }
     } catch {
-      // Keep the body and its draft available for retry.
+      // Restore the failed message for retry without discarding a next draft
+      // that was entered while the request was pending.
+      const nextDraft = bodyRef.current;
+      const restoredBody = nextDraft ? `${submittedBody}\n\n${nextDraft}` : submittedBody;
+      bodyRef.current = restoredBody;
+      if (draftTimer.current) {
+        clearTimeout(draftTimer.current);
+        draftTimer.current = null;
+      }
+      if (draftKey) saveDraft(draftKey, restoredBody);
+      setBody(restoredBody);
     } finally {
       setSubmitting(false);
     }

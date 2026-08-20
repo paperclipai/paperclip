@@ -87,6 +87,32 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     ]);
   });
 
+  it("keeps an exposed dev runtime tracked after its bind command is hardened", () => {
+    const exposedWeb = runtimeServiceRow({
+      serviceName: "paperclip-dev",
+      command: "pnpm dev --bind loopback",
+      exposure: {
+        provider: "tailscale_https",
+        state: "ready",
+        publicUrl: "https://paperclip-dev.example.ts.net:42012",
+        hostname: "paperclip-dev.example.ts.net",
+        listeners: [],
+        brokerRef: "broker-1",
+        lastError: null,
+        updatedAt: "2026-08-20T00:00:00.000Z",
+      },
+    });
+
+    const selected = selectConfiguredRuntimeServiceRows(
+      [exposedWeb],
+      { services: [{ name: "paperclip-dev", command: "pnpm dev --bind lan" }] },
+    );
+
+    expect(selected).toEqual([
+      expect.objectContaining({ id: exposedWeb.id, configIndex: 0 }),
+    ]);
+  });
+
   it("matches configured services only to rows with the configured reuse scope", () => {
     const staleProjectScopedWorker = runtimeServiceRow({
       serviceName: "worker",

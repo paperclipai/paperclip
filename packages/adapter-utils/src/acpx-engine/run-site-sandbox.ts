@@ -320,7 +320,7 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
       }
       return {
         referencedProjectStagingFailures: (staged.stagedRuntime.additionalSourceFailures ?? []).map(
-          (failure) => ({ projectId: failure.projectId }),
+          (failure) => ({ projectId: failure.projectId, error: failure.error }),
         ),
       };
     },

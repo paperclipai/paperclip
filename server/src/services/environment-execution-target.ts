@@ -317,6 +317,12 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // here. The client falls back to the chunked upload path when this is
             // false.
             supportsSingleStreamStdinProgress: false,
+            // Carry the verified concurrent-sync opt-in to the sync client. The
+            // client copies it onto the native path and ignores it on the base64
+            // fallback, which always permits concurrency. A null snapshot or a
+            // provider that never opted in keeps it false, so an unverified
+            // provider never permits concurrent sync operations.
+            allowConcurrentSyncOperations: effectiveCapabilities?.concurrentSyncOperations === true,
             execute: async (commandInput) => {
               // Record true start and stop timestamps around the provider await,
               // so the exec span and the result carry a real wall time.
@@ -496,6 +502,21 @@ export async function resolveEnvironmentExecutionTarget(input: {
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                    }),
+                }
+              : {}),
+            // Expose the duplex channel only when the effective snapshot grants
+            // the opt-in `duplexCommandStream` capability. A null snapshot
+            // (resolution failed or the snapshot is not resolvable) leaves the
+            // member undefined, so the caller keeps the file bridge. This mirrors
+            // the syncIn/syncOut gate above and fails closed.
+            ...(effectiveCapabilities?.duplexCommandStream
+              ? {
+                  openDuplexChannel: (channelInput) =>
+                    input.environmentRuntime!.openDuplexChannel({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      command: channelInput.command,
                     }),
                 }
               : {}),

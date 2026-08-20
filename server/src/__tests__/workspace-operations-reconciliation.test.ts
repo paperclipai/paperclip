@@ -44,14 +44,14 @@ describe("workspace runtime control serialization", () => {
 
     await expect(runExclusiveWorkspaceRuntimeControl({
       executionWorkspaceId: "workspace-1",
-      action: "restart",
-      run: async () => "restarted",
+      action: "repair",
+      run: async () => "repaired",
     })).rejects.toMatchObject({
       status: 409,
       details: {
         code: "workspace_runtime_control_in_progress",
         activeAction: "start",
-        requestedAction: "restart",
+        requestedAction: "repair",
       },
     });
 
@@ -203,5 +203,72 @@ describeEmbeddedPostgres("workspace operation reconciliation", () => {
       .where(eq(workspaceOperations.id, unrelatedOperationId))
       .then((rows) => rows[0]);
     expect(unrelated?.status).toBe("running");
+  });
+
+  it("persists bounded repair phase progress on the operation row and log", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Workspace repair diagnostics",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 7).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Repair diagnostics",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Repair diagnostics workspace",
+      status: "active",
+      cwd: "/tmp/repair-diagnostics-workspace",
+    });
+
+    const operation = await workspaceOperationService(db)
+      .createRecorder({ companyId, executionWorkspaceId })
+      .recordOperation({
+        phase: "workspace_repair",
+        command: "workspace command repair",
+        cwd: "/tmp/repair-diagnostics-workspace",
+        metadata: { action: "repair" },
+        run: async (reportProgress) => {
+          await reportProgress({
+            metadata: {
+              repairPhase: "target_backup",
+              repairDiagnostics: [{
+                phase: "target_backup",
+                status: "succeeded",
+                at: "2026-08-18T00:00:00.000Z",
+              }],
+              databaseOnly: true,
+              worktreePreserved: true,
+            },
+            system: "Workspace repair target_backup: succeeded.\n",
+          });
+          return { status: "succeeded", metadata: { backupRetained: true } };
+        },
+      });
+
+    expect(operation).toMatchObject({
+      status: "succeeded",
+      metadata: {
+        action: "repair",
+        repairPhase: "target_backup",
+        databaseOnly: true,
+        worktreePreserved: true,
+        backupRetained: true,
+      },
+    });
+    expect((await workspaceOperationService(db).readLog(operation.id)).content).toContain(
+      "Workspace repair target_backup: succeeded.",
+    );
   });
 });

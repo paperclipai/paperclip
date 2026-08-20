@@ -112,6 +112,7 @@ import {
   environmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageTemplateSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
+  relinkEnvironmentCustomImageTemplateSchema,
   updateEnvironmentSchema,
   probeEnvironmentConfigSchema,
   startEnvironmentCustomImageSetupSessionSchema,
@@ -635,6 +636,11 @@ const environmentCustomImageTemplateRollbackResultSchema = z.object({
   supersededTemplate: environmentCustomImageTemplateSchema,
 }).strict();
 
+const environmentCustomImageTemplateRelinkResultSchema = z.object({
+  template: environmentCustomImageTemplateSchema,
+  classification: z.enum(["knob_only", "boot_source_drift", "unclassified"]),
+}).strict();
+
 const workTimelineQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
@@ -804,6 +810,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
+  "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
   "DELETE /api/board-api-keys/{keyId}",
@@ -5325,6 +5332,36 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/execution-workspaces/{id}/login-handoff",
+  tags: ["execution-workspaces"],
+  summary: "Issue a single-use workspace login handoff",
+  description:
+    "Mints a short-lived, single-use ticket the isolated workspace exchanges for its own "
+    + "instance-scoped session, so opening a managed workspace does not depend on a cloned "
+    + "password. Board actors only. The response `url` must be navigated to, not stored: the "
+    + "workspace answers it with a redirect so the ticket never enters browser history. A refusal "
+    + "carries a machine `reason` and, where the control plane probed it, the workspace's own "
+    + "readiness.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        next: z.string().optional().describe("Same-origin path to land on; anything else collapses to `/`."),
+      }),
+    ),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    501: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/execution-workspaces/{id}/runtime-services/{action}",
   tags: ["execution-workspaces"],
   summary: "Control a runtime service in a workspace",
@@ -5582,6 +5619,26 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environments/{environmentId}/custom-image-template/relink",
+  tags: ["environments"],
+  summary: "Relink a detached environment customImage template to the current config",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: environmentCustomImageCompanyQuerySchema,
+    body: jsonBody(relinkEnvironmentCustomImageTemplateSchema),
+  },
+  responses: {
+    200: r.ok(environmentCustomImageTemplateRelinkResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
   },
 });
 

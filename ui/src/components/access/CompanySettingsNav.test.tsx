@@ -78,10 +78,12 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/invites")).toBe("invites");
     expect(getCompanySettingsTab("/PAP/company/settings/secrets")).toBe("secrets");
     expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("instance-general");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/instance/environments")).toBe("instance-environments");
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
@@ -106,14 +108,13 @@ describe("CompanySettingsNav", () => {
           { value: "members", label: "Members" },
           { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },
-          { value: "instance-profile", label: "Instance profile" },
-          { value: "instance-general", label: "Instance general" },
-          { value: "instance-environments", label: "Instance environments" },
-          { value: "instance-access", label: "Instance access" },
-          { value: "instance-heartbeats", label: "Instance heartbeats" },
-          { value: "instance-experimental", label: "Instance experimental" },
-          { value: "instance-plugins", label: "Instance plugins" },
-          { value: "instance-adapters", label: "Instance adapters" },
+          { value: "instance-profile", label: "Profile" },
+          { value: "instance-environments", label: "Environments" },
+          { value: "instance-access", label: "Access" },
+          { value: "instance-heartbeats", label: "Heartbeats" },
+          { value: "instance-experimental", label: "Experimental" },
+          { value: "instance-plugins", label: "Plugins" },
+          { value: "instance-adapters", label: "Adapters" },
         ],
       }),
     );

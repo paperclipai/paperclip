@@ -6,19 +6,14 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
-    open-pull-requests-limit: 10
+    # Each dependency update gets its own pull request, including major
+    # version bumps. A grouped major PR cannot merge when one member has
+    # a blocked upgrade, so it hides the other ready majors. Separate PRs
+    # let each major land on its own. The limit holds the initial burst
+    # of pending majors plus the regular minor and patch updates.
+    open-pull-requests-limit: 20
     labels:
       - "dependencies"
-    groups:
-      # Bundle all major version bumps into a single weekly PR so they
-      # stay visible without flooding the PR list. Minor/patch updates
-      # still get individual PRs.
-      major-updates:
-        applies-to: version-updates
-        update-types:
-          - "major"
-        patterns:
-          - "*"
 
   - package-ecosystem: github-actions
     directory: "/"

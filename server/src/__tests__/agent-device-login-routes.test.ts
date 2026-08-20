@@ -177,19 +177,22 @@ vi.mock("../services/codex-device-login-service.js", async (importOriginal) => {
 function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, AdapterAuthSessionRow> } {
   const rows = new Map<string, AdapterAuthSessionRow>();
   const activeSlots = new Set<string>();
-  const slotKey = (companyId: string, adapterType: string) => `${companyId}|${adapterType}`;
+  // The active slot is scoped to the company, the owner, and the adapter.
+  const slotKey = (companyId: string, startedByUserId: string, adapterType: string) =>
+    `${companyId}|${startedByUserId}|${adapterType}`;
   const isActive = (status: AdapterAuthSessionRow["status"]) =>
     status === "starting" || status === "waiting_for_user" || status === "promoting";
   return {
     rows,
     async insert(input) {
-      const key = slotKey(input.companyId, input.adapterType);
+      const key = slotKey(input.companyId, input.startedByUserId, input.adapterType);
       if (activeSlots.has(key)) {
         throw new AdapterAuthSessionConflictError();
       }
       activeSlots.add(key);
       rows.set(input.id, {
         id: input.id,
+        publicSessionId: input.publicSessionId,
         companyId: input.companyId,
         environmentId: input.environmentId,
         adapterType: input.adapterType,
@@ -213,7 +216,8 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
     },
     async compareAndSetStatus(input) {
       const row = rows.get(input.sessionId);
@@ -222,14 +226,25 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
       return true;
     },
     async get(sessionId) {
       const row = rows.get(sessionId);
       return row ? { ...row } : null;
     },
-    async withCompanyAdapterPromotionLock(_companyId, _adapterType, fn) {
+    async getByPublicId(publicSessionId, companyId) {
+      // Scope the read to the company and the public session id, so a
+      // foreign-company lookup reads nothing and the internal id never matches.
+      for (const row of rows.values()) {
+        if (row.publicSessionId === publicSessionId && row.companyId === companyId) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
+    async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The route test runs on a single event loop, so it needs no real lock. The
       // pass-through keeps the promotion contract satisfied.
       return fn();
@@ -370,18 +385,78 @@ describe("adapter device-login routes", () => {
       adapterType: "codex_local",
       startedByUserId: OWNER_A,
     });
-    // The row persists the immutable owner from the actor.
+    // The row persists the immutable owner from the actor. The response carries
+    // the public session id, so read the row by the public id, not the internal id.
     const store = harness.store as ReturnType<typeof createMemoryStore>;
-    const row = store.rows.get(res.body.sessionId);
+    const row = await store.getByPublicId(res.body.sessionId, COMPANY_1);
     expect(row?.startedByUserId).toBe(OWNER_A);
+    // The public session id is never the internal row id.
+    expect(row?.id).not.toBe(res.body.sessionId);
+    // No row is keyed by the public session id in the internal-id map.
+    expect(store.rows.get(res.body.sessionId)).toBeUndefined();
   });
 
-  it("rejects a non-codex adapter", async () => {
+  it("rejects an adapter whose login capability drives a different transport", async () => {
+    // The Claude adapter declares a pseudo-terminal login, not a streamed-exec
+    // device login. The guard reads the capability transport, so it rejects the
+    // adapter with a fixed 400 before any lease.
     const app = await createApp();
 
     const res = await request(app)
       .post(loginPath(COMPANY_1, "claude_local"))
       .send({ environmentId: SANDBOX_ENV_1 });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(harness.acquisitions).toHaveLength(0);
+  });
+
+  it("starts a device login for a third adapter that declares the streamed-exec capability", async () => {
+    // A third adapter, not the Codex adapter, declares a streamed-exec login
+    // capability. The guard reads the registry capability, not the adapter name,
+    // so the adapter passes the guard and starts a session. This proves no
+    // adapter-name branch remains in the guard path. The test overrides an
+    // existing adapter type so the strict request schema accepts it.
+    const app = await createApp();
+    const { registerServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      type: "gemini_local",
+      execute: async () => {
+        throw new Error("not used");
+      },
+      testEnvironment: async () => {
+        throw new Error("not used");
+      },
+      loginCapability: {
+        panelMode: "displayed_code",
+        sandboxTransport: "streamed_exec",
+        timeoutPolicy: "caller_bounded",
+        getCommand: () => "vendor login",
+        parsePrompt: () => null,
+      },
+    });
+    try {
+      const res = await request(app)
+        .post(loginPath(COMPANY_1, "gemini_local"))
+        .send({ environmentId: SANDBOX_ENV_1 });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body).toMatchObject({ environmentId: SANDBOX_ENV_1, status: "starting" });
+      expect(harness.acquisitions).toHaveLength(1);
+      expect(harness.acquisitions[0]).toMatchObject({ adapterType: "gemini_local" });
+    } finally {
+      unregisterServerAdapter("gemini_local");
+    }
+  });
+
+  it("rejects a malformed start body with the strict schema before any side effect", async () => {
+    const app = await createApp();
+
+    // The strict start schema rejects an unknown field. The old lax parse
+    // accepted an extra field and started a session; the shared spine now fails
+    // the request with a fixed 400 before it acquires a lease.
+    const res = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1, unexpectedField: "x" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect(harness.acquisitions).toHaveLength(0);
@@ -522,7 +597,7 @@ describe("adapter device-login routes", () => {
     expect(restart.body.sessionId).not.toBe(sessionId);
   });
 
-  it("returns 409 for a second active start by a different owner", async () => {
+  it("lets a second owner start an active login in the same company", async () => {
     const app = await createApp();
 
     const first = await request(app)
@@ -531,13 +606,16 @@ describe("adapter device-login routes", () => {
     expect(first.status, JSON.stringify(first.body)).toBe(201);
 
     // A different owner starts a second login for the same company and adapter.
+    // The active slot is scoped to the company, the owner, and the adapter, so
+    // the second owner holds an independent slot and the start succeeds.
     currentActor = boardActor(OWNER_B);
     const second = await request(app)
       .post(loginPath(COMPANY_1))
       .send({ environmentId: SANDBOX_ENV_1 });
-    expect(second.status, JSON.stringify(second.body)).toBe(409);
-    // The second start never acquires a lease.
-    expect(harness.acquisitions).toHaveLength(1);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(second.body.sessionId).not.toBe(first.body.sessionId);
+    // Each owner's start acquires its own lease.
+    expect(harness.acquisitions).toHaveLength(2);
   });
 
   it("returns 409 for a second active start in a different environment", async () => {
@@ -576,7 +654,10 @@ describe("adapter device-login routes", () => {
       expect(status.body.failure?.reason).toBe("promotion_failed");
     });
 
-    const row = (harness.store as ReturnType<typeof createMemoryStore>).rows.get(sessionId);
+    const row = await (harness.store as ReturnType<typeof createMemoryStore>).getByPublicId(
+      sessionId,
+      COMPANY_1,
+    );
     expect(row?.status).toBe("failed");
     expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
   });
@@ -602,7 +683,10 @@ describe("adapter device-login routes", () => {
       expect(status.body.failure?.reason).toBe("promotion_failed");
     });
 
-    const row = (harness.store as ReturnType<typeof createMemoryStore>).rows.get(sessionId);
+    const row = await (harness.store as ReturnType<typeof createMemoryStore>).getByPublicId(
+      sessionId,
+      COMPANY_1,
+    );
     expect(row?.status).toBe("failed");
     expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
   });

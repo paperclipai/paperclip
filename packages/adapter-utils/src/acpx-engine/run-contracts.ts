@@ -325,6 +325,8 @@ export interface SitePlan {
 /** One referenced project whose staging into the sandbox failed. */
 export interface ReferencedProjectStagingFailure {
   readonly projectId: string;
+  /** The failure reason. A reader of the run sees why the project dropped. */
+  readonly error: string;
 }
 
 /**

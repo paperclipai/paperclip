@@ -552,6 +552,62 @@ describe("command managed runtime", () => {
     expect(native.syncOut).toBeTypeOf("function");
   });
 
+  it("base64 fallback client reports allowConcurrentSyncOperations true", () => {
+    // A runner with no native sync uses the base64 fallback, which always
+    // permits concurrent sync operations.
+    const base = makeSpawnRunner().runner;
+    const client = createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("undeclared native runner reports allowConcurrentSyncOperations false", () => {
+    // A native runner (both sync verbs) that never opted into concurrency keeps
+    // the flag off.
+    const base = makeSpawnRunner().runner;
+    const undeclaredNative: CommandManagedRuntimeRunner = {
+      ...base,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({
+      runner: undeclaredNative,
+      commandCwd: "/",
+      timeoutMs: 1,
+    });
+    expect(client.allowConcurrentSyncOperations).toBe(false);
+  });
+
+  it("declared native runner reports allowConcurrentSyncOperations true", () => {
+    // A native runner that verified the opt-in carries the flag through to the
+    // client.
+    const base = makeSpawnRunner().runner;
+    const declaredNative: CommandManagedRuntimeRunner = {
+      ...base,
+      allowConcurrentSyncOperations: true,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({
+      runner: declaredNative,
+      commandCwd: "/",
+      timeoutMs: 1,
+    });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("base64 fallback ignores a runner opt-in without both sync verbs", () => {
+    // A runner that sets the opt-in but exposes only one sync verb still uses
+    // the fallback, which permits concurrency independent of the runner flag.
+    const base = makeSpawnRunner().runner;
+    const onlyIn: CommandManagedRuntimeRunner = {
+      ...base,
+      allowConcurrentSyncOperations: true,
+      syncIn: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({ runner: onlyIn, commandCwd: "/", timeoutMs: 1 });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
   it("test_client_syncIn_delegates_to_native_runner_with_zero_execute_calls", async () => {
     // With a native runner, `client.syncIn` forwards `files` + `postUploadCommands`
     // to the runner and issues ZERO `execute` round-trips (the provider owns the

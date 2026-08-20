@@ -13,6 +13,11 @@ import {
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
 } from "../lib/recovery-display";
+import {
+  formatRecoveryLineageSummary,
+  readRecoveryRetryLineage,
+  type RecoveryLivenessContext,
+} from "../lib/recovery-lineage";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
@@ -59,6 +64,38 @@ interface IssueRowProps {
   chevronInGuide?: boolean;
   /** Opt in to a bottom divider on this row (default off; used by views that intentionally keep separators). */
   showDivider?: boolean;
+}
+
+export function InboxArchiveButton({
+  onArchive,
+  disabled,
+}: {
+  onArchive: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      data-slot="icon-button"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onArchive();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onArchive();
+      }}
+      disabled={disabled}
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+      aria-label="Archive"
+    >
+      <Archive className="h-3.5 w-3.5" />
+      Archive
+    </button>
+  );
 }
 
 export function IssueRow({
@@ -149,7 +186,11 @@ export function IssueRow({
     </span>
   ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
-  const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
+  // The row already carries the issue's own scheduled retry, so the chip can tell a retry the
+  // scheduler is actually running from one whose due time simply passed.
+  const recoveryIndicator = recoveryAction
+    ? renderRecoveryChip(recoveryAction, selected, { scheduledRetry: issue.scheduledRetry ?? null })
+    : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <Badge variant="outline"
       data-testid="issue-row-parked-blocker"
@@ -292,27 +333,7 @@ export function IssueRow({
       {(onArchive || desktopTrailing || trailingMeta || externalObjectSummary) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
           {onArchive ? (
-            <button
-              type="button"
-              data-slot="icon-button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              disabled={archiveDisabled}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Archive"
-            >
-              <Archive className="h-3.5 w-3.5" />
-              Archive
-            </button>
+            <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
           ) : null}
           {externalObjectSummary ? (
             <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
@@ -335,25 +356,34 @@ export function IssueRow({
   );
 }
 
-function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): ReactNode {
-  const state = deriveActiveRecoveryDisplayState(action);
+function renderRecoveryChip(
+  action: IssueRecoveryAction,
+  selected: boolean,
+  liveness: RecoveryLivenessContext,
+): ReactNode {
+  const state = deriveActiveRecoveryDisplayState(action, liveness);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
-  const label = recoveryChipLabel(state, action.kind);
+  const lineage = readRecoveryRetryLineage(action, liveness);
+  const label = recoveryChipLabel(state, action.kind, lineage);
+  const detail = lineage ? formatRecoveryLineageSummary(lineage) : null;
   return (
     <Badge variant="outline"
       data-testid="issue-row-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
+      data-recovery-lane={lineage?.lane}
       role="status"
-      aria-label={label}
+      aria-label={detail ? `${label} — ${detail}` : label}
       className={cn(
         "ml-1.5 gap-0.5 text-(length:--text-nano)",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
-      title={`${label} — open the source task to act.`}
+      title={detail
+        ? `${label} — ${detail}. Open the source task to act.`
+        : `${label} — open the source task to act.`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
       {label}

@@ -21,7 +21,7 @@ import {
   type CompanyImportTransferPartUploadResult,
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
-import { api, detachInflightGet } from "./client";
+import { api, detachInflightGet, type RequestOptions } from "./client";
 
 const COMPANIES_LIST_PATH = "/companies";
 
@@ -122,8 +122,9 @@ export const companiesApi = {
   exportPreview: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
+    options?: RequestOptions,
   ) =>
-    api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
+    api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data, options),
   exportFidelity: (companyId: string) =>
     api.get<ExportFidelityReport>(`/companies/${companyId}/export/fidelity`),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
