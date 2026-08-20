@@ -1752,7 +1752,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
   if (!environmentsEnabled) {
     return (
-      <div className="max-w-3xl space-y-4">
+      <div className="max-w-6xl space-y-4">
         <div className="text-sm text-muted-foreground">
           Enable Environments in instance experimental settings to manage shared execution targets.
         </div>
@@ -1761,7 +1761,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   }
 
   return (
-    <div className="max-w-5xl space-y-6" data-testid="instance-settings-environments-section">
+    <div className="max-w-6xl space-y-6" data-testid="instance-settings-environments-section">
       {!isEnvironmentFormPage ? (
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

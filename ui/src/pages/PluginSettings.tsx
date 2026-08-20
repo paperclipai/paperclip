@@ -157,7 +157,7 @@ export function PluginSettings() {
   const driverLabel = environmentDriverNames.join(", ");
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="max-w-6xl space-y-6">
       <div className="flex items-center gap-4">
         <Link to="/company/settings/instance/plugins">
           <Button variant="outline" size="icon" className="h-8 w-8">

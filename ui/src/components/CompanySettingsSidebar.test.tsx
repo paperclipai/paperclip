@@ -146,6 +146,8 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Members");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
+    expect(container.textContent).not.toContain("Access");
+    expect(container.textContent).not.toContain("Heartbeats");
     expect(container.textContent).not.toContain("Tools & Access");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({

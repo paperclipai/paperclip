@@ -64,8 +64,6 @@ export function normalizeRememberedInstanceSettingsPath(rawPath: string | null):
     suffix === "/profile" ||
     suffix === "/general" ||
     suffix === "/environments" ||
-    suffix === "/access" ||
-    suffix === "/heartbeats" ||
     suffix === "/plugins" ||
     suffix === "/experimental" ||
     suffix === "/adapters"

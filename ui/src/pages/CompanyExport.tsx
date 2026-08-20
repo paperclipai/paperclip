@@ -618,7 +618,14 @@ export function CompanyExport() {
   const [exportData, setExportData] = useState<CompanyPortabilityExportPreviewResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [categories, setCategories] = useState<ExportCategorySelection>(buildDefaultExportCategorySelection);
+  const [categories, setCategories] = useState<ExportCategorySelection>(() => ({
+    ...buildDefaultExportCategorySelection(),
+    // Task history is the expensive part of a large-company export. Keep it
+    // opt-in so opening this settings page uses the lightweight preview path.
+    tasks: false,
+    routines: false,
+    attachments: false,
+  }));
   const [treeSearch, setTreeSearch] = useState("");
   const [taskLimit, setTaskLimit] = useState(TASKS_PAGE_SIZE);
   const savedExpandedRef = useRef<Set<string> | null>(null);
@@ -655,6 +662,7 @@ export function CompanyExport() {
     () => JSON.stringify(sidebarOrder ?? null),
     [sidebarOrder],
   );
+  const includeIssues = categories.tasks || categories.routines;
 
   // Navigate-aware file selection: updates state + URL without page reload.
   // `replace` = true skips history entry (used for initial load); false = pushes (used for clicks).
@@ -696,9 +704,9 @@ export function CompanyExport() {
   }, [selectedCompany?.name, setBreadcrumbs]);
 
   const exportPreviewMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (withIssues: boolean) =>
       companiesApi.exportPreview(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: withIssues },
         sidebarOrder,
       }),
     onSuccess: (result) => {
@@ -739,7 +747,7 @@ export function CompanyExport() {
   const downloadMutation = useMutation({
     mutationFn: () =>
       companiesApi.exportBundle(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: includeIssues },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,
       }),
@@ -765,9 +773,9 @@ export function CompanyExport() {
     if (!selectedCompanyId || exportPreviewMutation.isPending) return;
     if (!isSessionFetched || !areAgentsFetched || !areProjectsFetched) return;
     setExportData(null);
-    exportPreviewMutation.mutate();
+    exportPreviewMutation.mutate(includeIssues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey]);
+  }, [selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey, includeIssues]);
 
   const tree = useMemo(
     () => (exportData ? buildFileTree(exportData.files) : []),
@@ -964,7 +972,7 @@ export function CompanyExport() {
     : null;
 
   return (
-    <div>
+    <div className="max-w-6xl">
       {/* Sticky top action bar */}
       <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1036,6 +1044,8 @@ export function CompanyExport() {
                 const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
                 const checked = categories[key] && !disabled;
                 const count = categoryCounts?.[key] ?? 0;
+                const countLoaded = exportData.manifest.includes.issues
+                  || (key !== "tasks" && key !== "routines" && key !== "attachments");
                 return (
                   <label
                     key={key}
@@ -1058,11 +1068,16 @@ export function CompanyExport() {
                       data-export-category={key}
                     />
                     <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
-                    <span className="text-xs text-muted-foreground">{count.toLocaleString()}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {countLoaded ? count.toLocaleString() : "—"}
+                    </span>
                   </label>
                 );
               })}
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Task and routine history is opt-in because it can be large.
+            </p>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">

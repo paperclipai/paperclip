@@ -238,10 +238,19 @@ describe("CompanyExport", () => {
     await flushReact();
   }
 
-  it("selects every file by default and requests them all on download", async () => {
+  it("keeps task history opt-in, then requests all selected files on download", async () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+
+    expect(mockCompaniesApi.exportPreview.mock.calls[0]?.[1]).toMatchObject({
+      include: { issues: false },
+    });
+    expect(container.textContent).toContain("Exporting 3 of 6 files");
+
+    await clickElement(categoryInput("tasks"));
+    await clickElement(categoryInput("routines"));
+    await clickElement(categoryInput("attachments"));
 
     expect(container.textContent).toContain("Exporting 6 of 6 files");
     // The tree is a pure browser now — no per-file checkboxes.
@@ -265,6 +274,9 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await clickElement(categoryInput("tasks"));
+    await clickElement(categoryInput("routines"));
+    await clickElement(categoryInput("attachments"));
     await clickElement(categoryInput("tasks"));
 
     expect(container.textContent).toContain("Exporting 4 of 6 files");
@@ -290,8 +302,6 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
-    await clickElement(categoryInput("tasks"));
-    await clickElement(categoryInput("routines"));
 
     const attachments = categoryInput("attachments");
     expect(attachments.disabled).toBe(true);
@@ -304,6 +314,8 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await clickElement(categoryInput("tasks"));
+    await clickElement(categoryInput("attachments"));
 
     const sizeText = () =>
       container.textContent?.match(/Exporting [\d,]+ of [\d,]+ files \(~([\d.]+ [KMGT]?B)\)/)?.[1] ?? null;
@@ -313,7 +325,7 @@ describe("CompanyExport", () => {
 
     await clickElement(categoryInput("tasks"));
 
-    expect(container.textContent).toContain("Exporting 4 of 6 files");
+    expect(container.textContent).toContain("Exporting 3 of 6 files");
     const toggledSize = sizeText();
     expect(toggledSize).not.toBeNull();
     // Dropping the one-off task and its blob shrinks the estimated zip.

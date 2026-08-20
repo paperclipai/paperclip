@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
-  Clock3,
   Cpu,
   Download,
   FlaskConical,
@@ -9,7 +8,6 @@ import {
   MailPlus,
   MonitorCog,
   Puzzle,
-  Shield,
   SlidersHorizontal,
   Upload,
   UserRoundPen,
@@ -120,18 +118,6 @@ export function CompanySettingsSidebar() {
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
             label="Environments"
             icon={MonitorCog}
-            end
-          />
-          <SidebarNavItem
-            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-            label="Access"
-            icon={Shield}
-            end
-          />
-          <SidebarNavItem
-            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
-            label="Heartbeats"
-            icon={Clock3}
             end
           />
           <SidebarNavItem to="/company/export" label="Export" icon={Download} />
