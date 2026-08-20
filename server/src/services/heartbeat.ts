@@ -17072,11 +17072,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // compact prompt to cards whose TITLE marks them as wrappers; a real card
     // with a recovery origin still gets its full task brief.
     const RECOVERY_WRAPPER_TITLE = /^(Recover (missing next step|stalled issue)|Unblock:)/;
+    // BOTH branches gate on the wrapper title. The successful-run-handoff
+    // branch was the remaining churn engine (2026-08-20 midday audit): a
+    // shallow run ends without a disposition -> handoff wake -> compact
+    // "record status only" prompt -> the lane does no work -> another
+    // disposition-less end -> repeat. Kestrel: 57 runs, 0 closes, every
+    // second run narrating "recovery-only heartbeat ... without restarting
+    // the redesign work". On a REAL card the handoff wake now renders the
+    // full task brief — doing the work IS the disposition.
+    const isWrapperCard = RECOVERY_WRAPPER_TITLE.test(issueContext?.title ?? "");
     const recoveryCause =
-      issueContext?.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery &&
-        RECOVERY_WRAPPER_TITLE.test(issueContext?.title ?? "")
+      issueContext?.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery && isWrapperCard
         ? RECOVERY_ORIGIN_KINDS.strandedIssueRecovery
-        : readNonEmptyString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON && context.handoffRequired === true
+        : readNonEmptyString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON &&
+            context.handoffRequired === true && isWrapperCard
           ? SUCCESSFUL_RUN_MISSING_STATE_REASON
           : null;
     if (recoveryCause) {
