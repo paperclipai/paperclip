@@ -320,6 +320,41 @@ describe.sequential("closed isolated workspace issue routes", () => {
     });
   });
 
+  it("skips closed-workspace reopen when the issue becomes terminal after checkout returns", async () => {
+    const source = makeIssue();
+    const checkedOut = {
+      ...source,
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+      startedAt: new Date("2026-08-20T09:00:00.000Z"),
+    };
+    const terminalized = { ...checkedOut, status: "cancelled" as const };
+    mockIssueService.getById
+      .mockResolvedValueOnce(source)
+      .mockResolvedValueOnce(terminalized);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+
+    const res = await (await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "cancelled",
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    });
+  });
+
   it("returns 409 and blocks the comment when the workspace cannot be reopened", async () => {
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
@@ -544,8 +579,13 @@ describe.sequential("closed isolated workspace issue routes", () => {
   it("does not clear the reopen-pending flag when the checkout resumes the issue", async () => {
     // Checkout moves the issue out of the terminal state first; reopen then runs
     // for the non-terminal row. The reaper clears the flag on its next cycle.
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
-    mockIssueService.checkout.mockResolvedValue({ ...makeIssue(), status: "in_progress" });
+    // Post-checkout getById must see the resumed status (not the pre-checkout
+    // terminal snapshot), otherwise the route correctly skips reopen.
+    const resumed = { ...makeIssue(), status: "in_progress" as const };
+    mockIssueService.getById
+      .mockResolvedValueOnce({ ...makeIssue(), status: "done" })
+      .mockResolvedValue(resumed);
+    mockIssueService.checkout.mockResolvedValue(resumed);
 
     const res = await (await createApp())
       .post(`/api/issues/${issueId}/checkout`)

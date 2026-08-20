@@ -10677,81 +10677,100 @@ export function issueRoutes(
 
     let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
     let reopenedGeneration: number | null = null;
-    const shouldReopenClosedWorkspace =
-      Boolean(updated)
-      && updated.status !== "done"
-      && updated.status !== "cancelled";
-    if (shouldReopenClosedWorkspace && updated) {
-      const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(updated);
-      if (closedExecutionWorkspace) {
-        const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
-          req,
-          res,
-          updated,
-          closedExecutionWorkspace,
-        );
-        if (reopenOutcome === null) {
-          // Checkout already ran before reopen. A 409/503 reopen response must not
-          // leave the caller holding ownership that retries cannot reclaim with the
-          // usual expectedStatuses set. Restore the pre-checkout snapshot (not a
-          // generic release → todo) when this request mutated the row; a
-          // pre-existing lock holder keeps their checkout.
-          const checkoutMutatedOnReopenFailure =
-            updated.status !== issue.status
-            || updated.checkoutRunId !== issue.checkoutRunId
-            || updated.executionRunId !== issue.executionRunId
-            || updated.assigneeAgentId !== issue.assigneeAgentId;
-          if (checkoutMutatedOnReopenFailure) {
-            try {
-              await svc.restoreCheckoutSnapshot(
-                id,
-                {
-                  status: issue.status,
-                  assigneeAgentId: issue.assigneeAgentId,
-                  assigneeUserId: issue.assigneeUserId,
-                  checkoutRunId: issue.checkoutRunId,
-                  executionRunId: issue.executionRunId,
-                  executionAgentNameKey: issue.executionAgentNameKey ?? null,
-                  executionLockedAt: issue.executionLockedAt ?? null,
-                  startedAt: issue.startedAt ?? null,
-                },
-                req.body.agentId,
-                checkoutRunId,
-                {
-                  checkoutRunId: updated.checkoutRunId,
-                  executionRunId: updated.executionRunId,
-                  status: updated.status,
-                },
-              );
-            } catch (err) {
-              logger.warn(
-                { err, issueId: id },
-                "failed to restore checkout snapshot after closed-workspace reopen failure",
-              );
+    // Live status for the reopen-pending fence — may diverge from the checkout
+    // snapshot when another request terminalizes the issue mid-flight.
+    let finalStatusForReopenGuard: string | null | undefined = updated?.status;
+    const shouldConsiderClosedWorkspaceReopen =
+      Boolean(updated) && !isClosedIssueStatus(updated.status);
+    if (shouldConsiderClosedWorkspaceReopen && updated) {
+      // Revalidate before reopen: concurrent done/cancelled after checkout must
+      // not rebuild an active workspace for terminal work.
+      const postCheckout = await svc.getById(id);
+      if (postCheckout && isClosedIssueStatus(postCheckout.status)) {
+        updated = postCheckout;
+        finalStatusForReopenGuard = postCheckout.status;
+      } else {
+        if (postCheckout) {
+          updated = postCheckout;
+          finalStatusForReopenGuard = postCheckout.status;
+        }
+        const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(updated);
+        if (closedExecutionWorkspace) {
+          const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
+            req,
+            res,
+            updated,
+            closedExecutionWorkspace,
+          );
+          if (reopenOutcome === null) {
+            // Checkout already ran before reopen. A 409/503 reopen response must not
+            // leave the caller holding ownership that retries cannot reclaim with the
+            // usual expectedStatuses set. Restore the pre-checkout snapshot (not a
+            // generic release → todo) when this request mutated the row; a
+            // pre-existing lock holder keeps their checkout.
+            const checkoutMutatedOnReopenFailure =
+              updated.status !== issue.status
+              || updated.checkoutRunId !== issue.checkoutRunId
+              || updated.executionRunId !== issue.executionRunId
+              || updated.assigneeAgentId !== issue.assigneeAgentId;
+            if (checkoutMutatedOnReopenFailure) {
+              try {
+                await svc.restoreCheckoutSnapshot(
+                  id,
+                  {
+                    status: issue.status,
+                    assigneeAgentId: issue.assigneeAgentId,
+                    assigneeUserId: issue.assigneeUserId,
+                    checkoutRunId: issue.checkoutRunId,
+                    executionRunId: issue.executionRunId,
+                    executionAgentNameKey: issue.executionAgentNameKey ?? null,
+                    executionLockedAt: issue.executionLockedAt ?? null,
+                    startedAt: issue.startedAt ?? null,
+                  },
+                  req.body.agentId,
+                  checkoutRunId,
+                  {
+                    checkoutRunId: updated.checkoutRunId,
+                    executionRunId: updated.executionRunId,
+                    status: updated.status,
+                  },
+                );
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: id },
+                  "failed to restore checkout snapshot after closed-workspace reopen failure",
+                );
+              }
+            }
+            return;
+          }
+          // Install the guard only when this request set the reopen-pending flag. A
+          // concurrent request that found the workspace already open must not clear
+          // the flag that the actual reopener still owns.
+          if (reopenOutcome.outcome === "reopened") {
+            reopenedWorkspace = closedExecutionWorkspace;
+            reopenedGeneration = reopenOutcome.generation;
+            const afterReopen = await svc.getById(id);
+            if (afterReopen) {
+              finalStatusForReopenGuard = afterReopen.status;
+              if (isClosedIssueStatus(afterReopen.status)) {
+                updated = afterReopen;
+              }
             }
           }
-          return;
-        }
-        // Install the guard only when this request set the reopen-pending flag. A
-        // concurrent request that found the workspace already open must not clear
-        // the flag that the actual reopener still owns.
-        if (reopenOutcome.outcome === "reopened") {
-          reopenedWorkspace = closedExecutionWorkspace;
-          reopenedGeneration = reopenOutcome.generation;
         }
       }
     }
     // Clear the reopen-pending flag if the response ends with a terminal issue, so
-    // the rebuilt worktree does not leak. The guard reads `updated` when the
-    // response ends. It clears only the fence this request installed, keyed by
-    // its generation.
+    // the rebuilt worktree does not leak. Prefer the revalidated status over the
+    // checkout snapshot so a mid-flight done/cancelled clears this request's fence.
     guardReopenedWorkspaceConsumption({
       req,
       res,
       issue,
       workspace: reopenedWorkspace,
       generation: reopenedGeneration,
-      finalIssueStatus: () => updated?.status,
+      finalIssueStatus: () => finalStatusForReopenGuard,
     });
 
     const actor = getActorInfo(req);
@@ -10759,8 +10778,11 @@ export function issueRoutes(
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
     }
 
+    // A concurrent terminalization after checkout is not a successful checkout for
+    // activity / wake purposes — do not advertise ownership of finished work.
     const checkoutMutated =
       updated
+      && !isClosedIssueStatus(updated.status)
       && (
         updated.status !== issue.status
         || updated.checkoutRunId !== issue.checkoutRunId
