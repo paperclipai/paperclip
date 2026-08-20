@@ -86,8 +86,8 @@
     },
     "overrides": {
       "rollup": ">=4.59.0",
-      "react": "^19.2.7",
-      "react-dom": "^19.2.7",
+      "react": "^19.2.8",
+      "react-dom": "^19.2.8",
       "lexical": "0.49.0",
       "@lexical/clipboard": "0.49.0",
       "@lexical/link": "0.49.0",

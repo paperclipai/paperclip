@@ -6,7 +6,10 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { BrokerClient, BrokerListenerRequest } from "./runtime-exposure/broker-client.js";
-import { diagnoseRuntimeListenerBinds } from "./runtime-exposure/loopback-listener.js";
+import {
+  diagnoseRuntimeListenerBinds,
+  readListenerBindFacts,
+} from "./runtime-exposure/loopback-listener.js";
 import {
   resetRuntimeServicesForTests,
   setWorkspaceRuntimeExposureDepsForTests,
@@ -35,7 +38,9 @@ afterEach(async () => {
 });
 
 function serviceCommand() {
-  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((_,r)=>{r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
+  // Answers `/api/health` the way a real Paperclip dev runtime does: managed
+  // publication requires semantic health, not just a 200 (PAP-17572).
+  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
 }
 
 /**
@@ -70,8 +75,11 @@ const host = mode === "custom" ? (valueOf("--bind-host") ?? "127.0.0.1")
   : mode === "lan" ? "0.0.0.0"
   : "127.0.0.1";
 const p = Number(process.env.PORT);
+// Even a pre-exposure checkout answered /api/health semantically; these guests
+// model bind behaviour, not health behaviour.
+const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
 for (const q of [p, p + 10000]) {
-  http.createServer((_, r) => { r.statusCode = 200; r.end("ok"); }).listen(q, host);
+  http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, host);
 }
 setInterval(() => {}, 1000);
 `;
@@ -89,7 +97,8 @@ const argv = process.argv.slice(2);
 const at = argv.indexOf("--bind-host");
 const host = at >= 0 ? argv[at + 1] : "127.0.0.1";
 const p = Number(process.env.PORT);
-http.createServer((_, r) => { r.statusCode = 200; r.end("ok"); }).listen(p, host);
+const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
+http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(p, host);
 // No host argument: Vite's own HMR listener lands on the wildcard.
 http.createServer((_, r) => { r.statusCode = 426; r.end(); }).listen(p + 10000);
 setInterval(() => {}, 1000);
@@ -99,8 +108,9 @@ setInterval(() => {}, 1000);
 const ALWAYS_WILDCARD_GUEST = `
 import http from "node:http";
 const p = Number(process.env.PORT);
+const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
 for (const q of [p, p + 10000]) {
-  http.createServer((_, r) => { r.statusCode = 200; r.end("ok"); }).listen(q, "0.0.0.0");
+  http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "0.0.0.0");
 }
 setInterval(() => {}, 1000);
 `;
@@ -110,6 +120,10 @@ beforeAll(async () => {
   await fs.writeFile(path.join(guestDir, "dev-runner.mjs"), PRE_MANAGED_EXPOSURE_GUEST);
   await fs.writeFile(path.join(guestDir, "dev-runner-legacy.mjs"), ALWAYS_WILDCARD_GUEST);
   await fs.writeFile(path.join(guestDir, "dev-runner-wildcard-hmr.mjs"), WILDCARD_HMR_GUEST);
+  await fs.writeFile(
+    path.join(guestDir, "dev-runner-bind-conflict.mjs"),
+    'process.stderr.write("local_trusted requires server.bind=loopback\\n"); process.exit(1);\n',
+  );
 });
 
 afterAll(async () => {
@@ -155,6 +169,9 @@ function createBroker() {
  * "make exposure fixture honor occupied ports").
  */
 async function isLoopbackPortFree(port: number): Promise<boolean> {
+  const facts = await readListenerBindFacts(port);
+  if (facts?.present) return false;
+
   return await new Promise<boolean>((resolve) => {
     const probe = net.createServer();
     probe.unref();
@@ -461,7 +478,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     }));
 
     // The launched command carries the loopback bind, replacing `--bind lan`.
-    expect(runtime.command).toContain("--bind custom --bind-host 127.0.0.1");
+    expect(runtime.command).toContain("--bind loopback");
     expect(runtime.command).not.toContain("--bind lan");
 
     // And because the guest honoured it, both listeners are loopback-only, so
@@ -517,7 +534,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     // The bare code alone is what cost PAP-17254 three diagnostic cycles.
     expect(error!.message).toContain("listener_ownership_mismatch");
     expect(error!.message).toContain("loopback");
-    expect(error!.message).toContain("--bind custom --bind-host 127.0.0.1");
+    expect(error!.message).toContain("--bind loopback");
   }, 20_000);
 
   it("leaves a non-Paperclip service's --bind argument alone", async () => {
@@ -534,7 +551,7 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
     }));
 
     expect(runtime.command).toBe(declared);
-    expect(runtime.command).not.toContain("--bind custom");
+    expect(runtime.command).not.toContain("--bind loopback");
     expect(calls.slice(0, 2)).toEqual(["reserve", "expose"]);
     expect(runtime.exposure?.state).toBe("ready");
   }, 20_000);
@@ -553,6 +570,20 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
 
     expect(calls).toEqual([]);
     expect(runtime.command).toBe(declared);
+  }, 20_000);
+
+  it("surfaces a deployment/bind conflict from a guest that exits during startup", async () => {
+    const { broker } = createBroker();
+    installDeps({ broker });
+
+    await expect(startRuntimeServicesForWorkspaceControl(startInput({
+      serviceName: "paperclip-dev",
+      command: guestCommand("dev-runner-bind-conflict.mjs"),
+      expose: LEGACY_HTTP_EXPOSE,
+      port: { type: "auto", envKey: "PORT" },
+    }))).rejects.toThrow(
+      /deployment\/bind conflict: local_trusted requires server\.bind=loopback.*output: local_trusted requires server\.bind=loopback/s,
+    );
   }, 20_000);
 });
 

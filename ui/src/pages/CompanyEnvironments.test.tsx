@@ -1316,6 +1316,65 @@ describe("CompanyEnvironments — test provider button", () => {
     });
   });
 
+  it("names the changed boot-source field in the out-of-sync banner for a boot-source drift", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeTemplateDrift: {
+        classification: "boot_source_drift",
+        driftedPaths: [{ path: "snapshot", from: "a", to: "b" }],
+      },
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Not in use — Base image changed: snapshot `a` -> `b`");
+      expect(dialog.textContent).not.toContain("the environment configuration changed");
+    });
+  });
+
+  it("keeps the generic out-of-sync banner for an unclassified drift", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeTemplateDrift: { classification: "unclassified", driftedPaths: [{ path: "apiUrl" }] },
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Not in use — the environment configuration changed");
+      expect(dialog.textContent).not.toContain("Base image changed");
+    });
+  });
+
   it("does not show the out-of-sync warning when the active template matches the saved config", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

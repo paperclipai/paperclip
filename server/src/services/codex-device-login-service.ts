@@ -21,6 +21,7 @@ import {
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
 
 // The login-session service. It creates a login session, acquires a fresh
@@ -104,11 +105,12 @@ export interface LoginSessionRuntime {
 }
 
 /** The per-session context the promotion seam needs. The service knows the
- *  session, the company, and the adapter, so the promotion resolves the company
- *  scope and the sole-active-owner check for this exact session. */
+ *  session, the company, the owner, and the adapter, so the promotion resolves
+ *  the company slot and the sole-active-owner check for this exact session. */
 export interface CredentialPromotionContext {
   sessionId: string;
   companyId: string;
+  startedByUserId: string;
   adapterType: AgentAdapterType;
 }
 
@@ -210,6 +212,10 @@ export class AdapterAuthSessionConflictError extends Error {
 
 export interface AdapterAuthSessionRow {
   id: string;
+  /** The public, CSPRNG session identifier. The API returns and looks up this
+   *  value. It never equals the internal primary-key `id`, so a caller cannot
+   *  address a row by the internal id. */
+  publicSessionId: string;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -227,6 +233,9 @@ export interface AdapterAuthSessionRow {
 
 export interface InsertAdapterAuthSessionInput {
   id: string;
+  /** The public, CSPRNG session identifier. The service builds it and returns it
+   *  to the client; the store persists it in `public_session_id`. */
+  publicSessionId: string;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -272,33 +281,44 @@ export interface AdapterAuthSessionStore {
   /** A conditional status write. It returns true only when it changed one row. */
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
+  /**
+   * Read a session by its public session id, scoped to the company and the Codex
+   * device-login adapter. The predicate carries the company id, so a query never
+   * keys on the public session id alone, and a foreign-company caller reads
+   * nothing. It never accepts the internal primary-key `id`.
+   */
+  getByPublicId(publicSessionId: string, companyId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
-   *  company and adapter. The reaper reclaims a stale `promoting` row inside this
-   *  lock, so a reclaim never interleaves with a live credential write. */
+   *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
+   *  row inside this lock, so a reclaim never interleaves with a live credential
+   *  write for the same slot. */
   withCompanyAdapterPromotionLock<T>(
     companyId: string,
+    startedByUserId: string,
     adapterType: AgentAdapterType,
     fn: () => Promise<T>,
   ): Promise<T>;
 }
 
 /** Build the advisory-lock key for the promotion critical section. The key is
- *  company-scoped and adapter-scoped, so two different company slots never
- *  contend. The credential-promotion path and the reaper reclaim both derive the
- *  key from this function, so they take the exact same lock. */
+ *  scoped to the company, the owner, and the adapter, so two different slots
+ *  never contend. The credential-promotion path and the reaper reclaim both
+ *  derive the key from this function, so they take the exact same lock. */
 export function adapterLoginPromotionLockKey(
   companyId: string,
+  startedByUserId: string,
   adapterType: AgentAdapterType,
 ): string {
-  return `paperclip:adapter-login-promotion:${companyId}:${adapterType}`;
+  return `paperclip:adapter-login-promotion:${companyId}:${startedByUserId}:${adapterType}`;
 }
 
 /**
- * Run `fn` inside the promotion critical section for one company and adapter.
+ * Run `fn` inside the promotion critical section for one company, owner, and
+ * adapter slot.
  *
  * The function opens a database transaction and takes a transaction-scoped
  * PostgreSQL advisory lock. The lock serializes the credential-promotion path
- * against the reaper reclaim, so a reaper never releases the company slot while a
+ * against the reaper reclaim, so a reaper never releases the slot while a
  * credential write runs, and a stale promotion never writes after the reaper
  * reclaims the slot. The transaction holds the lock through `fn`, so the caller
  * runs the ownership check and the credential write in one mutually-exclusive
@@ -308,10 +328,11 @@ export function adapterLoginPromotionLockKey(
 export async function withAdapterLoginPromotionLock<T>(
   db: Db,
   companyId: string,
+  startedByUserId: string,
   adapterType: AgentAdapterType,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = adapterLoginPromotionLockKey(companyId, adapterType);
+  const key = adapterLoginPromotionLockKey(companyId, startedByUserId, adapterType);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
     return fn();
@@ -354,10 +375,12 @@ export interface AdapterAuthReaperStore {
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
-   *  company and adapter. The reaper reclaims a stale `promoting` row inside this
-   *  lock, so a reclaim never interleaves with a live credential write. */
+   *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
+   *  row inside this lock, so a reclaim never interleaves with a live credential
+   *  write for the same slot. */
   withCompanyAdapterPromotionLock<T>(
     companyId: string,
+    startedByUserId: string,
     adapterType: AgentAdapterType,
     fn: () => Promise<T>,
   ): Promise<T>;
@@ -385,12 +408,16 @@ function isUniqueViolation(error: unknown): boolean {
 function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSessionRow {
   return {
     id: row.id,
+    publicSessionId: row.publicSessionId,
     companyId: row.companyId,
     environmentId: row.environmentId,
     adapterType: row.adapterType,
     startedByUserId: row.startedByUserId,
     providerLeaseId: row.providerLeaseId ?? null,
-    status: row.status,
+    // The unified `status` column type is the merged login-state union. A Codex
+    // device-login row only ever holds a Codex internal status, so narrow the
+    // read back to the internal union the service reasons about.
+    status: row.status as AdapterAuthSessionInternalStatus,
     expiresAt: row.expiresAt ?? null,
     promotionExpiresAt: row.promotionExpiresAt ?? null,
     finishedAt: row.finishedAt ?? null,
@@ -427,6 +454,11 @@ export function createDbAdapterAuthSessionStore(
           environmentId: input.environmentId,
           adapterType: input.adapterType,
           startedByUserId: input.startedByUserId,
+          // The unified table requires a unique public session id. The service
+          // builds it from a CSPRNG and returns it to the client, so the store
+          // persists that value here. It never uses the internal id, a timestamp,
+          // or a counter.
+          publicSessionId: input.publicSessionId,
           status: "starting",
           expiresAt: input.expiresAt,
           createdAt: input.at,
@@ -477,6 +509,25 @@ export function createDbAdapterAuthSessionStore(
       const row = rows[0];
       return row ? toRow(row) : null;
     },
+    async getByPublicId(publicSessionId, companyId) {
+      // The predicate carries the company id and the Codex device-login adapter,
+      // so a read never keys on the public session id alone. A foreign-company or
+      // foreign-adapter caller reads nothing. The internal primary-key `id` never
+      // matches, so a caller cannot address a row by the internal id.
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(
+          and(
+            eq(adapterAuthSessions.publicSessionId, publicSessionId),
+            eq(adapterAuthSessions.companyId, companyId),
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      return row ? toRow(row) : null;
+    },
     async listExpiredActiveSessions(nowAt) {
       // The partial index on the active statuses and the index on `expiresAt`
       // both support this scan. The scan is bounded by the active-status set, so
@@ -489,6 +540,9 @@ export function createDbAdapterAuthSessionStore(
         .from(adapterAuthSessions)
         .where(
           and(
+            // The shared table also holds the setup-token rows, so every reaper
+            // scan filters by the device-login adapter to reach only Codex rows.
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
             inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
             isNotNull(adapterAuthSessions.expiresAt),
             lte(adapterAuthSessions.expiresAt, nowAt),
@@ -505,20 +559,30 @@ export function createDbAdapterAuthSessionStore(
       const rows = await db
         .select()
         .from(adapterAuthSessions)
-        .where(eq(adapterAuthSessions.status, "cleanup_pending"));
+        .where(
+          and(
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            eq(adapterAuthSessions.status, "cleanup_pending"),
+          ),
+        );
       return rows.map(toRow);
     },
     async listLeaseReferences() {
       const rows = await db
         .select({ providerLeaseId: adapterAuthSessions.providerLeaseId })
         .from(adapterAuthSessions)
-        .where(isNotNull(adapterAuthSessions.providerLeaseId));
+        .where(
+          and(
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            isNotNull(adapterAuthSessions.providerLeaseId),
+          ),
+        );
       return rows
         .map((row) => row.providerLeaseId)
         .filter((value): value is string => value != null);
     },
-    async withCompanyAdapterPromotionLock(companyId, adapterType, fn) {
-      return withAdapterLoginPromotionLock(db, companyId, adapterType, fn);
+    async withCompanyAdapterPromotionLock(companyId, startedByUserId, adapterType, fn) {
+      return withAdapterLoginPromotionLock(db, companyId, startedByUserId, adapterType, fn);
     },
   };
 }
@@ -644,6 +708,10 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     input: StartCodexDeviceLoginInput,
   ): Promise<StartCodexDeviceLoginResult> {
     const sessionId = randomUUID();
+    // The public session identifier the API returns and looks up. It is an
+    // independent CSPRNG value, so it never equals the internal `sessionId` and a
+    // caller cannot address the row by the internal id.
+    const publicSessionId = randomUUID();
     const startedAt = now();
     const ttlSeconds = input.ttlSeconds ?? CODEX_DEVICE_LOGIN_TIMEOUT_MS / 1000;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
@@ -662,6 +730,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     // acquires a lease for a losing start.
     await store.insert({
       id: sessionId,
+      publicSessionId,
       companyId: input.companyId,
       environmentId: input.environmentId,
       adapterType: input.adapterType,
@@ -726,7 +795,8 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     activity("lease_acquired");
 
     const session: AdapterAuthSessionResponse = {
-      sessionId,
+      // The API identifier is the public session id, never the internal `sessionId`.
+      sessionId: publicSessionId,
       environmentId: input.environmentId,
       status: "starting",
       expiresAt: expiresAt.toISOString(),
@@ -837,6 +907,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
         await promotion.promote(credential, {
           sessionId,
           companyId: input.companyId,
+          startedByUserId: input.startedByUserId,
           adapterType: input.adapterType,
         });
       } catch {
@@ -972,24 +1043,28 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   }
 
   async function readOwnerSession(
-    sessionId: string,
+    publicSessionId: string,
+    companyId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await store.get(sessionId);
+    // Look the row up by its public session id, scoped to the company. A
+    // foreign-company caller reads nothing, and the internal id never matches.
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row) return null;
     const isOwner = row.startedByUserId === requestingUserId;
     const status = resolvePublicStatus(row);
     // Deliver the one-time prompt to the owner principal exactly once. The read
     // and the delete run with no await between them, so the first authorized
     // owner read consumes the prompt and every later read returns null. This
-    // keeps the short-lived device code out of a repeated response.
+    // keeps the short-lived device code out of a repeated response. The prompt
+    // map keys on the internal id, so read it by `row.id`, not the public id.
     let prompt: DeviceLoginPrompt | null = null;
     if (isOwner) {
-      prompt = promptsBySession.get(sessionId) ?? null;
-      if (prompt) promptsBySession.delete(sessionId);
+      prompt = promptsBySession.get(row.id) ?? null;
+      if (prompt) promptsBySession.delete(row.id);
     }
     return {
-      sessionId: row.id,
+      sessionId: row.publicSessionId,
       environmentId: row.environmentId,
       status,
       expiresAt: row.expiresAt?.toISOString() ?? null,
@@ -1011,14 +1086,18 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   // row, so a cancel never interrupts an in-flight credential write; that
   // promotion runs to its own terminal.
   async function cancelOwnerSession(
-    sessionId: string,
+    publicSessionId: string,
+    companyId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await store.get(sessionId);
+    // Look the row up by its public session id, scoped to the company. The status
+    // write keys on the internal `row.id`, so a cancel never addresses a row by
+    // the public id alone.
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row || row.startedByUserId !== requestingUserId) return null;
     const write = terminalCleanupWrite(false, "cancelled", null);
     await store.compareAndSetStatus({
-      sessionId,
+      sessionId: row.id,
       expectedStatuses: ["starting", "waiting_for_user"],
       status: write.status,
       at: now(),
@@ -1026,7 +1105,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
       finishedAt: now(),
       promotionExpiresAt: null,
     });
-    return readOwnerSession(sessionId, requestingUserId);
+    return readOwnerSession(publicSessionId, companyId, requestingUserId);
   }
 
   return { start, readOwnerSession, cancelOwnerSession };
@@ -1157,20 +1236,15 @@ export function createProductionLoginSessionRuntime(
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
-      const record = await deps.environmentRuntime.acquireRunLease({
-        companyId: input.companyId,
-        environment,
-        issueId: null,
-        agentId: null,
-        // A null heartbeat run and a null execution workspace disable lease
-        // reuse, so the login session always runs in a fresh sandbox.
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        adapterType: input.adapterType,
-        // Apply the active custom-image template, so the sandbox binds to the
-        // trusted image and runtime identity.
-        applyCustomImageTemplate: true,
-      });
+      const record = await deps.environmentRuntime.acquireRunLease(
+        buildLoginLeaseAcquireArgs({
+          metadata: {
+            companyId: input.companyId,
+            environment,
+            adapterType: input.adapterType,
+          },
+        }),
+      );
       // Tag the lease with the session identifier, so the reaper resolves an
       // orphan lease that no live session references. The tag carries no secret.
       await environmentsSvc.updateLeaseMetadata(record.lease.id, {

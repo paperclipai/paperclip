@@ -3326,7 +3326,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let resumedSession = false;
       let clearSession = false;
       let referencedProjectStagingFailuresField:
-        | { referencedProjectStagingFailures: Array<{ projectId: string }> }
+        | { referencedProjectStagingFailures: Array<{ projectId: string; error: string }> }
         | Record<string, never> = {};
       const recordTeardownError = async (step: string, teardownErr: unknown) => {
         const reason = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
@@ -3432,9 +3432,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // is a failure to report.
         const referencedProjectStagingFailures = (
           prepared.stagedRuntime?.additionalSourceFailures ?? []
-        ).map((failure) => ({ projectId: failure.projectId }));
+        ).map((failure) => ({ projectId: failure.projectId, error: failure.error }));
         referencedProjectStagingFailuresField =
           referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
+        // Write one run-log line per failure, so a reader of the run log alone sees
+        // each dropped referenced project and its reason. The run continues without
+        // the failed project (per-project failure isolation). Goes to stderr: the
+        // acpx stdout log stream carries machine-parseable JSON event payloads.
+        for (const failure of referencedProjectStagingFailures) {
+          await ctx.onLog(
+            "stderr",
+            `[paperclip] Referenced project ${failure.projectId} failed to stage; the run continues without it: ${failure.error}\n`,
+          );
+        }
         // State the effective wall-clock timeout and its source up front so a
         // later timeout is diagnosable from the run log alone. Goes to stderr:
         // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -4226,9 +4236,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         stopTransport: () => timedPhase("stop_transport", async () => {
           await stopRunTransport(prepared);
         }),
-        // The site sync-back (the managed-home copy-back).
+        // The site sync-back (the managed-home copy-back). The run-parented span
+        // runner wraps the restore in a `sandbox.syncBack` span. The runner also
+        // publishes the run parent into the runtime-parent store while the restore
+        // runs, so the host mints a `traceparent` for the provider spans, and the
+        // per-task restore spans parent to `sandbox.syncBack`.
         syncBack: () => timedPhase("sync_back", async () => {
-          await syncBackManagedHome(prepared);
+          await runRuntimeSpan("sandbox.syncBack", async () => {
+            await syncBackManagedHome(prepared);
+          });
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
         // reproduces the result, in the run root `finally` below. This step stays a

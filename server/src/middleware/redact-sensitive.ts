@@ -45,6 +45,10 @@ const SENSITIVE_KEYS = new Set<string>([
   "browsercode",
   "authorization_code",
   "authorizationcode",
+  // The workspace login handoff ticket (PAP-17572). It is a signed bearer
+  // credential carried as a query parameter, so it must never reach a log line
+  // even though the exchange itself answers 302.
+  "ticket",
 ]);
 
 const MAX_DEPTH = 6;

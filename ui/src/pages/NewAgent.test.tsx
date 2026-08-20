@@ -76,6 +76,33 @@ vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => new Set<string>(),
 }));
 
+// The form reads the projected adapter login capability to pick the login flow
+// and to gate the login panel. The server projects these safe scalar fields.
+// `claude_local` runs on a real pseudo-terminal, so the panel gate requires the
+// provider pty capability. Provide the projection so the login panel renders.
+const mockLoginProjections = vi.hoisted(
+  () =>
+    new Map<string, { panelMode: string; sandboxTransport: string; timeoutPolicy: string }>([
+      ["claude_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
+      ["codex_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+    ]),
+);
+
+vi.mock("../adapters/use-adapter-capabilities", () => ({
+  useAdapterCapabilities: () => (adapterType: string) => {
+    const login = mockLoginProjections.get(adapterType);
+    return {
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+      supportsModelProfiles: true,
+      supportsAcp: true,
+      ...(login ? { login } : {}),
+    };
+  },
+}));
+
 vi.mock("../components/MarkdownEditor", () => ({
   MarkdownEditor: ({
     value,
@@ -164,8 +191,8 @@ const CLAUDE_AUTH_MISSING_RESULT = {
 // for a provider with the capability, so the sandbox environment uses Daytona.
 const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
   sandboxProviders: {
-    daytona: { supportsSetupTokenLogin: true, displayName: "Daytona" },
-    e2b: { supportsSetupTokenLogin: false, displayName: "E2B" },
+    daytona: { supportsLoginPty: true, displayName: "Daytona" },
+    e2b: { supportsLoginPty: false, displayName: "E2B" },
   },
 });
 

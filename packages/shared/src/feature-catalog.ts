@@ -253,6 +253,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: false,
   },
+  enableSandboxDuplexBridge: {
+    title: "Sandbox Duplex Bridge",
+    description:
+      "Let a run open the sandbox duplex command-stream bridge when the provider grants the capability. The host reads this per run before it selects the transport. Off keeps the file bridge for every run.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableWorktreeRunExecution: {
     title: "Worktree Run Execution",
     description:

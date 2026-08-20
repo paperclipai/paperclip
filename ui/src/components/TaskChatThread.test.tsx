@@ -116,8 +116,8 @@ describe("TaskChatThread draft pass-through", () => {
   });
 });
 
-describe("TaskChatThread composer alignment (PAP-498)", () => {
-  it("matches the thread width on mobile and stays narrower on larger screens", () => {
+describe("TaskChatThread composer alignment", () => {
+  it("matches the thread width at every breakpoint", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
 
     const dock = container
@@ -125,7 +125,8 @@ describe("TaskChatThread composer alignment (PAP-498)", () => {
       ?.closest("div.sticky") as HTMLElement | null;
 
     expect(dock?.className).toContain("w-full");
-    expect(dock?.className).toContain("md:w-(--pct-80)");
+    expect(dock?.className).toContain("max-w-(--tc-shell-max-w)");
+    expect(dock?.className).not.toContain("md:w-(--pct-80)");
   });
 });
 
