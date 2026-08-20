@@ -183,13 +183,28 @@ export function resolveWorkspaceAccessState(input: {
     const seedPhase = typeof provision.metadata?.seedFailurePhase === "string"
       ? provision.metadata.seedFailurePhase
       : null;
+    // A source-readiness failure is about the registered source workspace, not the clone,
+    // so repairing from the same source repeats it: surface the remediation instead.
+    const sourcePreflightReason = typeof provision.metadata?.sourcePreflightReason === "string"
+      ? provision.metadata.sourcePreflightReason
+      : null;
+    const sourcePreflightRemediation = typeof provision.metadata?.sourcePreflightRemediation === "string"
+      ? provision.metadata.sourcePreflightRemediation
+      : null;
     return {
       state: "failed",
       title: "Database provisioning failed",
-      description: seedPhase
-        ? `The clone failed during ${seedPhase}. Repairing replaces only the isolated database.`
-        : "The clone did not finish, so this workspace has no usable database yet.",
-      action: { kind: "repair", label: "Repair workspace" },
+      description: sourcePreflightReason
+        ? [
+            `The registered source workspace failed its readiness check (${sourcePreflightReason}) before the clone started.`,
+            sourcePreflightRemediation,
+          ].filter(Boolean).join(" ")
+        : seedPhase
+          ? `The clone failed during ${seedPhase}. Repairing replaces only the isolated database.`
+          : "The clone did not finish, so this workspace has no usable database yet.",
+      action: sourcePreflightReason
+        ? { kind: "view_logs", label: "View provision log" }
+        : { kind: "repair", label: "Repair workspace" },
       handoffAvailable,
     };
   }

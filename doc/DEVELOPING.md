@@ -19,6 +19,13 @@ Current implementation status:
 
 GitHub Actions owns `pnpm-lock.yaml`.
 
+The workspace package preflight and `paperclipai doctor` report an escaped
+`virtualStoreDir` or dangling direct dependency symlink with this repair command:
+
+```sh
+NODE_ENV=development pnpm install --prefer-offline --config.confirmModulesPurge=false
+```
+
 - Do not commit `pnpm-lock.yaml` in pull requests.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.

@@ -16,6 +16,7 @@ import {
   serviceHealthChecks,
   storageCheck,
   type CheckResult,
+  workspacePackageStateCheck,
 } from "../checks/index.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
@@ -133,6 +134,10 @@ export async function doctor(opts: {
     results.push(result);
     printResult(result);
   }
+
+  const workspacePackageResult = workspacePackageStateCheck();
+  results.push(workspacePackageResult);
+  printResult(workspacePackageResult);
 
   // 11. Background service checks
   for (const result of await serviceHealthChecks(config)) {

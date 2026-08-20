@@ -18,6 +18,10 @@ import {
   resolveCanonicalWorktreeSeedSource,
   type CanonicalWorktreeSeedSource,
 } from "@paperclipai/shared/worktree-seed-source";
+import {
+  evaluateWorktreeSeedSourceReadiness,
+  WORKTREE_SEED_SOURCE_PREFLIGHT_PHASE,
+} from "@paperclipai/shared/worktree-seed-source-readiness";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -426,6 +430,37 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             repairPhase: "precondition_validation",
           },
         );
+      }
+
+      // Source identity resolves, so check that the source it names is actually usable
+      // before any operation or service mutation. A registered primary workspace whose
+      // config points at deleted or transient worktree state fails here with a stable
+      // reason instead of as an opaque reseed failure.
+      const sourceReadiness = await evaluateWorktreeSeedSourceReadiness({
+        sourceConfigPath: repairSeedSource.configPath,
+        registeredPrimaryWorkspace: true,
+      });
+      if (!sourceReadiness.ok) {
+        logger.warn(
+          {
+            executionWorkspaceId: existing.id,
+            sourceConfigPath: repairSeedSource.configPath,
+            reason: sourceReadiness.reason,
+            findings: sourceReadiness.findings,
+          },
+          "workspace repair rejected an unready seed source",
+        );
+        throw unprocessable(sourceReadiness.message, {
+          code: "workspace_source_preflight_failed",
+          reason: sourceReadiness.reason,
+          // Both names are surfaced: `repairPhase` keeps the repair timeline exact while
+          // `preflightPhase` names the check that failed.
+          repairPhase: "precondition_validation",
+          preflightPhase: WORKTREE_SEED_SOURCE_PREFLIGHT_PHASE,
+          remediation: sourceReadiness.remediation,
+          findings: sourceReadiness.findings,
+          databaseState: sourceReadiness.databaseState,
+        });
       }
     }
 

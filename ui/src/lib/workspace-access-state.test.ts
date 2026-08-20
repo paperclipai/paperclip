@@ -199,6 +199,25 @@ describe("resolveWorkspaceAccessState", () => {
     expect(access.description).toContain("restore");
   });
 
+  it("names the source readiness reason and remediation when the seed preflight failed", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [],
+      operations: [operation({
+        status: "failed",
+        metadata: {
+          seedFailurePhase: "seed_source_preflight",
+          sourcePreflightReason: "source_data_dir_missing",
+          sourcePreflightRemediation: "Re-point database.embeddedPostgresDataDir at the live instance data directory.",
+        },
+      })],
+    });
+    expect(access).toMatchObject({ state: "failed", action: { kind: "view_logs", label: "View provision log" } });
+    // The clone never started, so the copy points at the registered source, not the clone.
+    expect(access.description).toContain("source_data_dir_missing");
+    expect(access.description).toContain("Re-point database.embeddedPostgresDataDir");
+    expect(access.description).not.toContain("The clone failed");
+  });
+
   it("shows validating, not degraded, while a fresh clone is still being confirmed", () => {
     const access = resolveWorkspaceAccessState({
       runtimeServices: [runtimeService()],

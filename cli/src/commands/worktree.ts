@@ -32,6 +32,11 @@ import {
   writeWorktreePortRegistry,
 } from "@paperclipai/shared/worktree-port-registry";
 import {
+  assertWorktreeSeedSourceReady,
+  isWorktreeSeedSourceReadinessError,
+  type WorktreeSeedSourceReadiness,
+} from "@paperclipai/shared/worktree-seed-source-readiness";
+import {
   applyPendingMigrations,
   agents,
   authAccounts,
@@ -1677,6 +1682,34 @@ async function inspectVerifiedSeedDatabase(
   }
 }
 
+/**
+ * Reject a contaminated or absent seed source before the seed touches it.
+ *
+ * A managed source is a registered primary project workspace, so it must name durable
+ * host state. A config overwritten by a `pcvt-` test run can point at a deleted
+ * instance. Failing here turns that into
+ * a named, actionable preflight failure instead of an opaque snapshot error.
+ */
+export async function preflightWorktreeSeedSource(input: {
+  sourceConfigPath: string;
+  registeredPrimaryWorkspace?: boolean;
+  expectedSourceInstanceId?: string | null;
+  onPhase?: (phase: WorktreeSeedPhase, status: "started" | "succeeded", message?: string) => void;
+}): Promise<WorktreeSeedSourceReadiness> {
+  input.onPhase?.("source_readiness", "started");
+  const readiness = await assertWorktreeSeedSourceReady({
+    sourceConfigPath: input.sourceConfigPath,
+    registeredPrimaryWorkspace: input.registeredPrimaryWorkspace,
+    expectedSourceInstanceId: input.expectedSourceInstanceId,
+  });
+  input.onPhase?.(
+    "source_readiness",
+    "succeeded",
+    `Validated the registered seed source identity and persistent state (database ${readiness.databaseState}).`,
+  );
+  return readiness;
+}
+
 async function seedWorktreeDatabase(input: {
   sourceConfigPath: string;
   sourceConfig: PaperclipConfig;
@@ -1686,8 +1719,14 @@ async function seedWorktreeDatabase(input: {
   seedMode: WorktreeSeedMode;
   preserveLiveWork?: boolean;
   expectedCompanyId?: string;
+  registeredPrimaryWorkspace?: boolean;
   onPhase?: (phase: WorktreeSeedPhase, status: "started" | "succeeded", message?: string) => void;
 }): Promise<SeedWorktreeDatabaseResult> {
+  await preflightWorktreeSeedSource({
+    sourceConfigPath: input.sourceConfigPath,
+    registeredPrimaryWorkspace: input.registeredPrimaryWorkspace,
+    onPhase: input.onPhase,
+  });
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
   const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
   const sourceEnvEntries = readPaperclipEnvEntries(sourceEnvFile);
@@ -1823,6 +1862,9 @@ export function formatWorktreeSeedFailureDiagnostic(
   error: unknown,
 ): string {
   const message = error instanceof Error ? error.message : String(error ?? "");
+  // Readiness failures are built from enumerated reasons and config key names only,
+  // so the exact preflight diagnostic is safe to persist and is what an operator needs.
+  if (isWorktreeSeedSourceReadinessError(error)) return error.message;
   if (
     phase === "restore"
     && /database system is shutting down|terminating connection due to administrator command/i.test(message)
@@ -2171,6 +2213,7 @@ async function runVerifiedWorktreeSeed(input: {
   seedMode: WorktreeSeedMode;
   preserveLiveWork?: boolean;
   expectedCompanyId?: string;
+  registeredPrimaryWorkspace?: boolean;
   seedDatabase: SeedWorktreeDatabase;
 }): Promise<SeedWorktreeDatabaseResult> {
   let activePhase: WorktreeSeedPhase = "pending";
@@ -2206,6 +2249,7 @@ async function runVerifiedWorktreeSeed(input: {
       seedMode: input.seedMode,
       preserveLiveWork: input.preserveLiveWork,
       expectedCompanyId: input.expectedCompanyId,
+      registeredPrimaryWorkspace: input.registeredPrimaryWorkspace,
       onPhase: (phase, status, message) => {
         activePhase = phase;
         updateWorktreeSeedManifest({
@@ -2422,6 +2466,9 @@ export async function ensureWorktreeSeeded(
       seedMode: manifest.seedMode,
       preserveLiveWork: opts.preserveLiveWork,
       expectedCompanyId,
+      // A managed seed derives its source from a registered primary project workspace,
+      // which must never resolve through transient worktree or test-harness state.
+      registeredPrimaryWorkspace: Boolean(registeredBaseWorkspaceCwd),
       seedDatabase,
     });
     return { seeded: true, reason: "seeded", details };

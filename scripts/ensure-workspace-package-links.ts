@@ -2,6 +2,10 @@
 import fs from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import {
+  inspectWorkspacePackageState,
+  workspacePackageStateCheck,
+} from "../cli/src/checks/workspace-package-state-check.ts";
 import { repoRoot } from "./dev-service-profile.ts";
 
 type WorkspaceLinkMismatch = {
@@ -51,6 +55,16 @@ const workspaceDirs = Array.from(
       .filter((workspaceDir) => workspaceDir.length > 0),
   ),
 ).sort();
+
+// Escaped stores can mutate another checkout, so reject them before relinking.
+// Dangling workspace links are safe to repair and are checked again afterward.
+const unsafePackageState = inspectWorkspacePackageState(repoRoot).some(
+  (issue) => issue.kind === "escaped_node_modules" || issue.kind === "escaped_virtual_store",
+);
+if (unsafePackageState) {
+  const packageState = workspacePackageStateCheck(repoRoot);
+  throw new Error(`${packageState.name}: ${packageState.message}\n${packageState.repairHint}`);
+}
 
 function findWorkspaceLinkMismatches(workspaceDir: string): WorkspaceLinkMismatch[] {
   const nodeModulesDir = path.join(repoRoot, workspaceDir, "node_modules");
@@ -114,4 +128,9 @@ async function ensureWorkspaceLinksCurrent(workspaceDir: string) {
 
 for (const workspaceDir of workspaceDirs) {
   await ensureWorkspaceLinksCurrent(workspaceDir);
+}
+
+const packageState = workspacePackageStateCheck(repoRoot);
+if (packageState.status === "fail") {
+  throw new Error(`${packageState.name}: ${packageState.message}\n${packageState.repairHint}`);
 }

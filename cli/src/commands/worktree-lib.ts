@@ -14,6 +14,10 @@ export type WorktreeSeedMode = (typeof WORKTREE_SEED_MODES)[number];
 
 export const WORKTREE_SEED_PHASES = [
   "pending",
+  // Source-readiness preflight: identity and persistent-state checks that run before
+  // any source database is touched, so host contamination fails with a named reason
+  // instead of an opaque snapshot error.
+  "source_readiness",
   "source_validation",
   "snapshot",
   "restore",

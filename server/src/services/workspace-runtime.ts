@@ -38,6 +38,11 @@ import { conflict } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
+  evaluateWorktreeSeedSourceReadiness,
+  formatWorktreeSeedSourceReadinessFailure,
+  WORKTREE_SEED_SOURCE_PREFLIGHT_PHASE,
+} from "@paperclipai/shared/worktree-seed-source-readiness";
+import {
   buildManagedWorkspaceGuestEnv,
   logManagedWorkspaceReadinessRejection,
   probeManagedWorkspaceHandoffSubjects,
@@ -2890,6 +2895,42 @@ async function recordGitOperation(
   return stdout.trim();
 }
 
+/**
+ * Source-readiness preflight for a managed workspace seed.
+ *
+ * The seed clones the registered base project workspace's database, so a base config
+ * that points at deleted or transient worktree state can only fail deep inside the
+ * seed. Checking first turns that into a terminal `workspace_seed` operation whose
+ * metadata names the preflight phase, a stable reason and the remediation.
+ *
+ * A base workspace with no Paperclip config is left alone: nothing is registered to
+ * validate, and the seed command itself owns that error.
+ */
+async function preflightWorkspaceSeedSource(baseCwd: string | null | undefined) {
+  const trimmedBaseCwd = baseCwd?.trim();
+  if (!trimmedBaseCwd) return null;
+  const sourceConfigPath = path.join(trimmedBaseCwd, ".paperclip", "config.json");
+  if (!existsSync(sourceConfigPath)) return null;
+
+  const readiness = await evaluateWorktreeSeedSourceReadiness({
+    sourceConfigPath,
+    registeredPrimaryWorkspace: true,
+  });
+  if (readiness.ok) return null;
+  return {
+    message: formatWorktreeSeedSourceReadinessFailure(readiness),
+    metadata: {
+      provisionKind: "workspace_seed",
+      seedPhase: WORKTREE_SEED_SOURCE_PREFLIGHT_PHASE,
+      seedFailurePhase: WORKTREE_SEED_SOURCE_PREFLIGHT_PHASE,
+      sourcePreflightReason: readiness.reason,
+      sourcePreflightRemediation: readiness.remediation,
+      sourcePreflightFindings: readiness.findings,
+      sourceDatabaseState: readiness.databaseState,
+    } satisfies Record<string, unknown>,
+  };
+}
+
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
@@ -2901,10 +2942,16 @@ async function recordWorkspaceCommandOperation(
     label: string;
     metadata?: Record<string, unknown> | null;
     successMessage?: string | null;
+    /** Registered base project workspace whose config the seed reads as its source. */
+    seedSourceBaseCwd?: string | null;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   },
 ) {
   if (!recorder) {
+    if (input.phase === "workspace_seed") {
+      const preflight = await preflightWorkspaceSeedSource(input.seedSourceBaseCwd);
+      if (preflight) throw new Error(`${input.label} failed: ${preflight.message}`);
+    }
     await runWorkspaceCommand(input);
     return null;
   }
@@ -2918,6 +2965,21 @@ async function recordWorkspaceCommandOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
+      if (input.phase === "workspace_seed") {
+        const preflight = await preflightWorkspaceSeedSource(input.seedSourceBaseCwd);
+        if (preflight) {
+          stderr = preflight.message;
+          code = 1;
+          if (input.onLog) await input.onLog("stderr", `[runtime-provision] ${preflight.message}`);
+          return {
+            status: "failed",
+            exitCode: 1,
+            stdout: "",
+            stderr,
+            metadata: preflight.metadata,
+          };
+        }
+      }
       const shell = resolveShell();
       const result = await executeProcess({
         command: shell,
@@ -5232,6 +5294,7 @@ async function runRuntimeProvisionWithWorkspaceMutex(input: StartLocalRuntimeSer
     label: workspaceSeed
       ? `Workspace seed command "${command}"`
       : `Runtime provision command "${command}"`,
+    seedSourceBaseCwd: workspaceSeed ? input.workspace.baseCwd : null,
     metadata: {
       executionWorkspaceId: input.executionWorkspaceId ?? null,
       projectWorkspaceId: input.workspace.workspaceId,

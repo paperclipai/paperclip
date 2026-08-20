@@ -4043,6 +4043,99 @@ describe("ensureRuntimeServicesForRun", () => {
     }
   });
 
+  it("fails the built-in seed with a named source preflight instead of spawning it", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-seed-preflight-"));
+    const restorePaperclipEnv = configureRuntimeProvisionTestHome(workspaceRoot, "workspace-seed-preflight");
+    const scriptsDir = path.join(workspaceRoot, "scripts");
+    const configDir = path.join(workspaceRoot, ".paperclip");
+    const spawnMarkerPath = path.join(workspaceRoot, "seed-spawned.txt");
+    await fs.mkdir(scriptsDir, { recursive: true });
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(scriptsDir, "provision-worktree-runtime.sh"),
+      ["#!/usr/bin/env bash", "set -euo pipefail", `printf 'spawned\\n' > ${JSON.stringify(spawnMarkerPath)}`].join("\n"),
+      "utf8",
+    );
+    // The registered base workspace config points at a deleted `pcvt-` test tree
+    // while its .env still names the live instance.
+    const contaminated = path.join(
+      workspaceRoot,
+      ".p16582",
+      "pcvt-2140811-1-VA2N3o",
+      "instances",
+      "pap-885-show-worktree-banner",
+    );
+    await fs.writeFile(
+      path.join(configDir, "config.json"),
+      `${JSON.stringify({
+        $meta: { version: 1, updatedAt: "2026-08-19T00:00:00.000Z", source: "configure" },
+        database: {
+          mode: "embedded-postgres",
+          embeddedPostgresDataDir: path.join(contaminated, "db"),
+          embeddedPostgresPort: 54330,
+        },
+        logging: { mode: "file", logDir: path.join(contaminated, "logs") },
+        server: { host: "127.0.0.1", port: 3101 },
+      })}\n`,
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(configDir, ".env"),
+      "PAPERCLIP_INSTANCE_ID=\"default\"\n",
+      "utf8",
+    );
+    await fs.writeFile(path.join(configDir, "seed-pending"), "{}\n", "utf8");
+    const config = runtimeProvisionTestConfig({});
+    const workspace = {
+      ...buildWorkspace(workspaceRoot),
+      source: "task_session" as const,
+      strategy: "git_worktree" as const,
+      worktreePath: workspaceRoot,
+    };
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    try {
+      await expect(
+        startRuntimeServicesForWorkspaceControl(
+          runtimeProvisionStartInput({ workspace, config, recorder }),
+        ),
+      ).rejects.toThrow(/seed_source_preflight.*source_instance_mismatch/);
+
+      expect(existsSync(spawnMarkerPath)).toBe(false);
+      expect(operations).toEqual([
+        expect.objectContaining({
+          phase: "workspace_seed",
+          result: expect.objectContaining({
+            status: "failed",
+            exitCode: 1,
+            metadata: expect.objectContaining({
+              provisionKind: "workspace_seed",
+              seedPhase: "seed_source_preflight",
+              seedFailurePhase: "seed_source_preflight",
+              sourcePreflightReason: "source_instance_mismatch",
+              sourcePreflightRemediation: expect.stringContaining("paperclip configure"),
+            }),
+          }),
+        }),
+      ]);
+      const findings = (operations[0]!.result.metadata as { sourcePreflightFindings: Array<{ reason: string }> })
+        .sourcePreflightFindings;
+      expect(new Set(findings.map((finding) => finding.reason))).toEqual(new Set([
+        "source_instance_mismatch",
+        "source_transient_worktree_identity",
+        "source_data_dir_missing",
+      ]));
+      expect(JSON.stringify(operations[0]!.result)).not.toContain(contaminated);
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-1",
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      restorePaperclipEnv();
+    }
+  });
+
   it("does not create a runtime provision operation when the command is absent", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-provision-noop-"));
     const restorePaperclipEnv = configureRuntimeProvisionTestHome(workspaceRoot, "runtime-provision-noop");

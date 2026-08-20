@@ -153,9 +153,47 @@ async function createApp() {
   return app;
 }
 
+/**
+ * Registered source config shaped like a real host instance: identity-consistent paths
+ * under `<home>/instances/<id>` and a stopped-but-initialized embedded data directory.
+ * The source-readiness preflight is only satisfied by a source that could really be
+ * seeded from, so the fixture has to look like one.
+ */
+function writeRegisteredSourceConfig(input: {
+  sourceConfigPath: string;
+  instanceId: string;
+  instanceRoot: string;
+  initializeDataDir?: boolean;
+}) {
+  const dataDir = path.join(input.instanceRoot, "db");
+  fs.writeFileSync(input.sourceConfigPath, `${JSON.stringify({
+    $meta: { version: 1, updatedAt: "2026-08-19T00:00:00.000Z", source: "configure" },
+    database: {
+      mode: "embedded-postgres",
+      embeddedPostgresDataDir: dataDir,
+      // A closed port is healthy: a stopped source is startable from its data directory.
+      embeddedPostgresPort: 54987,
+      backup: { enabled: true, intervalMinutes: 60, retentionDays: 7, dir: path.join(input.instanceRoot, "data", "backups") },
+    },
+    logging: { mode: "file", logDir: path.join(input.instanceRoot, "logs") },
+    server: { host: "127.0.0.1", port: 3100 },
+    storage: { provider: "local_disk", localDisk: { baseDir: path.join(input.instanceRoot, "data", "storage") } },
+    secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: path.join(input.instanceRoot, "secrets", "master.key") } },
+  })}\n`);
+  fs.writeFileSync(
+    path.join(path.dirname(input.sourceConfigPath), ".env"),
+    `PAPERCLIP_INSTANCE_ID=${input.instanceId}\n`,
+  );
+  if (input.initializeDataDir !== false) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "16\n");
+  }
+  return { dataDir };
+}
+
 function createRegisteredRepairFixture(
   prefix: string,
-  options: { targetInstanceId?: string; withCli?: boolean } = {},
+  options: { targetInstanceId?: string; withCli?: boolean; sourceInstanceRoot?: string; initializeSourceDataDir?: boolean } = {},
 ) {
   const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const baseCwd = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}base-`));
@@ -166,8 +204,14 @@ function createRegisteredRepairFixture(
   const cliEntry = path.join(baseCwd, "cli", "src", "index.ts");
   fs.mkdirSync(configDir, { recursive: true });
   fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
-  fs.writeFileSync(sourceConfigPath, "{}\n");
-  fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=repair-source\n");
+  const sourceInstanceRoot = options.sourceInstanceRoot
+    ?? path.join(baseCwd, "home", "instances", "repair-source");
+  const { dataDir: sourceDataDir } = writeRegisteredSourceConfig({
+    sourceConfigPath,
+    instanceId: "repair-source",
+    instanceRoot: sourceInstanceRoot,
+    initializeDataDir: options.initializeSourceDataDir,
+  });
   fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
   fs.writeFileSync(path.join(configDir, ".env"), `PAPERCLIP_INSTANCE_ID=${targetInstanceId}\n`);
   if (options.withCli !== false) {
@@ -189,7 +233,7 @@ function createRegisteredRepairFixture(
     projectId,
     projectWorkspaceId,
   }));
-  return { workspaceCwd, baseCwd, configDir, sourceConfigPath, targetInstanceId };
+  return { workspaceCwd, baseCwd, configDir, sourceConfigPath, targetInstanceId, sourceDataDir };
 }
 
 function removeRegisteredRepairFixture(fixture: { workspaceCwd: string; baseCwd: string }) {
@@ -461,6 +505,106 @@ describe.sequential("execution workspace runtime control conflict and failure re
       expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(workspaceCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a healthy but stopped registered seed source", async () => {
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-stopped-source-");
+    try {
+      mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({ cwd: fixture.workspaceCwd });
+      mockStartRuntimeServices.mockResolvedValue([{
+        id: "service-1",
+        status: "running",
+        healthStatus: "healthy",
+      }]);
+      mockVerifiedReseed(fixture);
+
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      // The source database is not listening, only startable, so the preflight passes and
+      // the repair proceeds to its reseed.
+      expect(res.status).toBe(200);
+      expect(mockSpawn).toHaveBeenCalled();
+    } finally {
+      removeRegisteredRepairFixture(fixture);
+    }
+  });
+
+  it("returns 422 with a source preflight reason when the source data directory is deleted", async () => {
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-datadir-", {
+      initializeSourceDataDir: false,
+    });
+    try {
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        code: "workspace_source_preflight_failed",
+        reason: "source_data_dir_missing",
+        repairPhase: "precondition_validation",
+        preflightPhase: "seed_source_preflight",
+        remediation: expect.stringContaining("data directory"),
+        details: expect.objectContaining({
+          databaseState: "unknown",
+          findings: [expect.objectContaining({
+            reason: "source_data_dir_missing",
+            configKeys: ["database.embeddedPostgresDataDir"],
+            detail: "missing",
+          })],
+        }),
+      });
+      // Nothing about the private source layout leaks into the surfaced operation.
+      expect(JSON.stringify(res.body)).not.toContain(fixture.sourceDataDir);
+      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+      expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
+      expect(mockWorkspaceOperationService.createRecorder).not.toHaveBeenCalled();
+    } finally {
+      removeRegisteredRepairFixture(fixture);
+    }
+  });
+
+  it("returns 422 when the registered source carries pcvt- worktree identity", async () => {
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-pcvt-scratch-"));
+    // A virtualized test run rewrote the shared checkout's config to point at
+    // its own `pcvt-` tree under another instance, and the tree is long gone.
+    const fixture = createRegisteredRepairFixture("paperclip-route-repair-pcvt-", {
+      sourceInstanceRoot: path.join(
+        scratchRoot,
+        ".p16582",
+        "pcvt-2140811-1-VA2N3o",
+        "t",
+        "paperclip-worktrees-sM1nDa",
+        "instances",
+        "pap-885-show-worktree-banner",
+      ),
+      initializeSourceDataDir: false,
+    });
+    try {
+      const res = await request(await createApp())
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
+        .send({});
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        code: "workspace_source_preflight_failed",
+        reason: "source_instance_mismatch",
+        preflightPhase: "seed_source_preflight",
+      });
+      const findings = res.body.details.findings as Array<{ reason: string; detail: string }>;
+      expect(findings.some((finding) =>
+        finding.reason === "source_transient_worktree_identity"
+        && finding.detail.includes("pcvt_test_harness"))).toBe(true);
+      expect(JSON.stringify(res.body)).not.toContain("pcvt-2140811-1-VA2N3o");
+      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
+    } finally {
+      removeRegisteredRepairFixture(fixture);
+      fs.rmSync(scratchRoot, { recursive: true, force: true });
     }
   });
 

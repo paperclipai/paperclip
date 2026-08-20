@@ -91,6 +91,10 @@ export function errorHandler(
       : null;
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
     const workspaceRepairPreconditionFailure = details?.code === "workspace_repair_precondition_failed";
+    // Source-readiness preflight failures keep the same top-level reason/phase contract as
+    // repair preconditions, but keep their `details` so the per-key findings survive.
+    const workspaceSourcePreflightFailure = details?.code === "workspace_source_preflight_failed";
+    const hoistsWorkspaceFailureReason = workspaceRepairPreconditionFailure || workspaceSourcePreflightFailure;
     const structuredConnectionError = new Set([
       "user_authorization_required",
       "grant_revoked",
@@ -114,9 +118,12 @@ export function errorHandler(
       error: err.message,
       ...(typeof details?.code === "string" ? { code: details.code } : {}),
       ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
-      ...(workspaceRepairPreconditionFailure && typeof details?.reason === "string" ? { reason: details.reason } : {}),
-      ...(workspaceRepairPreconditionFailure && typeof details?.repairPhase === "string"
+      ...(hoistsWorkspaceFailureReason && typeof details?.reason === "string" ? { reason: details.reason } : {}),
+      ...(hoistsWorkspaceFailureReason && typeof details?.repairPhase === "string"
         ? { repairPhase: details.repairPhase }
+        : {}),
+      ...(workspaceSourcePreflightFailure && typeof details?.preflightPhase === "string"
+        ? { preflightPhase: details.preflightPhase }
         : {}),
       ...(typeof details?.remediation === "string" || (structuredConnectionError && details?.remediation && typeof details.remediation === "object")
         ? { remediation: details.remediation }

@@ -33,6 +33,7 @@ import {
   inspectLegacyWorktreeDatabase,
   markWorktreeSeedPending,
   pauseSeededScheduledRoutines,
+  preflightWorktreeSeedSource,
   quarantineSeededWorktreeExecutionState,
   readWorktreeSeedManifest,
   readSourceAttachmentBody,
@@ -880,7 +881,68 @@ describe("worktree helpers", () => {
       expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
         sourceConfigPath,
         expectedCompanyId: "company-1",
+        registeredPrimaryWorkspace: true,
       }));
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the source_readiness phase and a redacted reason for a contaminated seed source", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-readiness-"));
+    try {
+      const baseRoot = path.join(tempRoot, "base");
+      const sourceConfigPath = path.join(baseRoot, ".paperclip", "config.json");
+      const liveInstanceRoot = path.join(tempRoot, "home", "instances", "default");
+      // A `pcvt-` test run pointed the shared checkout at its own scratch tree.
+      const contaminatedInstanceRoot = path.join(
+        tempRoot,
+        ".p16582",
+        "pcvt-2140811-1-VA2N3o",
+        "instances",
+        "pap-885-show-worktree-banner",
+      );
+      const writeSourceConfig = (instanceRoot: string) => {
+        const sourceConfig = buildSourceConfig();
+        // A port nothing listens on: the preflight must read that as a stopped-but-startable
+        // source, not as a defect. (The fixture default is the live host port.)
+        sourceConfig.database.embeddedPostgresPort = 65533;
+        sourceConfig.database.embeddedPostgresDataDir = path.join(instanceRoot, "db");
+        sourceConfig.database.backup.dir = path.join(instanceRoot, "backups");
+        sourceConfig.logging.logDir = path.join(instanceRoot, "logs");
+        sourceConfig.storage.localDisk.baseDir = path.join(instanceRoot, "storage");
+        sourceConfig.secrets.localEncrypted.keyFilePath = path.join(instanceRoot, "secrets", "master.key");
+        fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig, null, 2)}\n`);
+      };
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=default\n");
+      fs.mkdirSync(path.join(liveInstanceRoot, "db"), { recursive: true });
+      fs.writeFileSync(path.join(liveInstanceRoot, "db", "PG_VERSION"), "16\n");
+
+      // A stopped source with intact persistent state passes and names the phase.
+      writeSourceConfig(liveInstanceRoot);
+      const healthyPhases: Array<[string, string]> = [];
+      await expect(preflightWorktreeSeedSource({
+        sourceConfigPath,
+        registeredPrimaryWorkspace: true,
+        onPhase: (phase, status) => healthyPhases.push([phase, status]),
+      })).resolves.toMatchObject({ ok: true, databaseState: "stopped" });
+      expect(healthyPhases).toEqual([["source_readiness", "started"], ["source_readiness", "succeeded"]]);
+
+      writeSourceConfig(contaminatedInstanceRoot);
+      const failedPhases: Array<[string, string]> = [];
+      const error = await preflightWorktreeSeedSource({
+        sourceConfigPath,
+        registeredPrimaryWorkspace: true,
+        onPhase: (phase, status) => failedPhases.push([phase, status]),
+      }).catch((thrown: unknown) => thrown as Error);
+
+      expect(failedPhases).toEqual([["source_readiness", "started"]]);
+      expect(error.message).toContain("seed_source_preflight");
+      expect(error.message).toContain("source_instance_mismatch");
+      expect(error.message).not.toContain(contaminatedInstanceRoot);
+      // The manifest diagnostic keeps the exact preflight reason instead of a generic phase label.
+      expect(formatWorktreeSeedFailureDiagnostic("source_readiness", error)).toBe(error.message);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -2185,7 +2247,11 @@ describe("worktree helpers", () => {
       await expect(worktreeReseedCommand({
         fromConfig: sourcePaths.configPath,
         yes: true,
-      })).rejects.toThrow("Source instance uses postgres mode but has no connection string");
+        // The source-readiness preflight now rejects the unusable source database setting
+        // before the reseed touches the source, so the failure names the preflight phase.
+      })).rejects.toThrow(
+        /seed_source_preflight.*source_config_invalid.*database\.connectionString: missing_setting/,
+      );
 
       const restoredConfig = JSON.parse(fs.readFileSync(currentPaths.configPath, "utf8"));
       const restoredEnv = fs.readFileSync(currentPaths.envPath, "utf8");
