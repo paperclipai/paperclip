@@ -73,6 +73,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Sparkles,
     recommended: true,
   },
+  codebuddy_local: {
+    label: "CodeBuddy",
+    description: "Tencent CodeBuddy CLI harness",
+    icon: Code,
+  },
   codex_local: {
     label: "Codex",
     description: "Codex CLI harness",

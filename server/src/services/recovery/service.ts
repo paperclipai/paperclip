@@ -98,6 +98,7 @@ const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participa
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
+  "codebuddy_local",
   "codex_local",
   "cursor",
   "gemini_local",

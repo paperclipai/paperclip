@@ -273,6 +273,7 @@ export function agentRoutes(
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
+    codebuddy_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
@@ -2107,6 +2108,7 @@ export function agentRoutes(
   // declare requiresMaterializedRuntimeSkills explicitly.
   const LEGACY_MATERIALIZED_SKILLS_SET = new Set([
     "cursor",
+    "codebuddy_local",
     "gemini_local",
     "opencode_local",
     "pi_local",

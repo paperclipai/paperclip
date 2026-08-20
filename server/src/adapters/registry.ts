@@ -30,6 +30,17 @@ import {
   modelProfiles as claudeModelProfiles,
 } from "@paperclipai/adapter-claude-local";
 import {
+  execute as codeBuddyExecute,
+  listCodeBuddySkills,
+  syncCodeBuddySkills,
+  testEnvironment as codeBuddyTestEnvironment,
+  sessionCodec as codeBuddySessionCodec,
+} from "@paperclipai/adapter-codebuddy-local/server";
+import {
+  agentConfigurationDoc as codeBuddyAgentConfigurationDoc,
+  models as codeBuddyModels,
+} from "@paperclipai/adapter-codebuddy-local";
+import {
   execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
@@ -298,6 +309,27 @@ const acpxLocalAdapter: ServerAdapterModule = {
   getConfigSchema: () => ({ fields: [] }),
 };
 
+const codeBuddyLocalAdapter: ServerAdapterModule = {
+  type: "codebuddy_local",
+  execute: codeBuddyExecute,
+  testEnvironment: codeBuddyTestEnvironment,
+  listSkills: listCodeBuddySkills,
+  syncSkills: syncCodeBuddySkills,
+  sessionCodec: codeBuddySessionCodec,
+  sessionManagement: getAdapterSessionManagement("codebuddy_local") ?? undefined,
+  models: codeBuddyModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "codebuddy"),
+    detectCommand: readConfiguredCommand(config, "codebuddy"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: codeBuddyAgentConfigurationDoc,
+};
+
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
   execute: codexExecute,
@@ -481,6 +513,7 @@ function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
     claudeLocalAdapter,
+    codeBuddyLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
