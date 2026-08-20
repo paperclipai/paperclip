@@ -223,6 +223,10 @@ importers:
       ws:
         specifier: ^8.21.3
         version: 8.21.3
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
 
   packages/adapters/gemini-local:
     dependencies:
