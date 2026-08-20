@@ -32,7 +32,7 @@ export const statusCardRefreshPolicySchema = z
     intervalMinutes: z.number().int().positive().optional(),
     debounceSeconds: z.number().int().positive().optional(),
     maxUpdatesPerHour: z.number().int().positive().optional(),
-    triggers: statusCardRefreshTriggersSchema.default({}),
+    triggers: statusCardRefreshTriggersSchema.prefault({}),
     activeHours: z
       .object({
         start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),

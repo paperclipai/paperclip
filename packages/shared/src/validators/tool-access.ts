@@ -388,7 +388,7 @@ export type ReviewToolProfileNewTools = z.infer<typeof reviewToolProfileNewTools
 export const deleteToolProfileSchema = z.object({
   force: z.boolean().default(false),
   reassignToProfileId: z.string().uuid().optional(),
-}).default({});
+}).prefault({});
 
 export type DeleteToolProfile = z.infer<typeof deleteToolProfileSchema>;
 
@@ -423,14 +423,14 @@ export const toolMcpGatewayAuthConfigSchema = z.object({
     defaultTtlSeconds: z.number().int().positive().max(31_536_000).nullable().default(7_776_000),
     requireFiniteExpiry: z.boolean().default(true),
     longLivedTokenRequiresOverride: z.boolean().default(true),
-  }).default({}),
+  }).prefault({}),
   oauth: z.object({
     enabled: z.literal(false).default(false),
     reservedFor: z.literal("v1_5").default("v1_5"),
     protectedResourceMetadataPath: z.string().trim().max(240).optional().nullable(),
     dynamicClientRegistration: z.literal(false).optional(),
     authorizationCodePkce: z.literal(false).optional(),
-  }).default({}),
+  }).prefault({}),
 });
 
 export const toolMcpGatewayHeaderPolicySchema = z.object({
@@ -438,7 +438,7 @@ export const toolMcpGatewayHeaderPolicySchema = z.object({
   callerPassthrough: z.object({
     enabled: z.boolean().default(false),
     allowedHeaders: z.array(headerNameSchema).max(50).default([]),
-  }).default({}),
+  }).prefault({}),
   staticHeaders: z.array(z.object({
     name: headerNameSchema,
     valueRef: z.string().trim().max(240).optional().nullable(),
@@ -447,11 +447,11 @@ export const toolMcpGatewayHeaderPolicySchema = z.object({
   generatedMetadata: z.object({
     enabled: z.boolean().default(false),
     allowedHeaders: z.array(headerNameSchema).max(20).default([]),
-  }).default({}),
+  }).prefault({}),
   responseHeaders: z.object({
     forwardMcpRequiredHeaders: z.boolean().default(true),
     forwardSafeCacheHeaders: z.boolean().default(true),
-  }).default({}),
+  }).prefault({}),
 });
 
 export const toolMcpGatewayMetadataPolicySchema = z.object({

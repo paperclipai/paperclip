@@ -28,10 +28,10 @@ const createSchema = z.object({
   expiresAt: z.coerce.date().optional(),
   idempotencyKey: z.string().trim().min(1).max(500).nullable().optional(),
   continuationPolicy: z.enum(["none", "wake_origin_agent"]).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 const bundleSchema = z.object({ title: z.string().trim().min(1).max(500), summary: z.string().max(100_000), decisions: z.array(createSchema).min(1).max(50) }).strict();
-const decideSchema = z.object({ optionId: z.string().trim().min(1).max(120), inputValues: z.record(z.string().max(20_000)).optional(), idempotencyKey: z.string().trim().min(1).max(500).nullable().optional() }).strict();
+const decideSchema = z.object({ optionId: z.string().trim().min(1).max(120), inputValues: z.record(z.string(), z.string().max(20_000)).optional(), idempotencyKey: z.string().trim().min(1).max(500).nullable().optional() }).strict();
 const dismissSchema = z.object({ reason: z.string().max(20_000).nullable().optional() }).strict();
 const statsQuerySchema = z.object({
   groupBy: z.literal("ruleKey"),

@@ -251,7 +251,7 @@ export const pluginManagedAgentDeclarationSchema = z.object({
   instructions: z.object({
     entryFile: z.string().min(1).max(200).optional(),
     content: z.string().max(200_000).optional(),
-    files: z.record(z.string().max(200_000)).optional(),
+    files: z.record(z.string(), z.string().max(200_000)).optional(),
     assetPath: z.string().min(1).max(500).optional(),
   }).optional(),
 });

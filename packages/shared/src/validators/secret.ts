@@ -386,7 +386,7 @@ export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreview
 
 export const secretProviderConfigDiscoveryPreviewSchema = z.object({
   provider: z.enum(SECRET_PROVIDERS),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   query: z.string().trim().max(200).optional().nullable(),
   nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
   pageSize: z.number().int().min(1).max(100).optional(),

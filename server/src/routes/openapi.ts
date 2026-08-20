@@ -255,148 +255,180 @@ type OpenApiPathRegistration = {
   [key: string]: unknown;
 };
 
-const zodTypeName = (schema: z.ZodTypeAny) => schema._def.typeName as string;
+// Zod 4 stores each schema definition on `_def` with a lowercase `type`
+// discriminator and moves the wrapped members onto that def. This loose view
+// lets the converter read those members, because Zod 4 does not export a
+// public type for every internal def shape.
+type ZodDefAny = Record<string, unknown> & { type: string };
+
+const zodDef = (schema: z.ZodTypeAny): ZodDefAny => schema._def as unknown as ZodDefAny;
+const zodTypeName = (schema: z.ZodTypeAny): string => zodDef(schema).type;
 
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
-  const typeName = zodTypeName(schema);
-  if (typeName === "ZodOptional" || typeName === "ZodDefault" || typeName === "ZodCatch") {
-    return unwrapSchema(schema._def.innerType);
+  const def = zodDef(schema);
+  if (def.type === "optional" || def.type === "default" || def.type === "catch") {
+    return unwrapSchema(def.innerType as z.ZodTypeAny);
   }
-  if (typeName === "ZodEffects") {
-    return unwrapSchema(schema._def.schema);
+  // A `.transform()` or `.pipe()` becomes a pipe. Read the input schema so the
+  // published contract describes the value a client sends.
+  if (def.type === "pipe") {
+    return unwrapSchema(def.in as z.ZodTypeAny);
   }
   return schema;
 }
 
 function isOptionalSchema(schema: z.ZodTypeAny): boolean {
-  const typeName = zodTypeName(schema);
-  if (typeName === "ZodOptional" || typeName === "ZodDefault" || typeName === "ZodCatch") {
+  const def = zodDef(schema);
+  if (def.type === "optional" || def.type === "default" || def.type === "catch") {
     return true;
   }
-  if (typeName === "ZodEffects") {
-    return isOptionalSchema(schema._def.schema);
+  if (def.type === "pipe") {
+    return isOptionalSchema(def.in as z.ZodTypeAny);
   }
-  if (typeName === "ZodNullable") {
-    return isOptionalSchema(schema._def.innerType);
+  if (def.type === "nullable") {
+    return isOptionalSchema(def.innerType as z.ZodTypeAny);
   }
   return false;
 }
 
-function applyStringChecks(jsonSchema: JsonSchema, checks: Array<Record<string, unknown>>) {
+// Zod 4 stores each check as an object with a `_zod.def` that carries a `check`
+// name and the check members. Read that def to describe the constraint.
+function checkDef(check: unknown): Record<string, unknown> | undefined {
+  return (check as { _zod?: { def?: Record<string, unknown> } })._zod?.def;
+}
+
+function applyStringChecks(jsonSchema: JsonSchema, checks: ReadonlyArray<unknown>) {
   for (const check of checks) {
-    if (check.kind === "min") jsonSchema.minLength = check.value;
-    if (check.kind === "max") jsonSchema.maxLength = check.value;
-    if (check.kind === "email") jsonSchema.format = "email";
-    if (check.kind === "url") jsonSchema.format = "uri";
-    if (check.kind === "uuid") jsonSchema.format = "uuid";
-    if (check.kind === "datetime") jsonSchema.format = "date-time";
-    if (check.kind === "regex" && check.regex instanceof RegExp) {
-      jsonSchema.pattern = check.regex.source;
+    const def = checkDef(check);
+    if (!def) continue;
+    if (def.check === "min_length") jsonSchema.minLength = def.minimum;
+    else if (def.check === "max_length") jsonSchema.maxLength = def.maximum;
+    else if (def.check === "string_format") {
+      if (def.format === "email") jsonSchema.format = "email";
+      else if (def.format === "url") jsonSchema.format = "uri";
+      else if (def.format === "uuid") jsonSchema.format = "uuid";
+      else if (def.format === "datetime") jsonSchema.format = "date-time";
+      // Zod 4 stores a `.regex()` pattern as a `RegExp`; publish its source.
+      else if (def.format === "regex") {
+        if (def.pattern instanceof RegExp) jsonSchema.pattern = def.pattern.source;
+        else if (typeof def.pattern === "string") jsonSchema.pattern = def.pattern;
+      }
     }
   }
 }
 
-function applyNumberChecks(jsonSchema: JsonSchema, checks: Array<Record<string, unknown>>) {
+function applyNumberChecks(jsonSchema: JsonSchema, checks: ReadonlyArray<unknown>) {
   for (const check of checks) {
-    if (check.kind === "int") jsonSchema.type = "integer";
-    if (check.kind === "min") {
-      jsonSchema.minimum = check.value;
-      if (!check.inclusive) jsonSchema.exclusiveMinimum = true;
-    }
-    if (check.kind === "max") {
-      jsonSchema.maximum = check.value;
-      if (!check.inclusive) jsonSchema.exclusiveMaximum = true;
+    const def = checkDef(check);
+    if (!def) continue;
+    // `.int()` records a number-format check such as `safeint`.
+    if (def.check === "number_format") {
+      if (typeof def.format === "string" && def.format.includes("int")) {
+        jsonSchema.type = "integer";
+      }
+    } else if (def.check === "greater_than") {
+      jsonSchema.minimum = def.value;
+      if (!def.inclusive) jsonSchema.exclusiveMinimum = true;
+    } else if (def.check === "less_than") {
+      jsonSchema.maximum = def.value;
+      if (!def.inclusive) jsonSchema.exclusiveMaximum = true;
     }
   }
 }
 
 function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   const unwrapped = unwrapSchema(schema);
-  const typeName = zodTypeName(unwrapped);
+  const def = zodDef(unwrapped);
+  const typeName = def.type;
 
-  if (typeName === "ZodString") {
+  if (typeName === "string") {
     const jsonSchema: JsonSchema = { type: "string" };
-    applyStringChecks(jsonSchema, unwrapped._def.checks ?? []);
+    applyStringChecks(jsonSchema, (def.checks as unknown[]) ?? []);
     return jsonSchema;
   }
 
-  if (typeName === "ZodNumber") {
+  if (typeName === "number") {
     const jsonSchema: JsonSchema = { type: "number" };
-    applyNumberChecks(jsonSchema, unwrapped._def.checks ?? []);
+    applyNumberChecks(jsonSchema, (def.checks as unknown[]) ?? []);
     return jsonSchema;
   }
 
-  if (typeName === "ZodBoolean") return { type: "boolean" };
-  if (typeName === "ZodDate") return { type: "string", format: "date-time" };
-  if (typeName === "ZodAny" || typeName === "ZodUnknown") return {};
+  if (typeName === "boolean") return { type: "boolean" };
+  if (typeName === "date") return { type: "string", format: "date-time" };
+  if (typeName === "any" || typeName === "unknown") return {};
 
-  if (typeName === "ZodLiteral") {
-    const value = unwrapped._def.value;
-    return { type: typeof value, enum: [value] };
+  if (typeName === "literal") {
+    const values = def.values as unknown[];
+    return { type: typeof values[0], enum: values };
   }
 
-  if (typeName === "ZodEnum") {
-    return { type: "string", enum: unwrapped._def.values };
-  }
-
-  if (typeName === "ZodNativeEnum") {
-    const values = Object.values(unwrapped._def.values).filter(
-      (value) => typeof value === "string" || typeof value === "number",
+  // Zod 4 merges string enums and native enums into one `enum` type and stores
+  // the members on `entries`. A pure string enum keeps `type: "string"`; a
+  // native enum can hold numbers, so it publishes the values without a type.
+  if (typeName === "enum") {
+    const values = Array.from(
+      new Set(
+        Object.values(def.entries as Record<string, unknown>).filter(
+          (value) => typeof value === "string" || typeof value === "number",
+        ),
+      ),
     );
-    return { enum: Array.from(new Set(values)) };
+    if (values.every((value) => typeof value === "string")) {
+      return { type: "string", enum: values };
+    }
+    return { enum: values };
   }
 
-  if (typeName === "ZodArray") {
-    return { type: "array", items: zodToOpenApiSchema(unwrapped._def.type) };
+  if (typeName === "array") {
+    return { type: "array", items: zodToOpenApiSchema(def.element as z.ZodTypeAny) };
   }
 
-  if (typeName === "ZodRecord") {
+  if (typeName === "record") {
     return {
       type: "object",
-      additionalProperties: zodToOpenApiSchema(unwrapped._def.valueType),
+      additionalProperties: zodToOpenApiSchema(def.valueType as z.ZodTypeAny),
     };
   }
 
-  if (typeName === "ZodNullable") {
-    return { ...zodToOpenApiSchema(unwrapped._def.innerType), nullable: true };
+  if (typeName === "nullable") {
+    return { ...zodToOpenApiSchema(def.innerType as z.ZodTypeAny), nullable: true };
   }
 
-  if (typeName === "ZodUnion") {
-    return { oneOf: unwrapped._def.options.map((option: z.ZodTypeAny) => zodToOpenApiSchema(option)) };
-  }
-
-  if (typeName === "ZodDiscriminatedUnion") {
+  // Zod 4 represents a plain union and a discriminated union as one `union`
+  // type with the members on `options`.
+  if (typeName === "union") {
     return {
-      oneOf: Array.from(unwrapped._def.options.values()).map((option) =>
-        zodToOpenApiSchema(option as z.ZodTypeAny),
-      ),
+      oneOf: (def.options as z.ZodTypeAny[]).map((option) => zodToOpenApiSchema(option)),
     };
   }
 
-  if (typeName === "ZodIntersection") {
+  if (typeName === "intersection") {
     return {
       allOf: [
-        zodToOpenApiSchema(unwrapped._def.left),
-        zodToOpenApiSchema(unwrapped._def.right),
+        zodToOpenApiSchema(def.left as z.ZodTypeAny),
+        zodToOpenApiSchema(def.right as z.ZodTypeAny),
       ],
     };
   }
 
-  if (typeName === "ZodObject") {
-    const shape = unwrapped._def.shape();
+  if (typeName === "object") {
+    const shape = def.shape as Record<string, z.ZodTypeAny>;
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
     for (const [key, value] of Object.entries(shape)) {
-      const propertySchema = value as z.ZodTypeAny;
-      properties[key] = zodToOpenApiSchema(propertySchema);
-      if (!isOptionalSchema(propertySchema)) required.push(key);
+      properties[key] = zodToOpenApiSchema(value);
+      if (!isOptionalSchema(value)) required.push(key);
     }
     const jsonSchema: JsonSchema = { type: "object", properties };
     if (required.length > 0) jsonSchema.required = required;
-    // A `.strict()` Zod object forbids an unknown key. Publish that constraint
-    // as `additionalProperties: false`, so a client, a gateway, or a handler
-    // that treats the contract as authoritative rejects an extra property too.
-    if (unwrapped._def.unknownKeys === "strict") jsonSchema.additionalProperties = false;
+    // A `.strict()` Zod object forbids an unknown key. Zod 4 records that as a
+    // `never` catchall. Publish the constraint as `additionalProperties: false`,
+    // so a client, a gateway, or a handler that treats the contract as
+    // authoritative rejects an extra property too.
+    const catchall = def.catchall as z.ZodTypeAny | undefined;
+    if (catchall && zodDef(catchall).type === "never") {
+      jsonSchema.additionalProperties = false;
+    }
     return jsonSchema;
   }
 
@@ -445,13 +477,13 @@ function normalizeResponses(responses: Record<string, OpenApiResponse> = {}) {
 
 function parametersFromSchema(schema: z.ZodTypeAny, location: "path" | "query") {
   const objectSchema = unwrapSchema(schema);
-  if (zodTypeName(objectSchema) !== "ZodObject") return [];
-  const shape = objectSchema._def.shape();
+  if (zodTypeName(objectSchema) !== "object") return [];
+  const shape = zodDef(objectSchema).shape as Record<string, z.ZodTypeAny>;
   return Object.entries(shape).map(([name, value]) => ({
     name,
     in: location,
-    required: location === "path" ? true : !isOptionalSchema(value as z.ZodTypeAny),
-    schema: zodToOpenApiSchema(value as z.ZodTypeAny),
+    required: location === "path" ? true : !isOptionalSchema(value),
+    schema: zodToOpenApiSchema(value),
   }));
 }
 
@@ -511,7 +543,7 @@ const ErrorSchema = registry.register(
 );
 
 const responses = {
-  ok: (schema: z.ZodTypeAny = z.record(z.unknown())) => ({
+  ok: (schema: z.ZodTypeAny = z.record(z.string(), z.unknown())) => ({
     description: "Success",
     content: { "application/json": { schema } },
   }),
@@ -701,7 +733,7 @@ const workTimelineResponseSchema = z.object({
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
-  const shape: z.ZodRawShape = {};
+  const shape: Record<string, z.ZodTypeAny> = {};
   for (const name of names) {
     shape[name] = z.string();
   }
@@ -3458,7 +3490,7 @@ registry.registerPath({
       entityType: z.string().min(1),
       entityId: z.string().min(1),
       agentId: z.string().uuid().optional().nullable(),
-      details: z.record(z.unknown()).optional().nullable(),
+      details: z.record(z.string(), z.unknown()).optional().nullable(),
     })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
@@ -5786,7 +5818,7 @@ registry.registerPath({
   request: {
     body: jsonBody(z.object({
       tool: z.string(),
-      parameters: z.record(z.unknown()).optional(),
+      parameters: z.record(z.string(), z.unknown()).optional(),
       runContext: z.object({
         agentId: z.string(),
         runId: z.string(),
@@ -5895,7 +5927,7 @@ registry.registerPath({
   summary: "Set company-scoped plugin config",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.unknown()) })),
+    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.string(), z.unknown()) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -5907,7 +5939,7 @@ registry.registerPath({
   summary: "Test company-scoped plugin config",
   request: {
     params: z.object({ pluginId: z.string() }),
-    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.unknown()) })),
+    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.string(), z.unknown()) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
@@ -5969,7 +6001,7 @@ registry.registerPath({
     body: jsonBody(z.object({
       key: z.string(),
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -5985,7 +6017,7 @@ registry.registerPath({
     body: jsonBody(z.object({
       key: z.string(),
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -6000,7 +6032,7 @@ registry.registerPath({
     params: z.object({ pluginId: z.string(), key: z.string() }),
     body: jsonBody(z.object({
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -6015,7 +6047,7 @@ registry.registerPath({
     params: z.object({ pluginId: z.string(), key: z.string() }),
     body: jsonBody(z.object({
       companyId: z.string().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
@@ -6783,7 +6815,7 @@ for (const route of [
     path: route[1],
     tags: ["skills"],
     summary: route[2],
-    ...(route[0] === "post" ? { body: z.record(z.unknown()).optional() } : {}),
+    ...(route[0] === "post" ? { body: z.record(z.string(), z.unknown()).optional() } : {}),
   });
 }
 
@@ -7573,7 +7605,7 @@ const toolGatewaySessionSchema = z.object({
 
 const toolGatewayCallSchema = z.object({
   tool: z.string(),
-  parameters: z.record(z.unknown()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
   timeoutMs: z.number().int().positive().optional(),
   approvedActionRequestId: z.string().optional(),
   idempotencyKey: z.string().optional(),
@@ -7586,7 +7618,7 @@ const toolGatewayCompanyBodySchema = z.object({
   companyId: z.string(),
 }).passthrough();
 
-const mcpGatewayProtocolSchema = z.record(z.unknown());
+const mcpGatewayProtocolSchema = z.record(z.string(), z.unknown());
 
 registerCurrentRoute({
   method: "get",

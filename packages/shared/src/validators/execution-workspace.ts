@@ -44,7 +44,7 @@ export const executionWorkspaceConfigSchema = z.object({
   cleanupCommand: z.string().optional().nullable(),
   workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
-  serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
+  serviceStates: z.record(z.string(), z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
 
 export const workspaceRuntimeControlTargetSchema = z.object({

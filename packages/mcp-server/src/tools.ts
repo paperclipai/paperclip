@@ -19,7 +19,7 @@ import { formatErrorResponse, formatTextResponse } from "./format.js";
 export interface ToolDefinition {
   name: string;
   description: string;
-  schema: z.AnyZodObject;
+  schema: z.ZodObject;
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;

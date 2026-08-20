@@ -24,6 +24,22 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+// Zod 4 keeps a field `.default()` active after `.partial()`, so a patch parse
+// injects the default for an absent key. A patch schema must keep only the keys
+// the caller sends, so the merge does not overwrite a stored value. This helper
+// rebuilds the shape with each top-level default removed. `.partial()` then
+// leaves an absent key absent.
+function shapeWithoutDefaults(
+  shape: Record<string, z.ZodTypeAny>,
+): Record<string, z.ZodTypeAny> {
+  return Object.fromEntries(
+    Object.entries(shape).map(([key, field]) => [
+      key,
+      field instanceof z.ZodDefault ? (field.unwrap() as z.ZodTypeAny) : field,
+    ]),
+  );
+}
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -36,7 +52,10 @@ export const instanceGeneralSettingsSchema = z.object({
   executionMode: z.enum(["kubernetes", "any"]).optional(),
 }).strict();
 
-export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
+export const patchInstanceGeneralSettingsSchema = z
+  .object(shapeWithoutDefaults(instanceGeneralSettingsSchema.shape))
+  .partial()
+  .strict();
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
@@ -81,11 +100,17 @@ export const instanceExperimentalSettingsSchema = z.object({
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
 }).strict();
 
-export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema
-  .omit({
-    worktreeRunExecutionActivatedAt: true,
-    worktreeRunExecutionActivationInstanceId: true,
-  })
+export const patchInstanceExperimentalSettingsSchema = z
+  .object(
+    shapeWithoutDefaults(
+      instanceExperimentalSettingsSchema
+        .omit({
+          worktreeRunExecutionActivatedAt: true,
+          worktreeRunExecutionActivationInstanceId: true,
+        })
+        .shape,
+    ),
+  )
   .partial()
   .strip();
 
@@ -98,7 +123,7 @@ export const managedSettingMetadataSchema = z.object({
 // instances every overlaid key is listed in `managedKeys`; self-hosted
 // responses omit the field entirely.
 export const instanceExperimentalSettingsWithManagedSchema = instanceExperimentalSettingsSchema.extend({
-  managedKeys: z.record(managedSettingMetadataSchema).optional(),
+  managedKeys: z.record(z.string(), managedSettingMetadataSchema).optional(),
 }).strict();
 
 export const patchInstanceSettingsSchema = z.object({
@@ -115,9 +140,16 @@ export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
 }).strict();
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
-export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSettingsSchema>;
+// The patch schema removes each default so an absent key stays absent. Declare
+// the type from the full settings type, so every field keeps its precise type.
+export type PatchInstanceGeneralSettings = Partial<InstanceGeneralSettings>;
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
-export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
+export type PatchInstanceExperimentalSettings = Partial<
+  Omit<
+    InstanceExperimentalSettings,
+    "worktreeRunExecutionActivatedAt" | "worktreeRunExecutionActivationInstanceId"
+  >
+>;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
 export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
   typeof issueGraphLivenessAutoRecoveryRequestSchema

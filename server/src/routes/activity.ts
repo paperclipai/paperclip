@@ -96,7 +96,7 @@ const createActivitySchema = z.object({
   entityType: z.string().min(1),
   entityId: z.string().min(1),
   agentId: z.string().uuid().optional().nullable(),
-  details: z.record(z.unknown()).optional().nullable(),
+  details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
