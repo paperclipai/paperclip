@@ -9,9 +9,8 @@
 // The service gives the harness these operations against the one live session:
 // start the session, read the login prompt, submit one browser code, cancel the
 // session, expire the session on a timeout, and receive the token. Every
-// operation verifies the company, the owner user, and the target agent. A
-// missing session and a cross-scope session both return the same not-found
-// error.
+// operation verifies the company, the owner user, and the adapter. A missing
+// session and a cross-scope session both return the same not-found error.
 //
 // Security controls folded here:
 //   * SR-1 (no secret in a log): the service keeps the full login URL, the
@@ -35,8 +34,14 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { claudeSetupTokenSessions } from "@paperclipai/db";
+import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
+
+// The setup-token login flow supports only the `claude_local` adapter. The
+// unified `adapter_auth_sessions` table also holds the Codex device-login rows,
+// so every store scan filters by this adapter to reach only the setup-token
+// rows.
+const SETUP_TOKEN_ADAPTER_TYPE: AgentAdapterType = "claude_local";
 
 /**
  * The session states. The four terminal states end the login. The `stored`
@@ -68,24 +73,24 @@ export function isTerminalSessionState(state: SetupTokenSessionState): boolean {
 }
 
 /**
- * The immutable owner scope of a session. Every operation verifies all five
- * fields against the stored scope. The service builds the scope once at start
- * and never changes it.
+ * The immutable owner scope of a session. The service builds the scope once at
+ * start and never changes it. The session identity is the company, the owner,
+ * and the adapter. Every operation verifies these three fields against the
+ * stored scope.
  *
- * The `targetAgentId` is null for a company-and-environment login. That login
- * has no agent id: a hire flow starts one session before an agent exists. The
- * agent-scoped login sets `targetAgentId` to the agent id. The full-scope match
- * treats null as one immutable value, so a company login and an agent login
- * never resolve one another.
+ * The active company credential slot is scoped to the company, the owner, and
+ * the adapter. Two owners in one company no longer conflict. The scope drops the
+ * environment term from the slot, so the same owner cannot hold one active login
+ * per environment.
  */
 export interface SetupTokenSessionScope {
   companyId: string;
   ownerUserId: string;
-  targetAgentId: string | null;
-  // The adapter and the environment of the login. The durable cleanup record
-  // keys on the company, the owner, the adapter, and the environment, so a hire
-  // flow with no agent id still resolves one record.
+  // The adapter of the login. It is part of the session identity.
   adapterType: string;
+  // The environment of the login. The store persists it on the row, but it is
+  // not part of the session identity: a caller never addresses a session by the
+  // environment, and the active slot no longer includes the environment.
   environmentId: string;
   // The optional confirmed-overwrite capture. The client sends it when a stored
   // token fails the agent test. The secret writer reads it and rotates the
@@ -183,9 +188,9 @@ export interface SetupTokenLeaseManager {
 /**
  * The non-secret cleanup record. It holds only ids, the deadline, the claim
  * marker, and the state. It never holds a URL, a code, a token, or a raw process
- * chunk. The service persists it at start so a restart can reap the
- * lease. The record keys on the company, the owner, the adapter, and the
- * environment, not the agent id, so a hire flow with no agent still resolves it.
+ * chunk. The service persists it at start so a restart can reap the lease. The
+ * record carries the environment, so the store writes the non-null environment
+ * column on the row.
  */
 export interface SetupTokenCleanupRecord {
   sessionId: string;
@@ -202,16 +207,15 @@ export interface SetupTokenCleanupRecord {
 }
 
 /**
- * The immutable identity of a cleanup record. It is the full owner scope plus
- * the session id. Every durable write matches on all five fields, so a write
- * never updates a row by session id alone.
+ * The immutable identity of a cleanup record. It is the company, the owner, the
+ * adapter, and the public session id. Every durable write matches on all four
+ * fields, so a write never updates a row by the session id alone.
  */
 export interface SetupTokenCleanupIdentity {
   sessionId: string;
   companyId: string;
   ownerUserId: string;
   adapterType: string;
-  environmentId: string;
 }
 
 /**
@@ -249,20 +253,66 @@ export interface SetupTokenCleanupStore {
   consumeStoredClaim(identity: SetupTokenCleanupIdentity): Promise<SetupTokenCleanupRecord | null>;
 }
 
+/** The counts one reaper sweep produced over the durable cleanup store. */
+export interface SetupTokenReapResult {
+  /** The reapable records whose lease released and whose row cleared. */
+  released: number;
+  /** The reapable records whose lease release failed. The row stays for a retry. */
+  failed: number;
+}
+
+/**
+ * The shared setup-token reap logic. It reads the durable store and releases any
+ * lease whose session is terminal, past its deadline, or already consumed. It
+ * runs after a restart and on the scheduler interval, so it frees a lease that a
+ * crash left behind (SR-4). A release failure stays retryable: the sweep leaves
+ * the record for a later run. The standalone reaper and the in-flight session
+ * service both call this function, so both flows use one reap convention.
+ */
+export async function reapSetupTokenLeases(
+  deps: {
+    store: Pick<SetupTokenCleanupStore, "listReapable" | "remove">;
+    leases: Pick<SetupTokenLeaseManager, "releaseById">;
+    log?: (line: string) => void;
+  },
+  now: number,
+): Promise<SetupTokenReapResult> {
+  const log = deps.log ?? (() => {});
+  const records = await deps.store.listReapable(now);
+  let released = 0;
+  let failed = 0;
+  for (const record of records) {
+    try {
+      await deps.leases.releaseById(record.leaseId);
+      await deps.store.remove({
+        sessionId: record.sessionId,
+        companyId: record.companyId,
+        ownerUserId: record.ownerUserId,
+        adapterType: record.adapterType,
+      });
+      released += 1;
+    } catch {
+      failed += 1;
+      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+    }
+  }
+  return { released, failed };
+}
+
 /** A per-key start rate limiter. It matches the invite-rate-limit shape. */
 export interface SetupTokenRateLimiter {
   consume(key: string): { allowed: boolean; retryAfterSeconds: number };
 }
 
 export interface SetupTokenSessionCaps {
+  // The active-session cap per company, owner, and adapter slot. The slot cap
+  // mirrors the database active-slot unique index as defense in depth.
   perOwner: number;
-  perAgent: number;
   perCompany: number;
 }
 
 export const DEFAULT_SETUP_TOKEN_SESSION_CAPS: SetupTokenSessionCaps = {
   perOwner: 1,
-  perAgent: 1,
   perCompany: 3,
 };
 
@@ -523,8 +573,8 @@ export function assessConfidentialStartup(config: ConfidentialTransportConfig): 
 
 /**
  * A synchronous capacity hold for the enforced caps. The service reserves the
- * capacity for the owner, the agent, and the company before the first `await` in
- * {@link SetupTokenSessionService.start}, so two concurrent starts for one owner
+ * capacity for the slot and the company before the first `await` in
+ * {@link SetupTokenSessionService.start}, so two concurrent starts for one slot
  * never both pass the cap. The service holds the reservation for the whole
  * session lifetime and releases it exactly one time: on an early start failure or
  * on the terminal cleanup. The `released` flag makes the release idempotent.
@@ -532,8 +582,9 @@ export function assessConfidentialStartup(config: ConfidentialTransportConfig): 
 interface CapReservation {
   released: boolean;
   companyId: string;
-  ownerUserId: string;
-  targetAgentId: string | null;
+  // The company, owner, and adapter slot key. The reservation counts one active
+  // session per slot, so it mirrors the database active-slot unique index.
+  slotKey: string;
 }
 
 interface StoredSession {
@@ -635,11 +686,11 @@ function defaultSessionId(): string {
  */
 export class SetupTokenSessionService {
   private readonly sessions = new Map<string, StoredSession>();
-  // The live reservation counts per owner, per agent, and per company. The start
-  // path reads and increments these synchronously before the first `await`, so
-  // the cap decision and the capacity hold are one atomic step on the event loop.
-  private readonly reservedByOwner = new Map<string, number>();
-  private readonly reservedByAgent = new Map<string, number>();
+  // The live reservation counts per slot and per company. The start path reads
+  // and increments these synchronously before the first `await`, so the cap
+  // decision and the capacity hold are one atomic step on the event loop. The
+  // slot key is the company, the owner, and the adapter.
+  private readonly reservedBySlot = new Map<string, number>();
   private readonly reservedByCompany = new Map<string, number>();
   private readonly factory: SetupTokenLoginProcessFactory;
   private readonly leases: SetupTokenLeaseManager;
@@ -669,8 +720,8 @@ export class SetupTokenSessionService {
 
   /**
    * Builds the durable-record identity for a session. The store matches every
-   * write on the full owner scope and the session id, so no write updates a row
-   * by the session id alone.
+   * write on the company, the owner, the adapter, and the session id, so no write
+   * updates a row by the session id alone.
    */
   private identityOf(session: StoredSession): SetupTokenCleanupIdentity {
     return {
@@ -678,7 +729,6 @@ export class SetupTokenSessionService {
       companyId: session.scope.companyId,
       ownerUserId: session.scope.ownerUserId,
       adapterType: session.scope.adapterType,
-      environmentId: session.scope.environmentId,
     };
   }
 
@@ -725,40 +775,38 @@ export class SetupTokenSessionService {
     }
   }
 
+  /** Builds the company, owner, and adapter slot key. The reservation and the
+   *  database active-slot unique index share this identity. */
+  private static slotKey(
+    scope: Pick<SetupTokenSessionScope, "companyId" | "ownerUserId" | "adapterType">,
+  ): string {
+    return [scope.companyId, scope.ownerUserId, scope.adapterType].join("\u0000");
+  }
+
   /**
    * Reserves the capacity for one start under every enforced cap. The method is
    * synchronous, so it runs to completion before the first `await` in
-   * {@link start}. Two concurrent starts for one owner cannot interleave inside
-   * it: the first reserves the owner slot, and the second reads the incremented
-   * count and fails closed with the fixed 429 cap error. The method holds the
-   * per-owner, per-agent, and per-company semantics: it counts the agent slot
-   * only for an agent-scoped login, because a null agent id is not a shared key
-   * across owners. It increments no counter on a rejection, so a rejected start
+   * {@link start}. Two concurrent starts for one slot cannot interleave inside
+   * it: the first reserves the slot, and the second reads the incremented count
+   * and fails closed with the fixed 429 cap error. The method holds the per-slot
+   * and per-company semantics; the slot is the company, the owner, and the
+   * adapter. It increments no counter on a rejection, so a rejected start
    * reserves nothing.
    */
   private reserveCapacity(scope: SetupTokenSessionScope): CapReservation {
-    if ((this.reservedByOwner.get(scope.ownerUserId) ?? 0) >= this.caps.perOwner) {
-      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
-    }
-    if (
-      scope.targetAgentId !== null &&
-      (this.reservedByAgent.get(scope.targetAgentId) ?? 0) >= this.caps.perAgent
-    ) {
+    const slotKey = SetupTokenSessionService.slotKey(scope);
+    if ((this.reservedBySlot.get(slotKey) ?? 0) >= this.caps.perOwner) {
       throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
     }
     if ((this.reservedByCompany.get(scope.companyId) ?? 0) >= this.caps.perCompany) {
       throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
     }
-    SetupTokenSessionService.incrementCount(this.reservedByOwner, scope.ownerUserId);
-    if (scope.targetAgentId !== null) {
-      SetupTokenSessionService.incrementCount(this.reservedByAgent, scope.targetAgentId);
-    }
+    SetupTokenSessionService.incrementCount(this.reservedBySlot, slotKey);
     SetupTokenSessionService.incrementCount(this.reservedByCompany, scope.companyId);
     return {
       released: false,
       companyId: scope.companyId,
-      ownerUserId: scope.ownerUserId,
-      targetAgentId: scope.targetAgentId,
+      slotKey,
     };
   }
 
@@ -766,16 +814,12 @@ export class SetupTokenSessionService {
    * Releases a capacity reservation exactly one time. The `released` flag makes
    * the release idempotent, so an early start failure and the terminal cleanup
    * never double-release one reservation. The method decrements the same counters
-   * that {@link reserveCapacity} incremented, and it drops the agent counter only
-   * for an agent-scoped login.
+   * that {@link reserveCapacity} incremented.
    */
   private releaseReservation(reservation: CapReservation): void {
     if (reservation.released) return;
     reservation.released = true;
-    SetupTokenSessionService.decrementCount(this.reservedByOwner, reservation.ownerUserId);
-    if (reservation.targetAgentId !== null) {
-      SetupTokenSessionService.decrementCount(this.reservedByAgent, reservation.targetAgentId);
-    }
+    SetupTokenSessionService.decrementCount(this.reservedBySlot, reservation.slotKey);
     SetupTokenSessionService.decrementCount(this.reservedByCompany, reservation.companyId);
   }
 
@@ -869,7 +913,6 @@ export class SetupTokenSessionService {
           companyId: scope.companyId,
           ownerUserId: scope.ownerUserId,
           adapterType: scope.adapterType,
-          environmentId: scope.environmentId,
         })
         .catch(() => {});
       this.releaseReservation(reservation);
@@ -962,12 +1005,11 @@ export class SetupTokenSessionService {
 
   /**
    * Resolves a session for an operation. It returns the session only when the
-   * id exists and the stored scope equals the caller scope in all five fields:
-   * the company, the owner, the agent, the adapter, and the environment. A
-   * missing session and a cross-scope session both throw the same not-found
-   * error, so a caller cannot tell them apart. The full-scope match makes
-   * a cross-adapter and a cross-environment session return the same not-found
-   * error as a missing session.
+   * id exists and the stored scope equals the caller scope in all three identity
+   * fields: the company, the owner, and the adapter. A missing session and a
+   * cross-scope session both throw the same not-found error, so a caller cannot
+   * tell them apart. The scope match makes a cross-company, a cross-owner, and a
+   * cross-adapter session return the same not-found error as a missing session.
    */
   private resolveOwned(sessionId: string, scope: SetupTokenSessionScope): StoredSession {
     const session = this.sessions.get(sessionId);
@@ -975,9 +1017,7 @@ export class SetupTokenSessionService {
       !session ||
       session.scope.companyId !== scope.companyId ||
       session.scope.ownerUserId !== scope.ownerUserId ||
-      session.scope.targetAgentId !== scope.targetAgentId ||
-      session.scope.adapterType !== scope.adapterType ||
-      session.scope.environmentId !== scope.environmentId
+      session.scope.adapterType !== scope.adapterType
     ) {
       throw new SetupTokenSessionError(404, SETUP_TOKEN_SESSION_NOT_FOUND);
     }
@@ -988,16 +1028,14 @@ export class SetupTokenSessionService {
    * Resolves the immutable scope of a company-and-environment session. The
    * caller provides the company, the owner, and the adapter it derived from the
    * request; the route path gives the company, the actor gives the owner, and
-   * the route fixes the adapter. The lookup matches these three fields and the
-   * agentless marker, then returns the full scope, including the intrinsic
-   * environment.
+   * the route fixes the adapter. The lookup matches these three fields, then
+   * returns the full scope, including the intrinsic environment.
    *
    * A caller never supplies the environment on a read, a submit, a cancel, or a
    * completion. The environment is intrinsic to the session, so a foreign
    * environment cannot address the session. A missing session and a
    * cross-company, cross-owner, or cross-adapter session all throw the same
-   * not-found error. The agentless marker rejects an
-   * agent-scoped session, so a company route never resolves an agent session.
+   * not-found error.
    */
   resolveCompanyScope(
     sessionId: string,
@@ -1006,7 +1044,6 @@ export class SetupTokenSessionService {
     const session = this.sessions.get(sessionId);
     if (
       !session ||
-      session.scope.targetAgentId !== null ||
       session.scope.companyId !== key.companyId ||
       session.scope.ownerUserId !== key.ownerUserId ||
       session.scope.adapterType !== key.adapterType
@@ -1251,29 +1288,11 @@ export class SetupTokenSessionService {
    * The startup reaper. It reads the durable store and releases any lease whose
    * session is terminal or past its deadline. It runs after a restart, so it
    * frees a lease that a crash left behind (SR-4). A release failure stays
-   * retryable: the reaper leaves the record for a later run.
+   * retryable: the reaper leaves the record for a later run. The standalone
+   * scheduled reaper calls the same {@link reapSetupTokenLeases} logic.
    */
-  async reap(now: number = this.now()): Promise<{ released: number; failed: number }> {
-    const records = await this.store.listReapable(now);
-    let released = 0;
-    let failed = 0;
-    for (const record of records) {
-      try {
-        await this.leases.releaseById(record.leaseId);
-        await this.store.remove({
-          sessionId: record.sessionId,
-          companyId: record.companyId,
-          ownerUserId: record.ownerUserId,
-          adapterType: record.adapterType,
-          environmentId: record.environmentId,
-        });
-        released += 1;
-      } catch {
-        failed += 1;
-        this.log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
-      }
-    }
-    return { released, failed };
+  async reap(now: number = this.now()): Promise<SetupTokenReapResult> {
+    return reapSetupTokenLeases({ store: this.store, leases: this.leases, log: this.log }, now);
   }
 
   /**
@@ -1294,35 +1313,48 @@ export class SetupTokenSessionService {
 }
 
 // --- The durable, database-backed cleanup store ------------------------------
+//
+// The store reads and writes the unified `adapter_auth_sessions` table. It maps
+// the setup-token record fields to the unified columns:
+//   - `sessionId`    -> `public_session_id`
+//   - `ownerUserId`  -> `started_by_user_id`
+//   - `leaseId`      -> `provider_lease_id`
+//   - `state`        -> `status`
+//   - `deadline`     -> `expires_at`
+// The table also holds the Codex device-login rows, so every scan filters by the
+// setup-token adapter to reach only the setup-token rows.
 
-type ClaudeSetupTokenSessionRow = typeof claudeSetupTokenSessions.$inferSelect;
+type AdapterAuthSessionRow = typeof adapterAuthSessions.$inferSelect;
 
 /** Maps a database row to the non-secret cleanup record. */
-function toCleanupRecord(row: ClaudeSetupTokenSessionRow): SetupTokenCleanupRecord {
+function toCleanupRecord(row: AdapterAuthSessionRow): SetupTokenCleanupRecord {
   return {
-    sessionId: row.sessionId,
+    sessionId: row.publicSessionId,
     companyId: row.companyId,
-    ownerUserId: row.ownerUserId,
+    ownerUserId: row.startedByUserId,
     adapterType: row.adapterType,
     environmentId: row.environmentId,
-    leaseId: row.leaseId ?? "",
-    deadline: row.deadlineAt.getTime(),
-    state: row.state as SetupTokenSessionState,
+    leaseId: row.providerLeaseId ?? "",
+    // The setup-token flow always writes an expiry, so a null value means a
+    // corrupt row. Treat it as already expired, so the reaper reclaims it.
+    deadline: row.expiresAt ? row.expiresAt.getTime() : 0,
+    state: row.status as SetupTokenSessionState,
     boundAt: row.boundAt ? row.boundAt.getTime() : null,
   };
 }
 
 /**
- * The database scope predicate. It matches the full owner scope and the session
- * id, so no write ever addresses a row by the session id alone.
+ * The database scope predicate. It matches the company, the owner, the adapter,
+ * and the public session id, so no write ever addresses a row by the session id
+ * alone. The `company_id` and `started_by_user_id` terms hold the server-scoped
+ * lookup: a query never keys on the public session id alone.
  */
 function setupTokenScopeMatch(identity: SetupTokenCleanupIdentity) {
   return and(
-    eq(claudeSetupTokenSessions.sessionId, identity.sessionId),
-    eq(claudeSetupTokenSessions.companyId, identity.companyId),
-    eq(claudeSetupTokenSessions.ownerUserId, identity.ownerUserId),
-    eq(claudeSetupTokenSessions.adapterType, identity.adapterType as AgentAdapterType),
-    eq(claudeSetupTokenSessions.environmentId, identity.environmentId),
+    eq(adapterAuthSessions.publicSessionId, identity.sessionId),
+    eq(adapterAuthSessions.companyId, identity.companyId),
+    eq(adapterAuthSessions.startedByUserId, identity.ownerUserId),
+    eq(adapterAuthSessions.adapterType, identity.adapterType as AgentAdapterType),
   );
 }
 
@@ -1355,14 +1387,14 @@ export async function transitionSetupTokenSessionToStored(
   identity: SetupTokenCleanupIdentity,
 ): Promise<boolean> {
   const changed = await executor
-    .update(claudeSetupTokenSessions)
-    .set({ state: "stored", updatedAt: sql`clock_timestamp()` })
+    .update(adapterAuthSessions)
+    .set({ status: "stored", updatedAt: sql`clock_timestamp()` })
     .where(
       and(
         setupTokenScopeMatch(identity),
-        inArray(claudeSetupTokenSessions.state, [...SETUP_TOKEN_STORED_PREDECESSOR_STATES]),
-        gt(claudeSetupTokenSessions.deadlineAt, sql`clock_timestamp()`),
-        isNull(claudeSetupTokenSessions.boundAt),
+        inArray(adapterAuthSessions.status, [...SETUP_TOKEN_STORED_PREDECESSOR_STATES]),
+        gt(adapterAuthSessions.expiresAt, sql`clock_timestamp()`),
+        isNull(adapterAuthSessions.boundAt),
       ),
     )
     .returning();
@@ -1382,66 +1414,73 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
 
   return {
     async record(record): Promise<void> {
-      await db.insert(claudeSetupTokenSessions).values({
-        sessionId: record.sessionId,
+      // The database generates `id`. The store fills `public_session_id` with the
+      // service session id, which the service builds from a CSPRNG at start.
+      await db.insert(adapterAuthSessions).values({
         companyId: record.companyId,
-        ownerUserId: record.ownerUserId,
-        adapterType: record.adapterType as AgentAdapterType,
         environmentId: record.environmentId,
-        leaseId: record.leaseId,
-        state: record.state,
-        deadlineAt: new Date(record.deadline),
+        adapterType: record.adapterType as AgentAdapterType,
+        startedByUserId: record.ownerUserId,
+        publicSessionId: record.sessionId,
+        providerLeaseId: record.leaseId,
+        status: record.state,
+        expiresAt: new Date(record.deadline),
         boundAt: record.boundAt === null ? null : new Date(record.boundAt),
       });
     },
 
     async markState(identity, state): Promise<void> {
-      // The compare-and-set predicate matches the full owner scope, so a write
-      // never updates a row by the session id alone.
+      // The compare-and-set predicate matches the company, the owner, and the
+      // adapter, so a write never updates a row by the session id alone.
       await db
-        .update(claudeSetupTokenSessions)
-        .set({ state, updatedAt: sql`clock_timestamp()` })
+        .update(adapterAuthSessions)
+        .set({ status: state, updatedAt: sql`clock_timestamp()` })
         .where(scopeMatch(identity));
     },
 
     async remove(identity): Promise<void> {
-      // The delete matches the full owner scope, so it never removes a row by the
-      // session id alone.
-      await db.delete(claudeSetupTokenSessions).where(scopeMatch(identity));
+      // The delete matches the company, the owner, and the adapter, so it never
+      // removes a row by the session id alone.
+      await db.delete(adapterAuthSessions).where(scopeMatch(identity));
     },
 
     async listReapable(now): Promise<SetupTokenCleanupRecord[]> {
       // A record is reapable when its session is terminal, its deadline is past,
-      // or its claim is already consumed. The deadline index supports the scan.
+      // or its claim is already consumed. The scan filters by the setup-token
+      // adapter, so it never reaps a Codex device-login row on the shared table.
+      // The deadline index supports the scan.
       const rows = await db
         .select()
-        .from(claudeSetupTokenSessions)
+        .from(adapterAuthSessions)
         .where(
-          or(
-            inArray(claudeSetupTokenSessions.state, [...SETUP_TOKEN_TERMINAL_STATES]),
-            lte(claudeSetupTokenSessions.deadlineAt, new Date(now)),
-            isNotNull(claudeSetupTokenSessions.boundAt),
+          and(
+            eq(adapterAuthSessions.adapterType, SETUP_TOKEN_ADAPTER_TYPE),
+            or(
+              inArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
+              lte(adapterAuthSessions.expiresAt, new Date(now)),
+              isNotNull(adapterAuthSessions.boundAt),
+            ),
           ),
         );
       return rows.map(toCleanupRecord);
     },
 
     async consumeStoredClaim(identity): Promise<SetupTokenCleanupRecord | null> {
-      // One conditional write. The predicate carries the full owner scope, the
-      // session id, `state = stored`, an unexpired deadline, and an unconsumed
-      // marker. It checks the deadline with `clock_timestamp()`, so the database
-      // evaluates the current time after any row-lock wait. An expired claim
-      // cannot pass the deadline condition. The write sets `bound_at` one time
-      // and returns the row only on a valid consume.
+      // One conditional write. The predicate carries the company, the owner, the
+      // adapter, the session id, `status = stored`, an unexpired deadline, and an
+      // unconsumed marker. It checks the deadline with `clock_timestamp()`, so the
+      // database evaluates the current time after any row-lock wait. An expired
+      // claim cannot pass the deadline condition. The write sets `bound_at` one
+      // time and returns the row only on a valid consume.
       const changed = await db
-        .update(claudeSetupTokenSessions)
+        .update(adapterAuthSessions)
         .set({ boundAt: sql`clock_timestamp()`, updatedAt: sql`clock_timestamp()` })
         .where(
           and(
             scopeMatch(identity),
-            eq(claudeSetupTokenSessions.state, "stored"),
-            gt(claudeSetupTokenSessions.deadlineAt, sql`clock_timestamp()`),
-            isNull(claudeSetupTokenSessions.boundAt),
+            eq(adapterAuthSessions.status, "stored"),
+            gt(adapterAuthSessions.expiresAt, sql`clock_timestamp()`),
+            isNull(adapterAuthSessions.boundAt),
           ),
         )
         .returning();

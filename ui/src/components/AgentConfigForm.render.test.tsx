@@ -102,9 +102,27 @@ vi.mock("../adapters", () => ({
   }),
 }));
 
+// The projected login capability per adapter type. The server projects these
+// safe scalar fields. `codex_local` drives the displayed-code panel; `claude_local`
+// drives the submitted-browser-code panel. A test overrides this map to add a
+// third adapter with a projected login capability.
+const mockLoginProjections = vi.hoisted(
+  () =>
+    new Map<string, { panelMode: string; sandboxTransport: string; timeoutPolicy: string }>([
+      ["codex_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+      ["claude_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
+      // A third adapter, not a built-in, with a projected displayed-code login.
+      ["vendor_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+      // A non-built-in adapter with a pseudo-terminal login transport. The gate
+      // requires the provider pty capability from the transport, not the name.
+      ["pty_vendor_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
+    ]),
+);
+
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => (adapterType: string) =>
-    adapterType === "hermes_gateway"
+  useAdapterCapabilities: () => (adapterType: string) => {
+    const login = mockLoginProjections.get(adapterType);
+    return adapterType === "hermes_gateway"
       ? {
           supportsInstructionsBundle: false,
           supportsSkills: false,
@@ -120,7 +138,9 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           requiresMaterializedRuntimeSkills: false,
           supportsModelProfiles: true,
           supportsAcp: true,
-        },
+          ...(login ? { login } : {}),
+        };
+  },
 }));
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
@@ -318,6 +338,32 @@ const AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+const VENDOR_AUTH_MISSING_RESULT = {
+  adapterType: "vendor_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
+const PTY_VENDOR_AUTH_MISSING_RESULT = {
+  adapterType: "pty_vendor_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
 const CLAUDE_AUTH_MISSING_RESULT = {
   adapterType: "claude_local",
   status: "warn",
@@ -341,8 +387,8 @@ const CLAUDE_AUTH_MISSING_RESULT = {
 // for a provider with the capability.
 const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
   sandboxProviders: {
-    daytona: { supportsSetupTokenLogin: true, displayName: "Daytona" },
-    e2b: { supportsSetupTokenLogin: false, displayName: "E2B" },
+    daytona: { supportsLoginPty: true, displayName: "Daytona" },
+    e2b: { supportsLoginPty: false, displayName: "E2B" },
   },
 });
 
@@ -368,6 +414,24 @@ async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
       }),
     ],
     { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+// A third adapter, not a built-in, in a sandbox environment. Its projected login
+// capability drives the login affordance and the displayed-code panel.
+async function renderVendorSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "E2B",
+        driver: "sandbox",
+        config: { provider: "e2b" },
+      }),
+    ],
+    { adapterType: "vendor_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
     { showAdapterTestEnvironmentButton: true },
   );
 }
@@ -678,6 +742,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("E2B · sandbox");
   });
 
+  it("shows the environment override for Kimi local agents", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "kimi_local" },
+    );
+    roots.push(result.root);
+
+    const text = result.container.textContent ?? "";
+    const selector = result.container.querySelector("select");
+
+    expect(text).toContain("Environment override");
+    expect(selector?.textContent).toContain("E2B · sandbox");
+  });
+
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
     const result = await renderForm(
       [
@@ -935,6 +1021,31 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Log in")).toBeTruthy();
   });
 
+  it("shows the login affordance and the displayed-code panel for a third adapter with a projected login capability", async () => {
+    // The adapter is not a built-in. Its projected login capability drives the
+    // login affordance and the panel, so the form reads the capability, not the
+    // adapter name. The displayed-code panel shows the server code.
+    mockAgentsApi.testEnvironment.mockResolvedValue(VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderVendorSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    // The projected capability gates the login affordance on for the third
+    // adapter.
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+
+    await startLogin(result.container);
+
+    // The displayed-code panel shows the one-time code and the authentication
+    // URL. It shows no browser-code input, so the dispatcher picked the panel
+    // from the projected `displayed_code` mode.
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
   it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Claude sandbox", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     const result = await renderClaudeSandbox();
@@ -973,7 +1084,7 @@ describe("AgentConfigForm environment selector", () => {
 
   it("hides the Login button for a Daytona sandbox while the capabilities report no setup-token support", async () => {
     // Reproduces the reported defect: the Test carries the auth-missing check,
-    // but the capabilities endpoint reports `supportsSetupTokenLogin: false`
+    // but the capabilities endpoint reports `supportsLoginPty: false`
     // for Daytona (a stale persisted plugin manifest). The gate hides the
     // panel. The server-side fix refreshes the persisted manifest so the
     // capability reports true and the panel shows (see the companion positive
@@ -982,7 +1093,7 @@ describe("AgentConfigForm environment selector", () => {
     mockEnvironmentsApi.capabilities.mockResolvedValue(
       getEnvironmentCapabilities(["claude_local", "codex_local"], {
         sandboxProviders: {
-          daytona: { supportsSetupTokenLogin: false, displayName: "Daytona" },
+          daytona: { supportsLoginPty: false, displayName: "Daytona" },
         },
       }),
     );
@@ -1004,6 +1115,57 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
 
     expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("gates a pseudo-terminal login on the provider pty capability for a non-Claude adapter", async () => {
+    // The gate reads the adapter login transport, not the adapter name. This
+    // adapter is not `claude_local`, but its login runs on a pseudo-terminal.
+    // The E2B provider reports no pty capability, so the panel stays hidden even
+    // after the auth-missing check.
+    mockAgentsApi.testEnvironment.mockResolvedValue(PTY_VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "pty_vendor_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("shows a pseudo-terminal login for a non-Claude adapter when the provider advertises pty support", async () => {
+    // The same non-Claude pseudo-terminal adapter on Daytona. Daytona advertises
+    // the pty capability, so the panel shows. This confirms the gate follows the
+    // provider capability, not the adapter name.
+    mockAgentsApi.testEnvironment.mockResolvedValue(PTY_VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "Daytona",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        }),
+      ],
+      { adapterType: "pty_vendor_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
   });
 
   it("shows the Login button when a parent lifts the test feedback and renders the panel from the descriptor", async () => {

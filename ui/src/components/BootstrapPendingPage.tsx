@@ -50,7 +50,7 @@ function claimErrorCopy(error: BootstrapPendingPageProps["claimError"]) {
   if (error?.status === 409) {
     return {
       title: "Someone else has already claimed this instance.",
-      body: "Refresh to sign in, or ask the existing admin to invite you from Instance settings -> Access.",
+      body: "Refresh to sign in, or ask the existing admin to invite you from Settings -> Access.",
     };
   }
   if (error?.status === 401) {

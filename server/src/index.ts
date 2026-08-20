@@ -72,6 +72,7 @@ import {
   createCodexDeviceLoginReaper,
   createProductionLoginSessionReaperRuntime,
 } from "./services/codex-device-login-reaper.js";
+import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -96,6 +97,11 @@ import {
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import {
+  createEmbeddedPostgresSupervisor,
+  type EmbeddedPostgresSupervisor,
+  type SupervisedEmbeddedPostgres,
+} from "./embedded-postgres-supervisor.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -112,10 +118,8 @@ type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type EmbeddedPostgresInstance = {
+type EmbeddedPostgresInstance = SupervisedEmbeddedPostgres & {
   initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
 };
 
 type EmbeddedPostgresCtor = new (opts: {
@@ -326,6 +330,7 @@ export async function startServer(): Promise<StartedServer> {
   let db;
   let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
+  let embeddedPostgresSupervisor: EmbeddedPostgresSupervisor | null = null;
   let embeddedPostgresStartedByThisProcess = false;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
@@ -450,7 +455,7 @@ export async function startServer(): Promise<StartedServer> {
         }
         port = detectedPort;
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
-        embeddedPostgres = new EmbeddedPostgres({
+        const createEmbeddedPostgres = () => new EmbeddedPostgres({
           databaseDir: dataDir,
           user: "paperclip",
           password: "paperclip",
@@ -460,6 +465,7 @@ export async function startServer(): Promise<StartedServer> {
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
         });
+        embeddedPostgres = createEmbeddedPostgres();
 
         if (!clusterAlreadyInitialized) {
           try {
@@ -489,6 +495,36 @@ export async function startServer(): Promise<StartedServer> {
           });
         }
         embeddedPostgresStartedByThisProcess = true;
+        embeddedPostgresSupervisor = createEmbeddedPostgresSupervisor({
+          initialInstance: embeddedPostgres,
+          createInstance: createEmbeddedPostgres,
+          beforeRestart: () => {
+            const runningPostgresPid = getRunningPid();
+            if (runningPostgresPid) {
+              throw new Error(`Refusing embedded PostgreSQL recovery because the data directory reports a live process (pid=${runningPostgresPid})`);
+            }
+            if (existsSync(postmasterPidFile)) rmSync(postmasterPidFile, { force: true });
+          },
+          onUnexpectedExit: (code, signal) => logger.error(
+            { code, signal, recentLogs: logBuffer.getRecentLogs() },
+            "Embedded PostgreSQL exited unexpectedly; attempting recovery",
+          ),
+          onRestartAttemptFailed: (err, attempt) => logger.error(
+            { err, attempt, recentLogs: logBuffer.getRecentLogs() },
+            "Embedded PostgreSQL recovery attempt failed",
+          ),
+          onRestarted: (attempt) => logger.info(
+            { attempt, port },
+            "Embedded PostgreSQL recovered after unexpected exit",
+          ),
+          onRecoveryExhausted: (err) => {
+            logger.fatal(
+              { err, recentLogs: logBuffer.getRecentLogs() },
+              "Embedded PostgreSQL recovery exhausted; stopping the unhealthy server",
+            );
+            process.kill(process.pid, "SIGTERM");
+          },
+        });
       }
     }
   
@@ -1049,7 +1085,9 @@ export async function startServer(): Promise<StartedServer> {
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
     });
-    const terminalWorkspaces = executionWorkspaceService(db as any);
+    const terminalWorkspaces = executionWorkspaceService(db as any, {
+      workspaceReaperCooldownDays: config.workspaceReaperCooldownDays,
+    });
     const scheduleMergedPullRequestConfirmationSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
@@ -1081,7 +1119,8 @@ export async function startServer(): Promise<StartedServer> {
             result.skippedActiveRun
             + result.skippedNonTerminalTree
             + result.skippedUndelivered
-            + result.skippedRace;
+            + result.skippedRace
+            + result.skippedCooldown;
           const nowMs = Date.now();
           if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
             lastTerminalWorkspaceSkipLogAt = nowMs;
@@ -1125,6 +1164,32 @@ export async function startServer(): Promise<StartedServer> {
         .then(logAdapterLoginReaperResult)
         .catch((err) => {
           logger.error({ err }, "adapter login reaper sweep failed");
+        }));
+    };
+
+    // The restart-safe cleanup backstop for the Claude setup-token login flow. It
+    // runs on startup and on the scheduler interval, so a sandbox lease survives a
+    // server restart and a release failure. It releases any lease whose login
+    // session is terminal, past its deadline, or already consumed.
+    const setupTokenReaper = createProductionSetupTokenReaper({
+      db: db as any,
+      environmentRuntime: environmentRuntimeService(db as any, { pluginWorkerManager }),
+      log: (line) => logger.info(line),
+    });
+    const logSetupTokenReaperResult = (
+      result: Awaited<ReturnType<typeof setupTokenReaper.sweep>>,
+    ) => {
+      if (result.released > 0 || result.failed > 0) {
+        logger.info(result, "setup-token login reaper released leases");
+      }
+    };
+    const scheduleSetupTokenReaperSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(setupTokenReaper
+        .sweep()
+        .then(logSetupTokenReaperResult)
+        .catch((err) => {
+          logger.error({ err }, "setup-token login reaper sweep failed");
         }));
     };
 
@@ -1265,6 +1330,15 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "startup adapter login reaper sweep failed");
       });
 
+    // Run the setup-token login reaper once at startup, so a login sandbox lease
+    // that outlived a server restart releases before timer ticks start.
+    await setupTokenReaper
+      .sweep()
+      .then(logSetupTokenReaperResult)
+      .catch((err) => {
+        logger.error({ err }, "startup setup-token login reaper sweep failed");
+      });
+
     // Retry any orphan sandbox teardown left by a failed acquire before a server
     // restart, so a leaked sandbox does not stay allocated across the restart.
     await runEnvironmentLeaseCleanupSweep(0);
@@ -1328,6 +1402,7 @@ export async function startServer(): Promise<StartedServer> {
         scheduleMergedPullRequestConfirmationSweep();
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
+        scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
 
         if (heartbeatSchedulerStopped) return;
@@ -1632,8 +1707,9 @@ export async function startServer(): Promise<StartedServer> {
 
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
         ?.paperclipShutdown;
-      const embeddedPostgresToStop =
-        embeddedPostgres && embeddedPostgresStartedByThisProcess ? embeddedPostgres : null;
+      const stopEmbeddedPostgres = embeddedPostgres && embeddedPostgresStartedByThisProcess
+        ? () => embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres!.stop()
+        : null;
 
       // Await the ordered application teardown before the process exits. A live
       // setup-token login session must stop and release its sandbox lease before
@@ -1642,7 +1718,7 @@ export async function startServer(): Promise<StartedServer> {
       await finalizeServerShutdown({
         signal,
         shutdownAppServices: appShutdown,
-        stopEmbeddedPostgres: embeddedPostgresToStop ? () => embeddedPostgresToStop.stop() : null,
+        stopEmbeddedPostgres,
         shutdownInstrumentation,
         log: logger,
       });

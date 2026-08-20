@@ -11,6 +11,7 @@ import {
   resolveDeclaredSandboxCapabilities,
   redactEnvironmentCustomImageSetupSession,
   redactEnvironmentCustomImageTemplate,
+  relinkEnvironmentCustomImageTemplateSchema,
   startEnvironmentCustomImageSetupSessionSchema,
   type EnvironmentDeleteBlastRadius,
   updateEnvironmentSchema,
@@ -741,7 +742,7 @@ export function environmentRoutes(
             templateRefKind: driver.templateRefKind,
             templateConfigBinding: driver.templateConfigBinding,
             supportsTemplateDelete: driver.supportsTemplateDelete,
-            supportsSetupTokenLogin: driver.supportsSetupTokenLogin ?? false,
+            supportsLoginPty: driver.supportsLoginPty ?? false,
             displayName: driver.displayName,
             description: driver.description,
             source: "plugin" as const,
@@ -951,6 +952,31 @@ export function environmentRoutes(
     });
     res.json(result);
   });
+
+  router.post(
+    "/environments/:environmentId/custom-image-template/relink",
+    validate(relinkEnvironmentCustomImageTemplateSchema),
+    async (req, res) => {
+      assertCanAccessInstanceEnvironments(req);
+      const companyId = await resolveCustomImageCompanyId(req);
+      const actor = getActorInfo(req);
+      // The service classifies drift, re-stamps the fingerprint, and writes the
+      // activity row in one transaction. The route never classifies.
+      const result = await customImages.relinkActiveTemplate({
+        environmentId: req.params.environmentId as string,
+        confirmBootSourceDrift: req.body.confirmBootSourceDrift === true,
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+        },
+        companyId,
+      });
+      res.json(result);
+    },
+  );
 
   router.delete("/environments/:environmentId/custom-image-template", async (req, res) => {
     assertCanAccessInstanceEnvironments(req);

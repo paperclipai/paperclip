@@ -10,7 +10,7 @@ import type {
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -21,8 +21,8 @@ import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/adapter-codex-local/ui";
 import {
   Popover,
   PopoverContent,
@@ -199,6 +199,15 @@ const claudeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+] as const;
+
+// Kimi exposes low/high/max (no "medium") via each model's support_efforts;
+// the kimi_local adapter maps a legacy "medium" onto "high" at runtime.
+const kimiThinkingEffortOptions = [
+  { id: "", label: "Auto" },
+  { id: "low", label: "Low" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Max" },
 ] as const;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -587,17 +596,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
-  // Load the sandbox provider capabilities. The Claude setup-token login runs on
-  // a real pseudo-terminal, so it needs a provider that advertises the
-  // setup-token login capability. The login panel gate reads this to hide the
-  // panel for a provider without the capability. The gate is advisory; the
-  // server resolves the capability again and fails closed.
+  // Load the sandbox provider capabilities. A login that runs on a real
+  // pseudo-terminal needs a provider that advertises the login pseudo-terminal
+  // capability. The login panel gate reads this to hide the panel for a provider
+  // without the capability. Enable the query from the adapter login transport,
+  // not the adapter name: only a pseudo-terminal login consults this data. The
+  // gate is advisory; the server resolves the capability again and fails closed.
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.environments.capabilities(selectedCompanyId)
       : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && adapterType === "claude_local",
+    enabled:
+      Boolean(selectedCompanyId) &&
+      adapterCaps.login?.sandboxTransport === "pseudo_terminal",
   });
 
   // When the instance forces Kubernetes execution, new agents must default to the
@@ -939,35 +951,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     clearClaudeLoginClaimRef.current();
   }, [adapterType, effectiveLoginEnvironmentId]);
 
-  // Show the login affordance only for a current `codex_local` or `claude_local`
-  // sandbox whose most recent Test result carries the canonical auth-missing
-  // check. Both adapters emit the same neutral code. The result keeps its own
-  // `adapterType`, so a result from another adapter never gates the panel.
-  const adapterSupportsSandboxLogin =
-    adapterType === "codex_local" || adapterType === "claude_local";
+  // Show the login affordance only for a current sandbox adapter that declares a
+  // login capability, and whose most recent Test result carries the canonical
+  // auth-missing check. The form reads the projected capability, not the adapter
+  // name. The result keeps its own `adapterType`, so the form reads the
+  // capability for that result adapter; a result from an adapter with no login
+  // capability never gates the panel.
+  const adapterSupportsSandboxLogin = adapterCaps.login != null;
+  const testResult = testEnvironment.data;
+  const testResultSupportsSandboxLogin =
+    testResult != null && getCapabilities(testResult.adapterType).login != null;
   const authMissingCheck =
-    testEnvironment.data?.adapterType === "codex_local" ||
-    testEnvironment.data?.adapterType === "claude_local"
-      ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
+    testResult && testResultSupportsSandboxLogin
+      ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
-  // The Claude login runs on a real pseudo-terminal, so it needs a provider that
-  // advertises the setup-token login capability. Read the capability for the
-  // effective environment provider. The codex login uses a different flow and
-  // does not gate on this capability, so the requirement applies to Claude only.
+  // A login that runs on a real pseudo-terminal needs a provider that advertises
+  // the login pseudo-terminal capability. Read the capability for the effective
+  // environment provider. The form reads the adapter login transport, not the
+  // adapter name: a login with a streamed-exec transport does not gate on this
+  // capability, so the requirement applies to a pseudo-terminal login only.
   const effectiveLoginProvider =
     typeof effectiveLoginEnvironment?.config?.provider === "string"
       ? effectiveLoginEnvironment.config.provider
       : null;
-  const providerSupportsSetupTokenLogin =
+  const providerSupportsLoginPty =
     effectiveLoginProvider != null &&
-    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsSetupTokenLogin === true;
+    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
+  const loginNeedsPty = adapterCaps.login?.sandboxTransport === "pseudo_terminal";
   const showAdapterLogin =
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&
     Boolean(authMissingCheck) &&
-    (adapterType !== "claude_local" || providerSupportsSetupTokenLogin);
+    (!loginNeedsPty || providerSupportsLoginPty);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");
@@ -1090,7 +1107,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? cursorModeOptions
         : adapterType === "opencode_local"
           ? openCodeThinkingEffortOptions
-          : claudeThinkingEffortOptions;
+          : adapterType === "kimi_local"
+            ? kimiThinkingEffortOptions
+            : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1445,6 +1464,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "kimi_local") {
+                      nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -1462,6 +1483,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         model:
                           t === "gemini_local"
                             ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "kimi_local"
+                              ? DEFAULT_KIMI_LOCAL_MODEL
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
@@ -1576,6 +1599,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       claude_local: "claude",
                       codex_local: "codex",
                       gemini_local: "gemini",
+                      kimi_local: "kimi",
                       pi_local: "pi",
                       cursor: "agent",
                       opencode_local: "opencode",
@@ -2011,11 +2035,13 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onApplyStored?: () => void;
 };
 
-// The login panel dispatcher. It picks the panel mode from the adapter. The
-// Claude adapter shows the submitted-browser-code panel. Every other adapter
-// shows the displayed-code panel.
+// The login panel dispatcher. It picks the panel from the projected panel mode,
+// not from the adapter name. The `submitted_browser_code` mode shows the
+// submitted-browser-code panel; every other mode shows the displayed-code panel.
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
-  if (props.adapterType === "claude_local") {
+  const getCapabilities = useAdapterCapabilities();
+  const panelMode = getCapabilities(props.adapterType).login?.panelMode;
+  if (panelMode === "submitted_browser_code") {
     return <SubmittedBrowserCodeLoginPanel {...props} />;
   }
   return <DisplayedCodeLoginPanel {...props} />;

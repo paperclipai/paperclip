@@ -79,6 +79,26 @@ test("uses the nearest ancestor stable tag, not the newest by version", () => {
   assert.doesNotMatch(body, /new work/);
 });
 
+test("starts from the merge-base when the last stable was cut from a candidate branch", () => {
+  const dir = makeFixtureRepo();
+  commit(dir, "feat: shipped in the stable (#1)");
+  git(dir, "checkout", "-q", "-b", "candidate");
+  commit(dir, "docs: release notes only (#2)");
+  git(dir, "tag", "v2026.200.0");
+  git(dir, "checkout", "-q", "master");
+  commit(dir, "feat: next-release work (#3)");
+  git(dir, "tag", "beta/v2026.201.0-beta.0");
+
+  // The stable tag sits on the unmerged candidate branch, so it is not an
+  // ancestor of the beta source. The range must start at its merge-base
+  // with the source (the promoted commit), not fall back past it.
+  const { body } = runDraft(dir, "2026.201.0-beta.0");
+
+  assert.match(body, /- feat: next-release work \(#3\)/);
+  assert.doesNotMatch(body, /shipped in the stable/);
+  assert.doesNotMatch(body, /release notes only/);
+});
+
 test("falls back to the previous beta tag when no stable tag exists", () => {
   const dir = makeFixtureRepo();
   commit(dir, "feat: first-train work (#1)");

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -68,13 +69,11 @@ import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
-import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
-import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
+import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { InstanceSettings } from "./pages/InstanceSettings";
-import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
@@ -99,6 +98,10 @@ import {
 import { useCompanyMission } from "./hooks/useCompanyMission";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
+const CompanyExport = lazy(() =>
+  import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
+);
+
 function boardRoutes() {
   return (
     <>
@@ -114,7 +117,14 @@ function boardRoutes() {
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
-      <Route path="company/export/*" element={<CompanyExport />} />
+      <Route
+        path="company/export/*"
+        element={(
+          <Suspense fallback={<PaperclipLoading />}>
+            <CompanyExport />
+          </Suspense>
+        )}
+      />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
@@ -144,9 +154,9 @@ function boardRoutes() {
         <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
         <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       </Route>
-      <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
+      <Route path="company/settings/instance" element={<Navigate to="/company/settings" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
-      <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
+      <Route path="company/settings/instance/general" element={<Navigate to="/company/settings" replace />} />
       <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
       <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
       <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />

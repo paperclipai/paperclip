@@ -493,12 +493,10 @@ export async function createApp(
       confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,
       setupTokenLogin: setupTokenLoginTransport,
       onSetupTokenLoginService: (service) => {
+        // Capture the service, so the graceful-shutdown hook cancels every live
+        // session and releases each lease. The standalone scheduled reaper owns
+        // the startup and interval lease cleanup now (SR-4).
         setupTokenLoginService = service;
-        // Startup reaper (SR-4): release any lease whose login session is
-        // terminal or past its deadline after a restart. The DB is ready here.
-        void service.reap().catch((err) => {
-          logger.error({ err }, "Setup-token login startup reaper failed");
-        });
       },
     }),
   );

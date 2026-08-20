@@ -84,6 +84,7 @@ describe("InstanceGeneralSettings sign-out", () => {
       );
     });
     await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+    expect(container.querySelector('[data-slot="card"]')).toBeNull();
   }
 
   function signOutButton() {

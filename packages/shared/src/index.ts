@@ -1,4 +1,5 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
@@ -300,6 +301,7 @@ export {
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   ISSUE_SURFACE_VISIBILITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
+  ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
@@ -876,6 +878,11 @@ export type {
   WorkspaceOperation,
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,
+  WorkspaceLoginHandoffTicketResponse,
+  WorkspaceReadiness,
+  WorkspaceReadinessProbeResult,
+  WorkspaceReadinessState,
+  WorkspaceSeedReadinessState,
   NormalizedWorkspaceFileAvailabilityQuery,
   WorkspaceFileAvailabilityQuery,
   WorkspaceFileAvailabilityRequest,
@@ -1436,6 +1443,7 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
+export { WORKSPACE_READINESS_STATES } from "./types/index.js";
 export {
   COMPANY_SEARCH_EXTRACT_KINDS,
   COMPANY_SEARCH_EXTRACT_SCOPES,
@@ -2438,6 +2446,7 @@ export {
   startEnvironmentCustomImageSetupSessionSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
+  relinkEnvironmentCustomImageTemplateSchema,
   createEnvironmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageTerminalSessionTokenSchema,
   type EnvironmentCustomImageSetupConnectionSummary,
@@ -2446,6 +2455,7 @@ export {
   type StartEnvironmentCustomImageSetupSession,
   type FinishEnvironmentCustomImageSetupSession,
   type CancelEnvironmentCustomImageSetupSession,
+  type RelinkEnvironmentCustomImageTemplate,
   type CreateEnvironmentCustomImageTerminalSessionToken,
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";

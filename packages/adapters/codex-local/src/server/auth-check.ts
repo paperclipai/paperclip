@@ -1,10 +1,7 @@
 /**
- * The canonical check code both Codex Test engines emit when a sandbox target
- * has no ready authentication. The user interface reads this stable code to
- * decide login eligibility. The user interface does not read the message text
- * or the top-level status.
- *
- * The name is neutral. It carries no vendor name and no login-flow word, because
- * a Test result can sync to public packages.
+ * The canonical check code the Codex Test engine emits when a sandbox target has
+ * no ready authentication. This module re-exports the one shared constant, so
+ * the adapters and the user interface gate login from the same code. See the
+ * source in the shared package for the full contract.
  */
-export const ADAPTER_AUTH_MISSING_CHECK_CODE = "adapter_auth_missing";
+export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";

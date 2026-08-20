@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
+import { ApiError } from "@/api/client";
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -138,6 +139,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   finishCustomImageSetupSession: vi.fn(),
   cancelCustomImageSetupSession: vi.fn(),
   rollbackCustomImageTemplate: vi.fn(),
+  relinkCustomImageTemplate: vi.fn(),
   disableCustomImageTemplate: vi.fn(),
 }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -432,6 +434,10 @@ describe("CompanyEnvironments — test provider button", () => {
       activeTemplate: createTemplate({ id: "template-previous" }),
       supersededTemplate: createTemplate({ id: "template-current", status: "superseded" }),
     });
+    mockEnvironmentsApi.relinkCustomImageTemplate.mockResolvedValue({
+      template: createTemplate({ id: "template-relinked" }),
+      classification: "knob_only",
+    });
     mockEnvironmentsApi.disableCustomImageTemplate.mockResolvedValue(
       createTemplate({ status: "revoked" }),
     );
@@ -625,7 +631,7 @@ describe("CompanyEnvironments — test provider button", () => {
     await flushReact();
 
     await act(async () => {
-      click(findAction(container, "Add environment"));
+      click(container.querySelector('[aria-label="Add environment"]'));
     });
 
     await waitForAssertion(() => {
@@ -1310,6 +1316,65 @@ describe("CompanyEnvironments — test provider button", () => {
     });
   });
 
+  it("names the changed boot-source field in the out-of-sync banner for a boot-source drift", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeTemplateDrift: {
+        classification: "boot_source_drift",
+        driftedPaths: [{ path: "snapshot", from: "a", to: "b" }],
+      },
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Not in use — Base image changed: snapshot `a` -> `b`");
+      expect(dialog.textContent).not.toContain("the environment configuration changed");
+    });
+  });
+
+  it("keeps the generic out-of-sync banner for an unclassified drift", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeTemplateDrift: { classification: "unclassified", driftedPaths: [{ path: "apiUrl" }] },
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Not in use — the environment configuration changed");
+      expect(dialog.textContent).not.toContain("Base image changed");
+    });
+  });
+
   it("does not show the out-of-sync warning when the active template matches the saved config", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -1389,6 +1454,136 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       expect(mockEnvironmentsApi.disableCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     });
+  });
+
+  function setupOutOfSyncTemplatePanel() {
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue({
+      adapters: [],
+      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
+      sandboxProviders: {
+        daytona: {
+          status: "supported",
+          supportsSavedProbe: true,
+          supportsUnsavedProbe: true,
+          supportsRunExecution: true,
+          supportsReusableLeases: true,
+          supportsInteractiveSetup: true,
+          interactiveSetupConnectionTypes: ["ssh"],
+          supportsTemplateCapture: true,
+          supportsTemplateDelete: true,
+          displayName: "Daytona",
+        },
+      },
+    });
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeSession: null,
+      latestSession: null,
+    });
+  }
+
+  it("relinks an out-of-sync template and names both remedies in the copy", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setupOutOfSyncTemplatePanel();
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("relink this image or capture a new one");
+      expect(findButton(dialog, "Relink")).toBeTruthy();
+    });
+
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Relink")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.relinkCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    });
+  });
+
+  it("confirms boot-source drift before re-sending the relink with the flag", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setupOutOfSyncTemplatePanel();
+    mockEnvironmentsApi.relinkCustomImageTemplate
+      .mockRejectedValueOnce(new ApiError("Confirm the relink.", 409, {
+        error: "Confirm the relink.",
+        details: {
+          classification: "boot_source_drift",
+          driftedPaths: [{ path: "image", from: "fake:base", to: "fake:other" }],
+        },
+      }))
+      .mockResolvedValueOnce({
+        template: createTemplate({ id: "template-relinked" }),
+        classification: "boot_source_drift",
+      });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    try {
+      await act(async () => {
+        root!.render(renderCompanyEnvironments(queryClient));
+      });
+      await flushReact();
+      await act(async () => click(editButtons(container)[0]));
+      await waitForAssertion(() => {
+        expect(findButton(getEnvironmentFormPage()!, "Relink")).toBeTruthy();
+      });
+
+      await act(async () => click(findButton(getEnvironmentFormPage()!, "Relink")));
+      await waitForAssertion(() => {
+        expect(mockEnvironmentsApi.relinkCustomImageTemplate).toHaveBeenNthCalledWith(1, "env-1", "company-1");
+        expect(mockEnvironmentsApi.relinkCustomImageTemplate).toHaveBeenNthCalledWith(
+          2,
+          "env-1",
+          "company-1",
+          { confirmBootSourceDrift: true },
+        );
+      });
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(confirmSpy.mock.calls[0]![0]).toContain("image fake:base -> fake:other");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("does not re-send the relink when the operator declines the confirmation", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    setupOutOfSyncTemplatePanel();
+    mockEnvironmentsApi.relinkCustomImageTemplate.mockRejectedValueOnce(new ApiError("Cannot verify.", 409, {
+      error: "Cannot verify.",
+      details: { classification: "unclassified", driftedPaths: [{ path: "apiUrl" }] },
+    }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    try {
+      await act(async () => {
+        root!.render(renderCompanyEnvironments(queryClient));
+      });
+      await flushReact();
+      await act(async () => click(editButtons(container)[0]));
+      await waitForAssertion(() => {
+        expect(findButton(getEnvironmentFormPage()!, "Relink")).toBeTruthy();
+      });
+
+      await act(async () => click(findButton(getEnvironmentFormPage()!, "Relink")));
+      await waitForAssertion(() => {
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(confirmSpy.mock.calls[0]![0]).toContain("cannot verify the boot source");
+      expect(mockEnvironmentsApi.relinkCustomImageTemplate).toHaveBeenCalledTimes(1);
+      expect(mockEnvironmentsApi.relinkCustomImageTemplate).toHaveBeenCalledWith("env-1", "company-1");
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 
   it("offers the implicit Local option in the default picker by default", async () => {

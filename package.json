@@ -69,7 +69,7 @@
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.1",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.1",
     "typescript": "^5.7.3",
@@ -86,8 +86,8 @@
     },
     "overrides": {
       "rollup": ">=4.59.0",
-      "react": "^19.2.7",
-      "react-dom": "^19.2.7",
+      "react": "^19.2.8",
+      "react-dom": "^19.2.8",
       "lexical": "0.49.0",
       "@lexical/clipboard": "0.49.0",
       "@lexical/link": "0.49.0",
