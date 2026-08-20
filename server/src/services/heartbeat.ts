@@ -15010,8 +15010,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Guards: only on clean success into idle; next card must be free of
       // non-terminal blockers; the per-issue rewake throttle still applies at the
       // wake layer, so a chain can never hammer one card.
-      if (outcome === "succeeded" && nextStatus === "idle") {
+      // Shell handlers are excluded: their work arrives as dispatch directives,
+      // not generic cards, so chaining them onto directive-less cards produced
+      // a no-op comment loop within minutes of deploy (RoutineOps <-> TSM-6240,
+      // three "no directive" comments in two minutes, 2026-08-20 10:49). The
+      // wake also now skips any card already wake-targeted in the last 10
+      // minutes — the assignment-reason wake path is not covered by the
+      // per-issue rewake throttle, which is how the loop tightened.
+      if (
+        outcome === "succeeded" &&
+        nextStatus === "idle" &&
+        !existing.adapterType.includes("shell")
+      ) {
         try {
+          const recentWakeTargets = db
+            .select({ issueId: sql<string>`(${agentWakeupRequests.payload} ->> 'issueId')` })
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.agentId, agentId),
+              gt(agentWakeupRequests.createdAt, new Date(Date.now() - 10 * 60 * 1000)),
+            ));
           const nextCard = await db
             .select({ id: issues.id })
             .from(issues)
@@ -15019,6 +15037,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(issues.assigneeAgentId, agentId),
               eq(issues.status, "todo"),
               visibleIssueCondition(),
+              notInArray(sql`${issues.id}::text`, recentWakeTargets),
             ))
             .orderBy(issues.createdAt)
             .limit(5)
