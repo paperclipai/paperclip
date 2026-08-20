@@ -279,13 +279,14 @@ export interface SandboxManagedRuntimeClient {
 /**
  * Which path grammar one side of a sync mapping speaks. Sandbox paths are always
  * POSIX. Host paths follow the platform the server runs on, which is Win32 when
- * Paperclip runs on Windows.
+ * Paperclip runs on Windows. Callers pass `host`; `win32` selects the Win32
+ * grammar explicitly so tests exercise it on every runner platform.
  */
-export type SyncPathFlavour = "posix" | "host";
+export type SyncPathFlavour = "posix" | "host" | "win32";
 
 /** Path helpers for a flavour. `host` is platform-native (`path`), not POSIX. */
 const pathFlavour = (flavour: SyncPathFlavour): path.PlatformPath =>
-  flavour === "host" ? path : path.posix;
+  flavour === "host" ? path : flavour === "win32" ? path.win32 : path.posix;
 
 /**
  * Host-side complete-mediation guard for native sync operations. The orchestrator
@@ -314,8 +315,10 @@ export function assertSyncOperationsConfined(
       throw new Error(`sync operation ${label} path is not a confined absolute path: ${candidate}`);
     }
     // Windows paths are case-insensitive. A case-sensitive compare rejects a
-    // legitimate root that differs only in case.
-    const caseInsensitive = flavour === "host" && path.sep === "\\";
+    // legitimate root that differs only in case. The grammar decides: any side
+    // evaluated with Win32 rules folds case, whether the caller reached that
+    // grammar through `host` on a Windows server or through `win32` directly.
+    const caseInsensitive = p.sep === "\\";
     const fold = (value: string): string => (caseInsensitive ? value.toLowerCase() : value);
     const folded = fold(normalized);
     const within = allowed.some((root) => {

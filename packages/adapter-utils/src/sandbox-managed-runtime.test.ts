@@ -1911,6 +1911,89 @@ describe("sandbox managed runtime", () => {
     ).toThrow(/escapes its confinement root|not a confined absolute path/);
   });
 
+  // The `win32` flavour pins the Win32 grammar regardless of the runner
+  // platform, so CI on a POSIX runner still exercises Windows semantics:
+  // drive-letter absolutes, either separator, traversal, and case folding.
+  it("confines Win32 host paths identically on every runner platform", () => {
+    const hostRoot = "C:\\Users\\example\\AppData\\Local\\Temp\\paperclip-sandbox-sync-Tx5GSy";
+    const sandboxRoot = "/opt/paperclip/runtime";
+
+    // The exact staging path that failed under POSIX-only confinement.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{
+          operationId: "inbound",
+          files: [{ sourcePath: `${hostRoot}\\workspace.tar`, targetPath: `${sandboxRoot}/workspace.tar`, kind: "file" as const }],
+        }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "win32", target: "posix" },
+      ),
+    ).not.toThrow();
+
+    // Win32 accepts forward slashes too.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{
+          operationId: "inbound",
+          files: [{ sourcePath: "C:/Users/example/AppData/Local/Temp/paperclip-sandbox-sync-Tx5GSy/workspace.tar", targetPath: `${sandboxRoot}/workspace.tar`, kind: "file" as const }],
+        }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "win32", target: "posix" },
+      ),
+    ).not.toThrow();
+
+    // Windows paths are case-insensitive: a root that differs only in case matches.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{
+          operationId: "inbound",
+          files: [{ sourcePath: "c:\\users\\EXAMPLE\\appdata\\local\\temp\\PAPERCLIP-SANDBOX-SYNC-tx5gsy\\workspace.tar", targetPath: `${sandboxRoot}/workspace.tar`, kind: "file" as const }],
+        }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "win32", target: "posix" },
+      ),
+    ).not.toThrow();
+
+    // A Win32 path outside its declared root is rejected.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: "C:\\Windows\\System32\\config\\SAM", targetPath: `${sandboxRoot}/x.tar`, kind: "file" as const }] }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "win32", target: "posix" },
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+
+    // `..` traversal is rejected with either separator.
+    for (const sourcePath of [`${hostRoot}\\..\\..\\secrets.tar`, `${hostRoot}/../../secrets.tar`]) {
+      expect(() =>
+        assertSyncOperationsConfined(
+          [{ operationId: "o", files: [{ sourcePath, targetPath: `${sandboxRoot}/x.tar`, kind: "file" as const }] }],
+          { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+          { source: "win32", target: "posix" },
+        ),
+      ).toThrow(/escapes its confinement root|not a confined absolute path/);
+    }
+
+    // A drive-relative path (no root) is not a confined absolute path.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: "Users\\example\\workspace.tar", targetPath: `${sandboxRoot}/x.tar`, kind: "file" as const }] }],
+        { sourceRoots: [hostRoot], targetRoots: [sandboxRoot] },
+        { source: "win32", target: "posix" },
+      ),
+    ).toThrow(/not a confined absolute path/);
+
+    // Case folding stays OFF for POSIX: the same case-mismatch that passes under
+    // Win32 rules is an escape under POSIX rules (control for the folding gate).
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "o", files: [{ sourcePath: "/TMP/STAGE/x.tar", targetPath: `${sandboxRoot}/x.tar`, kind: "file" as const }] }],
+        { sourceRoots: ["/tmp/stage"], targetRoots: [sandboxRoot] },
+        { source: "posix", target: "posix" },
+      ),
+    ).toThrow(/escapes its confinement root/);
+  });
+
   it("keeps POSIX rules on both sides when the caller gives no flavours", () => {
     expect(() =>
       assertSyncOperationsConfined(
