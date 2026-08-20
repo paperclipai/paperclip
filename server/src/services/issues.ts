@@ -7540,6 +7540,11 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        expectedCheckoutRunId?: string | null;
+        expectedExecutionRunId?: string | null;
+        expectedStatus?: typeof issues.$inferSelect.status;
+        expectedAssigneeAgentId?: string | null;
+        expectedAssigneeUserId?: string | null;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7558,6 +7563,11 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        expectedCheckoutRunId,
+        expectedExecutionRunId,
+        expectedStatus,
+        expectedAssigneeAgentId,
+        expectedAssigneeUserId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -7743,7 +7753,32 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(
+            and(
+              eq(issues.id, id),
+              expectedCheckoutRunId === undefined
+                ? undefined
+                : expectedCheckoutRunId === null
+                  ? isNull(issues.checkoutRunId)
+                  : eq(issues.checkoutRunId, expectedCheckoutRunId),
+              expectedExecutionRunId === undefined
+                ? undefined
+                : expectedExecutionRunId === null
+                  ? isNull(issues.executionRunId)
+                  : eq(issues.executionRunId, expectedExecutionRunId),
+              expectedStatus === undefined ? undefined : eq(issues.status, expectedStatus),
+              expectedAssigneeAgentId === undefined
+                ? undefined
+                : expectedAssigneeAgentId === null
+                  ? isNull(issues.assigneeAgentId)
+                  : eq(issues.assigneeAgentId, expectedAssigneeAgentId),
+              expectedAssigneeUserId === undefined
+                ? undefined
+                : expectedAssigneeUserId === null
+                  ? isNull(issues.assigneeUserId)
+                  : eq(issues.assigneeUserId, expectedAssigneeUserId),
+            ),
+          )
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
