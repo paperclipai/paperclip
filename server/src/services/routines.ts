@@ -1760,7 +1760,9 @@ export function routineService(
       .join("\n\n");
     const triggerPayload = {
       ...(mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables }) ?? {}),
-      executionIssue: { parentId: input.routine.parentIssueId },
+      ...(input.routine.parentIssueId
+        ? { executionIssue: { parentId: input.routine.parentIssueId } }
+        : {}),
     };
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
@@ -3210,16 +3212,18 @@ export function routineService(
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-        const standingParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload) ?? issue.parentId;
+        const standingParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload);
         return db.transaction(async (tx) => {
-          if (standingParentIssueId) {
+          if (standingParentIssueId !== null) {
             await tx
               .delete(issueRelations)
               .where(and(
                 eq(issueRelations.companyId, issue.companyId),
                 eq(issueRelations.issueId, issue.id),
-                eq(issueRelations.relatedIssueId, standingParentIssueId),
                 eq(issueRelations.type, "blocks"),
+                ...(standingParentIssueId === undefined
+                  ? []
+                  : [eq(issueRelations.relatedIssueId, standingParentIssueId)]),
               ));
           }
           return finalizeRun(run.id, {

@@ -411,6 +411,54 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(blockerEdges).toEqual([]);
   });
 
+  it("clears legacy routine blocker edges when the parent snapshot is absent", async () => {
+    const { companyId, issueSvc, projectId, routine, svc } = await seedFixture();
+    const originalParent = await issueSvc.create(companyId, {
+      projectId,
+      title: "Original standing target",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.update(routines).set({ parentIssueId: originalParent.id }).where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toEqual(expect.any(String));
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: run.linkedIssueId!,
+      relatedIssueId: originalParent.id,
+      type: "blocks",
+    });
+    const storedRun = await db
+      .select({ id: routineRuns.id, triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.linkedIssueId, run.linkedIssueId!))
+      .then((rows) => rows[0]!);
+    const { executionIssue: _executionIssue, ...legacyPayload } = storedRun.triggerPayload as Record<string, unknown>;
+    await db.update(routineRuns).set({ triggerPayload: legacyPayload }).where(eq(routineRuns.id, storedRun.id));
+
+    const replacementParent = await issueSvc.create(companyId, {
+      projectId,
+      title: "Replacement parent",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: replacementParent.id, status: "done" })
+      .where(eq(issues.id, run.linkedIssueId!));
+
+    await svc.syncRunStatusForIssue(run.linkedIssueId!);
+
+    const blockerEdges = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, run.linkedIssueId!));
+    expect(blockerEdges).toEqual([]);
+  });
+
   it("filters listed routines by project", async () => {
     const { companyId, agentId, projectId, routine, svc } = await seedFixture();
     const otherProjectId = randomUUID();
