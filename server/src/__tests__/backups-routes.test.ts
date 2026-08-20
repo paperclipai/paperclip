@@ -104,7 +104,7 @@ describe("portable backup routes", () => {
       getDownloadDescriptor: vi.fn(async () => ({
         bundleDirectory: tempHome,
         bundleName,
-        archiveName: 'backup"\r\nX-Injected: true.tar.gz',
+        archiveName: 'backup"/unsafe\\name\r\nX-Injected: true.tar.gz',
       })),
     } as unknown as BackupManager;
     const app = createApp(instanceAdmin, manager);
@@ -112,7 +112,7 @@ describe("portable backup routes", () => {
     const response = await request(app).get("/api/backups/backup-1/download").buffer(true);
 
     expect(response.status).toBe(200);
-    expect(response.headers["content-disposition"]).toBe('attachment; filename="backup__X-Injected: true.tar.gz"');
+    expect(response.headers["content-disposition"]).toBe('attachment; filename="backup_unsafe_name__X-Injected: true.tar.gz"');
     expect(response.headers["content-disposition"]).not.toContain("\r");
     expect(response.headers["content-disposition"]).not.toContain("\n");
   });
