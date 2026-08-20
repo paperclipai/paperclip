@@ -1328,6 +1328,14 @@ async function listPendingFinalizeBlockerIssueIds(
     }
   }
 
+  // A pending finalize only means something while a run can still deliver it.
+  // TSBC-2099 (2026-08-20): DONE blockers whose runs ended without recording
+  // workspace_finalize held their dependents forever — the barrier had no
+  // expiry, so a terminal blocker with a stale op wedged the gate permanently.
+  // After this grace window a missing finalize is a fact, not a wait.
+  const FINALIZE_BARRIER_EXPIRY_MS = 6 * 60 * 60 * 1000;
+  const now = Date.now();
+
   for (const pair of blockerWorkspacePairs) {
     const latest = latestAttributedByBlockerWorkspace.get(`${pair.blockerIssueId}:${pair.executionWorkspaceId}`)
       ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
@@ -1335,6 +1343,7 @@ async function listPendingFinalizeBlockerIssueIds(
     if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
     const laterSuccessfulFinalize = latestSuccessfulFinalizeByWorkspace.get(pair.executionWorkspaceId);
     if (laterSuccessfulFinalize && laterSuccessfulFinalize > latest.startedAt) continue;
+    if (now - latest.startedAt.getTime() > FINALIZE_BARRIER_EXPIRY_MS) continue;
     pending.add(pair.blockerIssueId);
   }
 
