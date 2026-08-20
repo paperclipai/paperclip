@@ -81,6 +81,22 @@ import {
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
+import {
+  RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+  RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+  RESTART_BATCH_STAGGER_RETRY_REASON,
+  RESTART_BATCH_STAGGER_WAKE_REASON,
+  computeRestartBatchStaggerDelayMs,
+} from "./restart-batch-stagger.js";
+// Re-exported so existing imports of these symbols from "./heartbeat.js" keep
+// working after the RENA-54203 move to a shared module.
+export {
+  RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+  RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+  RESTART_BATCH_STAGGER_RETRY_REASON,
+  RESTART_BATCH_STAGGER_WAKE_REASON,
+  computeRestartBatchStaggerDelayMs,
+};
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -454,6 +470,11 @@ const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
 const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+// RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD, RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+// RESTART_BATCH_STAGGER_RETRY_REASON, RESTART_BATCH_STAGGER_WAKE_REASON, and
+// computeRestartBatchStaggerDelayMs (RENA-54107 thundering-herd damping, shared with
+// recovery/service.ts per RENA-54203) now live in ./restart-batch-stagger.js and are
+// re-exported below to keep existing imports of this module working.
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
@@ -2551,6 +2572,12 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // RENA-54203: an optional additional delay (ms) before this wake's run becomes
+  // eligible to execute. When set, the new run is created with status
+  // "scheduled_retry" (promoted later by promoteDueScheduledRetries) instead of
+  // "queued", so restart-triggered batches of recovery wakes can be spread out
+  // instead of firing all at once. See ./restart-batch-stagger.js.
+  staggerMs?: number;
 }
 
 type UsageTotals = {
@@ -10141,7 +10168,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
     now: Date,
+    opts?: { staggerMs?: number },
   ) {
+    const staggerMs = Math.max(0, Math.floor(opts?.staggerMs ?? 0));
     const existingRetry = await db
       .select()
       .from(heartbeatRuns)
@@ -10187,11 +10216,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const staggeredDueAt = staggerMs > 0 ? new Date(now.getTime() + staggerMs) : null;
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason,
+      ...(staggeredDueAt
+        ? {
+            restartBatchStaggerMs: staggerMs,
+            scheduledRetryAt: staggeredDueAt.toISOString(),
+          }
+        : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
@@ -10203,10 +10239,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           source: "automation",
           triggerDetail: "system",
-          reason: "process_lost_retry",
+          reason: staggeredDueAt ? RESTART_BATCH_STAGGER_WAKE_REASON : "process_lost_retry",
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
+            ...(staggeredDueAt ? { restartBatchStaggerMs: staggerMs } : {}),
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -10223,13 +10260,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           invocationSource: "automation",
           triggerDetail: "system",
-          status: "queued",
+          status: staggeredDueAt ? "scheduled_retry" : "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
           processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          ...(staggeredDueAt
+            ? {
+                scheduledRetryAt: staggeredDueAt,
+                scheduledRetryAttempt: 1,
+                scheduledRetryReason: RESTART_BATCH_STAGGER_RETRY_REASON,
+              }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -10259,25 +10303,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return retryRun;
     });
 
-    publishLiveEvent({
-      companyId: queued.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: queued.id,
-        agentId: queued.agentId,
-        invocationSource: queued.invocationSource,
-        triggerDetail: queued.triggerDetail,
-        wakeupRequestId: queued.wakeupRequestId,
-      },
-    });
+    if (staggeredDueAt) {
+      logger.warn(
+        {
+          sourceRunId: run.id,
+          retryRunId: queued.id,
+          agentId: queued.agentId,
+          staggerMs,
+          scheduledRetryAt: staggeredDueAt.toISOString(),
+        },
+        "restart-batch process-loss retry staggered instead of requeuing immediately",
+      );
+    } else {
+      publishLiveEvent({
+        companyId: queued.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: queued.id,
+          agentId: queued.agentId,
+          invocationSource: queued.invocationSource,
+          triggerDetail: queued.triggerDetail,
+          wakeupRequestId: queued.wakeupRequestId,
+        },
+      });
+    }
 
     await appendRunEvent(queued, 1, {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message: staggeredDueAt
+        ? `Restart-batch process-loss retry staggered ${staggerMs}ms until ${staggeredDueAt.toISOString()} to avoid a thundering-herd requeue`
+        : "Queued automatic retry after orphaned child process was confirmed dead",
       payload: {
         retryOfRunId: run.id,
+        ...(staggeredDueAt ? { staggerMs, scheduledRetryAt: staggeredDueAt.toISOString() } : {}),
       },
     });
 
@@ -10692,7 +10752,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
+    const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
 
+    // Pass 1: terminate processes and conditionally mark each "running" row
+    // interrupted. A run can be finalized concurrently (e.g. it completes on
+    // its own) between the initial query above and this per-row update, in
+    // which case setRunStatusIfRunning is a no-op and the run is skipped. The
+    // restart-batch stagger decision (pass 2, below) is therefore built from
+    // the runs actually interrupted here, not the raw query result -- an
+    // agent whose batch only crosses the threshold because of runs that were
+    // never actually interrupted must not have its real (smaller) retry
+    // batch staggered (RENA-54203 review fix).
+    const interruptedEntries: Array<{
+      run: (typeof activeRuns)[number]["run"];
+      agent: (typeof activeRuns)[number]["agent"];
+      interrupted: typeof heartbeatRuns.$inferSelect;
+    }> = [];
     for (const { run, agent } of activeRuns) {
       const running = runningProcesses.get(run.id);
       try {
@@ -10712,7 +10787,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runningProcesses.delete(run.id);
       }
 
-      const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
       const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
         finishedAt: now,
         error: message,
@@ -10740,7 +10814,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: interrupted.error ?? undefined,
       });
 
-      const retry = await enqueueProcessLossRetry(interrupted, agent, now);
+      interruptedEntries.push({ run, agent, interrupted });
+    }
+
+    // Same thundering-herd guard as reapOrphanedRuns (RENA-54107): a graceful
+    // shutdown/redeploy drains every "running" run at once, so a large batch here
+    // gets staggered retries instead of all requeuing the moment the new instance
+    // starts up. Batch size is scoped per agent (RENA-54203) so one overloaded
+    // agent's runs don't cause unrelated agents' small batches to be staggered too.
+    const drainCountByAgentId = new Map<string, number>();
+    for (const { run } of interruptedEntries) {
+      drainCountByAgentId.set(run.agentId, (drainCountByAgentId.get(run.agentId) ?? 0) + 1);
+    }
+    const restartBatchShutdownAgentIds = new Set(
+      [...drainCountByAgentId.entries()]
+        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
+        .map(([agentId]) => agentId),
+    );
+    if (restartBatchShutdownAgentIds.size > 0) {
+      logger.warn(
+        {
+          drainedRunCount: interruptedEntries.length,
+          restartBatchAgentCount: restartBatchShutdownAgentIds.size,
+          threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+          staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+        },
+        "restart-batch shutdown drain detected for one or more agents; process-loss retries will be staggered to avoid a thundering herd",
+      );
+    }
+
+    // Pass 2: now that the actual interrupted batch per agent is known, enqueue
+    // retries with the correct stagger decision.
+    for (const { run, agent, interrupted } of interruptedEntries) {
+      const retry = await enqueueProcessLossRetry(
+        interrupted,
+        agent,
+        now,
+        restartBatchShutdownAgentIds.has(run.agentId) ? { staggerMs: computeRestartBatchStaggerDelayMs() } : undefined,
+      );
       if (!retry) {
         await releaseIssueExecutionAndPromote(interrupted);
       } else {
@@ -13512,6 +13623,74 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const reaped: string[] = [];
 
+    // Cheap, side-effect-free mirror of the eligibility checks below, used only to
+    // size this sweep's batch before any run is actually reaped. A sweep that finds
+    // many orphaned runs at once is the signature of a control-plane restart (crash
+    // or redeploy resets runningProcesses/activeRunExecutions to empty), so those
+    // retries get staggered instead of all requeuing immediately (RENA-54107).
+    const isReapEligible = (run: typeof heartbeatRuns.$inferSelect, adapterType: string) => {
+      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) return false;
+      if (staleThresholdMs > 0) {
+        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        if (now.getTime() - refTime < staleThresholdMs) return false;
+      }
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const processPidAlive = tracksLocalChild && !!run.processPid && isProcessAlive(run.processPid);
+      const processGroupAlive = tracksLocalChild && !!run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      if ((processPidAlive || processGroupAlive) && readHotRestartAdoptionMetadata(parseObject(run.resultJson))) {
+        return false;
+      }
+      if (processPidAlive) return false;
+      return true;
+    };
+    const reapEligibleCount = activeRuns.filter(({ run, adapterType }) => isReapEligible(run, adapterType)).length;
+    // Mirrors the `shouldRetry` check further down (RENA-54203 review fix):
+    // isReapEligible alone over-counts, since not every reap-eligible run
+    // actually gets a process-loss retry (e.g. it already used its one retry,
+    // or isn't a locally-tracked/monitor-dispatch run). Sizing the batch off
+    // the reap count could stagger a handful of real retries just because a
+    // larger group of non-retried runs shared the sweep.
+    const isRetryEligible = (run: typeof heartbeatRuns.$inferSelect, adapterType: string) => {
+      if (!isReapEligible(run, adapterType)) return false;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const runContext = parseObject(run.contextSnapshot);
+      const monitorIssueId = readNonEmptyString(runContext.issueId);
+      const monitorNextCheckAt = monitorIssueId
+        ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
+        : undefined;
+      const monitorDispatchLostWithoutFutureWake =
+        readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
+        monitorNextCheckAt !== undefined &&
+        (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
+      return (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
+      );
+    };
+    // Batch size is scoped per agent (RENA-54203) so one overloaded agent's reap
+    // batch doesn't cause unrelated agents' small batches to be staggered too.
+    const retryEligibleCountByAgentId = new Map<string, number>();
+    for (const { run, adapterType } of activeRuns) {
+      if (!isRetryEligible(run, adapterType)) continue;
+      retryEligibleCountByAgentId.set(run.agentId, (retryEligibleCountByAgentId.get(run.agentId) ?? 0) + 1);
+    }
+    const restartBatchReapAgentIds = new Set(
+      [...retryEligibleCountByAgentId.entries()]
+        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
+        .map(([agentId]) => agentId),
+    );
+    if (restartBatchReapAgentIds.size > 0) {
+      logger.warn(
+        {
+          reapEligibleCount,
+          restartBatchAgentCount: restartBatchReapAgentIds.size,
+          threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+          staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+        },
+        "restart-batch reap sweep detected for one or more agents; process-loss retries will be staggered to avoid a thundering herd",
+      );
+    }
+
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
@@ -13628,7 +13807,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const retryAgent = await getAgent(run.agentId);
       if (shouldRetry) {
         if (retryAgent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+          retriedRun = await enqueueProcessLossRetry(
+            finalizedRun,
+            retryAgent,
+            now,
+            restartBatchReapAgentIds.has(run.agentId) ? { staggerMs: computeRestartBatchStaggerDelayMs() } : undefined,
+          );
         }
       } else if (retryAgent) {
         const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
@@ -17559,6 +17743,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
+    const staggerMs = Math.max(0, Math.floor(opts.staggerMs ?? 0));
+    const staggeredDueAt = staggerMs > 0 ? new Date(Date.now() + staggerMs) : null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -18593,12 +18779,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId,
             invocationSource: source,
             triggerDetail,
-            status: "queued",
+            status: staggeredDueAt ? "scheduled_retry" : "queued",
             responsibleUserId: await resolveQueuedResponsibleUserId(),
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
+            ...(staggeredDueAt
+              ? {
+                  scheduledRetryAt: staggeredDueAt,
+                  scheduledRetryAttempt: 1,
+                  scheduledRetryReason: RESTART_BATCH_STAGGER_RETRY_REASON,
+                }
+              : {}),
           })
           .returning()
           .then((rows) => rows[0]);
@@ -18625,17 +18818,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const newRun = outcome.run;
-      publishLiveEvent({
-        companyId: newRun.companyId,
-        type: "heartbeat.run.queued",
-        payload: {
-          runId: newRun.id,
-          agentId: newRun.agentId,
-          invocationSource: newRun.invocationSource,
-          triggerDetail: newRun.triggerDetail,
-          wakeupRequestId: newRun.wakeupRequestId,
-        },
-      });
+      if (staggeredDueAt) {
+        logger.warn(
+          {
+            runId: newRun.id,
+            agentId: newRun.agentId,
+            staggerMs,
+            scheduledRetryAt: staggeredDueAt.toISOString(),
+          },
+          "restart-batch wake staggered instead of queuing immediately",
+        );
+      } else {
+        publishLiveEvent({
+          companyId: newRun.companyId,
+          type: "heartbeat.run.queued",
+          payload: {
+            runId: newRun.id,
+            agentId: newRun.agentId,
+            invocationSource: newRun.invocationSource,
+            triggerDetail: newRun.triggerDetail,
+            wakeupRequestId: newRun.wakeupRequestId,
+          },
+        });
+      }
 
       await startNextQueuedRunForAgent(agent.id);
       return newRun;
@@ -18767,12 +18972,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId,
           invocationSource: source,
           triggerDetail,
-          status: "queued",
+          status: staggeredDueAt ? "scheduled_retry" : "queued",
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
           continuationAttempt,
+          ...(staggeredDueAt
+            ? {
+                scheduledRetryAt: staggeredDueAt,
+                scheduledRetryAttempt: 1,
+                scheduledRetryReason: RESTART_BATCH_STAGGER_RETRY_REASON,
+              }
+            : {}),
         })
         .returning()
         .then((rows) => rows[0]);
@@ -18791,17 +19003,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
 
-    publishLiveEvent({
-      companyId: newRun.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: newRun.id,
-        agentId: newRun.agentId,
-        invocationSource: newRun.invocationSource,
-        triggerDetail: newRun.triggerDetail,
-        wakeupRequestId: newRun.wakeupRequestId,
-      },
-    });
+    if (staggeredDueAt) {
+      logger.warn(
+        {
+          runId: newRun.id,
+          agentId: newRun.agentId,
+          staggerMs,
+          scheduledRetryAt: staggeredDueAt.toISOString(),
+        },
+        "restart-batch wake staggered instead of queuing immediately",
+      );
+    } else {
+      publishLiveEvent({
+        companyId: newRun.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: newRun.id,
+          agentId: newRun.agentId,
+          invocationSource: newRun.invocationSource,
+          triggerDetail: newRun.triggerDetail,
+          wakeupRequestId: newRun.wakeupRequestId,
+        },
+      });
+    }
 
     await startNextQueuedRunForAgent(agent.id);
 

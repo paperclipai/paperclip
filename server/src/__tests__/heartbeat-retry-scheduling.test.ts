@@ -30,6 +30,11 @@ import {
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
+  RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+  RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+  RESTART_BATCH_STAGGER_RETRY_REASON,
+  RESTART_BATCH_STAGGER_WAKE_REASON,
+  computeRestartBatchStaggerDelayMs,
   heartbeatService,
 } from "../services/heartbeat.ts";
 
@@ -2305,5 +2310,185 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  describe("restart-batch thundering-herd damping (RENA-54107)", () => {
+    async function seedRestartBatchProcessLossFixture(input: {
+      count: number;
+      now?: Date;
+      adapterType?: string;
+    }) {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const now = input.now ?? new Date("2026-04-20T12:00:00.000Z");
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: input.adapterType ?? "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: input.count + 1,
+          },
+        },
+        permissions: {},
+      });
+
+      const runIds: string[] = [];
+      for (let i = 0; i < input.count; i += 1) {
+        const runId = randomUUID();
+        const wakeupRequestId = randomUUID();
+        runIds.push(runId);
+
+        await db.insert(agentWakeupRequests).values({
+          id: wakeupRequestId,
+          companyId,
+          agentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: {},
+          status: "claimed",
+          runId,
+          claimedAt: now,
+        });
+
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId,
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          status: "running",
+          wakeupRequestId,
+          contextSnapshot: {},
+          processPid: 999_900_000 + i,
+          processGroupId: null,
+          processLossRetryCount: 0,
+          startedAt: now,
+          updatedAt: now,
+        });
+      }
+
+      return { companyId, agentId, runIds, now };
+    }
+
+    it("computes a uniform-random restart-batch stagger delay bounded by the configured max", () => {
+      expect(computeRestartBatchStaggerDelayMs(() => 0, 300_000)).toBe(0);
+      expect(computeRestartBatchStaggerDelayMs(() => 1, 300_000)).toBe(300_000);
+      expect(computeRestartBatchStaggerDelayMs(() => 0.5, 300_000)).toBe(150_000);
+      // Out-of-range sampler output is clamped into [0, 1] before scaling.
+      expect(computeRestartBatchStaggerDelayMs(() => -1, 300_000)).toBe(0);
+      expect(computeRestartBatchStaggerDelayMs(() => 2, 300_000)).toBe(300_000);
+      // A configured max of 0 disables the stagger entirely.
+      expect(computeRestartBatchStaggerDelayMs(() => 0.5, 0)).toBe(0);
+    });
+
+    it("staggers process-loss retries across a random window when a reap sweep finds a restart-scale batch of orphaned runs", async () => {
+      const batchSize = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
+      const { runIds } = await seedRestartBatchProcessLossFixture({ count: batchSize });
+
+      const before = new Date();
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result.reaped).toBe(batchSize);
+
+      const retryRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.retryOfRunId, runIds));
+      expect(retryRuns).toHaveLength(batchSize);
+
+      for (const retryRun of retryRuns) {
+        expect(retryRun.status).toBe("scheduled_retry");
+        expect(retryRun.scheduledRetryReason).toBe(RESTART_BATCH_STAGGER_RETRY_REASON);
+        expect(retryRun.scheduledRetryAttempt).toBe(1);
+        expect(retryRun.processLossRetryCount).toBe(1);
+        expect(retryRun.scheduledRetryAt).not.toBeNull();
+
+        const dueAtMs = new Date(retryRun.scheduledRetryAt as unknown as string).getTime();
+        expect(dueAtMs).toBeGreaterThanOrEqual(before.getTime());
+        expect(dueAtMs).toBeLessThanOrEqual(before.getTime() + RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS + 5_000);
+
+        const snapshot = retryRun.contextSnapshot as Record<string, unknown>;
+        expect(typeof snapshot.restartBatchStaggerMs).toBe("number");
+        expect(snapshot.scheduledRetryAt).toBe(retryRun.scheduledRetryAt?.toISOString());
+
+        const wakeup = await db
+          .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, retryRun.wakeupRequestId ?? ""))
+          .then((rows) => rows[0] ?? null);
+        expect(wakeup?.reason).toBe(RESTART_BATCH_STAGGER_WAKE_REASON);
+        expect((wakeup?.payload as Record<string, unknown> | null)?.restartBatchStaggerMs).toBe(
+          snapshot.restartBatchStaggerMs,
+        );
+      }
+
+      // This batch damping is strictly additive: the per-run bounded backoff
+      // schedule used for ordinary transient retries must remain untouched.
+      expect(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length).toBeGreaterThan(0);
+    });
+
+    it.skipIf(RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD <= 1)(
+      "keeps immediate queueing for process-loss retries when a reap sweep finds only a few orphaned runs (below the restart-batch threshold)",
+      async () => {
+        const belowThresholdCount = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD - 1;
+        const { runIds } = await seedRestartBatchProcessLossFixture({ count: belowThresholdCount });
+
+        const result = await heartbeat.reapOrphanedRuns();
+        expect(result.reaped).toBe(belowThresholdCount);
+
+        const retryRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(inArray(heartbeatRuns.retryOfRunId, runIds));
+        expect(retryRuns).toHaveLength(belowThresholdCount);
+        for (const retryRun of retryRuns) {
+          expect(["queued", "running"]).toContain(retryRun.status);
+          expect(retryRun.scheduledRetryReason).toBeNull();
+          expect(retryRun.scheduledRetryAt).toBeNull();
+        }
+      },
+    );
+
+    it("promotes a staggered restart-batch retry to the queue once its scheduled time is due", async () => {
+      const batchSize = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
+      const { runIds } = await seedRestartBatchProcessLossFixture({ count: batchSize });
+
+      await heartbeat.reapOrphanedRuns();
+
+      const staggeredRuns = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.retryOfRunId, runIds));
+      expect(staggeredRuns.every((run) => run.status === "scheduled_retry")).toBe(true);
+
+      const farFuture = new Date(Date.now() + RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS + 60_000);
+      const promotion = await heartbeat.promoteDueScheduledRetries(farFuture);
+      expect(promotion.promoted).toBeGreaterThanOrEqual(batchSize);
+      expect(promotion.runIds).toEqual(
+        expect.arrayContaining(staggeredRuns.map((run) => run.id)),
+      );
+
+      const promotedRuns = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, staggeredRuns.map((run) => run.id)));
+      expect(promotedRuns.every((run) => run.status === "queued")).toBe(true);
+    });
   });
 });
