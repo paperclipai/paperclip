@@ -128,7 +128,7 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  *
  * The recent tier exists so sub-daily schedules (e.g. hourly) stay bounded:
  * without it the daily tier keeps every hourly file for `dailyDays` days,
- * which can exhaust the backup volume (APP-600).
+ * which can exhaust the backup volume.
  */
 const RECENT_TIER_WINDOW_MS = 24 * 60 * 60 * 1000;
 
