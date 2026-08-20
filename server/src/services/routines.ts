@@ -126,6 +126,14 @@ function executionIssueTransientFailureClearedAtFromPayload(payload: unknown): s
   return typeof clearedAt === "string" ? clearedAt : null;
 }
 
+function executionIssueParentIdFromPayload(payload: unknown): string | null | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const executionIssue = (payload as Record<string, unknown>).executionIssue;
+  if (!executionIssue || typeof executionIssue !== "object" || Array.isArray(executionIssue)) return undefined;
+  const parentId = (executionIssue as Record<string, unknown>).parentId;
+  return typeof parentId === "string" ? parentId : parentId === null ? null : undefined;
+}
+
 function legacyExecutionIssueTransientFailureStatus(
   failureReason: string | null,
 ): ExecutionIssueTransientFailureStatus | null {
@@ -1750,7 +1758,10 @@ export function routineService(
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const triggerPayload = {
+      ...(mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables }) ?? {}),
+      executionIssue: { parentId: input.routine.parentIssueId },
+    };
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
@@ -3199,14 +3210,15 @@ export function routineService(
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
+        const standingParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload) ?? issue.parentId;
         return db.transaction(async (tx) => {
-          if (issue.parentId) {
+          if (standingParentIssueId) {
             await tx
               .delete(issueRelations)
               .where(and(
                 eq(issueRelations.companyId, issue.companyId),
                 eq(issueRelations.issueId, issue.id),
-                eq(issueRelations.relatedIssueId, issue.parentId),
+                eq(issueRelations.relatedIssueId, standingParentIssueId),
                 eq(issueRelations.type, "blocks"),
               ));
           }

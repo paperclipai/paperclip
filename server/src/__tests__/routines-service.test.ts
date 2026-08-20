@@ -391,7 +391,16 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       type: "blocks",
     });
     await db.update(routines).set({ parentIssueId: null }).where(eq(routines.id, routine.id));
-    await db.update(issues).set({ status: "done" }).where(eq(issues.id, run.linkedIssueId!));
+    const replacementParent = await issueSvc.create(companyId, {
+      projectId,
+      title: "Replacement parent",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: replacementParent.id, status: "done" })
+      .where(eq(issues.id, run.linkedIssueId!));
 
     await svc.syncRunStatusForIssue(run.linkedIssueId!);
 
