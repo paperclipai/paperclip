@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   createDb,
   documentRevisions,
@@ -16,6 +17,7 @@ import {
   instanceSettings,
   issueComments,
   issueInboxArchives,
+  issueApprovals,
   issueDocuments,
   issuePlanDecompositions,
   issueReadStates,
@@ -304,6 +306,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueApprovals);
     await db.delete(issueComments);
     await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
@@ -320,6 +323,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(approvals);
     await db.delete(companies);
   });
 
@@ -692,6 +696,48 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .from(activityLog)
       .where(eq(activityLog.action, "issue.thread_interaction_expired"));
     expect(logged).toHaveLength(0);
+
+  async function seedConditionalQueueClaim() {
+    const companyId = await seedAssignableAgentCompany();
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: targetAgentId, name: "Idle queue target", status: "idle" }));
+    const issue = await svc.create(companyId, { title: "Queue candidate", description: null, status: "todo", priority: "medium", assigneeAgentId: null });
+    const approvalId = randomUUID();
+    const marker = "queue-loader-approved";
+    const scopeDigest = "a".repeat(64);
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "approved", payload: {
+      queueClaim: { approvalMarker: marker, scopeDigest, targetAgentId, expiresAt: "2099-01-01T00:00:00.000Z" },
+    } });
+    await db.insert(issueApprovals).values({ companyId, issueId: issue.id, approvalId });
+    return { companyId, targetAgentId, issue, approvalId, marker, scopeDigest };
+  }
+
+  it("atomically conditionally claims only an approved, idle todo", async () => {
+    const input = await seedConditionalQueueClaim();
+    const claimed = await svc.conditionalQueueClaim({
+      issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(),
+      approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId,
+    });
+    expect(claimed).toMatchObject({ id: input.issue.id, status: "in_progress", assigneeAgentId: input.targetAgentId, assigneeUserId: null });
+  });
+
+  it("leaves the issue untouched when status, assignee, scope, expiry, or target load changes", async () => {
+    const scenarios = ["status", "assignee", "scope", "expiry", "target-load"] as const;
+    for (const scenario of scenarios) {
+      const input = await seedConditionalQueueClaim();
+      if (scenario === "status") await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, input.issue.id));
+      if (scenario === "assignee") await db.update(issues).set({ assigneeUserId: "board-user" }).where(eq(issues.id, input.issue.id));
+      if (scenario === "scope") await db.update(approvals).set({ payload: { queueClaim: { approvalMarker: input.marker, scopeDigest: "b".repeat(64), targetAgentId: input.targetAgentId, expiresAt: "2099-01-01T00:00:00.000Z" } } }).where(eq(approvals.id, input.approvalId));
+      if (scenario === "expiry") await db.update(approvals).set({ payload: { queueClaim: { approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, expiresAt: "2000-01-01T00:00:00.000Z" } } }).where(eq(approvals.id, input.approvalId));
+      if (scenario === "target-load") await svc.create(input.companyId, { title: "Already running", description: null, status: "in_progress", priority: "medium", assigneeAgentId: input.targetAgentId });
+      await expect(svc.conditionalQueueClaim({
+        issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(),
+        approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId,
+      })).rejects.toMatchObject({ status: 409 });
+      const persisted = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues).where(eq(issues.id, input.issue.id)).then((rows) => rows[0]);
+      expect(persisted?.assigneeAgentId).toBeNull();
+      expect(persisted?.status).not.toBe("in_progress");
+    }
   });
 
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {

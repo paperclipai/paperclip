@@ -65,7 +65,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, preconditionFailed, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -4403,6 +4403,80 @@ export function issueService(db: Db) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
 
+  async function conditionalQueueClaim(input: {
+    issueId: string;
+    companyId: string;
+    expectedUpdatedAt: string;
+    approvalId: string;
+    approvalMarker: string;
+    scopeDigest: string;
+    targetAgentId: string;
+  }) {
+    const expectedUpdatedAt = new Date(input.expectedUpdatedAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime())) throw preconditionFailed("Invalid expectedUpdatedAt");
+
+    return db.transaction(async (tx) => {
+      // Lock all facts which make this claim eligible before reading them. The
+      // predicate lock on the target's open work makes competing queue claims
+      // serialize instead of both observing an idle agent.
+      const issue = await tx.select().from(issues)
+        .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+        .for("update").then((rows) => rows[0] ?? null);
+      if (!issue) throw conflict("Issue does not belong to company", { code: "issue_company_mismatch" });
+      if (issue.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+        throw preconditionFailed("Issue version no longer matches", { code: "stale_issue_version" });
+      }
+      if (issue.status !== "todo" || issue.assigneeAgentId !== null || issue.assigneeUserId !== null) {
+        throw conflict("Issue is no longer an unassigned todo", { code: "issue_not_claimable" });
+      }
+
+      const approval = await tx.select().from(approvals)
+        .where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId)))
+        .for("update").then((rows) => rows[0] ?? null);
+      const linkedApproval = approval && await tx.select({ approvalId: issueApprovals.approvalId }).from(issueApprovals)
+        .where(and(eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, input.issueId), eq(issueApprovals.approvalId, input.approvalId)))
+        .for("update").then((rows) => rows[0] ?? null);
+      const claim = approval?.payload && typeof approval.payload === "object"
+        ? (approval.payload as Record<string, unknown>).queueClaim as Record<string, unknown> | undefined
+        : undefined;
+      const expiresAt = typeof claim?.expiresAt === "string" ? new Date(claim.expiresAt) : null;
+      if (
+        !approval || !linkedApproval || approval.status !== "approved" || !claim ||
+        claim.approvalMarker !== input.approvalMarker || claim.scopeDigest !== input.scopeDigest ||
+        claim.targetAgentId !== input.targetAgentId || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()
+      ) {
+        throw conflict("Queue-claim approval is absent, mismatched, or expired", { code: "approval_precondition_failed" });
+      }
+
+      const target = await tx.select({ id: agents.id, status: agents.status }).from(agents)
+        .where(and(eq(agents.id, input.targetAgentId), eq(agents.companyId, input.companyId)))
+        .for("update").then((rows) => rows[0] ?? null);
+      if (!target || target.status !== "idle") throw conflict("Target agent is not idle", { code: "target_not_idle" });
+      const targetLoad = await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, input.targetAgentId), inArray(issues.status, ["todo", "in_progress"])))
+        .for("update").then((rows) => rows[0] ?? null);
+      if (targetLoad) throw conflict("Target agent already has execution load", { code: "target_has_execution_load" });
+
+      const now = new Date();
+      const claimed = await tx.update(issues).set({
+        assigneeAgentId: input.targetAgentId, assigneeUserId: null, status: "in_progress", startedAt: now, updatedAt: now,
+      }).where(and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.status, "todo"),
+        isNull(issues.assigneeAgentId),
+        isNull(issues.assigneeUserId),
+        // API timestamps are ISO milliseconds while Postgres may retain
+        // microseconds; compare the representable API version, not a value a
+        // caller cannot send back losslessly.
+        sql`date_trunc('milliseconds', ${issues.updatedAt}) = ${expectedUpdatedAt.toISOString()}`,
+      )).returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimed) throw preconditionFailed("Issue changed while claim was evaluated", { code: "claim_compare_and_swap_failed" });
+      return claimed;
+    });
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -5451,6 +5525,7 @@ export function issueService(db: Db) {
   }
 
   return {
+    conditionalQueueClaim,
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,

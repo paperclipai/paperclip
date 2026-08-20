@@ -40,6 +40,7 @@ import {
   createIssueLabelSchema,
   createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
+  conditionalQueueClaimSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -10731,6 +10732,23 @@ export function issueRoutes(
     }
 
     res.json(updated);
+  });
+
+  router.post("/issues/:id/conditional-queue-claim", validate(conditionalQueueClaimSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, existing.companyId);
+    if (req.body.companyId !== existing.companyId) { res.status(409).json({ error: "Issue does not belong to company" }); return; }
+    await assertCanAssignTasks(req, existing.companyId, {
+      issueId: existing.id, projectId: existing.projectId, parentIssueId: existing.parentId,
+      assigneeAgentId: req.body.targetAgentId, assigneeUserId: null,
+    });
+    const claimed = await svc.conditionalQueueClaim({ issueId: id, ...req.body });
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
+      action: "issue.conditionally_queue_claimed", entityType: "issue", entityId: id, details: { targetAgentId: req.body.targetAgentId, approvalId: req.body.approvalId } });
+    res.json(claimed);
   });
 
   router.post("/issues/:id/release", async (req, res) => {

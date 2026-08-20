@@ -592,6 +592,18 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+/** A governed, compare-and-swap claim used by the unattended queue loader. */
+export const conditionalQueueClaimSchema = z.object({
+  companyId: z.string().uuid(),
+  expectedUpdatedAt: z.string().datetime(),
+  approvalId: z.string().uuid(),
+  approvalMarker: z.string().trim().min(1).max(200),
+  scopeDigest: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  targetAgentId: z.string().uuid(),
+});
+
+export type ConditionalQueueClaim = z.infer<typeof conditionalQueueClaimSchema>;
+
 const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
 const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
 
