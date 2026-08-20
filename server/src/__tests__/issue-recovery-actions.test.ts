@@ -2107,4 +2107,232 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  // AGE-691 — a `blocked` issue with an active recovery action but zero
+  // first-class blockedByIssueIds relations has no monitor (ineligible on
+  // `blocked`) and is excluded from the todo/in_progress/in_review
+  // reconciliation scan above, so a single failed recovery wake parked it
+  // forever before this backstop existed.
+  describe("orphaned blocked recovery actions (AGE-691)", () => {
+    async function seedOrphanedBlockedAction(input: {
+      companyId: string;
+      sourceIssueId: string;
+      ownerAgentId: string;
+      lastAttemptAt: Date;
+      maxAttempts?: number | null;
+      attemptCount?: number;
+    }) {
+      const actionId = randomUUID();
+      await db.insert(issueRecoveryActions).values({
+        id: actionId,
+        companyId: input.companyId,
+        sourceIssueId: input.sourceIssueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: input.ownerAgentId,
+        cause: "stranded_assigned_issue",
+        fingerprint: `stranded_assigned_issue:${input.sourceIssueId}`,
+        evidence: {},
+        nextAction: "Restore a live execution path.",
+        wakePolicy: { type: "wake_owner", ownerAgentId: input.ownerAgentId },
+        attemptCount: input.attemptCount ?? 1,
+        maxAttempts: input.maxAttempts ?? null,
+        lastAttemptAt: input.lastAttemptAt,
+      });
+      return actionId;
+    }
+
+    it("re-wakes the recovery owner once the retry backoff has elapsed", async () => {
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      const actionId = await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
+        attemptCount: 1,
+      });
+      const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(1);
+      expect(result.orphanedBlockedRecoveryReminded).toBe(0);
+      expect(enqueueWakeup).toHaveBeenCalledWith(
+        managerId,
+        expect.objectContaining({ reason: "source_scoped_recovery_action" }),
+      );
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
+      expect(action?.attemptCount).toBe(2);
+      const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updatedIssue?.status).toBe("blocked");
+    });
+
+    it("does not consume the retry attempt or backoff window when enqueueWakeup does not create a wake (AGE-691)", async () => {
+      // `enqueueWakeup` can return `null` without throwing (idempotency
+      // dedupe, budget block). Recording the retry attempt regardless would
+      // silently burn this issue's bounded recovery budget and backoff
+      // window on a tick that never actually woke the owner.
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      const lastAttemptAt = new Date(Date.now() - 60 * 60 * 1000);
+      const actionId = await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt,
+        attemptCount: 1,
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(0);
+      expect(result.orphanedBlockedRecoveryReminded).toBe(0);
+      expect(result.skipped).toBeGreaterThanOrEqual(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(
+        managerId,
+        expect.objectContaining({ reason: "source_scoped_recovery_action" }),
+      );
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
+      expect(action?.attemptCount).toBe(1);
+      expect(action?.lastAttemptAt?.getTime()).toBe(lastAttemptAt.getTime());
+      const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updatedIssue?.status).toBe("blocked");
+    });
+
+    it("does not re-wake before the retry backoff elapses", async () => {
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(),
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("skips a blocked issue that already has a real blockedByIssueIds relation", async () => {
+      const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
+      const blockerIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerIssueId,
+        companyId,
+        title: "Real blocker",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: `${prefix}-2`,
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: sourceIssueId,
+        type: "blocks",
+      });
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(0);
+      expect(result.orphanedBlockedRecoveryReminded).toBe(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("leaves a bounded-frequency reminder instead of a silent stall when no invokable owner remains", async () => {
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      const actionId = await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
+        attemptCount: 3,
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(0);
+      expect(result.orphanedBlockedRecoveryReminded).toBe(1);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+      expect(comments.some((comment) => comment.body?.includes(actionId))).toBe(true);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
+      expect(action?.attemptCount).toBe(3);
+      expect(action?.lastAttemptAt?.getTime()).toBeGreaterThan(Date.now() - 60_000);
+    });
+
+    it("claims the retry slot atomically so two overlapping sweeps enqueue exactly one wake (AGE-709)", async () => {
+      // The periodic reconciliation tick is fire-and-forget with no in-flight
+      // guard, so two `reconcileOrphanedBlockedRecoveryActions` passes can
+      // overlap and both read the same pre-claim action row. Without a
+      // compare-and-set claim on the retry-slot UPDATE, both would enqueue a
+      // wake and both would write the same absolute `attemptCount + 1`,
+      // consuming two owner runs for one recorded retry.
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      const actionId = await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
+        attemptCount: 0,
+      });
+      const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const [first, second] = await Promise.all([
+        recovery.reconcileOrphanedBlockedRecoveryActions(),
+        recovery.reconcileOrphanedBlockedRecoveryActions(),
+      ]);
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(first.rewoken + second.rewoken).toBe(1);
+      expect(first.skipped + second.skipped).toBeGreaterThanOrEqual(1);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
+      expect(action?.attemptCount).toBe(1);
+    });
+
+    it("stops re-waking once maxAttempts is exhausted", async () => {
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
+        attemptCount: 3,
+        maxAttempts: 3,
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(0);
+      expect(result.orphanedBlockedRecoveryReminded).toBe(1);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+  });
 });
