@@ -488,6 +488,23 @@ describeEmbeddedPostgres("productivity review service", () => {
       status: "in_progress",
       startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
     });
+    // The trigger now requires a live active run behind the long episode.
+    const runningCreatedAt = new Date(now.getTime() - 30 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: runningCreatedAt,
+      finishedAt: null,
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: null,
+      nextAction: null,
+      createdAt: runningCreatedAt,
+      updatedAt: runningCreatedAt,
+    });
     const service = productivityReviewService(db);
 
     const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
@@ -503,6 +520,91 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("does not trigger a long-active review when the active episode is a stuck run with no live run", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    // Reproduce the ETS-422 false positive: a run stuck in "running" with liveness
+    // null/unknown, sitting on an issue that has been "in_progress" for >6h.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+      finishedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000 + 30_000),
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: "advanced",
+      nextAction: "Continue processing.",
+      createdAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+    });
+    // The most-recently-created run is the stuck one with no live liveness.
+    const stuckCreatedAt = new Date(now.getTime() - 1 * 60 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: stuckCreatedAt,
+      finishedAt: new Date(stuckCreatedAt.getTime() + 30_000),
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: null,
+      nextAction: null,
+      createdAt: stuckCreatedAt,
+      updatedAt: stuckCreatedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still triggers a long-active review when a live running run exists", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const runCreatedAt = new Date(now.getTime() - 30 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: runCreatedAt,
+      finishedAt: null,
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: null,
+      nextAction: null,
+      createdAt: runCreatedAt,
+      updatedAt: runCreatedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {

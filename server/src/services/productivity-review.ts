@@ -527,8 +527,17 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const activeRunCount = latestRuns.filter((run) =>
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
     ).length;
+    // A stale terminal run (failed/cancelled/succeeded) sitting in a past episode
+    // must not count toward active-duration. If the most recently created sampled
+    // run is terminal, no live active episode exists, so wall-clock elapsed time on
+    // the issue is an artifact of an abandoned run rather than a signal that the
+    // assignee is unresponsive.
+    const mostRecentlyCreatedRun = latestRuns[0] ?? null;
+    const hasLiveActiveRun = activeRunCount > 0 &&
+      Boolean(mostRecentlyCreatedRun) &&
+      ACTIVE_RUN_STATUSES.includes(mostRecentlyCreatedRun.status as (typeof ACTIVE_RUN_STATUSES)[number]);
     const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
-    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
+    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt && hasLiveActiveRun
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
