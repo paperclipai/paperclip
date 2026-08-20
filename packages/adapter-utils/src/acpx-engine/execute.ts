@@ -373,6 +373,10 @@ export interface AcpxEngineExecutorOptions {
 
 interface AcpxPreparedRuntime {
   acpxAgent: string;
+  // See the config parsing site: adapter-declared engine behavior knobs with
+  // behavior-preserving defaults.
+  summaryStrategy: "full" | "lastOutputSegment";
+  coalescePlaceholderToolUpdates: boolean;
   mode: "persistent" | "oneshot";
   cwd: string;
   // Host-only spawn cwd for the acpx runtime's host `spawn()` of the relay
@@ -1604,6 +1608,14 @@ async function buildRuntime(input: {
   );
 
   const acpxAgent = normalizeAgent(config);
+  // Engine behavior knobs set by the invoking adapter's acpx config builder
+  // (never by the engine itself): a verbose streaming backend opts into
+  // last-segment run summaries and placeholder tool-update coalescing here.
+  // The defaults preserve the engine's long-standing behavior, and the engine
+  // carries no knowledge of which adapters opt in.
+  const summaryStrategy: "full" | "lastOutputSegment" =
+    config.summaryStrategy === "lastOutputSegment" ? "lastOutputSegment" : "full";
+  const coalescePlaceholderToolUpdates = config.coalescePlaceholderToolUpdates === true;
   const mode = normalizeMode(config);
   const permissionMode = normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
@@ -2158,6 +2170,8 @@ async function buildRuntime(input: {
 
   return {
     acpxAgent,
+    summaryStrategy,
+    coalescePlaceholderToolUpdates,
     mode,
     // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
@@ -2443,16 +2457,41 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
   await ctx.onLog("stdout", `${JSON.stringify(payload)}\n`);
 }
 
+/**
+ * Build the short run summary that Paperclip may auto-post as an issue comment
+ * when the agent leaves no comment of its own. Used only for agents whose
+ * traits opt into the "lastOutputSegment" summary strategy.
+ *
+ * Prefer the last non-empty *output* segment after a tool call. Intermediate
+ * "let me check…" narration between tools must not become a 50k-char dump.
+ * Thought-stream text is never included (callers must not push it into segments).
+ */
+export function buildAcpxRunSummary(input: {
+  outputSegments: string[];
+  fallback?: string | null;
+}): string {
+  for (let i = input.outputSegments.length - 1; i >= 0; i -= 1) {
+    const text = (input.outputSegments[i] ?? "").trim();
+    if (text) return text;
+  }
+  const fallback = (input.fallback ?? "").trim();
+  return fallback;
+}
+
 // acpx substitutes a literal "tool call" title when an ACP tool_call_update
 // omits one, which would persist a generic name over the real one ("Terminal",
 // "Read", …) in the stored run log. Remember each call's real title so update
-// lines keep the name durably.
+// lines keep the name durably. Some ACP backends also stream partial tool
+// arguments as one in-progress update per token under this placeholder;
+// adapters that opt into coalescePlaceholderToolUpdates in their acpx config
+// have those updates coalesced until a real title is available.
 const GENERIC_ACP_TOOL_TITLE = "tool call";
 
 async function emitRuntimeEvent(
   ctx: AdapterExecutionContext,
   event: AcpRuntimeEvent,
   toolTitles?: Map<string, string>,
+  coalescePlaceholderToolUpdates?: boolean,
 ) {
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
@@ -2464,6 +2503,22 @@ async function emitRuntimeEvent(
     return;
   }
   if (event.type === "tool_call") {
+    // Coalesce token-by-token argument streaming for adapters that opt in via
+    // their acpx config: skip in-progress updates that still carry only the
+    // unresolved placeholder title. Backends that stream tool arguments
+    // otherwise emit tens of thousands of these per run, flooding the
+    // transcript and pinning the live activity indicator to a generic
+    // "tool call" instead of the real tool. The initial pending event, the
+    // resolved-title in-progress update, and the terminal
+    // completed/failed/cancelled update all still flow through. Adapters that
+    // do not opt in never have an event dropped.
+    if (
+      coalescePlaceholderToolUpdates &&
+      event.status === "in_progress" &&
+      (event.title ?? "").trim() === GENERIC_ACP_TOOL_TITLE
+    ) {
+      return;
+    }
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
     let name = event.title ?? "acp_tool";
@@ -3817,7 +3872,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // controller and never rejects; it returns a `TurnCompletion`. The step
       // bodies below record the external result for the coordinator to reproduce.
       const runTurn = async (_ready: StartupReady): Promise<TurnCompletion> => {
+      // Summary accumulation, per the adapter-declared strategy. "full" (the
+      // default) collects every text delta exactly as before.
+      // "lastOutputSegment" collects output text only (never thought stream),
+      // segmented on tool starts so multi-step narration is not glued into one
+      // auto-comment dump.
       const textParts: string[] = [];
+      const outputSegments: string[] = [];
+      let currentOutputChunk: string[] = [];
+      const flushOutputSegment = () => {
+        if (currentOutputChunk.length === 0) return;
+        outputSegments.push(currentOutputChunk.join(""));
+        currentOutputChunk = [];
+      };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
       // The turn-local state the sequence steps share. `promptBuild` sets the
@@ -3920,13 +3987,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
         for await (const event of turn.events) {
-          if (event.type === "text_delta") textParts.push(event.text);
+          if (event.type === "text_delta") {
+            if (prepared.summaryStrategy === "full") {
+              textParts.push(event.text);
+            } else if (event.stream !== "thought") {
+              currentOutputChunk.push(event.text);
+            }
+          } else if (event.type === "tool_call" && event.status === "pending") {
+            flushOutputSegment();
+          }
           if (event.type === "status" && event.tag === "usage_update") {
             eventBreakdown = event.breakdown ?? eventBreakdown;
             eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
           }
-          await emitRuntimeEvent(ctx, event, toolTitles);
+          await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
         }
+        flushOutputSegment();
         return await turn.result;
       };
       const stepTurnFinalize = async (
@@ -4007,7 +4083,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
               : {}),
           },
-          summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+          summary:
+            prepared.summaryStrategy === "lastOutputSegment"
+              ? buildAcpxRunSummary({
+                  outputSegments,
+                  fallback: terminalStopReason || terminal.status,
+                })
+              : textParts.join("").trim() || terminalStopReason || terminal.status,
           clearSession,
         };
         // The turn phase finished. A completed, non-timed-out turn is `ok`; every
