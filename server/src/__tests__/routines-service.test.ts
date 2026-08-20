@@ -431,6 +431,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       relatedIssueId: originalParent.id,
       type: "blocks",
     });
+    const unrelatedTarget = await issueSvc.create(companyId, {
+      projectId,
+      title: "Unrelated blocked target",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: run.linkedIssueId!,
+      relatedIssueId: unrelatedTarget.id,
+      type: "blocks",
+    });
     const storedRun = await db
       .select({ id: routineRuns.id, triggerPayload: routineRuns.triggerPayload })
       .from(routineRuns)
@@ -456,7 +468,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .select()
       .from(issueRelations)
       .where(eq(issueRelations.issueId, run.linkedIssueId!));
-    expect(blockerEdges).toEqual([]);
+    expect(blockerEdges).toEqual([
+      expect.objectContaining({
+        relatedIssueId: unrelatedTarget.id,
+        type: "blocks",
+      }),
+    ]);
   });
 
   it("filters listed routines by project", async () => {

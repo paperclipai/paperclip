@@ -3203,8 +3203,10 @@ export function routineService(
           status: routineRuns.status,
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
+          parentIssueId: routines.parentIssueId,
         })
         .from(routineRuns)
+        .innerJoin(routines, eq(routines.id, routineRuns.routineId))
         .where(eq(routineRuns.id, issue.originRunId))
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
@@ -3212,7 +3214,10 @@ export function routineService(
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-        const standingParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload);
+        const snapshottedParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload);
+        const standingParentIssueId = snapshottedParentIssueId === undefined
+          ? run.parentIssueId
+          : snapshottedParentIssueId;
         return db.transaction(async (tx) => {
           if (standingParentIssueId !== null) {
             await tx
@@ -3221,9 +3226,7 @@ export function routineService(
                 eq(issueRelations.companyId, issue.companyId),
                 eq(issueRelations.issueId, issue.id),
                 eq(issueRelations.type, "blocks"),
-                ...(standingParentIssueId === undefined
-                  ? []
-                  : [eq(issueRelations.relatedIssueId, standingParentIssueId)]),
+                eq(issueRelations.relatedIssueId, standingParentIssueId),
               ));
           }
           return finalizeRun(run.id, {
