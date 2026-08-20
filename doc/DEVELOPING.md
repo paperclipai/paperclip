@@ -39,6 +39,20 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+> **Do not run a control plane with live agents under `pnpm dev`.** Watch mode restarts the
+> server on any change inside its import graph — `server/src/**`, `packages/shared/**`,
+> `packages/adapters/**`. Each restart fails every in-flight heartbeat run as `process_lost`,
+> which converts healthy agent work into recovery issues. If agents edit this checkout while
+> the server serves them, that is a self-inflicted outage: one agent saving a file kills every
+> other agent's run.
+>
+> Use `pnpm dev:once` for any instance that agents run against. It uses the same entrypoint
+> with no file watcher, and it still picks up code changes — the supervisor tracks changed
+> paths and restarts only when the instance is idle (`activeRunCount === 0`), gated on the
+> `autoRestartDevServerWhenIdle` experimental setting. To deploy a change immediately, call
+> `POST /api/health/dev-server/restart`; the supervisor restarts on the next poll without
+> waiting for idle. `pnpm dev` (watch) is for solo work on a checkout with no live agents.
+
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.

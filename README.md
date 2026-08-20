@@ -338,8 +338,8 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 ## Development
 
 ```bash
-pnpm dev              # Full dev (API + UI, watch mode)
-pnpm dev:once         # Full dev without file watching
+pnpm dev              # Full dev (API + UI, watch mode) — restarts on every file save
+pnpm dev:once         # Full dev without file watching — required if agents run against it
 pnpm dev:server       # Server only
 pnpm build            # Build all
 pnpm typecheck        # Type checking

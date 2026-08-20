@@ -23,7 +23,9 @@ These are the most common commands. For full option tables and details, see `doc
 | Task | Command |
 |------|---------|
 | Start server (first time or normal) | `npx paperclipai run` |
-| Dev mode with hot reload | `pnpm dev` |
+| Start server for an instance agents run against | `pnpm dev:once` |
+| Dev mode with hot reload (no live agents only) | `pnpm dev` |
+| Deploy a change to a `dev:once` server | `curl -X POST http://127.0.0.1:3100/api/health/dev-server/restart` |
 | Stop dev server | `pnpm dev:stop` |
 | Build | `pnpm build` |
 | Type-check | `pnpm typecheck` |
@@ -35,6 +37,27 @@ These are the most common commands. For full option tables and details, see `doc
 | Print env vars | `npx paperclipai env` |
 | Trigger agent heartbeat | `npx paperclipai heartbeat run --agent-id <id>` |
 | Install agent skills locally | `npx paperclipai agent local-cli <agent> --company-id <id>` |
+
+## Never Serve Live Agents From a File Watcher
+
+`pnpm dev` runs the control plane under `tsx watch`. It restarts the server on any change in
+its import graph — `server/src/**`, `packages/shared/**`, `packages/adapters/**`. Every restart
+fails all in-flight heartbeat runs as `process_lost` and turns them into recovery issues.
+
+When agents edit the same checkout that serves them, one agent saving a file kills every other
+agent's run. This is not hypothetical: it produced 29 `process_lost` runs in a single morning
+against a company that had never seen one before.
+
+**Rules:**
+
+1. Any instance that agents run against MUST be started with `pnpm dev:once`, never `pnpm dev`.
+2. `pnpm dev:once` is not "no reload" — the supervisor still tracks changed paths and restarts
+   when the instance is idle (`activeRunCount === 0`), gated on the `autoRestartDevServerWhenIdle`
+   experimental setting.
+3. To deploy immediately without waiting for idle, `POST /api/health/dev-server/restart`. Do not
+   kill the server by PID to pick up a code change.
+4. `pnpm dev` is fine for a checkout with no live agents (solo UI/server work, worktrees you
+   are the only user of).
 
 ## Pulling from Master
 
