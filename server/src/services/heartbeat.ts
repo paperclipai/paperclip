@@ -17043,8 +17043,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // and recovery turn cap. In particular, issue assignment intentionally
     // builds a fresh wake context, so the fields supplied when the wrapper was
     // created are not guaranteed to survive to this execution boundary.
+    // Recovery framing is for recovery WRAPPERS, not for real work cards that
+    // once passed through strand churn. A card keeps its originKind forever,
+    // so keying the compact recovery-only prompt on originKind alone meant one
+    // strand converted a card's every future wake into "record a disposition
+    // only, do not do the task" — measured 2026-08-20 on the TSR scan card:
+    // the lane wrote "performing the required recovery handoff only ... without
+    // starting another scan" and produced empty runs from then on. Gate the
+    // compact prompt to cards whose TITLE marks them as wrappers; a real card
+    // with a recovery origin still gets its full task brief.
+    const RECOVERY_WRAPPER_TITLE = /^(Recover (missing next step|stalled issue)|Unblock:)/;
     const recoveryCause =
-      issueContext?.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery
+      issueContext?.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery &&
+        RECOVERY_WRAPPER_TITLE.test(issueContext?.title ?? "")
         ? RECOVERY_ORIGIN_KINDS.strandedIssueRecovery
         : readNonEmptyString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON && context.handoffRequired === true
           ? SUCCESSFUL_RUN_MISSING_STATE_REASON
