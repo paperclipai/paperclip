@@ -363,6 +363,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0] ?? null);
 
     expect(readyRun?.status).toBe("succeeded");
+    // Run status is persisted before finalization clears the issue lock. Wait for
+    // finalization so the explicit post-resolution wake below is the only owner
+    // wake introduced after the blocker becomes done.
+    const readyRunReleased = await waitForCondition(async () => {
+      const issue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, readyIssueId))
+        .then((rows) => rows[0] ?? null);
+      return issue?.executionRunId === null;
+    });
+    expect(readyRunReleased).toBe(true);
 
     await db
       .update(issues)

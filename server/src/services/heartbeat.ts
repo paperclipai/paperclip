@@ -10479,7 +10479,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      // A comment is evidence, not an implicit resume command. A queued ordinary
+      // comment/mention wake must remain inert after the issue becomes terminal;
+      // only an explicit resume intent can revive it.
+      if (!resumeIntent) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
