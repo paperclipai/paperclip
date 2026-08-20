@@ -26,6 +26,9 @@ function createApp(actor: Record<string, unknown>, manager: BackupManager) {
     next();
   });
   app.use("/api", backupRoutes(manager));
+  app.post("/api/tool-gateway/sessions", (_req, res) => {
+    res.status(201).json({ reached: true });
+  });
   app.use(errorHandler);
   return app;
 }
@@ -76,6 +79,19 @@ describe("portable backup routes", () => {
 
     expect(response.status).toBe(403);
     expect(response.body.details).toMatchObject({ code: "portable_backups_platform_managed" });
+    expect(manager.getOverview).not.toHaveBeenCalled();
+  });
+
+  it("does not intercept an agent request outside the backup route namespace", async () => {
+    const manager = createManager();
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+    }, manager);
+
+    await request(app).post("/api/tool-gateway/sessions").expect(201, { reached: true });
     expect(manager.getOverview).not.toHaveBeenCalled();
   });
 });

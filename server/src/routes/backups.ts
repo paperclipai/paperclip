@@ -40,7 +40,7 @@ export function backupRoutes(backupManager: BackupManager) {
     limits: { fileSize: MAX_BACKUP_IMPORT_BYTES, files: 1 },
   });
 
-  router.use((req, _res, next) => {
+  router.use("/backups", (req, _res, next) => {
     assertInstanceAdmin(req);
     if (isCloudManagedInstance()) {
       throw forbidden("Portable backups are platform-managed on cloud-managed instances", {
