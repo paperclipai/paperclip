@@ -66,6 +66,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  getAgentWorkEligibility,
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
@@ -1712,6 +1713,30 @@ function buildExecutionStageWakeContext(input: {
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
   };
+}
+
+type ReportingLineAgent = {
+  id: string;
+  companyId: string;
+  name: string;
+  status: string;
+  reportsTo: string | null;
+};
+
+function isInvokableReportingLineManager(
+  companyAgents: ReportingLineAgent[],
+  managerAgentId: string,
+  reportAgentId: string,
+) {
+  const report = companyAgents.find((agent) => agent.id === reportAgentId);
+  const manager = companyAgents.find((agent) => agent.id === managerAgentId);
+  if (!report || !manager) return false;
+  const reportEligibility = getAgentWorkEligibility({ agent: report, agents: companyAgents });
+  const managerEligibility = getAgentWorkEligibility({ agent: manager, agents: companyAgents });
+  if (!reportEligibility.invokable || !managerEligibility.invokable) return false;
+  return reportEligibility.orgChainHealth.fullChain.some(
+    (entry) => entry.relation === "ancestor" && entry.id === managerAgentId,
+  );
 }
 
 function summarizeIssueRelationForActivity(relation: {
@@ -9342,13 +9367,27 @@ export function issueRoutes(
         throw forbidden("Agents may only name themselves as an unblock owner");
       }
       if (owner !== "board" && "agentId" in owner) {
-        const target = await db.select({ id: agents.id }).from(agents).where(and(
-          eq(agents.id, owner.agentId),
-          eq(agents.companyId, existing.companyId),
-        )).limit(1).then((rows) => rows[0] ?? null);
-        if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
+        const companyAgents = await db
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            status: agents.status,
+            reportsTo: agents.reportsTo,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, existing.companyId));
+        const target = companyAgents.find((agent) => agent.id === owner.agentId);
+        if (!target) {
+          throw unprocessable("Unblock owner agent must belong to the issue company");
+        }
         if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
-          throw forbidden("Agents may only name themselves as an unblock owner");
+          const targetIsReportingLineManager = req.actor.agentId
+            ? isInvokableReportingLineManager(companyAgents, owner.agentId, req.actor.agentId)
+            : false;
+          if (!targetIsReportingLineManager) {
+            throw forbidden("Agents may only name themselves or a reporting-line manager as an unblock owner");
+          }
         }
       } else if (owner !== "board" && "userId" in owner) {
         const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
