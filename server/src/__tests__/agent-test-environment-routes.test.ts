@@ -141,6 +141,9 @@ describe("agent test-environment route", () => {
       driver: "sandbox",
       config: { provider: "fake-plugin" },
     });
+    // Default to an instance-global environment with no company binding, so the
+    // tenant-binding guard passes unless a test overrides it.
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
     mockEnvironmentRuntime.acquireRunLease.mockResolvedValue({
       lease: {
         id: "lease-1",
@@ -286,6 +289,9 @@ describe("agent test-environment route", () => {
     expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
       expect.objectContaining({
         applyCustomImageTemplate: true,
+        // The Test lease re-checks the company binding, so a binding change
+        // between the route guard and the lease cannot open a foreign sandbox.
+        assertCompanyBinding: true,
         environment: expect.objectContaining({
           config: expect.objectContaining({
             reuseLease: false,
@@ -509,6 +515,76 @@ describe("agent test-environment route", () => {
         expect.objectContaining({ code: "environment_target_unsupported", level: "warn" }),
         expect.objectContaining({ code: "environment_env_binding_missing", level: "error" }),
       ]);
+    });
+  });
+
+  describe("tenant-binding guard", () => {
+    async function postForeignEnvironmentTest() {
+      const app = await createApp();
+      return request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: { env: { FOO: "bar" } },
+          environmentId: "11111111-1111-4111-8111-111111111111",
+        });
+    }
+
+    function expectCompanyMismatch(res: request.Response) {
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(JSON.stringify(res.body)).toContain("environment_company_mismatch");
+      // The guard rejects before any secret resolution, target resolution,
+      // sandbox lease, or adapter test runs.
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    }
+
+    it("rejects an active environment bound to another company", async () => {
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      expectCompanyMismatch(await postForeignEnvironmentTest());
+    });
+
+    it("rejects an archived environment bound to another company without revealing its status", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-2",
+        name: "Sandbox QA",
+        driver: "sandbox",
+        status: "archived",
+        config: { provider: "fake-plugin" },
+      });
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      expectCompanyMismatch(await postForeignEnvironmentTest());
+    });
+
+    it("rejects a disallowed-driver environment bound to another company without revealing its driver", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-2",
+        name: "Plugin Env",
+        driver: "plugin",
+        status: "active",
+        config: {},
+      });
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      expectCompanyMismatch(await postForeignEnvironmentTest());
+    });
+
+    it("allows an instance-global environment with no company binding", async () => {
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
+      const res = await postForeignEnvironmentTest();
+      // The guard passes and the route proceeds to secret resolution.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalled();
+    });
+
+    it("allows an environment bound to the caller company", async () => {
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-1"]);
+      const res = await postForeignEnvironmentTest();
+      // The guard passes and the route proceeds to secret resolution.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalled();
     });
   });
 });
