@@ -7702,19 +7702,29 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     }
     if (adoptedRecord) {
       const adoptedUrl = adoptedRecord.url ?? row.backendUrl ?? row.url ?? null;
+      const adoptedHealthInput = {
+        db,
+        serviceName: row.serviceName,
+        command: row.command,
+        provider: "local_process",
+        port: adoptedRecord.port ?? row.port,
+        cwd: row.cwd,
+        executionWorkspaceId: row.executionWorkspaceId ?? null,
+        companyId: row.companyId,
+      };
+      // A surviving service can be slow to answer one probe when the host is
+      // busy at startup. One timeout is not enough evidence to terminate it.
+      // Confirm an unhealthy verdict with a second probe after a short bounded
+      // delay, the same way the reuse path protects a shared runtime.
+      let adoptedHealthy = await isRuntimeServiceUrlHealthy(adoptedUrl, adoptedHealthInput);
+      if (!adoptedHealthy) {
+        await delay(250);
+        adoptedHealthy = await isRuntimeServiceUrlHealthy(adoptedUrl, adoptedHealthInput);
+      }
       if (
         backfillDecision.action === "reprovision"
         || !exposureHealthMatches
-        || !(await isRuntimeServiceUrlHealthy(adoptedUrl, {
-          db,
-          serviceName: row.serviceName,
-          command: row.command,
-          provider: "local_process",
-          port: adoptedRecord.port ?? row.port,
-          cwd: row.cwd,
-          executionWorkspaceId: row.executionWorkspaceId ?? null,
-          companyId: row.companyId,
-        }))
+        || !adoptedHealthy
       ) {
         if (backfillDecision.action === "reprovision") backfilled += 1;
         await terminateLocalService(adoptedRecord);
