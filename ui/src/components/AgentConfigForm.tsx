@@ -35,6 +35,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
 } from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -862,22 +863,52 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
       let settings = instanceSettings;
-      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+      let environmentList = environments;
+      let managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+      if (!rawCurrentDefaultEnvironmentId) {
+        // The agent has no own environment, so the Test resolves the instance
+        // default, the local default, or the managed sandbox. Resolve the
+        // settings, the environment list, and the managed-sandbox-only policy
+        // here, because the render-time queries can be unsettled, or the
+        // environments query can be disabled under the managed-sandbox-only
+        // policy. A failure surfaces an honest error, not a silent host probe
+        // that reports a false result.
         try {
-          settings = await queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.settings,
-            queryFn: () => instanceSettingsApi.get(),
-          });
+          const [resolvedSettings, resolvedEnvironments, resolvedExperimental] =
+            await Promise.all([
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.instance.settings,
+                queryFn: () => instanceSettingsApi.get(),
+              }),
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.environments.list(selectedCompanyId),
+                queryFn: () => environmentsApi.list(selectedCompanyId),
+              }),
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.instance.experimentalSettings,
+                queryFn: () => instanceSettingsApi.getExperimental(),
+              }),
+            ]);
+          settings = resolvedSettings;
+          environmentList = resolvedEnvironments;
+          managedSandboxOnly = resolvedExperimental?.enableManagedSandboxOnly === true;
         } catch {
           throw new Error(
-            "Could not load instance settings to determine which environment to test in. Retry the test.",
+            "Could not load environment settings to determine which environment to test in. Retry the test.",
           );
         }
       }
+      // Mirror the server run-time resolution, including the managed-sandbox-only
+      // redirect: when the resolution lands on the local environment and the
+      // policy is on, probe the managed sandbox the real run uses instead. The
+      // resolver throws when no managed sandbox is available, which the mutation
+      // surfaces as a fail-closed error rather than a local host probe.
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
-        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
