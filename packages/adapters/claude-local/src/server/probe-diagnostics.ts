@@ -1,5 +1,4 @@
 import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
-import { redactDiagnosticText } from "@paperclipai/adapter-utils";
 
 /**
  * The fixed label a Test result shows when the probe runs on the local
@@ -8,14 +7,67 @@ import { redactDiagnosticText } from "@paperclipai/adapter-utils";
  */
 export const ADAPTER_TEST_HOST_TARGET_LABEL = "Paperclip host";
 
-// The server log keeps a bounded diagnostic. The bound stops a very large probe
-// output from filling the log.
-const MAX_LOGGED_PROBE_DIAGNOSTIC_CHARS = 2000;
-
 // The login hint may show a login URL. The URL must be a normalized https URL
 // with an allowlisted Claude or Anthropic host and no query or fragment. A host
 // matches when it equals a suffix or ends with a dot and the suffix.
 const ALLOWED_LOGIN_URL_HOST_SUFFIXES = ["anthropic.com", "claude.ai"] as const;
+
+// A JavaScript error class name is a bounded identifier. The bound stops a very
+// large or crafted class name from filling the log.
+const MAX_ERROR_CLASS_NAME_CHARS = 64;
+
+/**
+ * The allowlisted classification for a sandbox probe diagnostic. The call site
+ * picks one fixed label from this set. The label never holds a copy of
+ * untrusted probe text.
+ *
+ *   - `timeout`: the probe process did not finish before the deadline.
+ *   - `auth_required`: the probe ran and reported that login is required.
+ *   - `nonzero_exit`: the probe process exited with a non-zero exit code.
+ *   - `spawn_error`: the probe process, or a setup step, threw before it ran.
+ *   - `empty_output`: the probe produced no output.
+ *   - `unexpected_output`: the probe ran and exited zero, but the output did
+ *     not match the expected reply.
+ */
+export type SandboxProbeDiagnosticClassification =
+  | "timeout"
+  | "auth_required"
+  | "nonzero_exit"
+  | "spawn_error"
+  | "empty_output"
+  | "unexpected_output";
+
+/**
+ * The safe structured fields a call site may add to a probe diagnostic. Each
+ * field is a fixed shape, not free text. The helper drops any value that is not
+ * safe.
+ */
+export interface SandboxProbeDiagnosticFields {
+  // The process exit code. The helper logs it only when it is a finite number.
+  exitCode?: number | null;
+  // The class name of a thrown value. Use `classifyThrownErrorClass` to derive
+  // it. The helper sanitizes it again before it logs it.
+  errorClass?: string | null;
+}
+
+/**
+ * Read the class name of a thrown value for a safe probe diagnostic. The
+ * function returns the constructor name of an `Error`, or `null` for any other
+ * value. The name is a bounded identifier, not a copy of the error message, so
+ * it carries no untrusted probe text.
+ */
+export function classifyThrownErrorClass(err: unknown): string | null {
+  if (err instanceof Error) return err.constructor?.name ?? "Error";
+  return null;
+}
+
+// Keep only identifier characters and bound the length. The result cannot carry
+// untrusted probe text.
+function sanitizeErrorClassName(name: string | null | undefined): string | null {
+  if (typeof name !== "string") return null;
+  const safe = name.replace(/[^A-Za-z0-9_$]/g, "").slice(0, MAX_ERROR_CLASS_NAME_CHARS);
+  return safe.length > 0 ? safe : null;
+}
 
 /**
  * Send a sandbox probe or config materialization diagnostic to the server log.
@@ -25,28 +77,35 @@ const ALLOWED_LOGIN_URL_HOST_SUFFIXES = ["anthropic.com", "claude.ai"] as const;
  *   - the Claude ACP Test lane (`acp.ts`),
  *   - the managed-config materialization step (`claude-config.ts`).
  *
- * The helper is the single boundary where a raw probe error, stdout, or stderr
- * string reaches an output. It redacts secrets with `redactDiagnosticText`
- * first, so no credential reaches the log. The sanitizer redacts shell
- * `KEY=value` secrets and JSON secret fields such as `{"token":"..."}`. The
- * helper also bounds the length. A caller must never copy the raw string into a
- * Test-result check, because the user interface renders check text.
+ * Contract: no untrusted text reaches the log. The helper logs only the fixed
+ * context string, one allowlisted classification, and safe structured fields.
+ * The safe fields are the process exit code and a sanitized error class name.
+ * The helper never logs raw probe stdout, raw stderr, or a raw thrown-error
+ * message. A call site must never copy raw probe text into a Test-result check,
+ * because the user interface renders check text.
  *
  * @param context A short fixed description of the failed step. It carries no
  *   untrusted text.
- * @param raw The untrusted diagnostic from the sandbox. The helper redacts it.
+ * @param classification One allowlisted label that the call site derives from
+ *   the probe state. It carries no untrusted text.
+ * @param fields Optional safe structured fields, such as the exit code.
  */
-export function logRedactedSandboxProbeDiagnostic(
+export function logSandboxProbeDiagnostic(
   context: string,
-  raw: string | null | undefined,
+  classification: SandboxProbeDiagnosticClassification,
+  fields?: SandboxProbeDiagnosticFields,
 ): void {
-  if (!raw) return;
-  const redacted = redactDiagnosticText(raw)
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_LOGGED_PROBE_DIAGNOSTIC_CHARS);
-  if (!redacted) return;
-  console.warn(`[paperclip] ${context}`, { detail: redacted });
+  const detail: {
+    classification: SandboxProbeDiagnosticClassification;
+    exitCode?: number;
+    errorClass?: string;
+  } = { classification };
+  if (typeof fields?.exitCode === "number" && Number.isFinite(fields.exitCode)) {
+    detail.exitCode = fields.exitCode;
+  }
+  const errorClass = sanitizeErrorClassName(fields?.errorClass);
+  if (errorClass) detail.errorClass = errorClass;
+  console.warn(`[paperclip] ${context}`, detail);
 }
 
 /**

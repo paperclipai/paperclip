@@ -45,7 +45,8 @@ import {
 import {
   buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
-  logRedactedSandboxProbeDiagnostic,
+  classifyThrownErrorClass,
+  logSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
@@ -633,12 +634,12 @@ export async function probeClaudeAcpSandboxLogin(input: {
       onLog: async () => {},
     });
   } catch (err) {
-    // Keep the raw error out of the Test-result check. Send the redacted
-    // diagnostic to the server log instead.
-    logRedactedSandboxProbeDiagnostic(
-      "Claude ACP login probe could not run",
-      err instanceof Error ? err.message : String(err),
-    );
+    // Keep the raw error out of the Test-result check and the server log. Log
+    // only the fixed context, the allowlisted classification, and a safe error
+    // class name.
+    logSandboxProbeDiagnostic("Claude ACP login probe could not run", "spawn_error", {
+      errorClass: classifyThrownErrorClass(err),
+    });
     return [
       buildAcpLoginProbeUnavailableCheck(
         targetIsSandbox
@@ -661,12 +662,12 @@ export async function probeClaudeAcpSandboxLogin(input: {
     return buildAcpAuthMissingChecks({ targetIsSandbox, loginUrl: loginMeta.loginUrl });
   }
   if ((probe.exitCode ?? 1) !== 0) {
-    // Keep the raw stderr and stdout out of the Test-result check. Send the
-    // redacted diagnostic to the server log instead.
-    logRedactedSandboxProbeDiagnostic(
-      "Claude ACP login probe did not complete",
-      firstNonEmptyString(probe.stderr, probe.stdout),
-    );
+    // Keep the raw stderr and stdout out of the Test-result check and the
+    // server log. Log only the fixed context, the allowlisted classification,
+    // and the safe exit code.
+    logSandboxProbeDiagnostic("Claude ACP login probe did not complete", "nonzero_exit", {
+      exitCode: probe.exitCode ?? null,
+    });
     return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", targetIsSandbox)];
   }
   return [];

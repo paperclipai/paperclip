@@ -78,9 +78,9 @@ afterEach(() => {
 });
 
 describe("claude sandbox hello probe diagnostics", () => {
-  it("keeps the raw failure result out of every check and routes it to the log", async () => {
+  it("keeps the raw failure result out of every check and out of the log", async () => {
     // The non-zero result event carries a marker. The check must not repeat the
-    // marker, and the redacted diagnostic must reach the server log.
+    // marker, and the log must carry only the allowlisted classification.
     const marker = "NONPATTERNMARKERfailure";
     probeResult.value = {
       exitCode: 1,
@@ -109,15 +109,17 @@ describe("claude sandbox hello probe diagnostics", () => {
     expect(checkText).not.toContain(marker);
     // The unhelpful init line must never reach a check either.
     expect(checkText).not.toContain('"subtype":"init"');
-    // The raw diagnostic still reaches the server log.
+    // The raw diagnostic never reaches the server log. The log carries only the
+    // fixed context and an allowlisted classification.
     const loggedText = JSON.stringify(warnSpy.mock.calls);
-    expect(loggedText).toContain(marker);
+    expect(loggedText).not.toContain(marker);
+    expect(loggedText).toContain("nonzero_exit");
     warnSpy.mockRestore();
   });
 
-  it("keeps a stdout-fallback failure line out of every check", async () => {
+  it("keeps a stdout-fallback failure line out of every check and out of the log", async () => {
     // The CLI dies before a result event, so the last non-init stdout line is
-    // the diagnostic. The check must not repeat its marker.
+    // the diagnostic. The check and the log must not repeat its marker.
     const marker = "NONPATTERNMARKERstdout";
     probeResult.value = {
       exitCode: 1,
@@ -141,13 +143,14 @@ describe("claude sandbox hello probe diagnostics", () => {
     expect(checkText).not.toContain(marker);
     expect(checkText).not.toContain('"subtype":"init"');
     const loggedText = JSON.stringify(warnSpy.mock.calls);
-    expect(loggedText).toContain(marker);
+    expect(loggedText).not.toContain(marker);
+    expect(loggedText).toContain("nonzero_exit");
     warnSpy.mockRestore();
   });
 
-  it("never copies a credential-bearing stderr failure line into a check", async () => {
-    // A verbose CLI can print a credential to stderr on failure. The check must
-    // not repeat it, and the server log must redact it.
+  it("never copies a credential-bearing stderr failure line into a check or the log", async () => {
+    // A verbose CLI can print a credential to stderr on failure. The check and
+    // the log must not repeat it.
     const secret = "sk-ant-STDERRLEAK0123456789abcdef";
     probeResult.value = {
       exitCode: 1,
@@ -169,7 +172,8 @@ describe("claude sandbox hello probe diagnostics", () => {
     expect(checkText).not.toContain("STDERRLEAK");
     const loggedText = JSON.stringify(warnSpy.mock.calls);
     expect(loggedText).not.toContain(secret);
-    expect(loggedText).toContain("***REDACTED***");
+    expect(loggedText).not.toContain("STDERRLEAK");
+    expect(loggedText).toContain("nonzero_exit");
     warnSpy.mockRestore();
   });
 
@@ -201,7 +205,8 @@ describe("claude sandbox hello probe diagnostics", () => {
     const checkText = JSON.stringify(result.checks);
     expect(checkText).not.toContain(marker);
     const loggedText = JSON.stringify(warnSpy.mock.calls);
-    expect(loggedText).toContain(marker);
+    expect(loggedText).not.toContain(marker);
+    expect(loggedText).toContain("auth_required");
     warnSpy.mockRestore();
   });
 
@@ -323,7 +328,49 @@ describe("claude sandbox hello probe diagnostics", () => {
     const checkText = JSON.stringify(result.checks);
     expect(checkText).not.toContain(marker);
     const loggedText = JSON.stringify(warnSpy.mock.calls);
-    expect(loggedText).toContain(marker);
+    expect(loggedText).not.toContain(marker);
+    expect(loggedText).toContain("unexpected_output");
+    warnSpy.mockRestore();
+  });
+
+  it("keeps an opaque credential marker and a proxy marker out of every check and the log", async () => {
+    // The failure output carries two untrusted values that the pattern
+    // sanitizer did not recognize: an opaque credential with no token shape and
+    // a proxy URL. One rides in stdout, the other in stderr. Neither may reach a
+    // check or the server log.
+    const opaqueCredMarker = "OPAQUECREDMARKERnoshape";
+    const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
+    probeResult.value = {
+      exitCode: 7,
+      stdout: [
+        initLine,
+        `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"probe failed with ${opaqueCredMarker}","session_id":"abc"}`,
+      ].join("\n"),
+      stderr: `proxy connect failed: ${proxyMarker}`,
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const checkText = JSON.stringify(result.checks);
+    expect(checkText).not.toContain(opaqueCredMarker);
+    expect(checkText).not.toContain("proxy.corp.internal");
+    const loggedText = JSON.stringify(warnSpy.mock.calls);
+    expect(loggedText).not.toContain(opaqueCredMarker);
+    expect(loggedText).not.toContain("proxy.corp.internal");
+    // The log still carries the allowlisted classification and the safe exit
+    // code, so the diagnostic stays useful.
+    expect(loggedText).toContain("nonzero_exit");
+    expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({
+      classification: "nonzero_exit",
+      exitCode: 7,
+    });
     warnSpy.mockRestore();
   });
 

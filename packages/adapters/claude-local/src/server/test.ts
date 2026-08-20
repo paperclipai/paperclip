@@ -8,7 +8,6 @@ import {
   asBoolean,
   asNumber,
   asStringArray,
-  parseJson,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -19,7 +18,6 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
-  describeClaudeFailure,
   detectClaudeLoginRequired,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
@@ -35,7 +33,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
   buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
-  logRedactedSandboxProbeDiagnostic,
+  logSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 
@@ -47,39 +45,6 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
-function lastNonInitStdoutLine(text: string): string {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index]!;
-    const parsed = parseJson(line);
-    if (parsed && asString(parsed.type, "") === "system" && asString(parsed.subtype, "") === "init") {
-      continue;
-    }
-    return line;
-  }
-  return "";
-}
-
-function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || lastNonInitStdoutLine(stdout);
-  if (!raw) return null;
-  const clean = raw.replace(/\s+/g, " ").trim();
-  const max = 240;
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 export async function testEnvironment(
@@ -361,11 +326,12 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
         });
       } else if (loginMeta.requiresLogin) {
-        // The raw probe output is untrusted. Route it to the log-only boundary
-        // and return only a fixed public message and a safe hint.
-        logRedactedSandboxProbeDiagnostic(
+        // The raw probe output is untrusted. Log only the fixed context and the
+        // allowlisted classification. Return only a fixed public message and a
+        // safe hint.
+        logSandboxProbeDiagnostic(
           "Claude CLI hello probe reported login required",
-          summarizeProbeDetail(probe.stdout, probe.stderr),
+          "auth_required",
         );
         checks.push({
           code: "claude_hello_probe_auth_required",
@@ -388,11 +354,12 @@ export async function testEnvironment(
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
         if (!hasHello) {
-          // The unexpected summary is untrusted probe output. Route it to the
-          // log-only boundary and keep the check text fixed.
-          logRedactedSandboxProbeDiagnostic(
+          // The unexpected summary is untrusted probe output. Log only the fixed
+          // context and the allowlisted classification. Keep the check text
+          // fixed.
+          logSandboxProbeDiagnostic(
             "Claude CLI hello probe returned unexpected output",
-            summary,
+            "unexpected_output",
           );
         }
         checks.push({
@@ -408,20 +375,12 @@ export async function testEnvironment(
               }),
         });
       } else {
-        // Compose the richest raw diagnostic for the log. The real error lives
-        // in the final `result` event (parsed) or, when the CLI dies before it
-        // emits one, the last non-init stdout line — never the first line that
-        // `summarizeProbeDetail` returns.
-        const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
-        const failureDetail =
-          (parsed ? describeClaudeFailure(parsed) : null) ||
-          firstNonEmptyLine(probe.stderr) ||
-          stdoutFallback ||
-          summarizeProbeDetail(probe.stdout, probe.stderr) ||
-          "";
-        // The failure diagnostic is untrusted. Route it to the log-only
-        // boundary and return only a fixed public message and hint.
-        logRedactedSandboxProbeDiagnostic("Claude CLI hello probe failed", failureDetail);
+        // The failure diagnostic is untrusted. Log only the fixed context, the
+        // allowlisted classification, and the safe exit code. Return only a
+        // fixed public message and hint.
+        logSandboxProbeDiagnostic("Claude CLI hello probe failed", "nonzero_exit", {
+          exitCode: probe.exitCode ?? null,
+        });
         // Provider-quota exhaustion (usage/session limit) is classified
         // separately from generic transient upstream errors: auth works, the
         // subscription's usage window is just spent. Surface it as its own

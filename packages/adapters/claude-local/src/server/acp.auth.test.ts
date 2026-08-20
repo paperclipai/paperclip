@@ -317,11 +317,15 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(checks[0]?.level).toBe("warn");
   });
 
-  it("never copies a thrown probe error into a Test-result check", async () => {
-    // A sandbox transport failure can carry a credential. Inject a secret
-    // marker through the thrown error and assert no check text repeats it.
-    const secret = "sk-ant-LEAKMARKER0123456789abcdef";
-    probeResult.throwError = new Error(`transport failed with ${secret}`);
+  it("never copies a thrown probe error into a Test-result check or the log", async () => {
+    // A sandbox transport failure can carry a credential. Inject an opaque
+    // credential marker and a proxy marker through the thrown error, then assert
+    // no check text and no log call repeats either one.
+    const opaqueCredMarker = "OPAQUECREDMARKERnoshape";
+    const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
+    probeResult.throwError = new Error(
+      `transport failed with ${opaqueCredMarker} via ${proxyMarker}`,
+    );
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const checks = await probeClaudeAcpSandboxLogin({
@@ -330,25 +334,32 @@ describe("probeClaudeAcpSandboxLogin", () => {
     });
 
     const checkText = JSON.stringify(checks);
-    expect(checkText).not.toContain(secret);
-    expect(checkText).not.toContain("LEAKMARKER");
+    expect(checkText).not.toContain(opaqueCredMarker);
+    expect(checkText).not.toContain("proxy.corp.internal");
     expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
-    // The diagnostic still reaches the server log, but the secret is redacted.
+    // The log carries only the fixed context, the allowlisted classification,
+    // and a safe error class name. It never repeats the raw error text.
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const loggedText = JSON.stringify(warnSpy.mock.calls);
-    expect(loggedText).not.toContain(secret);
-    expect(loggedText).toContain("***REDACTED***");
+    expect(loggedText).not.toContain(opaqueCredMarker);
+    expect(loggedText).not.toContain("proxy.corp.internal");
+    expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({
+      classification: "spawn_error",
+      errorClass: "Error",
+    });
     warnSpy.mockRestore();
   });
 
-  it("never copies raw probe stderr or stdout into a Test-result check", async () => {
-    // A non-zero probe can print a credential to stderr. Inject a secret marker
-    // and assert no check text repeats it.
-    const secret = "sk-ant-STDERRMARKER0123456789abcdef";
+  it("never copies raw probe stderr or stdout into a Test-result check or the log", async () => {
+    // A non-zero probe can print an opaque credential to stdout and a proxy URL
+    // to stderr. Inject one marker in each stream and assert neither reaches a
+    // check or the log.
+    const opaqueCredMarker = "OPAQUECREDMARKERstream";
+    const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
     probeResult.value = {
       exitCode: 2,
-      stdout: initLine,
-      stderr: `fatal: leaked ${secret}`,
+      stdout: [initLine, `note: ${opaqueCredMarker}`].join("\n"),
+      stderr: `fatal: proxy connect failed ${proxyMarker}`,
       timedOut: false,
     };
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -359,14 +370,19 @@ describe("probeClaudeAcpSandboxLogin", () => {
     });
 
     const checkText = JSON.stringify(checks);
-    expect(checkText).not.toContain(secret);
-    expect(checkText).not.toContain("STDERRMARKER");
+    expect(checkText).not.toContain(opaqueCredMarker);
+    expect(checkText).not.toContain("proxy.corp.internal");
     expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
-    // The diagnostic still reaches the server log, but the secret is redacted.
+    // The log carries only the fixed context, the allowlisted classification,
+    // and the safe exit code. It never repeats the raw stream text.
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const loggedText = JSON.stringify(warnSpy.mock.calls);
-    expect(loggedText).not.toContain(secret);
-    expect(loggedText).toContain("***REDACTED***");
+    expect(loggedText).not.toContain(opaqueCredMarker);
+    expect(loggedText).not.toContain("proxy.corp.internal");
+    expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({
+      classification: "nonzero_exit",
+      exitCode: 2,
+    });
     warnSpy.mockRestore();
   });
 });
