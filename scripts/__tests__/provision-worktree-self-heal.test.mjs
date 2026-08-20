@@ -181,6 +181,17 @@ test("uses the base CLI when its import graph boots", () => {
   );
 });
 
+test("rejects a dangling base workspace config symlink instead of falling back", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+  fs.symlinkSync(path.join(baseCwd, "absent.json"), path.join(baseCwd, ".paperclip", "config.json"));
+
+  const { result } = runProvision(baseCwd);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /is missing or is not a canonical file/);
+});
+
 test("falls back to an isolated config when the base CLI cannot boot", () => {
   // Simulates the dangling pnpm symlink incident: the runner and entry files
   // exist, but booting the CLI fails ESM resolution. The base has no

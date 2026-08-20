@@ -44,6 +44,22 @@ function readInstanceId(configPath: string, label: "source" | "target"): string 
   throw new Error(`Registered ${label} Paperclip config has no PAPERCLIP_INSTANCE_ID binding.`);
 }
 
+/**
+ * Whether a base project workspace declares an instance config of its own.
+ *
+ * This tests the directory entry and does not follow it. A dangling or aliased
+ * symlink still counts as a declared config, so the resolver rejects the malformed
+ * source instead of falling back to another one.
+ */
+export function baseWorkspaceDeclaresInstanceConfig(baseWorkspaceCwd: string): boolean {
+  try {
+    lstatSync(path.join(baseWorkspaceCwd, ".paperclip", "config.json"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function canonicalRegularFile(filePath: string, label: string): string {
   const resolved = path.resolve(filePath);
   let canonical: string;
@@ -90,8 +106,9 @@ export function resolveRegisteredWorktreeSeedSource(
     }
     // A base workspace that is a plain checkout carries no instance config of its own.
     // The caller's explicit source supplies it, and stays subject to every check below.
-    const baseWorkspaceConfigPath = path.join(canonicalBaseCwd, ".paperclip", "config.json");
-    registeredConfigPath = existsSync(baseWorkspaceConfigPath) ? baseWorkspaceConfigPath : null;
+    registeredConfigPath = baseWorkspaceDeclaresInstanceConfig(canonicalBaseCwd)
+      ? path.join(canonicalBaseCwd, ".paperclip", "config.json")
+      : null;
   }
 
   const selectedPath = registeredConfigPath ?? explicitSource;

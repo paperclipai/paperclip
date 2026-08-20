@@ -79,6 +79,23 @@ describe("resolveCanonicalWorktreeSeedSource", () => {
     });
   });
 
+  it("rejects a dangling config symlink instead of falling back to the named source", () => {
+    const baseCwd = makePlainCheckout();
+    fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+    fs.symlinkSync(path.join(baseCwd, "absent.json"), path.join(baseCwd, ".paperclip", "config.json"));
+    const source = makeInstanceRoot("default");
+    const target = makeInstance("paperclip-seed-dangling-target-", "target-instance");
+
+    expect(() => resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: baseCwd,
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: { configPath: source.configPath, instanceId: source.instanceId },
+      manifestTargetInstanceId: target.instanceId,
+    })).toThrow(/Registered source Paperclip config does not exist/);
+  });
+
   it("fails closed when the base workspace carries no config and none is named", () => {
     const baseCwd = makePlainCheckout();
     const target = makeInstance("paperclip-seed-unnamed-target-", "target-instance");

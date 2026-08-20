@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import {
+  baseWorkspaceDeclaresInstanceConfig,
   resolveCanonicalWorktreeSeedSource,
   type CanonicalWorktreeSeedSource,
 } from "@paperclipai/shared/worktree-seed-source";
@@ -79,9 +80,7 @@ function isReadableFile(filePath: string) {
  * still rejected.
  */
 function resolveFallbackSeedSourceConfigPath(baseWorkspaceCwd: string): string | null {
-  return existsSync(path.join(baseWorkspaceCwd, ".paperclip", "config.json"))
-    ? null
-    : resolvePaperclipConfigPath();
+  return baseWorkspaceDeclaresInstanceConfig(baseWorkspaceCwd) ? null : resolvePaperclipConfigPath();
 }
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
