@@ -127,12 +127,107 @@ type ActorInfo = {
 
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
 const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const REMOTE_HTTP_NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 const MAX_REMOTE_HTTP_REDIRECTS = 5;
+// Budget for a whole remote OAuth exchange, redirects included. Generous for a
+// metadata, registration or token call, and overridable for a slow provider.
+const DEFAULT_REMOTE_HTTP_TIMEOUT_MS = 30_000;
+
 const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
 const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
 const OAUTH_REFRESH_LEASE_MS = 120_000;
 const OAUTH_REFRESH_LEASE_WAIT_MS = 30_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
+
+function remoteHttpTimeoutMs() {
+  const parsed = Number.parseInt(process.env.PAPERCLIP_REMOTE_HTTP_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REMOTE_HTTP_TIMEOUT_MS;
+}
+
+// Ceiling for a remote MCP or OAuth response body. These are metadata, token and
+// tools/list payloads, so this is far above any legitimate response while still
+// bounding what one untrusted endpoint can make us allocate.
+const DEFAULT_REMOTE_HTTP_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+function remoteHttpMaxResponseBytes() {
+  const parsed = Number.parseInt(process.env.PAPERCLIP_REMOTE_HTTP_MAX_RESPONSE_BYTES ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REMOTE_HTTP_MAX_RESPONSE_BYTES;
+}
+
+function remoteHttpTimeout() {
+  return new HttpError(504, "Remote endpoint did not respond in time", { code: "remote_http_timeout" });
+}
+
+/**
+ * Fetch a remote endpoint under a time bound, then buffer its body under the
+ * same bound and hand back a Response carrying the buffered bytes.
+ *
+ * Returning the live Response would leave every caller's `response.json()` /
+ * `.text()` outside this translation: an abort during the body would surface as
+ * a raw AbortError, or — where the caller writes `.catch(() => ({}))` — as a
+ * silently empty payload and a misleading "missing field" error. Buffering here
+ * means the body is already in memory by the time a caller reads it, so no
+ * caller can observe a body-read abort.
+ *
+ * The read is streamed against a size ceiling rather than buffered blindly,
+ * because these endpoints are operator- or app-supplied and `arrayBuffer()`
+ * would have already allocated everything before its length could be checked.
+ */
+async function fetchRemoteHttpWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (err) {
+    if (init.signal?.aborted) throw remoteHttpTimeout();
+    throw err;
+  }
+
+  // A redirect is inspected for its Location header and never read, so leave its
+  // body alone; fetchRemoteHttpUrl follows it with a fresh request.
+  if (REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)) return response;
+  // Statuses that cannot carry a body have nothing to buffer, and the Response
+  // constructor rejects a body for them.
+  if (REMOTE_HTTP_NULL_BODY_STATUSES.has(response.status)) return response;
+  // Only a real streaming Response can abort mid-body. Anything else — including
+  // the object-literal responses used in tests — is already fully in hand.
+  const stream = response.body;
+  if (typeof stream?.getReader !== "function") return response;
+
+  const limit = remoteHttpMaxResponseBytes();
+  let buffered: ArrayBuffer;
+  try {
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new HttpError(502, "Remote endpoint returned an oversized response", {
+          code: "remote_http_response_too_large",
+        });
+      }
+      chunks.push(value);
+    }
+    // Copy into a plain ArrayBuffer: Buffer/Uint8Array are generic over
+    // ArrayBufferLike, which BodyInit does not accept.
+    const joined = Buffer.concat(chunks);
+    buffered = new ArrayBuffer(joined.byteLength);
+    new Uint8Array(buffered).set(joined);
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    if (init.signal?.aborted) throw remoteHttpTimeout();
+    throw err;
+  }
+
+  return new Response(buffered, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -1393,9 +1488,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function fetchRemoteHttpUrl(value: string, init: RequestInit = {}): Promise<Response> {
     let currentUrl = value;
     const method = (init.method ?? "GET").toUpperCase();
+    // `fetch` has no default timeout, and these endpoints are operator- or
+    // app-supplied, so a host that accepts the connection and never answers would
+    // hold this call — and the request handler awaiting it — open indefinitely.
+    // One signal for the whole loop, so a chain of slow redirects cannot spend
+    // MAX_REMOTE_HTTP_REDIRECTS times the budget. A caller-supplied signal is
+    // still honoured.
+    const timeout = AbortSignal.timeout(remoteHttpTimeoutMs());
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     for (let redirectCount = 0; redirectCount <= MAX_REMOTE_HTTP_REDIRECTS; redirectCount += 1) {
       const safeUrl = await assertRemoteHttpUrlAllowed(currentUrl);
-      const response = await fetch(safeUrl, { ...init, redirect: "manual" });
+      const response = await fetchRemoteHttpWithTimeout(safeUrl, { ...init, redirect: "manual", signal });
       const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
         ? response.headers?.get?.("location") ?? null
         : null;
@@ -1907,20 +2010,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       body.set("requested_token_type", readConfigString(broker, "requestedTokenType") ?? "urn:ietf:params:oauth:token-type:access_token");
       body.set("actor_token", Buffer.from(JSON.stringify(actor)).toString("base64url"));
       body.set("actor_token_type", readConfigString(broker, "actorTokenType") ?? "urn:ietf:params:oauth:token-type:jwt");
-      response = await fetch(url, {
+      response = await fetchRemoteHttpWithTimeout(url, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body,
+        signal: AbortSignal.timeout(remoteHttpTimeoutMs()),
       });
     } else {
       const namespace = isPages ? pagesNamespaceFromScope(input.scope) : null;
       const body = isPages && namespace
         ? { namespace, ttlSeconds: input.ttlSeconds, actions: ["publish"], actor }
         : { scope: input.scope, ttlSeconds: input.ttlSeconds, actor, audience: readConfigString(broker, "audience") };
-      response = await fetch(url, {
+      response = await fetchRemoteHttpWithTimeout(url, {
         method: "POST",
         headers: { authorization: `Bearer ${parentToken}`, "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(remoteHttpTimeoutMs()),
       });
     }
     const payload = await response.json().catch(() => ({})) as unknown;
@@ -2865,7 +2970,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
-    const response = await fetch(endpoint, {
+    const response = await fetchRemoteHttpWithTimeout(endpoint, {
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
@@ -2876,6 +2981,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         method: "tools/list",
         params: {},
       }),
+      signal: AbortSignal.timeout(remoteHttpTimeoutMs()),
     });
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";

@@ -19,6 +19,8 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_REMOTE_HTTP_TIMEOUT_MS` | `30000` | Timeout for each outbound request to a remote MCP or OAuth endpoint (tool connections, provider metadata, token exchange). Raise it for a slow provider. |
+| `PAPERCLIP_REMOTE_HTTP_MAX_RESPONSE_BYTES` | `4194304` | Maximum size of a response body from a remote MCP or OAuth endpoint. Raise it only if a provider returns unusually large metadata. |
 
 ## Secrets
 
