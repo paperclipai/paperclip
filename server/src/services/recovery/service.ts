@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -1463,9 +1463,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
-    const silenceStartedAt = silenceStartedAtForRun(run);
-    const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
-    const level = run.status !== "running"
+    const isQueuedWithoutProcess = run.processStartedAt == null && run.lastOutputAt == null;
+    const silenceStartedAt = isQueuedWithoutProcess ? null : silenceStartedAtForRun(run);
+    const silenceAgeMs = run.status === "running" && !isQueuedWithoutProcess ? silenceAgeMsForRun(run, now) : null;
+    const level = run.status !== "running" || isQueuedWithoutProcess
       ? "not_applicable"
       : quietUntilDecision
         ? "snoozed"
@@ -2315,6 +2316,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
+          or(isNotNull(heartbeatRuns.processStartedAt), isNotNull(heartbeatRuns.lastOutputAt)),
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
         ),
       )
