@@ -199,6 +199,81 @@ describe("resolveWorkspaceAccessState", () => {
     expect(access.description).toContain("restore");
   });
 
+  it("returns to ready after a failed seed when a later repair succeeded and a healthy runtime is serving", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [runtimeService({ startedAt: new Date("2026-08-20T00:18:00.000Z") })],
+      operations: [
+        operation({
+          id: "repair-1",
+          phase: "workspace_repair",
+          status: "succeeded",
+          startedAt: new Date("2026-08-20T00:10:00.000Z"),
+          finishedAt: new Date("2026-08-20T00:17:31.000Z"),
+        }),
+        operation({
+          id: "seed-1",
+          phase: "workspace_seed",
+          status: "failed",
+          metadata: { seedFailurePhase: "manifest_verification" },
+          startedAt: new Date("2026-08-20T00:02:00.000Z"),
+          finishedAt: new Date("2026-08-20T00:04:37.000Z"),
+        }),
+      ],
+    });
+
+    expect(access).toMatchObject({
+      state: "ready",
+      action: { kind: "open", label: "Open workspace" },
+      secondaryNotice: {
+        title: "Database provisioning failed",
+        action: { kind: "view_logs", label: "View provisioning log" },
+      },
+    });
+    expect(access.secondaryNotice?.description).toContain("manifest_verification");
+    expect(access.secondaryNotice?.description).toContain("later became usable");
+  });
+
+  it("does not offer repair for a stale failed seed after a later successful repair", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [],
+      operations: [
+        operation({
+          id: "repair-1",
+          phase: "workspace_repair",
+          status: "succeeded",
+          finishedAt: new Date("2026-08-20T00:17:31.000Z"),
+        }),
+        operation({
+          id: "seed-1",
+          phase: "workspace_seed",
+          status: "failed",
+          finishedAt: new Date("2026-08-20T00:04:37.000Z"),
+        }),
+      ],
+    });
+
+    expect(access).toMatchObject({
+      state: "provisioning",
+      action: { kind: "start", label: "Start workspace" },
+    });
+  });
+
+  it("returns to ready when a healthy runtime proves a failed seed is stale", () => {
+    const access = resolveWorkspaceAccessState({
+      runtimeServices: [runtimeService()],
+      operations: [operation({ status: "failed" })],
+    });
+
+    expect(access).toMatchObject({
+      state: "ready",
+      action: { kind: "open", label: "Open workspace" },
+      secondaryNotice: {
+        title: "Database provisioning failed",
+        action: { kind: "view_logs" },
+      },
+    });
+  });
+
   it("shows validating, not degraded, while a fresh clone is still being confirmed", () => {
     const access = resolveWorkspaceAccessState({
       runtimeServices: [runtimeService()],

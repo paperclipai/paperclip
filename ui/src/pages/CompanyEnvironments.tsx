@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Link2, Lock, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Link2, Lock, Play, Plus, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -1285,7 +1285,6 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   useEffect(() => {
     const crumbs = [
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       isEnvironmentFormPage
         ? { label: "Environments", href: ENVIRONMENTS_PATH }
         : { label: "Environments" },
@@ -1753,8 +1752,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
   if (!environmentsEnabled) {
     return (
-      <div className="max-w-3xl space-y-4">
-        <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
+      <div className="max-w-6xl space-y-4">
+        <div className="text-sm text-muted-foreground">
           Enable Environments in instance experimental settings to manage shared execution targets.
         </div>
       </div>
@@ -1762,17 +1761,16 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   }
 
   return (
-    <div className="max-w-5xl space-y-6" data-testid="instance-settings-environments-section">
+    <div className="max-w-6xl space-y-6" data-testid="instance-settings-environments-section">
       {!isEnvironmentFormPage ? (
-      <div className="space-y-4 rounded-md border border-border px-4 py-4">
-        <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="space-y-1">
-              <div className="text-sm font-medium">Default</div>
-            </div>
-            <div className="min-w-(--sz-18rem) flex-1">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="flex flex-wrap items-center gap-3 text-sm font-medium">
+            <span>Default</span>
+            <span>
               <select
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                aria-label="Default environment"
+                className="min-w-(--sz-12rem) max-w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-normal outline-none"
                 value={instanceDefaultEnvironmentId}
                 onChange={(event) =>
                   defaultEnvironmentMutation.mutate(event.target.value || null)}
@@ -1796,16 +1794,16 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   </option>
                 ))}
               </select>
-            </div>
-          </div>
+            </span>
+          </label>
+          <Button size="icon-sm" variant="ghost" asChild>
+            <Link to={`${ENVIRONMENTS_PATH}/new`} aria-label="Add environment" title="Add environment">
+              <Plus className="h-4 w-4" />
+            </Link>
+          </Button>
         </div>
 
-        <div className="space-y-3">
-          <div className="flex justify-end">
-            <Button size="sm" asChild>
-              <Link to={`${ENVIRONMENTS_PATH}/new`}>Add environment</Link>
-            </Button>
-          </div>
+        <div className="space-y-1">
           {savedEnvironments.map((environment) => {
             const probe = probeResults[environment.id] ?? null;
             const sandboxProvider = readEnvironmentSandboxProvider(environment);
@@ -1817,7 +1815,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             return (
               <div
                 key={environment.id}
-                className="rounded-md border border-border/70 px-3 py-3"
+                className="py-3"
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -1826,7 +1824,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         {environment.name} <span className="text-muted-foreground">· {environment.driver}</span>
                       </span>
                       {isPlatformManagedEnvironment(environment) ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-xs font-normal text-muted-foreground">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
                           <Lock className="h-3 w-3" aria-hidden />
                           Managed by Paperclip
                         </span>
@@ -1875,8 +1873,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   <div
                     className={
                       probe.ok
-                        ? "mt-3 rounded border border-green-500/30 bg-green-500/5 px-2.5 py-2 text-xs text-green-700"
-                        : "mt-3 rounded border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
+                        ? "mt-3 rounded bg-green-500/5 px-2.5 py-2 text-xs text-green-700"
+                        : "mt-3 rounded bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
                     }
                   >
                     <div className="font-medium">{probe.summary}</div>
@@ -1893,13 +1891,13 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       ) : null}
 
       {isEnvironmentFormPage && mode === "edit" && environments === undefined ? (
-        <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
+        <div className="text-sm text-muted-foreground">
           Loading environment...
         </div>
       ) : null}
 
       {isEnvironmentFormPage && mode === "edit" && environments !== undefined && !editingEnvironment ? (
-        <div className="space-y-3 rounded-md border border-border px-4 py-4 text-sm">
+        <div className="space-y-3 text-sm">
           <div className="font-medium">Environment not found</div>
           <div className="text-muted-foreground">The environment may have been removed or is not available in this company.</div>
           <Button size="sm" variant="outline" asChild>
@@ -1910,8 +1908,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
       {isEnvironmentFormPage && mode === "edit" && editingEnvironment && isPlatformManagedEnvironment(editingEnvironment) ? (
         <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
-        <div className="rounded-md border border-border bg-background" data-testid="managed-environment-form-page">
-          <div className="border-b border-border/60 px-6 pb-4 pt-6">
+        <div data-testid="managed-environment-form-page">
+          <div className="pb-4">
             <div className="mb-4">
               <Button size="sm" variant="ghost" asChild>
                 <Link to={ENVIRONMENTS_PATH}>
@@ -1922,7 +1920,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-lg font-semibold">{editingEnvironment.name}</h1>
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                 <Lock className="h-3 w-3" aria-hidden />
                 Managed by Paperclip
               </span>
@@ -1935,7 +1933,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               variables for your agents; its name and configuration are managed by Paperclip.
             </p>
           </div>
-          <div className="px-6 py-4">
+          <div className="py-4">
             <Field
               label="Environment variables"
               hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
@@ -1958,7 +1956,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 bg-background px-6 py-4">
+          <div className="flex flex-wrap justify-end gap-2 py-4">
             <Button
               variant="outline"
               onClick={closeEnvironmentForm}
@@ -1980,8 +1978,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       {isEnvironmentFormPage &&
       (mode === "create" || (editingEnvironment && !isPlatformManagedEnvironment(editingEnvironment))) ? (
         <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
-        <div className="rounded-md border border-border bg-background" data-testid="environment-form-page">
-          <div className="border-b border-border/60 px-6 pb-4 pt-6">
+        <div data-testid="environment-form-page">
+          <div className="pb-4">
             <div className="mb-4">
               <Button size="sm" variant="ghost" asChild>
                 <Link to={ENVIRONMENTS_PATH}>
@@ -1996,7 +1994,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             </p>
           </div>
 
-          <div className="px-6 py-4">
+          <div className="py-4">
             <div className="space-y-4">
               <Field label="Name" hint="Operator-facing name for this execution target.">
                 <input
@@ -2172,7 +2170,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                       errors={sandboxConfigErrors}
                     />
                   ) : (
-                    <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    <div className="text-xs text-muted-foreground">
                       This provider does not declare additional configuration fields.
                     </div>
                   )}
@@ -2193,7 +2191,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               editingEnvironment.driver === "sandbox" &&
               environmentForm.driver === "sandbox" &&
               selectedCompanyId ? (
-                <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                <div className="space-y-2 py-3">
                   <div className="text-sm font-medium">Custom image</div>
                   <div className="text-xs text-muted-foreground">
                     Start a setup sandbox, SSH in to customize the instance, then capture the
@@ -2238,7 +2236,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             </div>
           </div>
 
-          <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 bg-background px-6 py-4">
+          <div className="flex flex-wrap justify-end gap-2 py-4">
             <Button
               variant="outline"
               onClick={closeEnvironmentForm}

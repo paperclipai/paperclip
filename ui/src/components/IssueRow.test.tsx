@@ -104,7 +104,13 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
     });
 
-    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    // jsdom 30 does not value-match a CSS attribute selector against a
+    // mixed-case SVG attribute name, so `svg[viewBox="0 0 24 24"]` matches
+    // nothing. Select the glyph SVGs by attribute presence, then compare the
+    // viewBox value with getAttribute to keep the exact-value assertion.
+    const glyphs = Array.from(container.querySelectorAll("svg[viewBox]")).filter(
+      (svg) => svg.getAttribute("viewBox") === "0 0 24 24",
+    );
     expect(glyphs.length).toBeGreaterThan(0);
     glyphs.forEach((glyph) => {
       expect(glyph.getAttribute("width")).toBe("16");

@@ -742,6 +742,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("E2B · sandbox");
   });
 
+  it("shows the environment override for Kimi local agents", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "kimi_local" },
+    );
+    roots.push(result.root);
+
+    const text = result.container.textContent ?? "";
+    const selector = result.container.querySelector("select");
+
+    expect(text).toContain("Environment override");
+    expect(selector?.textContent).toContain("E2B · sandbox");
+  });
+
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
     const result = await renderForm(
       [
