@@ -14,7 +14,7 @@
 // looked exactly like a crashed one and got terminalized mid-run. Both live
 // here so heartbeat.ts and recovery/service.ts share one answer instead of each
 // keeping a partial view.
-import { findServerAdapter, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
@@ -54,10 +54,22 @@ const LEGACY_LOCAL_CHILD_PROCESS_ADAPTERS = new Set([
  * free to report short-lived children — an adapter that shells out per tool
  * call reports one child per `run_command`, and each of those pids dies within
  * seconds while the run keeps working.
+ *
+ * Resolution goes through `getServerAdapter`, the same call execution uses to
+ * pick the module it hands the run to. It must, because an external override
+ * can be paused: `findServerAdapter` would still return the paused external
+ * module while the run actually executed on the restored builtin fallback, and
+ * the two need not agree on this flag. Reading the capability off a module that
+ * did not run the work gets the pid authority exactly backwards — a dead
+ * builtin run whose paused override declares `false` would keep its issue lock
+ * forever, and a live gateway run whose paused override declares `true` would
+ * be terminalized on a transient child's pid.
  */
 export function adapterTracksLocalChildProcess(adapterType: string): boolean {
-  const adapter = findServerAdapter(adapterType);
-  if (adapter && typeof adapter.tracksLocalChildProcess === "boolean") {
+  // Never null: unknown types fall back to the process adapter, which is also
+  // what would execute them.
+  const adapter = getServerAdapter(adapterType);
+  if (typeof adapter.tracksLocalChildProcess === "boolean") {
     return adapter.tracksLocalChildProcess;
   }
   return LEGACY_LOCAL_CHILD_PROCESS_ADAPTERS.has(adapterType);

@@ -213,8 +213,17 @@ Adapters can declare what "local" capabilities they support by setting optional 
 | `supportsInstructionsBundle` | `boolean` | `false` | Managed instructions bundle (AGENTS.md) — server-side resolution + UI editor |
 | `instructionsPathKey` | `string` | `"instructionsFilePath"` | The `adapterConfig` key that holds the instructions file path |
 | `requiresMaterializedRuntimeSkills` | `boolean` | `false` | Whether runtime skill entries must be written to disk before execution |
+| `tracksLocalChildProcess` | `boolean` | `false` | Whether the run is carried by one long-lived local child process, so recovery may read that process's death as the run's death |
 
-These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined).
+These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined). `tracksLocalChildProcess` is the exception: nothing in the UI branches on it, so it stays server-side and is read only by run recovery.
+
+### `tracksLocalChildProcess`
+
+Set this to `true` only when the adapter runs its agent as **exactly one** long-lived local child process for the lifetime of the run — the pid you report through `onSpawn` is the run. Recovery then treats that pid dying as the run dying, which is how it terminalizes crashed runs and releases their issue locks.
+
+Leave it `false` (the default) when the adapter does its work in-process — driving an SDK, a local HTTP server, or a remote runtime — even if it also spawns children along the way. An adapter that shells out per tool call reports a new child for every `run_command`, and those pids are *meant* to exit in seconds while the run keeps going. Reading them as run liveness makes recovery terminalize live runs, wake the agent, and repeat.
+
+The two costs are asymmetric but both real: opting in wrongly kills healthy runs mid-flight; leaving it `false` for a single-child adapter only delays cleanup of genuinely dead runs, which then hold their issue lock until the quiet-period backstop expires.
 
 ### Example
 
@@ -232,6 +241,10 @@ export function createServerAdapter(): ServerAdapterModule {
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
     requiresMaterializedRuntimeSkills: true,
+
+    // This adapter drives a remote cluster in-process; any child it spawns is a
+    // short-lived helper, not the run. A single-local-child adapter sets true.
+    tracksLocalChildProcess: false,
   };
 }
 ```

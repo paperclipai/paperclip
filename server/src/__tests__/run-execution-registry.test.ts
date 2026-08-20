@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/registry.ts";
+import {
+  registerServerAdapter,
+  setOverridePaused,
+  unregisterServerAdapter,
+} from "../adapters/registry.ts";
 import type { ServerAdapterModule } from "../adapters/types.ts";
 import {
   activeRunExecutions,
@@ -58,6 +62,40 @@ describe("adapterTracksLocalChildProcess", () => {
     expect(adapterTracksLocalChildProcess("plugin_opt_in")).toBe(true);
     expect(adapterTracksLocalChildProcess("plugin_opt_out")).toBe(false);
     expect(adapterTracksLocalChildProcess("plugin_silent")).toBe(false);
+  });
+
+  // A paused override is still the module `findServerAdapter` returns, but it is
+  // not the module that executes the run — `getServerAdapter` hands that to the
+  // restored builtin. Resolving the capability off the paused module inverts the
+  // pid authority in both directions.
+  it("follows a paused override back to the builtin that actually executes", () => {
+    // claude_local declares true; the override works in-process and declares false.
+    register(stubAdapter("claude_local", false));
+    expect(adapterTracksLocalChildProcess("claude_local")).toBe(false);
+
+    setOverridePaused("claude_local", true);
+    // Execution is back on the builtin child process, so its dead pid is once
+    // again evidence the run died. Reading the paused override here would leave
+    // a dead run holding its issue lock forever.
+    expect(adapterTracksLocalChildProcess("claude_local")).toBe(true);
+
+    setOverridePaused("claude_local", false);
+    expect(adapterTracksLocalChildProcess("claude_local")).toBe(false);
+  });
+
+  it("does not carry a paused override's opt-in onto a gateway builtin", () => {
+    // hermes_gateway declares nothing and is not in the legacy list; the
+    // override is backed by one long-lived child and declares true.
+    expect(adapterTracksLocalChildProcess("hermes_gateway")).toBe(false);
+    register(stubAdapter("hermes_gateway", true));
+    expect(adapterTracksLocalChildProcess("hermes_gateway")).toBe(true);
+
+    setOverridePaused("hermes_gateway", true);
+    // The gateway builtin holds no local child. Keeping the override's opt-in
+    // would terminalize a live run on a transient child's pid.
+    expect(adapterTracksLocalChildProcess("hermes_gateway")).toBe(false);
+
+    setOverridePaused("hermes_gateway", false);
   });
 });
 
