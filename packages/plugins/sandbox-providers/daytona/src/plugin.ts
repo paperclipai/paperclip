@@ -66,6 +66,24 @@ import type {
   DaytonaPtyProcess,
 } from "./setup-token-pty.js";
 
+// The Daytona duplex command stream for the sandbox callback bridge. The channel
+// runs the gateway command on a raw pseudo-terminal, streams the frames, and
+// accepts host input. The worker resolves the sandbox by the provider lease id,
+// registers the channel under the host route id, and streams the data and the
+// exit through `ctx.duplexChannel`.
+export {
+  createDaytonaDuplexChannelSessionOpener,
+  openDaytonaDuplexChannelSession,
+  buildDuplexChannelLaunchWrapper,
+} from "./duplex-command-stream.js";
+export type {
+  DuplexChannelSession,
+  DuplexChannelSessionOpener,
+  DaytonaDuplexChannelOptions,
+} from "./duplex-command-stream.js";
+import { openDaytonaDuplexChannelSession as openDuplexChannelSession } from "./duplex-command-stream.js";
+import type { DuplexChannelSession } from "./duplex-command-stream.js";
+
 // Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
 // to the real wall clock; `plugin.test.ts` overrides it via
 // `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`
@@ -1899,6 +1917,41 @@ function forgetDaytonaSetupTokenPty(entry: DaytonaSetupTokenPtyEntry): void {
   daytonaSetupTokenPtyBySession.delete(entry.workerSessionId);
 }
 
+// The worker-side registry of live duplex channels. The worker registers each
+// channel under the host-owned route identifier at open time, so the host closes
+// the exact channel by that identifier even when the open reply was lost. It also
+// indexes by the worker session identifier for write and stop. Each entry records
+// the provider lease id, so a lease teardown closes only its own channels. The
+// `onShutdown` hook closes every open channel here.
+interface DaytonaDuplexChannelEntry {
+  hostRouteId: string;
+  workerSessionId: string;
+  providerLeaseId: string;
+  session: DuplexChannelSession;
+}
+const daytonaDuplexChannelByRoute = new Map<string, DaytonaDuplexChannelEntry>();
+const daytonaDuplexChannelBySession = new Map<string, DaytonaDuplexChannelEntry>();
+
+function forgetDaytonaDuplexChannel(entry: DaytonaDuplexChannelEntry): void {
+  daytonaDuplexChannelByRoute.delete(entry.hostRouteId);
+  daytonaDuplexChannelBySession.delete(entry.workerSessionId);
+}
+
+// Close every open duplex channel that belongs to one provider lease and drop its
+// entry. The lease teardown hooks (release, destroy, resume) call this, so a
+// channel never outlives the sandbox that carries it. The close kills the child
+// and releases the pseudo-terminal socket, so no live channel survives the
+// teardown. The stored identifiers are always cleared, so no orphan id survives.
+async function closeDaytonaDuplexChannelsForLease(providerLeaseId: string): Promise<void> {
+  const matches = [...daytonaDuplexChannelByRoute.values()].filter(
+    (entry) => entry.providerLeaseId === providerLeaseId,
+  );
+  for (const entry of matches) {
+    forgetDaytonaDuplexChannel(entry);
+    await entry.session.close().catch(() => undefined);
+  }
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     // Hoist the context to a module variable so the lifecycle hooks and the
@@ -2106,6 +2159,10 @@ const plugin = definePlugin({
       // session and leak its shell until sandbox reaping.
       if (sandbox.state !== "started") {
         sandboxHandleSessionStore.clear(scope);
+        // A stopped sandbox loses its pseudo-terminals, so a stored duplex channel
+        // is dead after a real restart. Close and drop every channel on this lease
+        // before the restart, so no stale channel id survives the resume.
+        await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
       }
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
       try {
@@ -2170,6 +2227,9 @@ const plugin = definePlugin({
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
       await teardownSession(sandbox, scope);
+      // Close every duplex channel on this lease before the stop or the delete,
+      // so no channel outlives the sandbox and no stored channel id survives.
+      await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
 
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
@@ -2234,6 +2294,9 @@ const plugin = definePlugin({
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
       await teardownSession(sandbox, scope);
+      // Close every duplex channel on this lease before the delete, so no channel
+      // outlives the sandbox and no stored channel id survives.
+      await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
@@ -2734,13 +2797,87 @@ const plugin = definePlugin({
     return { hostRouteId: params.hostRouteId };
   },
 
-  // Close every open login pseudo-terminal on an orderly shutdown, then drain the
-  // sandbox handle cache, so a graceful shutdown holds no live login terminal.
+  // Open one persistent duplex channel. Resolve the cached sandbox by the provider
+  // lease id, run the gateway command on a raw pseudo-terminal, and register the
+  // channel under the host route id. Stream the raw data and the exit through
+  // `ctx.duplexChannel`, bound to the returned worker session id. Fail closed when
+  // no cached sandbox matches the lease.
+  async onDuplexChannelOpen(params) {
+    const sandbox = await sandboxHandleCache.findByProviderLeaseId(params.providerLeaseId);
+    if (!sandbox) {
+      throw new Error(
+        "Daytona duplex channel: no cached sandbox resolves the provider lease.",
+      );
+    }
+    const session = await openDuplexChannelSession(
+      sandbox.process as unknown as DaytonaPtyProcess,
+      params.command,
+    );
+    const workerSessionId = `duplex-${randomUUID()}`;
+    const entry: DaytonaDuplexChannelEntry = {
+      hostRouteId: params.hostRouteId,
+      workerSessionId,
+      providerLeaseId: params.providerLeaseId,
+      session,
+    };
+    daytonaDuplexChannelByRoute.set(params.hostRouteId, entry);
+    daytonaDuplexChannelBySession.set(workerSessionId, entry);
+    // Register the data listener before the first write, so no early data chunk is
+    // lost. The client stamps the worker session id, so the host binds the data to
+    // the open route.
+    session.onData((chunk) => {
+      pluginContext?.duplexChannel.data(workerSessionId, chunk);
+    });
+    // Forward the child exit one time. The host resolves the open route on it.
+    void session.wait().then(
+      (result) => pluginContext?.duplexChannel.exit(workerSessionId, result.exitCode),
+      () => pluginContext?.duplexChannel.exit(workerSessionId, null),
+    );
+    return { workerSessionId };
+  },
+
+  // Write host input to an open duplex channel, keyed by the worker session id.
+  // Drop the input for an unknown session.
+  async onDuplexChannelWrite(params) {
+    const entry = daytonaDuplexChannelBySession.get(params.workerSessionId);
+    if (!entry) return;
+    entry.session.write(params.data);
+  },
+
+  // Stop an open duplex channel child, keyed by the worker session id.
+  async onDuplexChannelStop(params) {
+    const entry = daytonaDuplexChannelBySession.get(params.workerSessionId);
+    if (!entry) return;
+    entry.session.kill();
+  },
+
+  // Close an open duplex channel by the host route id and acknowledge the close
+  // with the same identifier. The close is idempotent: it returns the
+  // acknowledgement even when the entry is already gone, so the host confirms the
+  // channel is closed. The worker never keys the close on the worker session id.
+  async onDuplexChannelClose(params) {
+    const entry = daytonaDuplexChannelByRoute.get(params.hostRouteId);
+    if (entry) {
+      forgetDaytonaDuplexChannel(entry);
+      await entry.session.close().catch(() => undefined);
+    }
+    return { hostRouteId: params.hostRouteId };
+  },
+
+  // Close every open login pseudo-terminal and every open duplex channel on an
+  // orderly shutdown, then drain the sandbox handle cache, so a graceful shutdown
+  // holds no live terminal and no live channel.
   async onShutdown() {
     const openSessions = [...daytonaSetupTokenPtyByRoute.values()];
     daytonaSetupTokenPtyByRoute.clear();
     daytonaSetupTokenPtyBySession.clear();
     for (const entry of openSessions) {
+      await entry.session.close().catch(() => undefined);
+    }
+    const openChannels = [...daytonaDuplexChannelByRoute.values()];
+    daytonaDuplexChannelByRoute.clear();
+    daytonaDuplexChannelBySession.clear();
+    for (const entry of openChannels) {
       await entry.session.close().catch(() => undefined);
     }
     sandboxHandleCache.reset();

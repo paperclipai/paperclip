@@ -2037,6 +2037,36 @@ export interface PluginSetupTokenPtyClient {
   exit(workerSessionId: string, exitCode: number | null): void;
 }
 
+/**
+ * `ctx.duplexChannel` — stream one persistent duplex channel's data and exit from
+ * a sandbox provider worker to the host.
+ *
+ * The worker registers the data listener on the channel and forwards each raw
+ * chunk through `data(workerSessionId, chunk)`. It forwards the child exit through
+ * `exit(workerSessionId, exitCode)`. Each call carries the worker session
+ * identifier the open reply returned, so the host binds the data to the open route
+ * by that identifier while the route is open. The host drops a chunk or an exit
+ * that carries an unknown or a mismatched identifier, and it never logs the raw
+ * bytes. The default is a no-op that never throws. This client models the
+ * `setupTokenPty` client, but it carries no login command allowlist.
+ */
+export interface PluginDuplexChannelClient {
+  /**
+   * Deliver one raw data chunk of a persistent duplex channel.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw channel output text.
+   */
+  data(workerSessionId: string, chunk: string): void;
+  /**
+   * Deliver the child exit of a persistent duplex channel.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   */
+  exit(workerSessionId: string, exitCode: number | null): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -2156,6 +2186,10 @@ export interface PluginContext {
    * The default is a no-op for a provider that opens no login
    * pseudo-terminal. */
   setupTokenPty: PluginSetupTokenPtyClient;
+
+  /** Stream one persistent duplex channel's data and exit to the host. The
+   * default is a no-op for a provider that opens no duplex channel. */
+  duplexChannel: PluginDuplexChannelClient;
 
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;

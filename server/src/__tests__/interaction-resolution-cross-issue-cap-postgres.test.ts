@@ -67,6 +67,15 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
   });
 
   afterAll(async () => {
+    // End the postgres.js pool before stopping the embedded server. Stopping
+    // the server first tears the TCP connection down under the still-open
+    // client, and a batched write the driver scheduled via setImmediate can
+    // then fire after the connection dropped its socket — an unhandled
+    // `Cannot read properties of null (reading 'write')` that fails the run
+    // even though every test passed. `end()` waits for in-flight queries
+    // (including a fire-and-forget wake landing just after a response) and
+    // closes the sockets from the client side first.
+    await db.$client.end();
     await tempDb?.cleanup();
   });
 

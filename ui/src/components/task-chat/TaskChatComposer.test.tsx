@@ -673,15 +673,16 @@ describe("TaskChatComposer", () => {
       }
     });
 
-    it("clears the saved draft only after a successful send", async () => {
+    it("clears the composer and saved draft while the send is pending", async () => {
       localStorage.setItem(draftKey, "queued message");
-      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>(() => {}));
       render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
 
       pressKey("Enter", { metaKey: true });
       await flushAsync();
 
       expect(onAdd).toHaveBeenCalledWith("queued message", undefined, undefined);
+      expect(editable().textContent).toBe("");
       expect(localStorage.getItem(draftKey)).toBeNull();
     });
 
@@ -737,10 +738,13 @@ describe("TaskChatComposer", () => {
         .toContain("next.txt");
     });
 
-    it("keeps the body and saved draft when sending fails", async () => {
+    it("restores a failed send before text entered while it was pending", async () => {
       vi.useFakeTimers();
       try {
-        const onAdd = vi.fn().mockRejectedValue(new Error("network down"));
+        let rejectSend!: (error: Error) => void;
+        const onAdd = vi.fn().mockReturnValue(new Promise<void>((_resolve, reject) => {
+          rejectSend = reject;
+        }));
         render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
         typeText("do not lose this");
         vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
@@ -748,9 +752,16 @@ describe("TaskChatComposer", () => {
 
         pressKey("Enter", { metaKey: true });
         await flushAsync();
+        expect(editable().textContent).toBe("");
+        expect(localStorage.getItem(draftKey)).toBeNull();
 
-        expect(editable().textContent).toBe("do not lose this");
-        expect(localStorage.getItem(draftKey)).toBe("do not lose this");
+        typeText("next draft");
+        rejectSend(new Error("network down"));
+        await flushAsync();
+        await flushAsync();
+
+        expect(editable().textContent).toBe("do not lose this\n\nnext draft");
+        expect(localStorage.getItem(draftKey)).toBe("do not lose this\n\nnext draft");
       } finally {
         vi.useRealTimers();
       }

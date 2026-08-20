@@ -169,6 +169,8 @@ describe("InstanceSidebar", () => {
     const pluginLinks = await findPluginLinks(container, 1);
     expect(pluginLinks[0]?.getAttribute("href")).toBe("/company/settings/instance/plugins/linear");
     expect(pluginLinks[0]?.textContent).toBe("Linear");
+    expect(container.textContent).not.toContain("Access");
+    expect(container.textContent).not.toContain("Heartbeats");
   });
 
   it("keeps plugins that mix sandbox-provider with other contributions", async () => {

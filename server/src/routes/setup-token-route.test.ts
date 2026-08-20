@@ -105,6 +105,22 @@ const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   readClaudeOAuthUserSecretStatus: vi.fn(),
 }));
+// The registry lookup the start-route guard reads. A `beforeEach` sets the
+// default so `claude_local` declares the setup-token capability. A test overrides
+// it to prove the guard reads the capability, not the adapter name.
+const mockFindActiveServerAdapter = vi.hoisted(() => vi.fn());
+
+// The Claude setup-token login capability the registry declares for the built-in
+// adapter. The guard requires the pseudo-terminal transport and the stored-session
+// completion claim.
+const CLAUDE_LOGIN_CAPABILITY = {
+  panelMode: "submitted_browser_code",
+  sandboxTransport: "pseudo_terminal",
+  timeoutPolicy: "fixed",
+  completionClaim: "storedSessionId",
+  getCommand: () => "",
+  parsePrompt: () => null,
+} as const;
 
 function registerModuleMocks(): void {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -160,11 +176,16 @@ function registerModuleMocks(): void {
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent: unknown, config: unknown) => config),
     workspaceOperationService: () => ({}),
   }));
+  // The start-route guard reads the login capability from the registry. The
+  // `beforeEach` default declares the Claude setup-token capability for
+  // `claude_local` and no capability for any other type, so the guard passes for
+  // `claude_local` and fails closed for a different adapter through capability
+  // data alone.
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(),
     listAdapterModels: vi.fn(),
     detectAdapterModel: vi.fn(),
-    findActiveServerAdapter: vi.fn(),
+    findActiveServerAdapter: mockFindActiveServerAdapter,
     requireServerAdapter: vi.fn(),
   }));
 }
@@ -430,6 +451,12 @@ beforeEach(() => {
   registerModuleMocks();
   vi.clearAllMocks();
   useOwner();
+  // The default registry declares the Claude setup-token capability for
+  // `claude_local` and no capability for any other type. A test overrides this to
+  // prove the guard reads the capability, not the adapter name.
+  mockFindActiveServerAdapter.mockImplementation((type: string) =>
+    type === "claude_local" ? { type, loginCapability: CLAUDE_LOGIN_CAPABILITY } : undefined,
+  );
   // The default owner has no stored Claude value. A test overrides this to prove
   // the status route returns the metadata for a present owner value.
   mockSecretService.readClaudeOAuthUserSecretStatus.mockResolvedValue(null);
@@ -459,7 +486,7 @@ beforeEach(() => {
   mockResolvePluginSandboxProviderDriverByKey.mockImplementation(
     async ({ driverKey }: { driverKey: string }) =>
       driverKey === "daytona"
-        ? { plugin: { id: "plugin-daytona" }, driver: { supportsSetupTokenLogin: true } }
+        ? { plugin: { id: "plugin-daytona" }, driver: { supportsLoginPty: true } }
         : null,
   );
 });
@@ -651,7 +678,10 @@ describe("company-and-environment setup-token route — object-level authorizati
     expect(transport.submittedCodes).toEqual([]);
   });
 
-  it("rejects an adapter other than claude_local at start", async () => {
+  it("rejects an adapter whose login capability does not match the setup-token guard", async () => {
+    // The Codex adapter declares a streamed-exec device login, not a
+    // pseudo-terminal setup-token login. The guard reads the capability, so it
+    // rejects the adapter with a fixed 400 before any session.
     const transport = buildTransport({ onSubmit: "pending" });
     const { app } = await createApp({ transport });
 
@@ -663,6 +693,32 @@ describe("company-and-environment setup-token route — object-level authorizati
     // The route rejected the adapter before it started a session, so the store
     // holds no record.
     expect(transport.records).toEqual([]);
+  });
+
+  it("starts a setup-token login for a third adapter that declares the capability", async () => {
+    // A third adapter, not the Claude adapter, declares the pseudo-terminal
+    // setup-token capability with the stored-session claim. The guard reads the
+    // capability, not the adapter name, so the adapter passes the guard and
+    // starts a session. This proves no adapter-name branch remains in the guard
+    // path. The start response reads the panel mode from the capability.
+    mockFindActiveServerAdapter.mockImplementation((type: string) =>
+      type === "gemini_local"
+        ? {
+            type,
+            loginCapability: { ...CLAUDE_LOGIN_CAPABILITY, panelMode: "displayed_code" },
+          }
+        : undefined,
+    );
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const res = await startCompanySession(app, {
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "gemini_local",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.panelMode).toBe("displayed_code");
+    expect(res.body.status).toBe("waiting_for_user");
   });
 });
 

@@ -38,7 +38,6 @@ export function ProfileSettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
@@ -141,7 +140,7 @@ export function ProfileSettings() {
     : "Select a company to upload an avatar into Paperclip storage.";
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
@@ -271,9 +270,7 @@ export function ProfileSettings() {
           </div>
         </form>
 
-        <Card className="rounded-(--rad-28) border-border/70 p-6">
-          <InboxAgentPolicyControl companyId={selectedCompanyId} />
-        </Card>
+        <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>
     </div>
   );

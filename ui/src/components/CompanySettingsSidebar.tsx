@@ -9,7 +9,6 @@ import {
   MailPlus,
   MonitorCog,
   Puzzle,
-  Settings,
   Shield,
   SlidersHorizontal,
   Upload,
@@ -86,22 +85,17 @@ export function CompanySettingsSidebar() {
           <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{selectedCompany?.name ?? "Company"}</span>
         </Link>
-        <div className="flex items-center gap-2 px-2 py-1">
-          <Settings className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="flex-1 truncate text-sm font-bold text-foreground">
-            Company Settings
-          </span>
-        </div>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Company settings
-        </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
-          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
+            label="Profile"
+            icon={UserRoundPen}
+            end
+          />
           <SidebarNavItem
             to="/company/settings/members"
             label="Members"
@@ -122,23 +116,6 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
-        </div>
-        <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Instance settings
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <SidebarNavItem
-            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
-            label="Profile"
-            icon={UserRoundPen}
-            end
-          />
-          <SidebarNavItem
-            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
-            label="General"
-            icon={SlidersHorizontal}
-            end
-          />
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
             label="Environments"
@@ -157,6 +134,8 @@ export function CompanySettingsSidebar() {
             icon={Clock3}
             end
           />
+          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
             label="Experimental"
