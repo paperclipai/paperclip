@@ -233,5 +233,11 @@ describeEmbeddedPostgres("issue list routes staleHours filter", () => {
       .get(`/api/companies/${companyId}/issues`)
       .query({ staleHours: "not-a-number", limit: "20" });
     expect(resNonNumeric.status).toBe(400);
+
+    const resOversized = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ staleHours: "1e308", limit: "20" });
+    expect(resOversized.status, JSON.stringify(resOversized.body)).toBe(400);
+    expect(resOversized.body).toMatchObject({ error: "staleHours must be a positive number when provided" });
   });
 });

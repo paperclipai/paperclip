@@ -5893,7 +5893,13 @@ export function issueRoutes(
     let staleHours: number | undefined;
     if (rawStaleHours !== undefined) {
       const parsedStaleHours = Number(rawStaleHours);
-      if (!Number.isFinite(parsedStaleHours) || parsedStaleHours <= 0) {
+      const staleCutoffMs = Date.now() - parsedStaleHours * 60 * 60 * 1000;
+      if (
+        !Number.isFinite(parsedStaleHours) ||
+        parsedStaleHours <= 0 ||
+        !Number.isFinite(staleCutoffMs) ||
+        !Number.isFinite(new Date(staleCutoffMs).getTime())
+      ) {
         res.status(400).json({ error: "staleHours must be a positive number when provided" });
         return;
       }
