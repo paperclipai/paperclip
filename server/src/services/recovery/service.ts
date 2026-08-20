@@ -2584,9 +2584,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
     preferredOwnerAgentId?: string | null;
   }) {
-    // The source issue assignee remains the source of truth for who owns the
-    // work. A recovery/helper run may execute under a different agent, but that
-    // must not silently steal the task on restore.
     const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId;
     const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
@@ -2596,10 +2593,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const retryAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
       if (!retryAgentId) {
         return {
-          ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(
-            input.issue,
-            input.preferredOwnerAgentId,
-          ),
+          ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
           returnOwnerAgentId: originalAgentId,
           routingFallbackReason: "The original assignee is not invokable; quota recovery fell through to the manager ladder.",
         };
@@ -2616,10 +2610,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return { ownerAgentId, returnOwnerAgentId: originalAgentId, routingFallbackReason: null };
       }
       return {
-        ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(
-          input.issue,
-          input.preferredOwnerAgentId,
-        ),
+        ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
         returnOwnerAgentId: originalAgentId,
         routingFallbackReason: "The original assignee is not invokable; recovery fell through to the manager ladder.",
       };
@@ -3244,25 +3235,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
   }
 
-  async function ensureBlockingEdge(companyId: string, blockerIssueId: string, blockedIssueId: string) {
-    await db
-      .insert(issueRelations)
-      .values({
-        companyId,
-        issueId: blockerIssueId,
-        relatedIssueId: blockedIssueId,
-        type: "blocks",
-      })
-      .onConflictDoNothing({
-        target: [
-          issueRelations.companyId,
-          issueRelations.issueId,
-          issueRelations.relatedIssueId,
-          issueRelations.type,
-        ],
-      });
-  }
-
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
     const existingBlockers = await existingUnresolvedBlockerIssues(issue.companyId, issue.id);
     const openChildren = await db
@@ -3368,36 +3340,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    const wakePolicyType = typeof recoveryAction.wakePolicy === "object" &&
-        recoveryAction.wakePolicy &&
-        "type" in recoveryAction.wakePolicy &&
-        typeof recoveryAction.wakePolicy.type === "string"
-      ? recoveryAction.wakePolicy.type
-      : null;
-    const preservesSourceAssignee =
-      Boolean(recoveryAction.ownerAgentId) &&
-      Boolean(input.issue.assigneeAgentId) &&
-      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
-    const takeoverRecoveryIssue = preservesSourceAssignee && wakePolicyType === "wake_owner"
-      ? await ensureStrandedIssueRecoveryIssue({
-        issue: input.issue,
-        latestRun: input.latestRun,
-        previousStatus: input.previousStatus,
-        recoveryCause,
-        recoveryOwnerAgentId: recoveryAction.ownerAgentId,
-        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-      })
-      : null;
-    if (takeoverRecoveryIssue) {
-      await ensureBlockingEdge(input.issue.companyId, takeoverRecoveryIssue.id, input.issue.id);
-    }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: preservesSourceAssignee
-        ? input.issue.assigneeAgentId
-        : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      assigneeAgentId: input.issue.assigneeAgentId,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3530,16 +3477,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     });
 
-    if (!takeoverRecoveryIssue) {
-      await enqueueSourceScopedStrandedRecoveryWake({
-        action: recoveryAction,
-        issue: input.issue,
-        latestRun: input.latestRun,
-        recoveryCause,
-      });
-    }
+    await enqueueSourceScopedStrandedRecoveryWake({
+      action: recoveryAction,
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+    });
 
-    if (!takeoverRecoveryIssue && recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
@@ -3550,11 +3495,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (
         currentIssue &&
-        currentIssue.status !== "blocked"
+        (currentIssue.status !== "blocked" ||
+          currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
+          assigneeAgentId: input.issue.assigneeAgentId,
         });
         if (reblocked) return reblocked;
       }
@@ -3964,6 +3911,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               latestRun: participantLatestRun,
               notice: buildExecutionReviewParticipantUnavailableNoticeSeed(),
               recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+              recoveryOwnerAgentId: participantAgentId,
             });
             if (updated) {
               result.escalated += 1;
@@ -4004,6 +3952,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             previousStatus: "in_review",
             latestRun: participantLatestRun,
             recoveryCause: "configuration_incomplete",
+            recoveryOwnerAgentId: participantAgentId,
             comment:
               "Paperclip classified the active review participant's latest adapter failure as " +
               "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
@@ -4029,6 +3978,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             latestRun: participantLatestRun,
             notice: buildExecutionReviewParticipantUnavailableNoticeSeed(),
             recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+            recoveryOwnerAgentId: participantAgentId,
           });
           if (updated) {
             result.escalated += 1;
@@ -4046,6 +3996,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             latestRun: participantLatestRun,
             notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
             recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+            recoveryOwnerAgentId: participantAgentId,
           });
           if (updated) {
             result.escalated += 1;

@@ -6257,9 +6257,6 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(persistedClaims).toHaveLength(1);
     expect(persistedClaims[0]?.requestedChildCount).toBe(2);
     expect(persistedClaims[0]?.childIssueIds).toEqual(first.childIssueIds);
-    expect((persistedClaims[0]?.requestedChildren as Array<Record<string, unknown>> | undefined)?.[1])
-      .not.toHaveProperty("assigneeAgentId");
-
     const childrenRows = await db
       .select({ id: issues.id, title: issues.title })
       .from(issues)
