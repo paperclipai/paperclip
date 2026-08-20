@@ -47,6 +47,7 @@ import {
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
+  createBackupManager,
   environmentCustomImageService,
   decisionService,
   decisionRetentionService,
@@ -83,6 +84,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -146,9 +148,15 @@ export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
-  ensureDecisionSigningSecret();
+  // A maintenance process does not execute decision routes, and must not create
+  // a signing secret or begin telemetry work while it is isolated for restore.
+  // Read the process-only flag directly here because the normal startup path
+  // validates the signing secret before loading the rest of the config.
+  if (process.env.PAPERCLIP_RESTORE_MAINTENANCE_MODE !== "true") {
+    ensureDecisionSigningSecret();
+  }
   let config = loadConfig();
-  initTelemetry({ enabled: config.telemetryEnabled });
+  initTelemetry({ enabled: !config.restoreMaintenanceMode && config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
   }
@@ -590,21 +598,23 @@ export async function startServer(): Promise<StartedServer> {
   let resolveSessionFromHeaders:
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
-  if (config.deploymentMode === "local_trusted") {
-    await ensureLocalTrustedBoardPrincipal(db as any);
-  }
-  const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
-  if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
-    logger.info(accessBackfill, "Backfilled principal access compatibility records");
-  }
-  const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
-  if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
-    logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
-  }
-  const confirmationSweep = await issueThreadInteractionService(db as any)
-    .sweepSupersededPendingRequestConfirmations();
-  if (confirmationSweep.expired > 0) {
-    logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
+  if (!config.restoreMaintenanceMode) {
+    if (config.deploymentMode === "local_trusted") {
+      await ensureLocalTrustedBoardPrincipal(db as any);
+    }
+    const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
+    if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
+      logger.info(accessBackfill, "Backfilled principal access compatibility records");
+    }
+    const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
+    if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
+      logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
+    }
+    const confirmationSweep = await issueThreadInteractionService(db as any)
+      .sweepSupersededPendingRequestConfirmations();
+    if (confirmationSweep.expired > 0) {
+      logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
+    }
   }
   if (config.deploymentMode === "authenticated") {
     const {
@@ -636,17 +646,21 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
-    await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+    if (!config.restoreMaintenanceMode) {
+      await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+    }
     authReady = true;
   }
 
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
   }
-  maybePersistWorktreeRuntimePorts({
-    serverPort: listenPort,
-    databasePort: resolvedEmbeddedPostgresPort,
-  });
+  if (!config.restoreMaintenanceMode) {
+    maybePersistWorktreeRuntimePorts({
+      serverPort: listenPort,
+      databasePort: resolvedEmbeddedPostgresPort,
+    });
+  }
   // Cloud managed-config contract (harness → app). Parse PAPERCLIP_MANAGED_CONFIG
   // once so a malformed document (blank value, bad JSON, unknown feature key,
   // unsupported v, missing section) refuses startup with a precise error instead
@@ -678,6 +692,17 @@ export async function startServer(): Promise<StartedServer> {
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
+  // This flag is shared with the portable manager. Set it synchronously before
+  // the legacy backup path first awaits so a restore/snapshot and pg_dump cannot
+  // pass each other between their respective in-flight checks.
+  let databaseBackupInFlight = false;
+  const backupManager = isCloudManagedInstance()
+    ? null
+    : createBackupManager({
+      connectionString: activeDatabaseConnectionString,
+      config,
+      isExternalDatabaseBackupRunning: () => databaseBackupInFlight,
+    });
   const backupSettingsSvc = instanceSettingsService(db);
   const databaseBackupMaxAgeHours = Math.max(
     1,
@@ -692,14 +717,20 @@ export async function startServer(): Promise<StartedServer> {
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
-  let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
   ): Promise<InstanceDatabaseBackupRunResult | null> => {
-    if (databaseBackupInFlight) {
-      const message = "Database backup already in progress";
+    if (databaseBackupInFlight || backupManager?.isOperationReserved()) {
+      const portableOperationActive = backupManager?.isOperationReserved() ?? false;
+      const message = portableOperationActive
+        ? "Cannot run a database backup while a portable backup or restore operation is in progress"
+        : "Database backup already in progress";
       if (trigger === "scheduled") {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
+        logger.warn(
+          portableOperationActive
+            ? "Skipping scheduled database backup while a portable backup or restore operation is in progress"
+            : "Skipping scheduled database backup because a previous backup is still running",
+        );
         return null;
       }
       throw conflict(message);
@@ -752,7 +783,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const heartbeat = config.heartbeatSchedulerEnabled
+  const heartbeat = !config.restoreMaintenanceMode && config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
   const decisionServiceOptions = {
@@ -767,6 +798,8 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     storageService,
     feedbackExportService: feedback,
+    backupManager: backupManager ?? undefined,
+    restoreMaintenanceMode: config.restoreMaintenanceMode,
     databaseBackupService: {
       runManualBackup: async () => {
         const result = await runServerDatabaseBackup("manual");
@@ -776,7 +809,11 @@ export async function startServer(): Promise<StartedServer> {
         return result;
       },
     },
-    databaseBackupHealth: config.databaseBackupEnabled
+    // Self-hosted instances schedule portable bundles, not the legacy .sql.gz
+    // job below. Its health probe only understands the latter format, so do not
+    // surface a false stale-backup warning while the portable manager owns the
+    // automatic schedule.
+    databaseBackupHealth: !backupManager && config.databaseBackupEnabled
       ? {
           enabled: config.databaseBackupEnabled,
           backupDir: config.databaseBackupDir,
@@ -832,153 +869,159 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
-  setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
-    pluginWorkerManager,
-  });
-  setupLiveEventsWebSocketServer(server, db as any, {
-    deploymentMode: config.deploymentMode,
-    resolveSessionFromHeaders,
-    // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
-    // of a local Better Auth session; without this lane every live-events
-    // upgrade behind the Cloud front door 403s forever. The resolver is
-    // self-gating: it returns null unless PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN
-    // is configured and the request presents the matching trust token, so
-    // self-hosted deployments never take this path.
-    resolveCloudActor: async (req) => {
-      const actor = await resolveCloudTenantActor(
-        db as any,
-        cloudActorHeaderSourceFromHeaders(req.headers),
-      );
-      if (!actor?.userId || !actor.companyIds) return null;
-      return { userId: actor.userId, companyIds: actor.companyIds };
-    },
-  });
+  if (!config.restoreMaintenanceMode) {
+    setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
+      pluginWorkerManager,
+    });
+    setupLiveEventsWebSocketServer(server, db as any, {
+      deploymentMode: config.deploymentMode,
+      resolveSessionFromHeaders,
+      // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
+      // of a local Better Auth session; without this lane every live-events
+      // upgrade behind the Cloud front door 403s forever. The resolver is
+      // self-gating: it returns null unless PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN
+      // is configured and the request presents the matching trust token, so
+      // self-hosted deployments never take this path.
+      resolveCloudActor: async (req) => {
+        const actor = await resolveCloudTenantActor(
+          db as any,
+          cloudActorHeaderSourceFromHeaders(req.headers),
+        );
+        if (!actor?.userId || !actor.companyIds) return null;
+        return { userId: actor.userId, companyIds: actor.companyIds };
+      },
+    });
 
-  try {
-    const result = await workspaceOperationService(db as any)
-      .reconcileStaleRuntimeControlOperations();
-    if (result.reconciled > 0) {
-      logger.warn(
-        { reconciled: result.reconciled, operationIds: result.operationIds },
-        "reconciled stale managed runtime control operations from a previous server process",
-      );
+    try {
+      const result = await workspaceOperationService(db as any)
+        .reconcileStaleRuntimeControlOperations();
+      if (result.reconciled > 0) {
+        logger.warn(
+          { reconciled: result.reconciled, operationIds: result.operationIds },
+          "reconciled stale managed runtime control operations from a previous server process",
+        );
+      }
+    } catch (err) {
+      logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
     }
-  } catch (err) {
-    logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
-  }
 
-  void reconcilePersistedRuntimeServicesOnStartup(db as any)
-    .then((result) => {
-      if (
-        result.reconciled > 0
-        || result.restarted > 0
-        || result.restartFailed > 0
-        || result.backfilled > 0
-      ) {
+    void reconcilePersistedRuntimeServicesOnStartup(db as any)
+      .then((result) => {
+        if (
+          result.reconciled > 0
+          || result.restarted > 0
+          || result.restartFailed > 0
+          || result.backfilled > 0
+        ) {
+          logger.warn(
+            {
+              reconciled: result.reconciled,
+              adopted: result.adopted,
+              stopped: result.stopped,
+              // Managed HTTP-only services taken down so they come back on a
+              // verified HTTPS origin (PAP-17158).
+              httpsBackfilled: result.backfilled,
+              restarted: result.restarted,
+              restartFailed: result.restartFailed,
+            },
+            "reconciled persisted runtime services from a previous server process",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+      });
+
+    // Backfill auth.json into any already-isolated codex_local managed home that
+    // was created by the #8272 isolation guard before the Phase 1 seeding fix.
+    // Idempotent; the Phase 1 execute-time seeding covers new strandings.
+    void reconcileCodexLocalManagedHomesOnStartup(db)
+      .then((result) => {
+        if (result.seeded > 0 || result.failed > 0) {
+          logger.warn(
+            { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
+            "reconciled codex_local managed homes (backfilled missing auth)",
+          );
+        }
+        if (result.sourceAuthMissing > 0) {
+          logger.warn(
+            { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
+            "could not backfill codex_local managed homes because shared Codex auth is missing",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
+      });
+
+    void reconcileBuiltInAgentsOnStartup(db as any)
+      .then((result) => {
+        if (
+          result.reconciled > 0
+          || result.unknown > 0
+          || result.duplicates > 0
+          || result.autoEnsured > 0
+          || result.companyFailures > 0
+        ) {
+          logger.warn(
+            result,
+            "startup reconciliation of built-in agents complete",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of built-in agents failed");
+      });
+
+    // Force the instance onto the Kubernetes sandbox provider when configured via
+    // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
+    // queued runs so the policy + managed k8s environments are in place. A bad
+    // PAPERCLIP_EXECUTION_MODE / PAPERCLIP_K8S_* value throws and fails startup
+    // (fail-loud) rather than silently allowing local execution.
+    try {
+      const policyResult = await bootstrapExecutionPolicyFromEnv(db as any);
+      if (policyResult) {
         logger.warn(
           {
-            reconciled: result.reconciled,
-            adopted: result.adopted,
-            stopped: result.stopped,
-            // Managed HTTP-only services taken down so they come back on a
-            // verified HTTPS origin (PAP-17158).
-            httpsBackfilled: result.backfilled,
-            restarted: result.restarted,
-            restartFailed: result.restartFailed,
+            executionMode: policyResult.executionMode,
+            companiesConfigured: policyResult.companiesConfigured,
           },
-          "reconciled persisted runtime services from a previous server process",
+          "forced execution policy applied at startup",
         );
       }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of persisted runtime services failed");
-    });
-
-  // Backfill auth.json into any already-isolated codex_local managed home that
-  // was created by the #8272 isolation guard before the Phase 1 seeding fix.
-  // Idempotent; the Phase 1 execute-time seeding covers new strandings.
-  void reconcileCodexLocalManagedHomesOnStartup(db)
-    .then((result) => {
-      if (result.seeded > 0 || result.failed > 0) {
-        logger.warn(
-          { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
-          "reconciled codex_local managed homes (backfilled missing auth)",
-        );
-      }
-      if (result.sourceAuthMissing > 0) {
-        logger.warn(
-          { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
-          "could not backfill codex_local managed homes because shared Codex auth is missing",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
-    });
-
-  void reconcileBuiltInAgentsOnStartup(db as any)
-    .then((result) => {
-      if (
-        result.reconciled > 0
-        || result.unknown > 0
-        || result.duplicates > 0
-        || result.autoEnsured > 0
-        || result.companyFailures > 0
-      ) {
-        logger.warn(
-          result,
-          "startup reconciliation of built-in agents complete",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of built-in agents failed");
-    });
-
-  // Force the instance onto the Kubernetes sandbox provider when configured via
-  // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
-  // queued runs so the policy + managed k8s environments are in place. A bad
-  // PAPERCLIP_EXECUTION_MODE / PAPERCLIP_K8S_* value throws and fails startup
-  // (fail-loud) rather than silently allowing local execution.
-  try {
-    const policyResult = await bootstrapExecutionPolicyFromEnv(db as any);
-    if (policyResult) {
-      logger.warn(
-        {
-          executionMode: policyResult.executionMode,
-          companiesConfigured: policyResult.companiesConfigured,
-        },
-        "forced execution policy applied at startup",
-      );
+    } catch (err) {
+      logger.error({ err }, "failed to apply forced execution policy from environment");
+      throw err;
     }
-  } catch (err) {
-    logger.error({ err }, "failed to apply forced execution policy from environment");
-    throw err;
-  }
 
-  // Ensure sandbox environments declared in the managed-config document
-  // (`environments` section) before the heartbeat resumes queued runs. The
-  // document already parsed fail-closed above; the ensure step itself is
-  // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
-  // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
-  // throws here and fails startup. `pluginsReady` sequences the ensure after
-  // the bundled-plugin install/load pass so a declared environment never
-  // activates before its provider driver is registered; the worker manager
-  // additionally gates each entry on a live plugin worker (and archives the
-  // row of a provider that did not come up).
-  try {
-    const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
-      .locals?.bundledPluginsStartup;
-    const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
-      pluginsReady: bundledPluginsStartup,
-      workerManager: pluginWorkerManager,
-    });
-    if (managedEnvironmentsResult) {
-      logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
+    // Ensure sandbox environments declared in the managed-config document
+    // (`environments` section) before the heartbeat resumes queued runs. The
+    // document already parsed fail-closed above; the ensure step itself is
+    // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
+    // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
+    // throws here and fails startup. `pluginsReady` sequences the ensure after
+    // the bundled-plugin install/load pass so a declared environment never
+    // activates before its provider driver is registered; the worker manager
+    // additionally gates each entry on a live plugin worker (and archives the
+    // row of a provider that did not come up).
+    try {
+      const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
+        .locals?.bundledPluginsStartup;
+      const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
+        pluginsReady: bundledPluginsStartup,
+        workerManager: pluginWorkerManager,
+      });
+      if (managedEnvironmentsResult) {
+        logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
+      }
+    } catch (err) {
+      logger.error({ err }, "failed to apply managed environments from managed config");
+      throw err;
     }
-  } catch (err) {
-    logger.error({ err }, "failed to apply managed environments from managed config");
-    throw err;
+  } else {
+    logger.warn(
+      "Restore maintenance mode active: websocket upgrades, runtime reconciliation, plugin activation, and startup writers are disabled.",
+    );
   }
 
   let drainHeartbeatRunsForShutdown: ((
@@ -1010,12 +1053,14 @@ export async function startServer(): Promise<StartedServer> {
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
   };
-  const externalObjects = externalObjectService(db as any, {
-    pluginWorkerManager,
-    enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
-  });
+  const externalObjects = !config.restoreMaintenanceMode
+    ? externalObjectService(db as any, {
+      pluginWorkerManager,
+      enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
+    })
+    : null;
   const scheduleExternalObjectRefreshSweep = (now = new Date()) => {
-    if (heartbeatSchedulerStopped) return;
+    if (heartbeatSchedulerStopped || !externalObjects) return;
     trackHeartbeatSchedulerWork(externalObjects
       .refreshDueObjectsForActiveCompanies(50, now)
       .then((result) => {
@@ -1050,10 +1095,12 @@ export async function startServer(): Promise<StartedServer> {
   // so a just-failed lease does not draw a retry on every tick. The startup
   // sweep passes zero, so a restart retries a stranded orphan at once.
   const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
-  const environmentLeaseCleanupHeartbeat =
-    heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
-  const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
-    environmentLeaseCleanupHeartbeat
+  const environmentLeaseCleanupHeartbeat = !config.restoreMaintenanceMode
+    ? heartbeat ?? heartbeatService(db as any, { pluginWorkerManager })
+    : null;
+  const runEnvironmentLeaseCleanupSweep = (backoffMs: number) => {
+    if (!environmentLeaseCleanupHeartbeat) return Promise.resolve();
+    return environmentLeaseCleanupHeartbeat
       .sweepPendingCleanupLeases({ backoffMs })
       .then((result) => {
         if (result.destroyed > 0 || result.capped > 0) {
@@ -1063,12 +1110,13 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "environment lease cleanup sweep failed");
       });
+  };
   const scheduleEnvironmentLeaseCleanupSweep = () => {
     if (heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
 
-  if (heartbeat) {
+  if (!config.restoreMaintenanceMode && heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     const retentionExecutor = decisionRetentionService(db as any, {
@@ -1540,7 +1588,7 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
-  } else {
+  } else if (!config.restoreMaintenanceMode) {
     // The heartbeat scheduler is disabled, but the orphan-sandbox cleanup sweep
     // is still required. A failed acquire can leak a paid provider sandbox, so
     // this path retries the teardown at startup and on the interval, exactly as
@@ -1552,7 +1600,7 @@ export async function startServer(): Promise<StartedServer> {
     });
   }
   
-  if (config.databaseBackupEnabled) {
+  if (!config.restoreMaintenanceMode && config.databaseBackupEnabled && !backupManager) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -1569,23 +1617,38 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
-  // Wait for external adapters to finish loading before accepting requests.
-  // Without this, adapter type validation (assertKnownAdapterType) would
-  // reject valid external adapter types during the startup loading window.
-  const { waitForExternalAdapters } = await import("./adapters/registry.js");
-  await waitForExternalAdapters();
 
-  // Reconcile the agent-creation picker to the declaratively-configured adapter
-  // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
-  // known-adapter list is complete. Fail loud on misconfig (a declared adapter
-  // with no implementation), consistent with the execution-policy bootstrap:
-  // log the structured error, then rethrow to fail startup.
-  try {
-    reconcileAdapterAvailability(parseAdapterRegistryEnv());
-  } catch (err) {
-    logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
-    throw err;
+  if (!config.restoreMaintenanceMode && backupManager) {
+    logger.info(
+      { pollIntervalSeconds: 30 },
+      "Portable backup manager scheduler enabled",
+    );
+    const portableBackupScheduler = setInterval(() => {
+      void backupManager.tick().catch((err) => {
+        logger.error({ err }, "portable backup scheduler tick failed");
+      });
+    }, 30_000);
+    portableBackupScheduler.unref?.();
+  }
+  
+  if (!config.restoreMaintenanceMode) {
+    // Wait for external adapters to finish loading before accepting requests.
+    // Without this, adapter type validation (assertKnownAdapterType) would
+    // reject valid external adapter types during the startup loading window.
+    const { waitForExternalAdapters } = await import("./adapters/registry.js");
+    await waitForExternalAdapters();
+
+    // Reconcile the agent-creation picker to the declaratively-configured adapter
+    // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
+    // known-adapter list is complete. Fail loud on misconfig (a declared adapter
+    // with no implementation), consistent with the execution-policy bootstrap:
+    // log the structured error, then rethrow to fail startup.
+    try {
+      reconcileAdapterAvailability(parseAdapterRegistryEnv());
+    } catch (err) {
+      logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
+      throw err;
+    }
   }
 
   await new Promise<void>((resolveListen, rejectListen) => {

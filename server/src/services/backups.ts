@@ -13,14 +13,14 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { restoreDatabaseBackup, runDatabaseBackup } from "@paperclipai/db";
+import { runDatabaseBackup, runDatabaseRestore } from "@paperclipai/db";
 import {
   backupAuditEventSchema,
   backupAuditSummarySchema,
@@ -141,6 +141,37 @@ const RESTORE_COMPONENT_LABELS: Record<BackupComponentKey, string> = {
   secretsKey: "Secrets master key",
   workspaces: "Agent workspaces",
 };
+const PORTABLE_CONFIG_EXCLUDED_TOP_LEVEL_KEYS = new Set(["server", "auth"]);
+const SECRET_CONFIG_KEY_TOKENS = new Set([
+  "key",
+  "keys",
+  "secret",
+  "secrets",
+  "token",
+  "tokens",
+  "password",
+  "passwords",
+  "credential",
+  "credentials",
+]);
+const HOST_LOCAL_PATH_KEY_TOKENS = new Set([
+  "path",
+  "paths",
+  "dir",
+  "dirs",
+  "directory",
+  "directories",
+  "folder",
+  "folders",
+]);
+const PORTABLE_CONFIG_OMITTED_PATHS = [
+  ["database", "connectionString"],
+  ["database", "embeddedPostgresDataDir"],
+  ["database", "backup", "dir"],
+  ["logging", "logDir"],
+  ["storage", "localDisk", "baseDir"],
+  ["secrets", "localEncrypted", "keyFilePath"],
+] as const;
 
 function nowIso(date: Date = new Date()): string {
   return date.toISOString();
@@ -164,11 +195,192 @@ function isPathInside(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/**
+ * Bundle manifests are moved between operating systems, so their component
+ * paths are a small, platform-neutral format rather than host file paths.
+ */
+function normalizeBundleRelativePath(relativePath: string): string {
+  if (!relativePath || relativePath.includes("\0")) {
+    throw new Error("Backup component paths must be non-empty relative paths.");
+  }
+
+  if (
+    path.posix.isAbsolute(relativePath)
+    || path.win32.isAbsolute(relativePath)
+    || /^[a-z]:/i.test(relativePath)
+  ) {
+    throw new Error("Backup component paths must not be absolute or drive-qualified.");
+  }
+
+  const slashSeparated = relativePath.replace(/\\/g, "/");
+  if (path.posix.isAbsolute(slashSeparated) || /^[a-z]:/i.test(slashSeparated)) {
+    throw new Error("Backup component paths must not be absolute or drive-qualified.");
+  }
+
+  const segments = slashSeparated.split("/");
+  if (segments.some((segment) => /^[a-z]:/i.test(segment))) {
+    throw new Error("Backup component paths must not contain drive-qualified segments.");
+  }
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("Backup component paths must not contain traversal segments.");
+  }
+
+  const normalized = segments.filter(Boolean).join("/");
+  if (!normalized) {
+    throw new Error("Backup component paths must be non-empty relative paths.");
+  }
+  return normalized;
+}
+
+function toBundleRelativePath(bundlePath: string, targetPath: string): string {
+  return normalizeBundleRelativePath(path.relative(bundlePath, targetPath));
+}
+
+function resolveBundleComponentPath(bundlePath: string, relativePath: string): string {
+  const normalized = normalizeBundleRelativePath(relativePath);
+  const resolvedBundlePath = path.resolve(bundlePath);
+  const resolvedPath = path.resolve(resolvedBundlePath, ...normalized.split("/"));
+  if (!isPathInside(resolvedBundlePath, resolvedPath)) {
+    throw new Error("Backup component path resolves outside the bundle.");
+  }
+  return resolvedPath;
+}
+
+function serializeBackupManifest(run: BackupRun): BackupRun {
+  return backupRunSchema.parse({
+    ...run,
+    // Never persist a source-machine path in a portable archive.
+    bundlePath: run.bundleName,
+    components: run.components.map((component) => ({
+      ...component,
+      relativePath: component.relativePath ? normalizeBundleRelativePath(component.relativePath) : null,
+      absolutePath: null,
+    })),
+  });
+}
+
+function hydrateBackupRun(run: BackupRun, bundlePath: string, bundleName: string): BackupRun {
+  return backupRunSchema.parse({
+    ...run,
+    bundleName,
+    bundlePath,
+    components: run.components.map((component) => ({
+      ...component,
+      relativePath: component.relativePath ? normalizeBundleRelativePath(component.relativePath) : null,
+      absolutePath: component.relativePath
+        ? resolveBundleComponentPath(bundlePath, component.relativePath)
+        : null,
+    })),
+  });
+}
+
 function joinNotes(...parts: Array<string | null | undefined>): string | null {
   const notes = parts
     .map((part) => part?.trim())
     .filter((part): part is string => Boolean(part));
   return notes.length > 0 ? notes.join("; ") : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function configKeyTokens(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function isSecretLikeConfigKey(key: string): boolean {
+  const tokens = configKeyTokens(key);
+  const normalized = tokens.join("");
+  return SECRET_CONFIG_KEY_TOKENS.has(normalized)
+    || tokens.some((token) => SECRET_CONFIG_KEY_TOKENS.has(token))
+    || normalized.includes("apikey")
+    || normalized.includes("connectionstring");
+}
+
+function isHostLocalPathConfigEntry(key: string, value: unknown): boolean {
+  if (!configKeyTokens(key).some((token) => HOST_LOCAL_PATH_KEY_TOKENS.has(token))) return false;
+  const values = Array.isArray(value) ? value : [value];
+  return values.some((entry) => {
+    if (typeof entry !== "string") return false;
+    const candidate = entry.trim();
+    return path.isAbsolute(candidate)
+      || /^[a-z]:[\\/]/i.test(candidate)
+      || /^~[\\/]/.test(candidate)
+      || /^\$[A-Z_][A-Z0-9_]*[\\/]/i.test(candidate)
+      || /^%[^%]+%[\\/]/.test(candidate);
+  });
+}
+
+function cloneConfigValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => cloneConfigValue(entry));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneConfigValue(entry)]));
+}
+
+function removeConfigPath(config: Record<string, unknown>, pathParts: readonly string[]): void {
+  let current: Record<string, unknown> = config;
+  for (const part of pathParts.slice(0, -1)) {
+    const next = current[part];
+    if (!isRecord(next)) return;
+    current = next;
+  }
+  const finalPart = pathParts[pathParts.length - 1];
+  if (finalPart) delete current[finalPart];
+}
+
+function sanitizePortableConfig(raw: unknown): Record<string, unknown> | null {
+  if (!isRecord(raw)) return null;
+
+  const sanitizeValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map((entry) => sanitizeValue(entry));
+    if (!isRecord(value)) return value;
+
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (isSecretLikeConfigKey(key) || isHostLocalPathConfigEntry(key, entry)) continue;
+      sanitized[key] = sanitizeValue(entry);
+    }
+    return sanitized;
+  };
+
+  const portable = sanitizeValue(raw);
+  if (!isRecord(portable)) return null;
+
+  for (const key of PORTABLE_CONFIG_EXCLUDED_TOP_LEVEL_KEYS) {
+    delete portable[key];
+  }
+  for (const pathParts of PORTABLE_CONFIG_OMITTED_PATHS) {
+    removeConfigPath(portable, pathParts);
+  }
+  return portable;
+}
+
+function mergePortableConfig(target: unknown, portable: Record<string, unknown>): Record<string, unknown> {
+  const mergeRecords = (
+    targetRecord: Record<string, unknown>,
+    portableRecord: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const merged = cloneConfigValue(targetRecord) as Record<string, unknown>;
+    for (const [key, portableValue] of Object.entries(portableRecord)) {
+      const targetValue = merged[key];
+      merged[key] = isRecord(targetValue) && isRecord(portableValue)
+        ? mergeRecords(targetValue, portableValue)
+        : cloneConfigValue(portableValue);
+    }
+    return merged;
+  };
+
+  return mergeRecords(isRecord(target) ? target : {}, portable);
+}
+
+function hasLegacyS3Credentials(raw: unknown): boolean {
+  if (!isRecord(raw) || !isRecord(raw.remote) || !isRecord(raw.remote.s3)) return false;
+  return Object.hasOwn(raw.remote.s3, "accessKeyId") || Object.hasOwn(raw.remote.s3, "secretAccessKey");
 }
 
 function getRetentionReferenceTime(backup: BackupRun): string {
@@ -339,29 +551,58 @@ function verifyBackupSignature(opts: {
   }
 }
 
-async function assertNoSymlinks(rootPath: string): Promise<void> {
+async function assertNoSymlinks(
+  rootPath: string,
+  options: { allowFile?: boolean; subject?: string } = {},
+): Promise<void> {
+  const { allowFile = false, subject } = options;
+  const unsupportedSymlinkMessage =
+    "Portable backups do not support symbolic links; replace the link with a regular file or directory.";
   const rootStat = await lstat(rootPath);
   if (rootStat.isSymbolicLink()) {
+    if (subject) {
+      throw new Error(`${subject} may not be a symbolic link. ${unsupportedSymlinkMessage}`);
+    }
     throw new Error("Backup bundle root may not be a symbolic link.");
   }
   if (!rootStat.isDirectory()) {
+    if (allowFile && rootStat.isFile()) return;
+    if (subject) {
+      throw new Error(`${subject} must be a regular file or directory.`);
+    }
     throw new Error("Backup bundle root must be a directory.");
   }
 
-  const entries = await readdir(rootPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const childPath = path.resolve(rootPath, entry.name);
-    if (entry.isSymbolicLink()) {
-      throw new Error(`Backup archive contains a symbolic link: ${entry.name}`);
+  const visitDirectory = async (directoryPath: string): Promise<void> => {
+    const entries = await readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const childPath = path.resolve(directoryPath, entry.name);
+      // Prefer lstat over Dirent type information so this check stays
+      // fail-closed on filesystems that do not expose d_type reliably.
+      const childStat = await lstat(childPath);
+      if (childStat.isSymbolicLink()) {
+        if (subject) {
+          const relativePath = path.relative(rootPath, childPath).split(path.sep).join("/");
+          throw new Error(
+            `${subject} contains a symbolic link at '${relativePath}'. ${unsupportedSymlinkMessage}`,
+          );
+        }
+        throw new Error(`Backup archive contains a symbolic link: ${entry.name}`);
+      }
+      if (childStat.isDirectory()) {
+        await visitDirectory(childPath);
+        continue;
+      }
+      if (!childStat.isFile()) {
+        if (subject) {
+          throw new Error(`${subject} contains an unsupported filesystem entry: ${entry.name}`);
+        }
+        throw new Error(`Backup archive contains an unsupported entry: ${entry.name}`);
+      }
     }
-    if (entry.isDirectory()) {
-      await assertNoSymlinks(childPath);
-      continue;
-    }
-    if (!entry.isFile()) {
-      throw new Error(`Backup archive contains an unsupported entry: ${entry.name}`);
-    }
-  }
+  };
+
+  await visitDirectory(rootPath);
 }
 
 async function computeFileSha256(filePath: string): Promise<string> {
@@ -409,14 +650,23 @@ async function computePathDigest(targetPath: string): Promise<PathDigest> {
     throw new Error(`Cannot compute integrity for unsupported path '${targetPath}'.`);
   }
 
-  const files = await listFilesRecursively(targetPath);
+  const files = (await listFilesRecursively(targetPath))
+    .map((filePath) => ({
+      filePath,
+      relativePath: toBundleRelativePath(targetPath, filePath),
+    }))
+    .sort((left, right) => {
+      if (left.relativePath < right.relativePath) return -1;
+      if (left.relativePath > right.relativePath) return 1;
+      return 0;
+    });
   const treeHash = createHash("sha256");
   let totalBytes = 0;
-  for (const filePath of files) {
+  for (const { filePath, relativePath } of files) {
     const fileStat = await stat(filePath);
     const fileHash = await computeFileSha256(filePath);
     totalBytes += fileStat.size;
-    treeHash.update(path.relative(targetPath, filePath));
+    treeHash.update(relativePath);
     treeHash.update("\0");
     treeHash.update(String(fileStat.size));
     treeHash.update("\0");
@@ -445,6 +695,15 @@ async function pathExists(filePath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function lstatIfExists(filePath: string) {
+  try {
+    return await lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 
@@ -486,6 +745,7 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 export function createBackupManager(opts: {
   connectionString: string;
   config: Config;
+  isExternalDatabaseBackupRunning?: () => boolean;
 }) {
   const instanceRoot = resolvePaperclipInstanceRoot();
   const settingsPath = path.resolve(instanceRoot, SETTINGS_FILENAME);
@@ -497,7 +757,70 @@ export function createBackupManager(opts: {
   let activeRunPromise: Promise<BackupRun> | null = null;
   let lastAutomaticRunAt: string | null = null;
   let activeRestorePromise: Promise<BackupRestoreState> | null = null;
+  // This becomes true synchronously when restore is requested, before any
+  // preflight or state-file await. The app-level API barrier must not wait for
+  // the asynchronous restore promise to be assigned.
+  let restoreBarrierActive = false;
+  // A restarted process has no in-memory restore promise. Probe the persisted
+  // state synchronously so the app-level (synchronous) API barrier stays
+  // closed until recovery has been completed.
+  let persistedRestoreBarrierActive = readPersistedRestoreBarrier();
   let snapshotBarrierActive = false;
+  let operationReserved = false;
+
+  function readPersistedRestoreBarrier(): boolean {
+    try {
+      const raw = JSON.parse(readFileSync(restoreStatePath, "utf8"));
+      const parsed = backupRestoreStateSchema.safeParse(raw);
+      return parsed.success && (parsed.data.status === "running" || parsed.data.status === "recovery_required");
+    } catch {
+      return false;
+    }
+  }
+
+  function markPersistedRestoreBarrier(state: BackupRestoreState): void {
+    if (state.status === "running" || state.status === "recovery_required") {
+      persistedRestoreBarrierActive = true;
+    }
+  }
+
+  function clearPersistedRestoreBarrier(): void {
+    persistedRestoreBarrierActive = false;
+  }
+
+  function ensureRestoreMaintenanceMode(action: string): void {
+    if (opts.config.restoreMaintenanceMode) return;
+    throw conflict(
+      `Cannot ${action} unless PAPERCLIP_RESTORE_MAINTENANCE_MODE=true was set at process startup. Stop every normal Paperclip replica and use exactly one isolated maintenance process.`,
+    );
+  }
+
+  function reserveOperation(action: string, reservationOptions: { checkExternal?: boolean } = {}): void {
+    if (operationReserved) {
+      throw conflict(`Cannot ${action} while another backup or restore operation is running.`);
+    }
+    if (reservationOptions.checkExternal !== false && opts.isExternalDatabaseBackupRunning?.()) {
+      throw conflict(`Cannot ${action} while an external database backup is running.`);
+    }
+    operationReserved = true;
+  }
+
+  function releaseOperation(): void {
+    operationReserved = false;
+  }
+
+  async function withOperationReservation<T>(
+    action: string,
+    reservationOptions: { checkExternal?: boolean },
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    reserveOperation(action, reservationOptions);
+    try {
+      return await operation();
+    } finally {
+      releaseOperation();
+    }
+  }
 
   function getDefaultSettings(): BackupSettings {
     return backupSettingsSchema.parse({
@@ -514,8 +837,6 @@ export function createBackupManager(opts: {
           region: opts.config.backupRemoteS3RegionDefault,
           endpoint: opts.config.backupRemoteS3EndpointDefault ?? null,
           prefix: opts.config.backupRemoteS3PrefixDefault,
-          accessKeyId: opts.config.backupRemoteS3AccessKeyIdDefault ?? null,
-          secretAccessKey: opts.config.backupRemoteS3SecretAccessKeyDefault ?? null,
           forcePathStyle: opts.config.backupRemoteS3ForcePathStyleDefault,
           deleteFromRemoteOnDelete: opts.config.backupRemoteS3DeleteOnDeleteDefault,
           serverSideEncryption: opts.config.backupRemoteS3ServerSideEncryptionDefault,
@@ -542,7 +863,7 @@ export function createBackupManager(opts: {
 
   async function readSettings(): Promise<BackupSettings> {
     const defaults = getDefaultSettings();
-    const raw = await readJsonFile<Partial<BackupSettings>>(settingsPath);
+    const raw = await readJsonFile<Partial<BackupSettings> & Record<string, unknown>>(settingsPath);
     if (!raw) return defaults;
 
     const merged = {
@@ -555,7 +876,12 @@ export function createBackupManager(opts: {
     };
 
     const parsed = backupSettingsSchema.safeParse(merged);
-    if (parsed.success) return parsed.data;
+    if (parsed.success) {
+      if (hasLegacyS3Credentials(raw)) {
+        await writeJsonAtomic(settingsPath, parsed.data);
+      }
+      return parsed.data;
+    }
 
     logger.warn({ issues: parsed.error.issues }, "Invalid backup manager settings file; using defaults");
     return defaults;
@@ -578,15 +904,38 @@ export function createBackupManager(opts: {
     }
 
     let state = parsed.data;
-    if (state.status === "running" && !activeRestorePromise) {
+    if (state.status === "running" && !restoreBarrierActive && !activeRestorePromise) {
+      const hasCheckpoint = Boolean(
+        state.rollback.checkpointBackupId && state.rollback.checkpointBundleName,
+      );
+      const rollbackWasRunning = state.rollback.status === "running";
       state = backupRestoreStateSchema.parse({
         ...state,
-        status: "failed",
+        status: hasCheckpoint ? "recovery_required" : "failed",
         finishedAt: nowIso(),
         error: state.error ?? "Restore was interrupted before completion.",
-        notes: joinNotes(state.notes, "The server exited or restarted before the restore completed."),
+        notes: joinNotes(
+          state.notes,
+          hasCheckpoint
+            ? "The server exited or restarted during a restore after a rollback checkpoint was captured. Complete rollback recovery before starting another backup or restore."
+            : "The server exited or restarted before the restore completed.",
+        ),
+        rollback: rollbackWasRunning
+          ? {
+              ...state.rollback,
+              status: "failed",
+              error: state.rollback.error ?? "Automatic rollback was interrupted before completion.",
+              finishedAt: nowIso(),
+            }
+          : state.rollback,
       });
-      await writeJsonAtomic(restoreStatePath, state);
+      await writeRestoreState(state);
+      // Without a checkpoint no restore components can have begun (the
+      // checkpoint is captured first), so this stale startup state is safe to
+      // release after it is persisted as terminal failure.
+      if (!hasCheckpoint) {
+        clearPersistedRestoreBarrier();
+      }
     }
 
     return state;
@@ -595,6 +944,7 @@ export function createBackupManager(opts: {
   async function writeRestoreState(state: BackupRestoreState): Promise<BackupRestoreState> {
     const parsed = backupRestoreStateSchema.parse(state);
     await writeJsonAtomic(restoreStatePath, parsed);
+    markPersistedRestoreBarrier(parsed);
     return parsed;
   }
 
@@ -660,6 +1010,69 @@ export function createBackupManager(opts: {
     if (restoreState.status === "running") {
       throw conflict(`Cannot ${action} while a restore is running.`);
     }
+    if (restoreState.status === "recovery_required") {
+      throw conflict(`Cannot ${action} until interrupted restore recovery is completed.`);
+    }
+  }
+
+  async function loadRecordedRecoveryCheckpoint(
+    state: BackupRestoreState,
+    settings: BackupSettings,
+  ): Promise<BackupRun> {
+    const checkpointId = state.rollback.checkpointBackupId;
+    const checkpointBundleName = state.rollback.checkpointBundleName;
+    if (!checkpointId || !checkpointBundleName) {
+      throw unprocessable("Interrupted restore recovery is missing its recorded rollback checkpoint.");
+    }
+    if (
+      !checkpointBundleName.startsWith("checkpoint-")
+      || checkpointBundleName.includes("/")
+      || checkpointBundleName.includes("\\")
+      || checkpointBundleName === "."
+      || checkpointBundleName === ".."
+    ) {
+      throw unprocessable("Recorded rollback checkpoint has an unsafe bundle name.");
+    }
+
+    const checkpointDirectory = path.resolve(settings.directory, BACKUP_CHECKPOINT_DIRNAME);
+    const checkpointPath = path.resolve(checkpointDirectory, checkpointBundleName);
+    if (!isPathInside(checkpointDirectory, checkpointPath) || checkpointPath === checkpointDirectory) {
+      throw unprocessable("Recorded rollback checkpoint resolves outside the checkpoint directory.");
+    }
+    if (!(await pathExists(checkpointPath))) {
+      throw unprocessable("Recorded rollback checkpoint is missing from disk.");
+    }
+
+    await assertNoSymlinks(checkpointPath);
+    const raw = await readJsonFile<unknown>(path.resolve(checkpointPath, MANIFEST_FILENAME));
+    const parsed = backupRunSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw unprocessable("Recorded rollback checkpoint has an invalid manifest.");
+    }
+
+    let checkpoint: BackupRun;
+    try {
+      checkpoint = hydrateBackupRun(parsed.data, checkpointPath, checkpointBundleName);
+    } catch (error) {
+      throw unprocessable(
+        `Recorded rollback checkpoint has unsafe component paths: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (
+      checkpoint.id !== checkpointId
+      || checkpoint.bundleName !== checkpointBundleName
+      || checkpoint.status !== "succeeded"
+    ) {
+      throw unprocessable("Recorded rollback checkpoint does not match the interrupted restore state.");
+    }
+
+    const integrity = await verifyBackupIntegrity(checkpoint);
+    if (integrity.status !== "verified") {
+      throw unprocessable(
+        integrity.issues[0] ?? "Recorded rollback checkpoint did not pass integrity verification.",
+      );
+    }
+    return checkpoint;
   }
 
   async function scanBackupDirectory(directory: string): Promise<BackupRun[]> {
@@ -680,11 +1093,16 @@ export function createBackupManager(opts: {
         logger.warn({ bundlePath, issues: parsed.error.issues }, "Skipping invalid backup manifest");
         continue;
       }
-      const run = {
-        ...parsed.data,
-        bundleName: entry.name,
-        bundlePath,
-      } satisfies BackupRun;
+      let run: BackupRun;
+      try {
+        run = hydrateBackupRun(parsed.data, bundlePath, entry.name);
+      } catch (error) {
+        logger.warn(
+          { bundlePath, err: error },
+          "Skipping backup manifest with an unsafe component path",
+        );
+        continue;
+      }
       if (run.status === "running" && run.id !== activeRunId) {
         backups.push({
           ...run,
@@ -762,9 +1180,7 @@ export function createBackupManager(opts: {
   }
 
   function resolveSnapshotTargets(settings: BackupSettings): SnapshotTarget[] {
-    const configPath = resolvePaperclipConfigPath();
     const envPath = resolvePaperclipEnvPath();
-    const managerSettingsPath = settingsPath;
     const secretsKeyPath =
       opts.config.secretsProvider === "local_encrypted"
         ? opts.config.secretsMasterKeyFilePath || resolveDefaultSecretsKeyFilePath()
@@ -791,7 +1207,7 @@ export function createBackupManager(opts: {
         sourcePath: null,
         destinationName: "config",
         supported: true,
-        notes: [configPath, managerSettingsPath].filter(Boolean).join("\n"),
+        notes: "Portable config excludes instance-local runtime settings and secret-like values.",
       },
       {
         key: "env",
@@ -838,30 +1254,12 @@ export function createBackupManager(opts: {
       };
     }
 
-    const configDir = path.resolve(bundleDir, target.destinationName);
+    const configDir = resolveBundleComponentPath(bundleDir, target.destinationName);
     await mkdir(configDir, { recursive: true });
 
-    const files = [
-      { source: resolvePaperclipConfigPath(), name: "config.json" },
-      { source: settingsPath, name: SETTINGS_FILENAME },
-    ];
-
-    let copied = 0;
-    let sizeBytes = 0;
-    const notes: string[] = [];
-    for (const file of files) {
-      if (!(await pathExists(file.source))) {
-        notes.push(`Missing ${file.name}`);
-        continue;
-      }
-      const destination = path.resolve(configDir, file.name);
-      await cp(file.source, destination, { force: true });
-      const fileStat = await stat(destination);
-      sizeBytes += fileStat.size;
-      copied += 1;
-    }
-
-    if (copied === 0) {
+    const sourcePath = resolvePaperclipConfigPath();
+    const sourceStat = await lstatIfExists(sourcePath);
+    if (!sourceStat) {
       return {
         key: target.key,
         label: target.label,
@@ -870,19 +1268,54 @@ export function createBackupManager(opts: {
         absolutePath: null,
         sizeBytes: 0,
         itemCount: 0,
-        notes: notes.join("; ") || "No config files were found.",
+        notes: "Missing config.json",
       };
     }
+
+    await assertNoSymlinks(sourcePath, {
+      allowFile: true,
+      subject: "Backup component 'Instance config'",
+    });
+    if (!sourceStat.isFile()) {
+      return {
+        key: target.key,
+        label: target.label,
+        status: "failed",
+        relativePath: null,
+        absolutePath: null,
+        sizeBytes: 0,
+        itemCount: 0,
+        notes: "config.json must be a regular file.",
+      };
+    }
+
+    const portableConfig = sanitizePortableConfig(await readJsonFile<unknown>(sourcePath));
+    if (!portableConfig) {
+      return {
+        key: target.key,
+        label: target.label,
+        status: "failed",
+        relativePath: null,
+        absolutePath: null,
+        sizeBytes: 0,
+        itemCount: 0,
+        notes: "config.json is invalid and was not included in the portable backup.",
+      };
+    }
+
+    const destination = path.resolve(configDir, "config.json");
+    await writeJsonAtomic(destination, portableConfig);
+    const fileStat = await stat(destination);
 
     return {
       key: target.key,
       label: target.label,
       status: "included",
-      relativePath: path.relative(bundleDir, configDir),
+      relativePath: toBundleRelativePath(bundleDir, configDir),
       absolutePath: configDir,
-      sizeBytes,
-      itemCount: copied,
-      notes: notes.length > 0 ? notes.join("; ") : null,
+      sizeBytes: fileStat.size,
+      itemCount: 1,
+      notes: target.notes ?? null,
     };
   }
 
@@ -913,7 +1346,7 @@ export function createBackupManager(opts: {
       };
     }
 
-    if (!target.sourcePath || !(await pathExists(target.sourcePath))) {
+    if (!target.sourcePath) {
       return {
         key: target.key,
         label: target.label,
@@ -926,8 +1359,26 @@ export function createBackupManager(opts: {
       };
     }
 
-    const destinationPath = path.resolve(bundleDir, target.destinationName);
-    const sourceStat = await stat(target.sourcePath);
+    const sourceStat = await lstatIfExists(target.sourcePath);
+    if (!sourceStat) {
+      return {
+        key: target.key,
+        label: target.label,
+        status: "missing",
+        relativePath: null,
+        absolutePath: null,
+        sizeBytes: 0,
+        itemCount: 0,
+        notes: target.notes ?? "Source path does not exist.",
+      };
+    }
+
+    await assertNoSymlinks(target.sourcePath, {
+      allowFile: true,
+      subject: `Backup component '${target.label}'`,
+    });
+
+    const destinationPath = resolveBundleComponentPath(bundleDir, target.destinationName);
     if (sourceStat.isDirectory() && isPathInside(target.sourcePath, bundleDir)) {
       return {
         key: target.key,
@@ -953,7 +1404,7 @@ export function createBackupManager(opts: {
       key: target.key,
       label: target.label,
       status: "included",
-      relativePath: path.relative(bundleDir, destinationPath),
+      relativePath: toBundleRelativePath(bundleDir, destinationPath),
       absolutePath: destinationPath,
       sizeBytes: stats.sizeBytes,
       itemCount: stats.itemCount,
@@ -963,7 +1414,7 @@ export function createBackupManager(opts: {
 
   async function writeManifest(run: BackupRun): Promise<void> {
     const manifestPath = path.resolve(run.bundlePath, MANIFEST_FILENAME);
-    await writeJsonAtomic(manifestPath, run);
+    await writeJsonAtomic(manifestPath, serializeBackupManifest(run));
   }
 
   function containsSensitiveComponents(components: BackupComponentResult[]): boolean {
@@ -975,13 +1426,20 @@ export function createBackupManager(opts: {
 
   function resolveRemoteS3Config(settings: BackupSettings): RemoteS3ClientConfig | null {
     if (settings.remote.provider !== "s3") return null;
+    const accessKeyId = opts.config.backupRemoteS3AccessKeyIdDefault?.trim() || null;
+    const secretAccessKey = opts.config.backupRemoteS3SecretAccessKeyDefault?.trim() || null;
+    if ((accessKeyId && !secretAccessKey) || (!accessKeyId && secretAccessKey)) {
+      throw new Error(
+        "PAPERCLIP_BACKUP_REMOTE_S3_ACCESS_KEY_ID and PAPERCLIP_BACKUP_REMOTE_S3_SECRET_ACCESS_KEY must be set together.",
+      );
+    }
     return {
       bucket: settings.remote.s3.bucket.trim(),
       region: settings.remote.s3.region.trim(),
       endpoint: settings.remote.s3.endpoint?.trim() || null,
       prefix: settings.remote.s3.prefix,
-      accessKeyId: settings.remote.s3.accessKeyId?.trim() || null,
-      secretAccessKey: settings.remote.s3.secretAccessKey?.trim() || null,
+      accessKeyId,
+      secretAccessKey,
       forcePathStyle: settings.remote.s3.forcePathStyle,
       serverSideEncryption: settings.remote.s3.serverSideEncryption,
       kmsKeyId: settings.remote.s3.kmsKeyId?.trim() || null,
@@ -992,7 +1450,9 @@ export function createBackupManager(opts: {
     const remote = resolveRemoteS3Config(settings);
     if (!remote) return [];
 
-    const stagingRoot = await mkdtemp(path.resolve(instanceRoot, "tmp", "backup-remote-upload-"));
+    const temporaryDirectory = path.resolve(instanceRoot, "tmp");
+    await mkdir(temporaryDirectory, { recursive: true });
+    const stagingRoot = await mkdtemp(path.resolve(temporaryDirectory, "backup-remote-upload-"));
     const archiveName = `${run.bundleName}.tar.gz`;
     const archivePath = path.resolve(stagingRoot, archiveName);
     try {
@@ -1076,18 +1536,22 @@ export function createBackupManager(opts: {
       const components: BackupComponentResult[] = [
         await (async () => {
           try {
-            const dbDir = path.resolve(run.bundlePath, "database");
+            const dbDir = resolveBundleComponentPath(run.bundlePath, "database");
             const dbResult = await runDatabaseBackup({
               connectionString: opts.connectionString,
               backupDir: dbDir,
-              retentionDays: 3650,
+              retention: {
+                dailyDays: 3650,
+                weeklyWeeks: 520,
+                monthlyMonths: 120,
+              },
               filenamePrefix: "database",
             });
             return {
               key: "database" as const,
               label: "Database",
               status: "included" as const,
-              relativePath: path.relative(run.bundlePath, dbResult.backupFile),
+              relativePath: toBundleRelativePath(run.bundlePath, dbResult.backupFile),
               absolutePath: dbResult.backupFile,
               sizeBytes: dbResult.sizeBytes,
               itemCount: 1,
@@ -1134,6 +1598,11 @@ export function createBackupManager(opts: {
         await writeManifest(run);
       }
 
+      // fs.cp preserves symlinks. Re-check the completed bundle so a source
+      // changed during copy (or a database backup result) can never be marked
+      // as a portable successful snapshot.
+      await assertNoSymlinks(run.bundlePath);
+
       snapshotBarrierActive = false;
 
       const containsSensitiveData = containsSensitiveComponents(components);
@@ -1156,58 +1625,64 @@ export function createBackupManager(opts: {
         throw new Error("Backup signing is required, but PAPERCLIP_BACKUP_SIGNING_SECRET is not configured.");
       }
 
-      const signature = params.sign && integrity && opts.config.backupSigningSecret
+      const finalizedRun = backupRunSchema.parse({
+        ...run,
+        status: hasHardFailure ? "failed" : "succeeded",
+        finishedAt,
+        totalSizeBytes: totalSize,
+        prunedCount,
+        error: hasHardFailure ? "One or more requested backup components failed." : null,
+        containsSensitiveData,
+        integrity,
+        signature: null,
+        remoteCopies: [],
+        components,
+      });
+      const uploadSignature = params.sign && integrity && opts.config.backupSigningSecret
         ? signBackupRun({
           run: {
-            ...run,
-            status: hasHardFailure ? "failed" : "succeeded",
-            finishedAt,
-            totalSizeBytes: totalSize,
-            prunedCount,
-            error: hasHardFailure ? "One or more requested backup components failed." : null,
-            containsSensitiveData,
-            integrity,
+            ...finalizedRun,
             signature: null,
-            remoteCopies: [],
-            components,
           },
           secret: opts.config.backupSigningSecret,
           keyId: opts.config.backupSigningKeyId ?? null,
         })
         : null;
 
+      const finalizedUploadManifest = backupRunSchema.parse({
+        ...finalizedRun,
+        signature: uploadSignature,
+      });
+      if (!hasHardFailure && params.uploadRemote) {
+        await writeManifest(finalizedUploadManifest);
+      }
+
       const remoteCopies = !hasHardFailure && params.uploadRemote
         ? await uploadRemoteCopies(
-          {
-            ...run,
-            status: "succeeded",
-            finishedAt,
-            totalSizeBytes: totalSize,
-            prunedCount,
-            error: null,
-            containsSensitiveData,
-            integrity,
-            signature,
-            remoteCopies: [],
-            components,
-          },
+          finalizedUploadManifest,
           params.settings,
         )
         : [];
       const remoteFailure = remoteCopies.find((copy) => copy.status === "failed")?.notes ?? null;
 
-      run = backupRunSchema.parse({
-        ...run,
+      const finalRun = backupRunSchema.parse({
+        ...finalizedRun,
         status: hasHardFailure || remoteFailure ? "failed" : "succeeded",
-        finishedAt,
-        totalSizeBytes: totalSize,
-        prunedCount,
-        error: remoteFailure ?? (hasHardFailure ? "One or more requested backup components failed." : null),
-        containsSensitiveData,
-        integrity,
-        signature,
+        error: remoteFailure ?? finalizedRun.error,
         remoteCopies,
-        components,
+        signature: null,
+      });
+      const finalSignature = params.sign && integrity && opts.config.backupSigningSecret
+        ? signBackupRun({
+          run: finalRun,
+          secret: opts.config.backupSigningSecret,
+          keyId: opts.config.backupSigningKeyId ?? null,
+        })
+        : null;
+
+      run = backupRunSchema.parse({
+        ...finalRun,
+        signature: finalSignature,
       });
       await writeManifest(run);
       return run;
@@ -1289,11 +1764,10 @@ export function createBackupManager(opts: {
     const components: BackupComponentResult[] = [];
     for (const component of imported.components) {
       let absolutePath: string | null = null;
+      let relativePath: string | null = null;
       if (component.relativePath) {
-        absolutePath = path.resolve(bundlePath, component.relativePath);
-        if (!isPathInside(bundlePath, absolutePath)) {
-          throw new Error(`Backup component '${component.key}' resolves outside the bundle.`);
-        }
+        relativePath = normalizeBundleRelativePath(component.relativePath);
+        absolutePath = resolveBundleComponentPath(bundlePath, relativePath);
         if (!(await pathExists(absolutePath))) {
           if (component.status === "included") {
             throw new Error(`Backup component '${component.key}' is missing from the archive bundle.`);
@@ -1306,6 +1780,7 @@ export function createBackupManager(opts: {
 
       components.push({
         ...component,
+        relativePath,
         absolutePath,
       });
     }
@@ -1324,12 +1799,7 @@ export function createBackupManager(opts: {
       throw new Error(`Backup component '${component.key}' does not have a source path in the bundle.`);
     }
 
-    const sourcePath = path.resolve(backup.bundlePath, component.relativePath);
-    if (!isPathInside(backup.bundlePath, sourcePath)) {
-      throw new Error(`Backup component '${component.key}' resolves outside the bundle.`);
-    }
-
-    return sourcePath;
+    return resolveBundleComponentPath(backup.bundlePath, component.relativePath);
   }
 
   function buildBundleIntegrityFromComponents(
@@ -1583,6 +2053,11 @@ export function createBackupManager(opts: {
   }
 
   async function buildRestorePreview(backup: BackupRun, settings: BackupSettings): Promise<BackupRestorePreview> {
+    // Imported archives are checked at extraction time, but local bundles can
+    // be modified after creation. Do not hash or preview a tree that could
+    // later replant a link during restore.
+    await assertNoSymlinks(backup.bundlePath);
+
     const checkedAt = nowIso();
     const sourceByKey = new Map(backup.components.map((component) => [component.key, component]));
     const integrity = await verifyBackupIntegrity(backup);
@@ -1774,16 +2249,16 @@ export function createBackupManager(opts: {
         });
       }
 
-      const result = await restoreDatabaseBackup({
+      const backupStats = await stat(backupFile);
+      await runDatabaseRestore({
         connectionString: opts.connectionString,
         backupFile,
-        dropExistingSchema: true,
       });
 
       return cloneRestoreComponent(source, { key: source.key, label: source.label }, {
         status: "included",
         absolutePath: null,
-        sizeBytes: result.sizeBytes,
+        sizeBytes: backupStats.size,
         itemCount: 1,
       });
     } catch (error) {
@@ -1907,56 +2382,58 @@ export function createBackupManager(opts: {
         });
       }
 
-      const files = [
-        {
-          label: "config.json",
-          sourcePath: path.resolve(sourceDir, "config.json"),
-          destinationPath: resolvePaperclipConfigPath(),
-        },
-        {
-          label: SETTINGS_FILENAME,
-          sourcePath: path.resolve(sourceDir, SETTINGS_FILENAME),
-          destinationPath: settingsPath,
-        },
-      ];
-
-      let copied = 0;
-      let sizeBytes = 0;
       const notes: string[] = [];
-
-      for (const file of files) {
-        if (!(await pathExists(file.sourcePath))) {
-          notes.push(`Missing ${file.label} in the backup bundle`);
-          continue;
-        }
-        await mkdir(path.dirname(file.destinationPath), { recursive: true });
-        await cp(file.sourcePath, file.destinationPath, {
-          force: true,
-          preserveTimestamps: true,
-        });
-        const fileStat = await stat(file.destinationPath);
-        sizeBytes += fileStat.size;
-        copied += 1;
-      }
-
-      if (copied === 0) {
+      const sourceConfigPath = path.resolve(sourceDir, "config.json");
+      if (!(await pathExists(sourceConfigPath))) {
         return cloneRestoreComponent(source, fallback, {
           status: "missing",
           absolutePath: destinationRoot,
           sizeBytes: 0,
           itemCount: 0,
-          notes: joinNotes(source.notes, notes.join("; "), "No config files were restored."),
+          notes: joinNotes(source.notes, "Missing config.json in the backup bundle."),
         });
+      }
+
+      const portableConfig = sanitizePortableConfig(await readJsonFile<unknown>(sourceConfigPath));
+      if (!portableConfig) {
+        return cloneRestoreComponent(source, fallback, {
+          status: "failed",
+          absolutePath: destinationRoot,
+          sizeBytes: 0,
+          itemCount: 0,
+          notes: joinNotes(source.notes, "Backup config.json is invalid and was not restored."),
+        });
+      }
+
+      const destinationPath = resolvePaperclipConfigPath();
+      const targetConfig = await readJsonFile<unknown>(destinationPath);
+      if ((await pathExists(destinationPath)) && !isRecord(targetConfig)) {
+        return cloneRestoreComponent(source, fallback, {
+          status: "failed",
+          absolutePath: destinationRoot,
+          sizeBytes: 0,
+          itemCount: 0,
+          notes: joinNotes(source.notes, "Target config.json is invalid and was left unchanged."),
+        });
+      }
+
+      const mergedConfig = mergePortableConfig(targetConfig, portableConfig);
+      await writeJsonAtomic(destinationPath, mergedConfig);
+      const restoredStats = await collectPathStats(destinationPath);
+
+      if (await pathExists(path.resolve(sourceDir, SETTINGS_FILENAME))) {
+        notes.push("Backup manager settings are instance-local and were not restored.");
       }
 
       return cloneRestoreComponent(source, fallback, {
         status: "included",
         absolutePath: destinationRoot,
-        sizeBytes,
-        itemCount: copied,
+        sizeBytes: restoredStats.sizeBytes,
+        itemCount: restoredStats.itemCount,
         notes: joinNotes(
           source.notes,
           notes.join("; "),
+          "Portable config was merged with target-local runtime settings.",
           "Restart the server if the restored config changes runtime settings.",
         ),
       });
@@ -2053,6 +2530,10 @@ export function createBackupManager(opts: {
     backup: BackupRun,
     onProgress?: (restoredComponents: BackupComponentResult[]) => Promise<void>,
   ): Promise<BackupComponentResult[]> {
+    // Repeat the link check at execution time: a local bundle can change
+    // between preview/preflight and the destructive restore operation.
+    await assertNoSymlinks(backup.bundlePath);
+
     const sourceByKey = new Map(backup.components.map((component) => [component.key, component]));
     const restoredComponents: BackupComponentResult[] = [];
     const push = async (component: BackupComponentResult) => {
@@ -2181,6 +2662,10 @@ export function createBackupManager(opts: {
   }
 
   async function runRestore(backup: BackupRun, actorId: string | null): Promise<BackupRestoreState> {
+    // This must happen before the state-file write below yields. The app-level
+    // API barrier otherwise has a window where a restore has started but its
+    // promise has not been assigned yet.
+    restoreBarrierActive = true;
     const initialState = await writeRestoreState({
       status: "running",
       sourceBackupId: backup.id,
@@ -2229,10 +2714,11 @@ export function createBackupManager(opts: {
         if (hasHardFailure && checkpoint) {
           rollback = await runRollbackFromCheckpoint(checkpoint, state, actorId);
         }
+        const recoveryRequired = hasHardFailure && checkpoint !== null && rollback.status !== "succeeded";
         const baseNotes = buildRestoreNotes(restoredComponents);
         state = await writeRestoreState({
           ...state,
-          status: hasHardFailure ? "failed" : "succeeded",
+          status: recoveryRequired ? "recovery_required" : hasHardFailure ? "failed" : "succeeded",
           finishedAt: nowIso(),
           error: hasHardFailure ? "One or more requested restore components failed." : null,
           notes: joinNotes(
@@ -2240,7 +2726,7 @@ export function createBackupManager(opts: {
             hasHardFailure && checkpoint
               ? rollback.status === "succeeded"
                 ? "Restore failed after applying some components, but the instance was rolled back to the pre-restore checkpoint."
-                : "Restore failed after applying some components, and automatic rollback did not fully succeed. Manual recovery may be required."
+                : "Restore failed after applying some components, and automatic rollback did not fully succeed. Complete rollback recovery before starting another backup or restore."
               : null,
           ),
           rollback,
@@ -2264,6 +2750,9 @@ export function createBackupManager(opts: {
         if ((state.status === "succeeded" || rollback.status === "succeeded") && checkpoint) {
           await rm(checkpoint.bundlePath, { recursive: true, force: true });
         }
+        if (state.status === "succeeded" || rollback.status === "succeeded") {
+          clearPersistedRestoreBarrier();
+        }
         return state;
       } catch (error) {
         const existingComponents = state.restoredComponents;
@@ -2271,9 +2760,10 @@ export function createBackupManager(opts: {
         if (checkpoint) {
           rollback = await runRollbackFromCheckpoint(checkpoint, state, actorId);
         }
+        const recoveryRequired = checkpoint !== null && rollback.status !== "succeeded";
         state = await writeRestoreState({
           ...state,
-          status: "failed",
+          status: recoveryRequired ? "recovery_required" : "failed",
           finishedAt: nowIso(),
           error: error instanceof Error ? error.message : String(error),
           notes: joinNotes(
@@ -2281,7 +2771,7 @@ export function createBackupManager(opts: {
             checkpoint
               ? rollback.status === "succeeded"
                 ? "Restore failed, but the instance was rolled back to the pre-restore checkpoint."
-                : "Restore failed and automatic rollback did not fully succeed. Manual recovery may be required."
+                : "Restore failed and automatic rollback did not fully succeed. Complete rollback recovery before starting another backup or restore."
               : "Restore stopped before all components were applied.",
           ),
           rollback,
@@ -2303,9 +2793,14 @@ export function createBackupManager(opts: {
         if (checkpoint && rollback.status === "succeeded") {
           await rm(checkpoint.bundlePath, { recursive: true, force: true });
         }
+        if (!recoveryRequired) {
+          clearPersistedRestoreBarrier();
+        }
         throw error;
       } finally {
         activeRestorePromise = null;
+        restoreBarrierActive = false;
+        releaseOperation();
       }
     };
 
@@ -2390,184 +2885,187 @@ export function createBackupManager(opts: {
   }
 
   async function updateSettings(patch: UpdateBackupSettings, actorId: string | null): Promise<BackupSettings> {
-    if (activeRunPromise) {
-      throw conflict("Cannot update backup settings while a backup is running.");
-    }
-    await ensureRestoreIdle("update backup settings");
+    return withOperationReservation("update backup settings", { checkExternal: false }, async () => {
+      await ensureRestoreIdle("update backup settings");
 
-    const current = await readSettings();
-    const next = backupSettingsSchema.parse({
-      ...current,
-      ...patch,
-      components: {
-        ...current.components,
-        ...(patch.components ?? {}),
-      },
-      remote: {
-        ...current.remote,
-        ...(patch.remote ?? {}),
-        s3: {
-          ...current.remote.s3,
-          ...(patch.remote?.s3 ?? {}),
+      const current = await readSettings();
+      const next = backupSettingsSchema.parse({
+        ...current,
+        ...patch,
+        components: {
+          ...current.components,
+          ...(patch.components ?? {}),
         },
-      },
-      updatedAt: nowIso(),
-      updatedBy: actorId,
+        remote: {
+          ...current.remote,
+          ...(patch.remote ?? {}),
+          s3: {
+            ...current.remote.s3,
+            ...(patch.remote?.s3 ?? {}),
+          },
+        },
+        updatedAt: nowIso(),
+        updatedBy: actorId,
+      });
+
+      if (next.requireSignedBackups && !opts.config.backupSigningSecret) {
+        throw unprocessable("Signed backups are required, but PAPERCLIP_BACKUP_SIGNING_SECRET is not configured on this instance.");
+      }
+
+      if (!current.enabled && next.enabled) {
+        schedulerAnchorAt = new Date();
+      }
+
+      await appendAuditEvent({
+        action: "backup.settings.updated",
+        result: "succeeded",
+        actorId,
+        details: {
+          enabled: next.enabled,
+          intervalMinutes: next.intervalMinutes,
+          retentionDays: next.retentionDays,
+          requireSignedBackups: next.requireSignedBackups,
+          remoteProvider: next.remote.provider,
+        },
+      });
+
+      return writeSettings(next);
     });
-
-    if (next.requireSignedBackups && !opts.config.backupSigningSecret) {
-      throw unprocessable("Signed backups are required, but PAPERCLIP_BACKUP_SIGNING_SECRET is not configured on this instance.");
-    }
-
-    if (!current.enabled && next.enabled) {
-      schedulerAnchorAt = new Date();
-    }
-
-    await appendAuditEvent({
-      action: "backup.settings.updated",
-      result: "succeeded",
-      actorId,
-      details: {
-        enabled: next.enabled,
-        intervalMinutes: next.intervalMinutes,
-        retentionDays: next.retentionDays,
-        requireSignedBackups: next.requireSignedBackups,
-        remoteProvider: next.remote.provider,
-      },
-    });
-
-    return writeSettings(next);
   }
 
   async function startBackup(triggerSource: BackupTriggerSource, actorId: string | null): Promise<BackupRun> {
-    if (activeRunPromise) {
-      throw conflict("A backup is already running.");
-    }
-    await ensureRestoreIdle("start a backup");
+    reserveOperation("start a backup");
+    try {
+      await ensureRestoreIdle("start a backup");
 
-    const settings = await readSettings();
-    await mkdir(settings.directory, { recursive: true });
+      const settings = await readSettings();
+      await mkdir(settings.directory, { recursive: true });
 
-    const startedAt = new Date();
-    const runId = randomUUID();
-    const bundleName = `${bundleTimestamp(startedAt)}-${runId.slice(0, 8)}`;
-    const bundlePath = path.resolve(settings.directory, bundleName);
-    const initialRun: BackupRun = {
-      id: runId,
-      origin: "local",
-      status: "running",
-      triggerSource,
-      startedAt: nowIso(startedAt),
-      finishedAt: null,
-      bundleName,
-      bundlePath,
-      totalSizeBytes: 0,
-      prunedCount: 0,
-      error: null,
-      importedAt: null,
-      importedBy: null,
-      importSourceFilename: null,
-      archivedAt: null,
-      archivedBy: null,
-      containsSensitiveData: false,
-      integrity: null,
-      signature: null,
-      remoteCopies: [],
-      components: [],
-    };
+      const startedAt = new Date();
+      const runId = randomUUID();
+      const bundleName = `${bundleTimestamp(startedAt)}-${runId.slice(0, 8)}`;
+      const bundlePath = path.resolve(settings.directory, bundleName);
+      const initialRun: BackupRun = {
+        id: runId,
+        origin: "local",
+        status: "running",
+        triggerSource,
+        startedAt: nowIso(startedAt),
+        finishedAt: null,
+        bundleName,
+        bundlePath,
+        totalSizeBytes: 0,
+        prunedCount: 0,
+        error: null,
+        importedAt: null,
+        importedBy: null,
+        importSourceFilename: null,
+        archivedAt: null,
+        archivedBy: null,
+        containsSensitiveData: false,
+        integrity: null,
+        signature: null,
+        remoteCopies: [],
+        components: [],
+      };
 
-    await mkdir(bundlePath, { recursive: true });
-    await writeManifest(initialRun);
+      await mkdir(bundlePath, { recursive: true });
+      await writeManifest(initialRun);
 
-    activeRunId = runId;
-    activeRunStartedAt = initialRun.startedAt;
-    if (triggerSource === "scheduler") {
-      lastAutomaticRunAt = initialRun.startedAt;
-    }
+      activeRunId = runId;
+      activeRunStartedAt = initialRun.startedAt;
+      if (triggerSource === "scheduler") {
+        lastAutomaticRunAt = initialRun.startedAt;
+      }
 
-    const execute = async (): Promise<BackupRun> => {
-      try {
-        await appendAuditEvent({
-          action: "backup.snapshot.started",
-          result: "started",
-          actorId,
-          backupId: initialRun.id,
-          bundleName: initialRun.bundleName,
-          details: {
+      const execute = async (): Promise<BackupRun> => {
+        try {
+          await appendAuditEvent({
+            action: "backup.snapshot.started",
+            result: "started",
+            actorId,
+            backupId: initialRun.id,
+            bundleName: initialRun.bundleName,
+            details: {
+              triggerSource,
+              remoteProvider: settings.remote.provider,
+              requireSignedBackups: settings.requireSignedBackups,
+            },
+          });
+          const run = await captureSnapshotBundle({
+            initialRun,
+            settings,
+            pruneExpired: true,
+            uploadRemote: true,
+            sign: true,
+          });
+          await appendAuditEvent({
+            action: "backup.snapshot.completed",
+            result: run.status === "succeeded" ? "succeeded" : "failed",
+            actorId,
+            backupId: run.id,
+            bundleName: run.bundleName,
+            details: {
+              totalSizeBytes: run.totalSizeBytes,
+              prunedCount: run.prunedCount,
+              remoteCopies: run.remoteCopies.length,
+              containsSensitiveData: run.containsSensitiveData,
+              signed: Boolean(run.signature),
+              error: run.error,
+            },
+          });
+          return run;
+        } catch (error) {
+          await appendAuditEvent({
+            action: "backup.snapshot.completed",
+            result: "failed",
+            actorId,
+            backupId: initialRun.id,
+            bundleName: initialRun.bundleName,
+            details: {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
+          throw error;
+        } finally {
+          activeRunId = null;
+          activeRunStartedAt = null;
+          activeRunPromise = null;
+          releaseOperation();
+        }
+      };
+
+      activeRunPromise = execute();
+      void activeRunPromise.then((run) => {
+        logger.info(
+          {
+            runId: run.id,
             triggerSource,
-            remoteProvider: settings.remote.provider,
-            requireSignedBackups: settings.requireSignedBackups,
-          },
-        });
-        const run = await captureSnapshotBundle({
-          initialRun,
-          settings,
-          pruneExpired: true,
-          uploadRemote: true,
-          sign: true,
-        });
-        await appendAuditEvent({
-          action: "backup.snapshot.completed",
-          result: run.status === "succeeded" ? "succeeded" : "failed",
-          actorId,
-          backupId: run.id,
-          bundleName: run.bundleName,
-          details: {
+            bundlePath: run.bundlePath,
             totalSizeBytes: run.totalSizeBytes,
             prunedCount: run.prunedCount,
-            remoteCopies: run.remoteCopies.length,
-            containsSensitiveData: run.containsSensitiveData,
-            signed: Boolean(run.signature),
-            error: run.error,
+            actorId,
           },
-        });
-        return run;
-      } catch (error) {
-        await appendAuditEvent({
-          action: "backup.snapshot.completed",
-          result: "failed",
-          actorId,
-          backupId: initialRun.id,
-          bundleName: initialRun.bundleName,
-          details: {
-            error: error instanceof Error ? error.message : String(error),
+          `Backup ${run.status}`,
+        );
+      }).catch((error) => {
+        logger.error(
+          {
+            err: error,
+            runId,
+            triggerSource,
+            bundlePath,
+            actorId,
           },
-        });
-        throw error;
-      } finally {
-        activeRunId = null;
-        activeRunStartedAt = null;
-        activeRunPromise = null;
-      }
-    };
+          "Backup failed",
+        );
+      });
 
-    activeRunPromise = execute();
-    void activeRunPromise.then((run) => {
-      logger.info(
-        {
-          runId: run.id,
-          triggerSource,
-          bundlePath: run.bundlePath,
-          totalSizeBytes: run.totalSizeBytes,
-          prunedCount: run.prunedCount,
-          actorId,
-        },
-        `Backup ${run.status}`,
-      );
-    }).catch((error) => {
-      logger.error(
-        {
-          err: error,
-          runId,
-          triggerSource,
-          bundlePath,
-          actorId,
-        },
-        "Backup failed",
-      );
-    });
-
-    return initialRun;
+      return initialRun;
+    } catch (error) {
+      releaseOperation();
+      throw error;
+    }
   }
 
   async function createManualBackup(actorId: string | null): Promise<BackupRun> {
@@ -2579,32 +3077,30 @@ export function createBackupManager(opts: {
     originalFilename: string | null,
     actorId: string | null,
   ): Promise<BackupRun> {
-    if (activeRunPromise) {
-      throw conflict("Cannot import a backup while a backup is running.");
-    }
-    await ensureRestoreIdle("import a backup");
+    return withOperationReservation("import a backup", { checkExternal: false }, async () => {
+      await ensureRestoreIdle("import a backup");
 
-    if (!(await pathExists(archivePath))) {
-      throw notFound("Uploaded backup archive was not found on disk.");
-    }
+      if (!(await pathExists(archivePath))) {
+        throw notFound("Uploaded backup archive was not found on disk.");
+      }
 
-    const settings = await readSettings();
-    await mkdir(settings.directory, { recursive: true });
+      const settings = await readSettings();
+      await mkdir(settings.directory, { recursive: true });
 
-    const existingBackups = await listBackups(settings.directory);
-    const existingIds = new Set(existingBackups.map((backup) => backup.id));
-    const existingBundleNames = new Set(existingBackups.map((backup) => backup.bundleName));
+      const existingBackups = await listBackups(settings.directory);
+      const existingIds = new Set(existingBackups.map((backup) => backup.id));
+      const existingBundleNames = new Set(existingBackups.map((backup) => backup.bundleName));
 
-    const inspection = await inspectImportedArchive(archivePath);
+      const inspection = await inspectImportedArchive(archivePath);
 
-    if (existingBundleNames.has(inspection.bundleName)) {
-      throw conflict(`Backup bundle '${inspection.bundleName}' already exists on this instance.`);
-    }
+      if (existingBundleNames.has(inspection.bundleName)) {
+        throw conflict(`Backup bundle '${inspection.bundleName}' already exists on this instance.`);
+      }
 
-    const stagingRoot = path.resolve(instanceRoot, "tmp", "backup-imports", randomUUID());
-    await mkdir(stagingRoot, { recursive: true });
+      const stagingRoot = path.resolve(instanceRoot, "tmp", "backup-imports", randomUUID());
+      await mkdir(stagingRoot, { recursive: true });
 
-    try {
+      try {
       await runCommand("tar", ["-xzf", archivePath, "-C", stagingRoot]);
       const extractedBundlePath = path.resolve(stagingRoot, inspection.bundleName);
       if (!(await pathExists(extractedBundlePath))) {
@@ -2626,23 +3122,28 @@ export function createBackupManager(opts: {
         throw conflict(`Backup '${parsedManifest.data.id}' already exists on this instance.`);
       }
 
+      // Verify the source bytes before normalizing a legacy Windows path. The
+      // signature payload intentionally excludes host paths, but does include
+      // relativePath, so normalizing first would invalidate an otherwise valid
+      // legacy signature.
+      const sourceSignature = verifyBackupSignature({
+        run: parsedManifest.data,
+        secret: opts.config.backupSigningSecret,
+      });
+      if (["mismatch", "error"].includes(sourceSignature.status)) {
+        throw new Error(sourceSignature.issues[0] ?? "Imported backup signature verification failed.");
+      }
+      if (settings.requireSignedBackups && sourceSignature.status !== "verified") {
+        throw new Error("This instance requires signed backups, and the imported archive could not be verified.");
+      }
+
       const finalBundlePath = path.resolve(settings.directory, inspection.bundleName);
       const importedRun = await prepareImportedRun(parsedManifest.data, extractedBundlePath, inspection.bundleName);
       const computedIntegrity = await computeBackupIntegrity(importedRun);
       if (parsedManifest.data.integrity && !integrityMatches(parsedManifest.data.integrity, computedIntegrity)) {
         throw new Error("Imported backup integrity does not match the recorded manifest.");
       }
-      const signature = verifyBackupSignature({
-        run: importedRun,
-        secret: opts.config.backupSigningSecret,
-      });
-      if (["mismatch", "error"].includes(signature.status)) {
-        throw new Error(signature.issues[0] ?? "Imported backup signature verification failed.");
-      }
-      if (settings.requireSignedBackups && signature.status !== "verified") {
-        throw new Error("This instance requires signed backups, and the imported archive could not be verified.");
-      }
-      const finalRun = backupRunSchema.parse({
+      const finalRunDraft = backupRunSchema.parse({
         ...importedRun,
         origin: "imported",
         bundlePath: finalBundlePath,
@@ -2651,11 +3152,31 @@ export function createBackupManager(opts: {
         importSourceFilename: originalFilename,
         archivedAt: null,
         archivedBy: null,
+        // Remote-copy metadata is neither ownership proof nor portable state.
+        // Never let an imported manifest choose objects that this instance's
+        // configured S3 credentials may later delete.
+        remoteCopies: [],
         integrity: computedIntegrity,
         components: importedRun.components.map((component) => ({
           ...component,
-          absolutePath: component.relativePath ? path.resolve(finalBundlePath, component.relativePath) : null,
+          absolutePath: component.relativePath
+            ? resolveBundleComponentPath(finalBundlePath, component.relativePath)
+            : null,
         })),
+      });
+      const importedSignature = sourceSignature.status === "verified" && opts.config.backupSigningSecret
+        ? signBackupRun({
+          run: {
+            ...finalRunDraft,
+            signature: null,
+          },
+          secret: opts.config.backupSigningSecret,
+          keyId: opts.config.backupSigningKeyId ?? parsedManifest.data.signature?.keyId ?? null,
+        })
+        : null;
+      const finalRun = backupRunSchema.parse({
+        ...finalRunDraft,
+        signature: importedSignature,
       });
 
       await rename(extractedBundlePath, finalBundlePath);
@@ -2682,15 +3203,16 @@ export function createBackupManager(opts: {
         details: {
           originalFilename,
           importedEntries: inspection.entryCount,
-          signatureStatus: signature.status,
+          signatureStatus: sourceSignature.status,
           signed: Boolean(finalRun.signature),
         },
       });
 
       return finalRun;
-    } finally {
-      await rm(stagingRoot, { recursive: true, force: true });
-    }
+      } finally {
+        await rm(stagingRoot, { recursive: true, force: true });
+      }
+    });
   }
 
   async function previewRestore(backupId: string): Promise<BackupRestorePreview> {
@@ -2699,168 +3221,169 @@ export function createBackupManager(opts: {
   }
 
   async function archiveBackup(backupId: string, actorId: string | null): Promise<BackupHistoryActionResult> {
-    if (activeRunPromise) {
-      throw conflict("Cannot archive a backup while a backup is running.");
-    }
-    await ensureRestoreIdle("archive a backup");
+    return withOperationReservation("archive a backup", { checkExternal: false }, async () => {
+      await ensureRestoreIdle("archive a backup");
 
-    const settings = await readSettings();
-    const backup = await getBackupById(backupId);
-    if (backup.status === "running") {
-      throw conflict("Cannot archive a backup while it is still running.");
-    }
-    if (backup.archivedAt) {
-      throw conflict("Backup is already archived.");
-    }
-    if (!(await pathExists(backup.bundlePath))) {
-      throw notFound(`Backup bundle '${backup.bundleName}' is missing from disk.`);
-    }
+      const settings = await readSettings();
+      const backup = await getBackupById(backupId);
+      if (backup.status === "running") {
+        throw conflict("Cannot archive a backup while it is still running.");
+      }
+      if (backup.archivedAt) {
+        throw conflict("Backup is already archived.");
+      }
+      if (!(await pathExists(backup.bundlePath))) {
+        throw notFound(`Backup bundle '${backup.bundleName}' is missing from disk.`);
+      }
 
-    const archiveDirectory = path.resolve(settings.directory, BACKUP_ARCHIVE_DIRNAME);
-    const archivedBundlePath = path.resolve(archiveDirectory, backup.bundleName);
-    if (await pathExists(archivedBundlePath)) {
-      throw conflict(`Archived backup bundle '${backup.bundleName}' already exists.`);
-    }
+      const archiveDirectory = path.resolve(settings.directory, BACKUP_ARCHIVE_DIRNAME);
+      const archivedBundlePath = path.resolve(archiveDirectory, backup.bundleName);
+      if (await pathExists(archivedBundlePath)) {
+        throw conflict(`Archived backup bundle '${backup.bundleName}' already exists.`);
+      }
 
-    await mkdir(archiveDirectory, { recursive: true });
-    await rename(backup.bundlePath, archivedBundlePath);
+      await mkdir(archiveDirectory, { recursive: true });
+      await rename(backup.bundlePath, archivedBundlePath);
 
-    const archivedRun = backupRunSchema.parse({
-      ...backup,
-      bundlePath: archivedBundlePath,
-      archivedAt: nowIso(),
-      archivedBy: actorId,
-      components: backup.components.map((component) => ({
-        ...component,
-        absolutePath: component.relativePath ? path.resolve(archivedBundlePath, component.relativePath) : null,
-      })),
-    });
-    await writeJsonAtomic(path.resolve(archivedBundlePath, MANIFEST_FILENAME), archivedRun);
+      const archivedRun = backupRunSchema.parse({
+        ...backup,
+        bundlePath: archivedBundlePath,
+        archivedAt: nowIso(),
+        archivedBy: actorId,
+        components: backup.components.map((component) => ({
+          ...component,
+          absolutePath: component.relativePath
+            ? resolveBundleComponentPath(archivedBundlePath, component.relativePath)
+            : null,
+        })),
+      });
+      await writeManifest(archivedRun);
 
-    logger.info(
-      {
+      logger.info(
+        {
+          backupId: archivedRun.id,
+          bundleName: archivedRun.bundleName,
+          bundlePath: archivedRun.bundlePath,
+          actorId,
+        },
+        "Backup archived",
+      );
+      await appendAuditEvent({
+        action: "backup.archived",
+        result: "succeeded",
+        actorId,
         backupId: archivedRun.id,
         bundleName: archivedRun.bundleName,
-        bundlePath: archivedRun.bundlePath,
-        actorId,
-      },
-      "Backup archived",
-    );
-    await appendAuditEvent({
-      action: "backup.archived",
-      result: "succeeded",
-      actorId,
-      backupId: archivedRun.id,
-      bundleName: archivedRun.bundleName,
-      details: {
-        archivedPath: archivedBundlePath,
-      },
-    });
+        details: {
+          archivedPath: archivedBundlePath,
+        },
+      });
 
-    return backupHistoryActionResultSchema.parse({
-      backupId: archivedRun.id,
-      bundleName: archivedRun.bundleName,
-      action: "archived",
-      archivedPath: archivedBundlePath,
+      return backupHistoryActionResultSchema.parse({
+        backupId: archivedRun.id,
+        bundleName: archivedRun.bundleName,
+        action: "archived",
+        archivedPath: archivedBundlePath,
+      });
     });
   }
 
   async function unarchiveBackup(backupId: string, actorId: string | null): Promise<BackupHistoryActionResult> {
-    if (activeRunPromise) {
-      throw conflict("Cannot unarchive a backup while a backup is running.");
-    }
-    await ensureRestoreIdle("unarchive a backup");
+    return withOperationReservation("unarchive a backup", { checkExternal: false }, async () => {
+      await ensureRestoreIdle("unarchive a backup");
 
-    const settings = await readSettings();
-    const backup = await getBackupById(backupId);
-    if (backup.status === "running") {
-      throw conflict("Cannot unarchive a backup while it is still running.");
-    }
-    if (!backup.archivedAt) {
-      throw conflict("Backup is not archived.");
-    }
-    if (!(await pathExists(backup.bundlePath))) {
-      throw notFound(`Backup bundle '${backup.bundleName}' is missing from disk.`);
-    }
+      const settings = await readSettings();
+      const backup = await getBackupById(backupId);
+      if (backup.status === "running") {
+        throw conflict("Cannot unarchive a backup while it is still running.");
+      }
+      if (!backup.archivedAt) {
+        throw conflict("Backup is not archived.");
+      }
+      if (!(await pathExists(backup.bundlePath))) {
+        throw notFound(`Backup bundle '${backup.bundleName}' is missing from disk.`);
+      }
 
-    const activeBundlePath = path.resolve(settings.directory, backup.bundleName);
-    if (await pathExists(activeBundlePath)) {
-      throw conflict(`Active backup bundle '${backup.bundleName}' already exists.`);
-    }
+      const activeBundlePath = path.resolve(settings.directory, backup.bundleName);
+      if (await pathExists(activeBundlePath)) {
+        throw conflict(`Active backup bundle '${backup.bundleName}' already exists.`);
+      }
 
-    await rename(backup.bundlePath, activeBundlePath);
-    const unarchivedRun = backupRunSchema.parse({
-      ...backup,
-      bundlePath: activeBundlePath,
-      archivedAt: null,
-      archivedBy: null,
-      components: backup.components.map((component) => ({
-        ...component,
-        absolutePath: component.relativePath ? path.resolve(activeBundlePath, component.relativePath) : null,
-      })),
-    });
-    await writeManifest(unarchivedRun);
-    await appendAuditEvent({
-      action: "backup.unarchived",
-      result: "succeeded",
-      actorId,
-      backupId: unarchivedRun.id,
-      bundleName: unarchivedRun.bundleName,
-      details: {
+      await rename(backup.bundlePath, activeBundlePath);
+      const unarchivedRun = backupRunSchema.parse({
+        ...backup,
         bundlePath: activeBundlePath,
-      },
-    });
+        archivedAt: null,
+        archivedBy: null,
+        components: backup.components.map((component) => ({
+          ...component,
+          absolutePath: component.relativePath
+            ? resolveBundleComponentPath(activeBundlePath, component.relativePath)
+            : null,
+        })),
+      });
+      await writeManifest(unarchivedRun);
+      await appendAuditEvent({
+        action: "backup.unarchived",
+        result: "succeeded",
+        actorId,
+        backupId: unarchivedRun.id,
+        bundleName: unarchivedRun.bundleName,
+        details: {
+          bundlePath: activeBundlePath,
+        },
+      });
 
-    return backupHistoryActionResultSchema.parse({
-      backupId: unarchivedRun.id,
-      bundleName: unarchivedRun.bundleName,
-      action: "unarchived",
-      archivedPath: null,
+      return backupHistoryActionResultSchema.parse({
+        backupId: unarchivedRun.id,
+        bundleName: unarchivedRun.bundleName,
+        action: "unarchived",
+        archivedPath: null,
+      });
     });
   }
 
   async function deleteBackup(backupId: string, actorId: string | null): Promise<BackupHistoryActionResult> {
-    if (activeRunPromise) {
-      throw conflict("Cannot delete a backup while a backup is running.");
-    }
-    await ensureRestoreIdle("delete a backup");
+    return withOperationReservation("delete a backup", { checkExternal: false }, async () => {
+      await ensureRestoreIdle("delete a backup");
 
-    const settings = await readSettings();
-    const backup = await getBackupById(backupId);
-    if (backup.status === "running") {
-      throw conflict("Cannot delete a backup while it is still running.");
-    }
-    if (!(await pathExists(backup.bundlePath))) {
-      throw notFound(`Backup bundle '${backup.bundleName}' is missing from disk.`);
-    }
+      const settings = await readSettings();
+      const backup = await getBackupById(backupId);
+      if (backup.status === "running") {
+        throw conflict("Cannot delete a backup while it is still running.");
+      }
+      if (!(await pathExists(backup.bundlePath))) {
+        throw notFound(`Backup bundle '${backup.bundleName}' is missing from disk.`);
+      }
 
-    await deleteRemoteCopies(backup, settings);
-    await rm(backup.bundlePath, { recursive: true, force: true });
-    logger.info(
-      {
+      await deleteRemoteCopies(backup, settings);
+      await rm(backup.bundlePath, { recursive: true, force: true });
+      logger.info(
+        {
+          backupId: backup.id,
+          bundleName: backup.bundleName,
+          bundlePath: backup.bundlePath,
+          actorId,
+        },
+        "Backup deleted",
+      );
+      await appendAuditEvent({
+        action: "backup.deleted",
+        result: "succeeded",
+        actorId,
         backupId: backup.id,
         bundleName: backup.bundleName,
-        bundlePath: backup.bundlePath,
-        actorId,
-      },
-      "Backup deleted",
-    );
-    await appendAuditEvent({
-      action: "backup.deleted",
-      result: "succeeded",
-      actorId,
-      backupId: backup.id,
-      bundleName: backup.bundleName,
-      details: {
-        deletedRemoteCopies: settings.remote.s3.deleteFromRemoteOnDelete ? backup.remoteCopies.length : 0,
-      },
-    });
+        details: {
+          deletedRemoteCopies: settings.remote.s3.deleteFromRemoteOnDelete ? backup.remoteCopies.length : 0,
+        },
+      });
 
-    return backupHistoryActionResultSchema.parse({
-      backupId: backup.id,
-      bundleName: backup.bundleName,
-      action: "deleted",
-      archivedPath: null,
+      return backupHistoryActionResultSchema.parse({
+        backupId: backup.id,
+        bundleName: backup.bundleName,
+        action: "deleted",
+        archivedPath: null,
+      });
     });
   }
 
@@ -2893,54 +3416,210 @@ export function createBackupManager(opts: {
     };
   }
 
-  async function restoreBackup(backupId: string, actorId: string | null): Promise<BackupRestoreState> {
-    if (activeRunPromise) {
-      throw conflict("Cannot restore a backup while a backup is running.");
-    }
-    await ensureRestoreIdle("start a restore");
-
-    const backup = await getBackupById(backupId);
-    if (backup.status !== "succeeded") {
-      throw conflict("Only successful backups can be restored.");
-    }
-
+  async function rollbackInterruptedRestore(actorId: string | null): Promise<BackupRestoreState> {
+    ensureRestoreMaintenanceMode("roll back an interrupted restore");
+    reserveOperation("roll back an interrupted restore");
     try {
-      await runRestorePreflight(backup);
+      const state = await readRestoreState();
+      if (state.status !== "recovery_required") {
+        throw conflict("No interrupted restore requires rollback recovery.");
+      }
+
+      // Once recovery is requested, stop unrelated API mutations before any
+      // checkpoint I/O. The reservation already prevents backup-manager races.
+      restoreBarrierActive = true;
+      const settings = await readSettings();
+      const checkpoint = await loadRecordedRecoveryCheckpoint(state, settings);
+      const initialState = await writeRestoreState({
+        ...state,
+        notes: joinNotes(
+          state.notes,
+          "Rollback recovery is running from the recorded pre-restore checkpoint.",
+        ),
+        rollback: {
+          status: "running",
+          checkpointBackupId: checkpoint.id,
+          checkpointBundleName: checkpoint.bundleName,
+          error: null,
+          finishedAt: null,
+        },
+      });
+
+      const execute = async (): Promise<BackupRestoreState> => {
+        let recoveredState = initialState;
+        try {
+          const rollback = await runRollbackFromCheckpoint(checkpoint, initialState, actorId);
+          const succeeded = rollback.status === "succeeded";
+          recoveredState = await writeRestoreState({
+            ...initialState,
+            // The original restore remains failed even when its rollback succeeds.
+            status: succeeded ? "failed" : "recovery_required",
+            finishedAt: initialState.finishedAt ?? nowIso(),
+            error: initialState.error ?? "Restore was interrupted before completion.",
+            notes: joinNotes(
+              initialState.notes,
+              succeeded
+                ? "Interrupted restore rollback completed successfully."
+                : "Interrupted restore rollback did not complete. Retry recovery before starting another backup or restore.",
+            ),
+            rollback,
+          });
+          try {
+            await appendAuditEvent({
+              action: "backup.restore.recovery.completed",
+              result: succeeded ? "succeeded" : "failed",
+              actorId,
+              backupId: checkpoint.id,
+              bundleName: checkpoint.bundleName,
+              details: {
+                rollbackStatus: rollback.status,
+                rollbackError: rollback.error,
+              },
+            });
+          } catch (error) {
+            logger.warn({ err: error }, "Failed to append interrupted restore recovery audit event");
+          }
+          if (succeeded) {
+            // The checkpoint restore completed and its terminal state is on
+            // disk, so a restarted app may safely reopen normal API writes.
+            clearPersistedRestoreBarrier();
+            try {
+              await rm(checkpoint.bundlePath, { recursive: true, force: true });
+            } catch (error) {
+              // A leftover checkpoint is safe; do not re-lock an already restored instance.
+              logger.warn({ err: error, checkpointPath: checkpoint.bundlePath }, "Failed to remove recovered rollback checkpoint");
+            }
+          }
+          return recoveredState;
+        } catch (error) {
+          const rollback = backupRollbackStateSchema.parse({
+            status: "failed",
+            checkpointBackupId: checkpoint.id,
+            checkpointBundleName: checkpoint.bundleName,
+            error: error instanceof Error ? error.message : String(error),
+            finishedAt: nowIso(),
+          });
+          try {
+            recoveredState = await writeRestoreState({
+              ...initialState,
+              status: "recovery_required",
+              finishedAt: initialState.finishedAt ?? nowIso(),
+              error: initialState.error ?? "Restore was interrupted before completion.",
+              notes: joinNotes(
+                initialState.notes,
+                "Interrupted restore rollback failed. Retry recovery before starting another backup or restore.",
+              ),
+              rollback,
+            });
+          } catch (persistError) {
+            // Keep the previous recovery_required state and checkpoint if even
+            // state persistence fails; clearing the lock would be unsafe.
+            logger.error({ err: persistError }, "Failed to persist interrupted restore recovery failure");
+          }
+          try {
+            await appendAuditEvent({
+              action: "backup.restore.recovery.completed",
+              result: "failed",
+              actorId,
+              backupId: checkpoint.id,
+              bundleName: checkpoint.bundleName,
+              details: {
+                error: rollback.error,
+              },
+            });
+          } catch (auditError) {
+            logger.warn({ err: auditError }, "Failed to append interrupted restore recovery audit event");
+          }
+          return recoveredState;
+        } finally {
+          activeRestorePromise = null;
+          restoreBarrierActive = false;
+          releaseOperation();
+        }
+      };
+
+      activeRestorePromise = execute();
+      void activeRestorePromise.then((result) => {
+        logger.info(
+          {
+            checkpointBackupId: checkpoint.id,
+            checkpointBundleName: checkpoint.bundleName,
+            rollbackStatus: result.rollback.status,
+          },
+          "Interrupted restore recovery finished",
+        );
+      }).catch((error) => {
+        logger.error(
+          { err: error, checkpointBackupId: checkpoint.id, checkpointBundleName: checkpoint.bundleName },
+          "Interrupted restore recovery failed",
+        );
+      });
+
+      return initialState;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      await writeRestorePreflightFailure(backup, errorMessage);
+      if (!activeRestorePromise) {
+        restoreBarrierActive = false;
+        releaseOperation();
+      }
+      throw error;
+    }
+  }
+
+  async function restoreBackup(backupId: string, actorId: string | null): Promise<BackupRestoreState> {
+    ensureRestoreMaintenanceMode("start a restore");
+    reserveOperation("start a restore");
+    try {
+      await ensureRestoreIdle("start a restore");
+
+      const backup = await getBackupById(backupId);
+      if (backup.status !== "succeeded") {
+        throw conflict("Only successful backups can be restored.");
+      }
+
+      try {
+        await runRestorePreflight(backup);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await writeRestorePreflightFailure(backup, errorMessage);
+        await appendAuditEvent({
+          action: "backup.restore.preflight",
+          result: "blocked",
+          actorId,
+          backupId: backup.id,
+          bundleName: backup.bundleName,
+          details: {
+            error: errorMessage,
+          },
+        });
+        throw unprocessable(errorMessage);
+      }
+
       await appendAuditEvent({
         action: "backup.restore.preflight",
-        result: "blocked",
+        result: "succeeded",
         actorId,
         backupId: backup.id,
         bundleName: backup.bundleName,
-        details: {
-          error: errorMessage,
-        },
+        details: null,
       });
-      throw unprocessable(errorMessage);
+
+      return await runRestore(backup, actorId);
+    } catch (error) {
+      if (!activeRestorePromise) {
+        restoreBarrierActive = false;
+        releaseOperation();
+      }
+      throw error;
     }
-
-    await appendAuditEvent({
-      action: "backup.restore.preflight",
-      result: "succeeded",
-      actorId,
-      backupId: backup.id,
-      bundleName: backup.bundleName,
-      details: null,
-    });
-
-    return runRestore(backup, actorId);
   }
 
   async function tick(now: Date = new Date()): Promise<BackupRun | null> {
+    if (operationReserved || activeRunPromise || activeRestorePromise || opts.isExternalDatabaseBackupRunning?.()) return null;
     const settings = await readSettings();
     if (!settings.enabled) return null;
-    if (activeRunPromise || activeRestorePromise) return null;
 
     const restoreState = await readRestoreState();
-    if (restoreState.status === "running") return null;
+    if (restoreState.status === "running" || restoreState.status === "recovery_required") return null;
 
     const nextDueAt = lastAutomaticRunAt
       ? new Date(new Date(lastAutomaticRunAt).getTime() + settings.intervalMinutes * 60_000)
@@ -2967,7 +3646,9 @@ export function createBackupManager(opts: {
     getBackupById,
     getDownloadDescriptor,
     restoreBackup,
-    isRestoreRunning: () => activeRestorePromise !== null,
+    rollbackInterruptedRestore,
+    isOperationReserved: () => operationReserved,
+    isRestoreRunning: () => restoreBarrierActive || persistedRestoreBarrierActive,
     isSnapshotBarrierActive: () => snapshotBarrierActive,
     tick,
   };

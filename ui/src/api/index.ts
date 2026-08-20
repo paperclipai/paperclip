@@ -21,3 +21,4 @@ export { sidebarPreferencesApi } from "./sidebarPreferences";
 export { resourceMembershipsApi } from "./resourceMemberships";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
+export { backupsApi } from "./backups";

@@ -43,7 +43,12 @@ if (!isSameFile && existsSync(CWD_ENV_PATH)) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
 
-maybeRepairLegacyWorktreeConfigAndEnvFiles();
+// This import-time repair can persist worktree config and env files. Do not run
+// it in the explicitly isolated restore process before loadConfig() gets a
+// chance to enforce the maintenance boundary.
+if (process.env.PAPERCLIP_RESTORE_MAINTENANCE_MODE !== "true") {
+  maybeRepairLegacyWorktreeConfigAndEnvFiles();
+}
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
@@ -69,6 +74,25 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  /**
+   * Process-only fail-closed mode for portable restore operations. This is
+   * intentionally not persisted in instance settings or backup bundles.
+   */
+  restoreMaintenanceMode: boolean;
+  backupRequireSignedBackupsDefault: boolean;
+  backupSigningSecret: string | undefined;
+  backupSigningKeyId: string | undefined;
+  backupRemoteProviderDefault: "none" | "s3";
+  backupRemoteS3BucketDefault: string;
+  backupRemoteS3RegionDefault: string;
+  backupRemoteS3EndpointDefault: string | undefined;
+  backupRemoteS3PrefixDefault: string;
+  backupRemoteS3AccessKeyIdDefault: string | undefined;
+  backupRemoteS3SecretAccessKeyDefault: string | undefined;
+  backupRemoteS3ForcePathStyleDefault: boolean;
+  backupRemoteS3DeleteOnDeleteDefault: boolean;
+  backupRemoteS3ServerSideEncryptionDefault: "none" | "AES256" | "aws:kms";
+  backupRemoteS3KmsKeyIdDefault: string | undefined;
   workspaceReaperCooldownDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
@@ -266,6 +290,28 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  const backupRequireSignedBackupsDefault = process.env.PAPERCLIP_BACKUP_REQUIRE_SIGNED === "true";
+  const backupSigningSecret = process.env.PAPERCLIP_BACKUP_SIGNING_SECRET?.trim() || undefined;
+  const backupSigningKeyId = process.env.PAPERCLIP_BACKUP_SIGNING_KEY_ID?.trim() || undefined;
+  const backupRemoteProviderDefault = process.env.PAPERCLIP_BACKUP_REMOTE_PROVIDER === "s3"
+    ? "s3" as const
+    : "none" as const;
+  const backupRemoteS3BucketDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_BUCKET?.trim() ?? "";
+  const backupRemoteS3RegionDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_REGION?.trim() ?? "us-east-1";
+  const backupRemoteS3EndpointDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_ENDPOINT?.trim() || undefined;
+  const backupRemoteS3PrefixDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_PREFIX?.trim() ?? "";
+  // Static S3 credentials are deliberately process-only: never copy them into
+  // backup-manager.json, API responses, or portable snapshot bundles.
+  const backupRemoteS3AccessKeyIdDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_ACCESS_KEY_ID?.trim() || undefined;
+  const backupRemoteS3SecretAccessKeyDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_SECRET_ACCESS_KEY?.trim() || undefined;
+  const backupRemoteS3ForcePathStyleDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_FORCE_PATH_STYLE === "true";
+  const backupRemoteS3DeleteOnDeleteDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_DELETE_ON_DELETE === "true";
+  const backupRemoteS3ServerSideEncryptionEnv = process.env.PAPERCLIP_BACKUP_REMOTE_S3_SSE?.trim();
+  const backupRemoteS3ServerSideEncryptionDefault =
+    backupRemoteS3ServerSideEncryptionEnv === "AES256" || backupRemoteS3ServerSideEncryptionEnv === "aws:kms"
+      ? backupRemoteS3ServerSideEncryptionEnv
+      : "none";
+  const backupRemoteS3KmsKeyIdDefault = process.env.PAPERCLIP_BACKUP_REMOTE_S3_KMS_KEY_ID?.trim() || undefined;
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
@@ -323,6 +369,24 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    // A restore process must be started deliberately. Do not let an instance
+    // setting or an imported backup silently put the next server process into
+    // maintenance mode.
+    restoreMaintenanceMode: process.env.PAPERCLIP_RESTORE_MAINTENANCE_MODE === "true",
+    backupRequireSignedBackupsDefault,
+    backupSigningSecret,
+    backupSigningKeyId,
+    backupRemoteProviderDefault,
+    backupRemoteS3BucketDefault,
+    backupRemoteS3RegionDefault,
+    backupRemoteS3EndpointDefault,
+    backupRemoteS3PrefixDefault,
+    backupRemoteS3AccessKeyIdDefault,
+    backupRemoteS3SecretAccessKeyDefault,
+    backupRemoteS3ForcePathStyleDefault,
+    backupRemoteS3DeleteOnDeleteDefault,
+    backupRemoteS3ServerSideEncryptionDefault,
+    backupRemoteS3KmsKeyIdDefault,
     workspaceReaperCooldownDays,
     serveUi:
       process.env.SERVE_UI !== undefined

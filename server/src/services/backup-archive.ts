@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import path from "node:path";
+import { Transform } from "node:stream";
 import { createGunzip } from "node:zlib";
 import { Parser, type ReadEntry } from "tar";
 
@@ -8,6 +9,13 @@ export type ImportedArchiveInspection = {
   entryCount: number;
 };
 
+export type ImportedArchiveInspectionLimits = {
+  maxEntries?: number;
+  maxUncompressedBytes?: number;
+};
+
+const DEFAULT_MAX_ARCHIVE_ENTRIES = 100_000;
+const DEFAULT_MAX_ARCHIVE_UNCOMPRESSED_BYTES = 10 * 1024 * 1024 * 1024;
 const SAFE_BUNDLE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
 const SUPPORTED_ENTRY_TYPES = new Set([
   "File",
@@ -45,6 +53,9 @@ function normalizeArchiveEntryPath(rawPath: string): string {
 }
 
 function classifyArchiveEntry(entry: ReadEntry): string | null {
+  if (entry.header.path?.includes("\\") || entry.path.includes("\\")) {
+    throw new Error("Backup archive contains a non-POSIX path separator.");
+  }
   if (entry.meta || IGNORED_ENTRY_TYPES.has(entry.type)) {
     return null;
   }
@@ -54,11 +65,42 @@ function classifyArchiveEntry(entry: ReadEntry): string | null {
   return normalizeArchiveEntryPath(entry.path);
 }
 
-export async function inspectImportedArchive(archivePath: string): Promise<ImportedArchiveInspection> {
-  const entries: string[] = [];
+function resolveInspectionLimit(value: number | undefined, fallback: number, label: string): number {
+  const limit = value ?? fallback;
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error(`Backup archive inspection ${label} must be a positive integer.`);
+  }
+  return limit;
+}
+
+export async function inspectImportedArchive(
+  archivePath: string,
+  limits: ImportedArchiveInspectionLimits = {},
+): Promise<ImportedArchiveInspection> {
+  const maxEntries = resolveInspectionLimit(limits.maxEntries, DEFAULT_MAX_ARCHIVE_ENTRIES, "maxEntries");
+  const maxUncompressedBytes = resolveInspectionLimit(
+    limits.maxUncompressedBytes,
+    DEFAULT_MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    "maxUncompressedBytes",
+  );
+  let archiveEntryCount = 0;
+  let entryCount = 0;
+  let declaredPayloadBytes = 0;
+  let bundleName: string | null = null;
   await new Promise<void>((resolve, reject) => {
     const source = createReadStream(archivePath);
     const gunzip = createGunzip();
+    let uncompressedBytes = 0;
+    const uncompressedSizeLimiter = new Transform({
+      transform(chunk, _encoding, callback) {
+        uncompressedBytes += chunk.length;
+        if (uncompressedBytes > maxUncompressedBytes) {
+          callback(new Error(`Backup archive exceeds the maximum uncompressed size of ${maxUncompressedBytes} bytes.`));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
     const parser = new Parser({ strict: true });
     let settled = false;
 
@@ -68,18 +110,40 @@ export async function inspectImportedArchive(archivePath: string): Promise<Impor
       const normalized = error instanceof Error ? error : new Error(String(error));
       source.destroy();
       gunzip.destroy();
+      uncompressedSizeLimiter.destroy();
       parser.abort(normalized);
       reject(normalized);
     };
 
     source.on("error", fail);
     gunzip.on("error", fail);
+    uncompressedSizeLimiter.on("error", fail);
     parser.on("error", fail);
     parser.on("entry", (entry: ReadEntry) => {
       try {
+        if (++archiveEntryCount > maxEntries) {
+          throw new Error(`Backup archive contains more than ${maxEntries} entries.`);
+        }
         const normalized = classifyArchiveEntry(entry);
         if (normalized) {
-          entries.push(normalized);
+          if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
+            throw new Error("Backup archive contains an invalid entry size.");
+          }
+          declaredPayloadBytes += entry.size;
+          if (declaredPayloadBytes > maxUncompressedBytes) {
+            throw new Error(`Backup archive exceeds the maximum uncompressed size of ${maxUncompressedBytes} bytes.`);
+          }
+          entryCount += 1;
+          const separatorIndex = normalized.indexOf("/");
+          const topLevel = separatorIndex === -1 ? normalized : normalized.slice(0, separatorIndex);
+          if (!topLevel || topLevel === "." || topLevel === "..") {
+            throw new Error("Backup archive contains an invalid top-level directory.");
+          }
+          if (bundleName === null) {
+            bundleName = topLevel;
+          } else if (bundleName !== topLevel) {
+            throw new Error("Backup archive must contain exactly one top-level bundle directory.");
+          }
         }
         entry.resume();
       } catch (error) {
@@ -92,33 +156,19 @@ export async function inspectImportedArchive(archivePath: string): Promise<Impor
       resolve();
     });
 
-    source.pipe(gunzip).pipe(parser);
+    source.pipe(gunzip).pipe(uncompressedSizeLimiter).pipe(parser);
   });
 
-  if (entries.length === 0) {
+  if (entryCount === 0 || bundleName === null) {
     throw new Error("Backup archive is empty.");
   }
 
-  const topLevelNames = new Set<string>();
-  for (const entry of entries) {
-    const topLevel = entry.split("/")[0];
-    if (!topLevel || topLevel === "." || topLevel === "..") {
-      throw new Error("Backup archive contains an invalid top-level directory.");
-    }
-    topLevelNames.add(topLevel);
-  }
-
-  if (topLevelNames.size !== 1) {
-    throw new Error("Backup archive must contain exactly one top-level bundle directory.");
-  }
-
-  const bundleName = Array.from(topLevelNames)[0]!;
   if (!isSafeBundleName(bundleName)) {
     throw new Error(`Backup bundle name '${bundleName}' is not allowed.`);
   }
 
   return {
     bundleName,
-    entryCount: entries.length,
+    entryCount,
   };
 }

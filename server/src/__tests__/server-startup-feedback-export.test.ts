@@ -11,6 +11,8 @@ const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
   createAppMock,
+  backupManagerMock,
+  createBackupManagerMock,
   createBetterAuthInstanceMock,
   createDbMock,
   detectPortMock,
@@ -32,8 +34,18 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  runDatabaseBackupMock,
+  setupEnvironmentCustomImageTerminalWebSocketServerMock,
+  setupLiveEventsWebSocketServerMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const backupManagerMock = {
+    isOperationReserved: vi.fn(() => false),
+    isRestoreRunning: vi.fn(() => false),
+    isSnapshotBarrierActive: vi.fn(() => false),
+    tick: vi.fn(async () => null),
+  };
+  const createBackupManagerMock = vi.fn(() => backupManagerMock);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({
     select: vi.fn(() => ({
@@ -109,6 +121,9 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const runDatabaseBackupMock = vi.fn();
+  const setupEnvironmentCustomImageTerminalWebSocketServerMock = vi.fn();
+  const setupLiveEventsWebSocketServerMock = vi.fn();
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -126,6 +141,8 @@ const {
 
   return {
     createAppMock,
+    backupManagerMock,
+    createBackupManagerMock,
     createBetterAuthInstanceMock,
     createDbMock,
     detectPortMock,
@@ -147,6 +164,9 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    runDatabaseBackupMock,
+    setupEnvironmentCustomImageTerminalWebSocketServerMock,
+    setupLiveEventsWebSocketServerMock,
   };
 });
 
@@ -170,6 +190,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     databaseBackupIntervalMinutes: 60,
     databaseBackupRetentionDays: 30,
     databaseBackupDir: "/tmp/paperclip-test-backups",
+    restoreMaintenanceMode: false,
     serveUi: false,
     uiDevMiddleware: false,
     secretsProvider: "local_encrypted",
@@ -207,7 +228,7 @@ vi.mock("@paperclipai/db", () => ({
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
-  runDatabaseBackup: vi.fn(),
+  runDatabaseBackup: runDatabaseBackupMock,
   authUsers: {},
   companies: {},
   companyMemberships: {},
@@ -234,10 +255,15 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 vi.mock("../realtime/live-events-ws.js", () => ({
-  setupLiveEventsWebSocketServer: vi.fn(),
+  setupLiveEventsWebSocketServer: setupLiveEventsWebSocketServerMock,
+}));
+
+vi.mock("../realtime/environment-custom-image-terminal-ws.js", () => ({
+  setupEnvironmentCustomImageTerminalWebSocketServer: setupEnvironmentCustomImageTerminalWebSocketServerMock,
 }));
 
 vi.mock("../services/index.js", () => ({
+  createBackupManager: createBackupManagerMock,
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
     migratedConnections: 0,
@@ -362,6 +388,8 @@ describe("startServer feedback export wiring", () => {
     });
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    backupManagerMock.isOperationReserved.mockReturnValue(false);
+    createBackupManagerMock.mockImplementation(() => backupManagerMock);
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
@@ -467,6 +495,71 @@ describe("startServer feedback export wiring", () => {
     });
   });
 
+  it("starts an isolated restore maintenance process without runtime workers or schedulers", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      restoreMaintenanceMode: true,
+      heartbeatSchedulerEnabled: true,
+      databaseBackupEnabled: true,
+    }));
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+
+    try {
+      await startServer();
+
+      expect(createAppMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ restoreMaintenanceMode: true }),
+      );
+      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      expect(externalObjectsServiceFactoryMock).not.toHaveBeenCalled();
+      expect(routineServiceFactoryMock).not.toHaveBeenCalled();
+      expect(backupManagerMock.tick).not.toHaveBeenCalled();
+      expect(setupEnvironmentCustomImageTerminalWebSocketServerMock).not.toHaveBeenCalled();
+      expect(setupLiveEventsWebSocketServerMock).not.toHaveBeenCalled();
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("gives the portable manager exclusive ownership of automatic self-hosted backups", async () => {
+    const legacyIntervalMs = 59 * 60 * 1000;
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupEnabled: true,
+      databaseBackupIntervalMinutes: 59,
+    }));
+    backupManagerMock.isOperationReserved.mockReturnValue(true);
+    const intervals: Array<{ callback: () => void; delay: number | undefined }> = [];
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void, delay?: number) => {
+        intervals.push({ callback, delay });
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(createBackupManagerMock).toHaveBeenCalledWith(expect.objectContaining({
+        isExternalDatabaseBackupRunning: expect.any(Function),
+      }));
+      expect(intervals.some((interval) => interval.delay === legacyIntervalMs)).toBe(false);
+      expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
+        databaseBackupHealth: undefined,
+      });
+
+      const appOptions = createAppMock.mock.calls[0]?.[1] as {
+        databaseBackupService?: { runManualBackup: () => Promise<unknown> };
+      };
+      expect(appOptions.databaseBackupService).toBeDefined();
+      await expect(appOptions.databaseBackupService!.runManualBackup())
+        .rejects.toThrow("portable backup or restore operation");
+      expect(runDatabaseBackupMock).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -485,6 +578,10 @@ describe("startServer feedback export wiring", () => {
       }) as typeof setInterval);
 
     try {
+      // This test exercises the heartbeat recovery interval specifically.
+      // Suppress the independent portable-backup poller so its later interval
+      // registration cannot replace the callback captured by this harness.
+      createBackupManagerMock.mockReturnValueOnce(null as never);
       await startServer();
 
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
@@ -521,6 +618,9 @@ describe("startServer feedback export wiring", () => {
       }) as typeof setInterval);
 
     try {
+      // This test exercises the disabled-heartbeat cleanup interval, not the
+      // independent portable-backup poller.
+      createBackupManagerMock.mockReturnValueOnce(null as never);
       await startServer();
 
       // The disabled path still creates one heartbeat runtime. This runtime owns

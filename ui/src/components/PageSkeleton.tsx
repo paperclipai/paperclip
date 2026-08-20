@@ -7,6 +7,7 @@ interface PageSkeletonProps {
     | "detail"
     | "dashboard"
     | "approvals"
+    | "backups"
     | "costs"
     | "inbox"
     | "org-chart";
@@ -67,6 +68,35 @@ export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
         <div className="grid gap-4 md:grid-cols-2">
           <Skeleton className="h-72 w-full" />
           <Skeleton className="h-72 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === "backups") {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-32" />
+            <Skeleton className="h-4 w-80" />
+          </div>
+          <div className="flex gap-2">
+            <Skeleton className="h-10 w-24" />
+            <Skeleton className="h-10 w-36" />
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 w-full" />
+          ))}
+        </div>
+        <div className="grid gap-6 xl:grid-cols-2">
+          <div className="space-y-6">
+            <Skeleton className="h-96 w-full" />
+            <Skeleton className="h-80 w-full" />
+          </div>
+          <Skeleton className="h-96 w-full" />
         </div>
       </div>
     );

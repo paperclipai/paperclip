@@ -43,6 +43,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatBytes, formatDateTime, relativeTime } from "@/lib/utils";
 
@@ -78,8 +79,6 @@ function emptySettings(): BackupSettings {
         region: "us-east-1",
         endpoint: null,
         prefix: "",
-        accessKeyId: null,
-        secretAccessKey: null,
         forcePathStyle: false,
         deleteFromRemoteOnDelete: false,
         serverSideEncryption: "none",
@@ -124,6 +123,7 @@ function statusTone(
     case "mismatch":
     case "error":
     case "failed":
+    case "recovery_required":
       return "bg-red-500/15 text-red-700 dark:text-red-300";
   }
 }
@@ -133,6 +133,7 @@ function restoreStatusIcon(status: BackupRestoreState["status"]) {
     case "succeeded":
       return ShieldCheck;
     case "failed":
+    case "recovery_required":
       return ShieldAlert;
     case "running":
       return Clock3;
@@ -251,15 +252,15 @@ function RestorePreviewSummary({ preview }: { preview: BackupRestorePreview }) {
 
       <div className="grid gap-3 md:grid-cols-3">
         <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Restore</div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Restore</div>
           <div className="mt-1 font-medium">{preview.canRestore ? "Ready to apply" : "Blocked"}</div>
         </div>
         <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Integrity</div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Integrity</div>
           <div className="mt-1 font-medium">{preview.integrity.status}</div>
         </div>
         <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Signature</div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Signature</div>
           <div className="mt-1 font-medium">
             {preview.signature.keyId ? `${preview.signature.status} (${preview.signature.keyId})` : preview.signature.status}
           </div>
@@ -271,7 +272,7 @@ function RestorePreviewSummary({ preview }: { preview: BackupRestorePreview }) {
           <div key={component.key} className="rounded-md border border-border px-3 py-2 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-foreground">{component.label}</span>
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                 {component.action}
               </span>
               <StatusBadge label={component.integrityStatus} status={component.integrityStatus} />
@@ -289,11 +290,11 @@ function RestorePreviewSummary({ preview }: { preview: BackupRestorePreview }) {
         <div className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
             <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Expected bundle hash</div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">Expected bundle hash</div>
               <div className="mt-1 font-mono text-xs break-all">{preview.integrity.expectedBundleHash ?? "Not recorded"}</div>
             </div>
             <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Actual bundle hash</div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">Actual bundle hash</div>
               <div className="mt-1 font-mono text-xs break-all">{preview.integrity.actualBundleHash ?? "Not computed"}</div>
             </div>
           </div>
@@ -327,11 +328,13 @@ function RestorePreviewSummary({ preview }: { preview: BackupRestorePreview }) {
 
 export function Backups() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const isCloud = Boolean(useCloudInstance());
   const queryClient = useQueryClient();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<BackupSettings>(emptySettings());
   const [previewBackupId, setPreviewBackupId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Backups" }]);
@@ -340,13 +343,14 @@ export function Backups() {
   const overviewQuery = useQuery({
     queryKey: queryKeys.backups.overview,
     queryFn: () => backupsApi.overview(),
+    enabled: !isCloud,
     refetchInterval: 5_000,
   });
 
   const previewQuery = useQuery({
     queryKey: previewBackupId ? queryKeys.backups.preview(previewBackupId) : ["backups", "preview", "idle"],
     queryFn: () => backupsApi.previewRestore(previewBackupId!),
-    enabled: previewBackupId !== null,
+    enabled: !isCloud && previewBackupId !== null,
   });
 
   useEffect(() => {
@@ -379,6 +383,14 @@ export function Backups() {
   const restoreMutation = useMutation({
     mutationFn: ({ backupId }: { backupId: string }) => backupsApi.restore(backupId, { confirmText: "RESTORE" }),
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.backups.overview });
+    },
+  });
+
+  const recoveryRollbackMutation = useMutation({
+    mutationFn: () => backupsApi.recoverInterruptedRestore({ confirmText: "ROLLBACK" }),
+    onSuccess: async () => {
+      setRecoveryConfirmation("");
       await queryClient.invalidateQueries({ queryKey: queryKeys.backups.overview });
     },
   });
@@ -434,6 +446,19 @@ export function Backups() {
     return map;
   }, [overviewQuery.data]);
 
+  if (isCloud) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Backups are platform-managed</CardTitle>
+          <CardDescription>
+            Portable backup and restore workflows are unavailable on cloud-managed instances.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   if (overviewQuery.isLoading) {
     return <PageSkeleton variant="backups" />;
   }
@@ -451,10 +476,12 @@ export function Backups() {
     ? relativeTime(overview.latestSuccess.startedAt)
     : "Never";
   const restoreRunning = overview.restore.status === "running";
+  const restoreRecoveryRequired = overview.restore.status === "recovery_required";
   const anyMutationError =
     saveMutation.error
     ?? runMutation.error
     ?? restoreMutation.error
+    ?? recoveryRollbackMutation.error
     ?? importMutation.error
     ?? archiveMutation.error
     ?? unarchiveMutation.error
@@ -462,7 +489,9 @@ export function Backups() {
   const settingsLocked =
     overview.scheduler.running
     || restoreRunning
+    || restoreRecoveryRequired
     || restoreMutation.isPending
+    || recoveryRollbackMutation.isPending
     || importMutation.isPending
     || archiveMutation.isPending
     || unarchiveMutation.isPending
@@ -482,7 +511,7 @@ export function Backups() {
 
   const handleRestore = (backup: BackupRun) => {
     const confirmation = window.prompt(
-      `Type RESTORE to replace the current instance with snapshot ${backup.bundleName}. This action is destructive.`,
+      `Restore is available only from an isolated maintenance process. Stop every normal Paperclip replica and its active agents/background jobs, then start exactly one process with PAPERCLIP_RESTORE_MAINTENANCE_MODE=true.\n\nType RESTORE to replace the current instance with snapshot ${backup.bundleName}. This action is destructive.`,
     );
     if (confirmation === null) return;
     if (confirmation !== "RESTORE") {
@@ -490,6 +519,11 @@ export function Backups() {
       return;
     }
     restoreMutation.mutate({ backupId: backup.id });
+  };
+
+  const handleRecoveryRollback = () => {
+    if (recoveryConfirmation !== "ROLLBACK") return;
+    recoveryRollbackMutation.mutate();
   };
 
   const handlePreview = (backupId: string) => {
@@ -596,7 +630,9 @@ export function Backups() {
               <RestoreStatusIcon className="h-4 w-4" />
               <span>Restore</span>
             </CardTitle>
-            <CardDescription>Most API routes pause while restore is running.</CardDescription>
+            <CardDescription>
+              Most API routes pause while restore is running. Active agents and background jobs must be stopped before restoration begins.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -619,7 +655,7 @@ export function Backups() {
               </div>
               {restoreRunning ? (
                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
-                  Avoid board writes until restore completes.
+                  Most API routes are unavailable. Restore runs only in an isolated maintenance process and does not stop work already running in another replica.
                 </div>
               ) : null}
             </div>
@@ -636,13 +672,49 @@ export function Backups() {
               </div>
             ) : null}
 
+            {restoreRecoveryRequired ? (
+              <div className="space-y-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-3 text-sm text-red-900 dark:text-red-200">
+                <div className="space-y-1">
+                  <div className="font-medium">Interrupted restore requires checkpoint rollback</div>
+                  <p className="text-xs leading-relaxed">
+                    This instance may contain a partial restore. All backup actions are locked until the pre-restore checkpoint is applied.
+                    Confirm rollback only after active agents and background jobs are stopped.
+                  </p>
+                </div>
+                {overview.restore.rollback.checkpointBundleName ? (
+                  <div className="rounded-md border border-red-500/20 bg-background/50 px-3 py-2 text-xs">
+                    Checkpoint: <span className="font-mono">{overview.restore.rollback.checkpointBundleName}</span>
+                  </div>
+                ) : null}
+                <label className="grid gap-1.5 text-xs font-medium">
+                  Type ROLLBACK to restore the checkpoint. This also requires an isolated process started with PAPERCLIP_RESTORE_MAINTENANCE_MODE=true.
+                  <input
+                    className="h-9 rounded-md border border-red-500/30 bg-background px-3 font-mono text-sm text-foreground outline-none"
+                    value={recoveryConfirmation}
+                    onChange={(event) => setRecoveryConfirmation(event.target.value)}
+                    placeholder="ROLLBACK"
+                    autoComplete="off"
+                    disabled={recoveryRollbackMutation.isPending}
+                  />
+                </label>
+                <Button
+                  variant="destructive"
+                  onClick={handleRecoveryRollback}
+                  disabled={recoveryConfirmation !== "ROLLBACK" || recoveryRollbackMutation.isPending}
+                >
+                  <Undo2 className="h-4 w-4" />
+                  {recoveryRollbackMutation.isPending ? "Rolling back..." : "Rollback to checkpoint"}
+                </Button>
+              </div>
+            ) : null}
+
             {overview.restore.rollback.status !== "not_needed" ? (
               <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium text-foreground">Rollback checkpoint</span>
                   <StatusBadge label={overview.restore.rollback.status} status={overview.restore.rollback.status} />
                   {overview.restore.rollback.checkpointBundleName ? (
-                    <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+                    <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
                       {overview.restore.rollback.checkpointBundleName}
                     </span>
                   ) : null}
@@ -687,7 +759,7 @@ export function Backups() {
         {metricLabel(formatBytes(overview.stats.storedBytes), "Retained size", HardDriveDownload)}
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]">
+      <div className="grid gap-6 xl:grid-cols-2">
         <div className="space-y-6">
           <Card>
             <CardHeader>
@@ -803,7 +875,7 @@ export function Backups() {
                           <span className="flex items-center gap-2 text-sm font-medium">
                             {support?.label ?? key}
                             {support?.recommended ? (
-                              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
                                 Recommended
                               </span>
                             ) : null}
@@ -963,44 +1035,10 @@ export function Backups() {
                           />
                         </SettingsField>
                       </div>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <SettingsField label="Access key id" hint="Leave blank to use the ambient AWS credential chain.">
-                          <input
-                            className="h-10 rounded-md border border-border bg-background px-3 text-sm outline-none"
-                            type="text"
-                            value={settingsDraft.remote.s3.accessKeyId ?? ""}
-                            disabled={settingsLocked}
-                            onChange={(event) => setSettingsDraft((current) => ({
-                              ...current,
-                              remote: {
-                                ...current.remote,
-                                s3: {
-                                  ...current.remote.s3,
-                                  accessKeyId: event.target.value || null,
-                                },
-                              },
-                            }))}
-                          />
-                        </SettingsField>
-                        <SettingsField label="Secret access key" hint="Stored only in this instance backup policy.">
-                          <input
-                            className="h-10 rounded-md border border-border bg-background px-3 text-sm outline-none"
-                            type="password"
-                            value={settingsDraft.remote.s3.secretAccessKey ?? ""}
-                            disabled={settingsLocked}
-                            onChange={(event) => setSettingsDraft((current) => ({
-                              ...current,
-                              remote: {
-                                ...current.remote,
-                                s3: {
-                                  ...current.remote.s3,
-                                  secretAccessKey: event.target.value || null,
-                                },
-                              },
-                            }))}
-                          />
-                        </SettingsField>
-                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Static S3 credentials are read only from the server environment. Leave them unset to use the
+                        ambient AWS credential chain.
+                      </p>
                       <div className="grid gap-3 md:grid-cols-2">
                         <SettingsField label="Server-side encryption">
                           <select
@@ -1140,7 +1178,7 @@ export function Backups() {
                   />
                 </div>
                 <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  Consistency mode: writes are paused during backup capture and restore.
+                  Snapshot capture temporarily pauses most mutating API requests. To restore or recover, stop every normal replica and start exactly one isolated process with PAPERCLIP_RESTORE_MAINTENANCE_MODE=true.
                 </div>
                 <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   Cross-machine restore: `Download` on the source instance, `Import backup` on the destination instance, then `Restore`.
@@ -1317,18 +1355,18 @@ export function Backups() {
                             </div>
                           </div>
 
-                          <div className="grid gap-2 xl:min-w-[320px]">
+                          <div className="grid gap-2 xl:min-w-80">
                             <div className="grid grid-cols-3 gap-2 text-sm">
                               <div className="rounded-md bg-muted/40 px-3 py-2">
-                                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Size</div>
+                                <div className="text-xs uppercase tracking-wide text-muted-foreground">Size</div>
                                 <div className="font-medium">{formatBytes(backup.totalSizeBytes)}</div>
                               </div>
                               <div className="rounded-md bg-muted/40 px-3 py-2">
-                                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Duration</div>
+                                <div className="text-xs uppercase tracking-wide text-muted-foreground">Duration</div>
                                 <div className="font-medium">{durationText(backup)}</div>
                               </div>
                               <div className="rounded-md bg-muted/40 px-3 py-2">
-                                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Pruned</div>
+                                <div className="text-xs uppercase tracking-wide text-muted-foreground">Pruned</div>
                                 <div className="font-medium">{backup.prunedCount}</div>
                               </div>
                             </div>
@@ -1409,7 +1447,7 @@ export function Backups() {
                         ) : null}
 
                         <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                          Restore replaces the current instance state. Download the bundle first if you want an offline copy before applying it.
+                          Restore replaces the current instance state. Stop every normal replica and its active agents/background jobs first, then use one process started with PAPERCLIP_RESTORE_MAINTENANCE_MODE=true; download the bundle first if you want an offline copy before applying it.
                         </div>
 
                         <DetailSection title="Bundle details">

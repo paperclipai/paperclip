@@ -3,7 +3,7 @@ import { z } from "zod";
 export const backupTriggerSourceSchema = z.enum(["manual", "scheduler"]);
 export const backupOriginSchema = z.enum(["local", "imported"]);
 export const backupRunStatusSchema = z.enum(["running", "succeeded", "failed"]);
-export const backupRestoreStatusSchema = z.enum(["idle", "running", "succeeded", "failed"]);
+export const backupRestoreStatusSchema = z.enum(["idle", "running", "succeeded", "failed", "recovery_required"]);
 export const backupIntegrityScopeSchema = z.enum(["file", "tree"]);
 export const backupIntegrityStatusSchema = z.enum(["verified", "missing", "mismatch", "error", "skipped"]);
 export const backupSignatureAlgorithmSchema = z.enum(["hmac-sha256"]);
@@ -49,8 +49,6 @@ export const backupRemoteS3SettingsSchema = z.object({
   region: z.string().default("us-east-1"),
   endpoint: z.string().nullable().default(null),
   prefix: z.string().default(""),
-  accessKeyId: z.string().nullable().default(null),
-  secretAccessKey: z.string().nullable().default(null),
   forcePathStyle: z.boolean().default(false),
   deleteFromRemoteOnDelete: z.boolean().default(false),
   serverSideEncryption: backupRemoteSseSchema.default("none"),
@@ -65,8 +63,6 @@ export const backupRemoteSettingsSchema = z
       region: "us-east-1",
       endpoint: null,
       prefix: "",
-      accessKeyId: null,
-      secretAccessKey: null,
       forcePathStyle: false,
       deleteFromRemoteOnDelete: false,
       serverSideEncryption: "none",
@@ -87,15 +83,6 @@ export const backupRemoteSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ["s3", "region"],
         message: "S3 region is required when remote backup replication is enabled.",
-      });
-    }
-    const accessKeyId = value.s3.accessKeyId?.trim() || null;
-    const secretAccessKey = value.s3.secretAccessKey?.trim() || null;
-    if ((accessKeyId && !secretAccessKey) || (!accessKeyId && secretAccessKey)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["s3", accessKeyId ? "secretAccessKey" : "accessKeyId"],
-        message: "Provide both S3 access key id and secret access key, or leave both empty.",
       });
     }
     if (value.s3.serverSideEncryption === "aws:kms" && !value.s3.kmsKeyId?.trim()) {
@@ -121,8 +108,6 @@ export const backupSettingsSchema = z.object({
       region: "us-east-1",
       endpoint: null,
       prefix: "",
-      accessKeyId: null,
-      secretAccessKey: null,
       forcePathStyle: false,
       deleteFromRemoteOnDelete: false,
       serverSideEncryption: "none",
@@ -223,6 +208,10 @@ export const backupRunSchema = z.object({
 
 export const restoreBackupSchema = z.object({
   confirmText: z.literal("RESTORE"),
+});
+
+export const rollbackRestoreRecoverySchema = z.object({
+  confirmText: z.literal("ROLLBACK"),
 });
 
 export const archiveBackupSchema = z.object({
@@ -392,6 +381,7 @@ export type BackupSignature = z.infer<typeof backupSignatureSchema>;
 export type BackupRemoteCopy = z.infer<typeof backupRemoteCopySchema>;
 export type BackupRun = z.infer<typeof backupRunSchema>;
 export type RestoreBackup = z.infer<typeof restoreBackupSchema>;
+export type RollbackRestoreRecovery = z.infer<typeof rollbackRestoreRecoverySchema>;
 export type ArchiveBackup = z.infer<typeof archiveBackupSchema>;
 export type UnarchiveBackup = z.infer<typeof unarchiveBackupSchema>;
 export type DeleteBackup = z.infer<typeof deleteBackupSchema>;
