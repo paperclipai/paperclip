@@ -382,7 +382,7 @@ rely on a local workspace path as the only access path.
 Use the helper bundled with the Paperclip skill from the repo root:
 
 ```sh
-skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+bash skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
   --title "Demo video render" \
   --summary "MP4 render for board review"
 ```
@@ -390,7 +390,7 @@ skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
 For WebM output:
 
 ```sh
-skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+bash skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
   --title "Walkthrough video" \
   --summary "WebM walkthrough render"
 ```

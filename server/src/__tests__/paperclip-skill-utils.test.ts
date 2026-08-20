@@ -49,12 +49,18 @@ describe("paperclip skill utils", () => {
   it("documents artifact uploads in the installed Paperclip skill", async () => {
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
     const referenceBody = await fs.readFile(path.resolve("skills/paperclip/references/artifacts.md"), "utf8");
+    const onboardingBody = await fs.readFile(
+      path.resolve("server/src/onboarding-assets/default/AGENTS.md"),
+      "utf8",
+    );
 
     expect(skillBody).toContain("Generated Artifacts and Work Products");
     expect(skillBody).toContain("references/artifacts.md");
     expect(skillBody).not.toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
     expect(referenceBody).toContain("Generated Artifacts and Work Products");
-    expect(referenceBody).toContain("scripts/paperclip-upload-artifact.sh");
+    expect(referenceBody).toContain("bash scripts/paperclip-upload-artifact.sh");
+    expect(referenceBody).toContain("package installation may not preserve its executable bit");
+    expect(onboardingBody).toContain("bash skills/paperclip/scripts/paperclip-upload-artifact.sh");
     expect(referenceBody).toContain("POST");
     expect(referenceBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
     expect(referenceBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");

@@ -457,6 +457,8 @@ describe("codex_local ACP lane", () => {
       fastMode: true,
       agentCommand: "custom-codex-acp",
       warmHandleIdleMs: 25,
+      dangerouslyBypassApprovalsAndSandbox: true,
+      env: { EXISTING: "keep", INITIAL_AGENT_MODE: "agent" },
     })).toMatchObject({
       agent: "codex",
       cwd: "/repo",
@@ -469,7 +471,24 @@ describe("codex_local ACP lane", () => {
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
       warmHandleIdleMs: 25,
+      env: { EXISTING: "keep", INITIAL_AGENT_MODE: "agent-full-access" },
     });
+  });
+
+  it("maps the legacy sandbox bypass setting to the Codex ACP agent mode", () => {
+    expect(buildCodexAcpConfig({
+      engine: "acp",
+      dangerouslyBypassSandbox: true,
+    })).toMatchObject({
+      env: { INITIAL_AGENT_MODE: "agent-full-access" },
+    });
+  });
+
+  it("does not inject a Codex ACP agent mode when sandbox bypass is disabled", () => {
+    expect(buildCodexAcpConfig({
+      engine: "acp",
+      dangerouslyBypassApprovalsAndSandbox: false,
+    })).not.toHaveProperty("env");
   });
 
   it("normalizes the legacy bare gpt-5.6 alias to gpt-5.6-sol", () => {

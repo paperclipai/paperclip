@@ -2,10 +2,10 @@
 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
-Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
+Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`. Invoke it through Bash because package installation may not preserve its executable bit:
 
 ```bash
-scripts/paperclip-upload-artifact.sh path/to/output.webm \
+bash scripts/paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
   --summary "Rendered walkthrough for review"
 ```

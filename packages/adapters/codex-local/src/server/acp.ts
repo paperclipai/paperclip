@@ -31,6 +31,7 @@ import type {
   AcpxRemoteManagedHomeResult,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
+  asBoolean,
   asNumber,
   asString,
   parseObject,
@@ -148,6 +149,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  const bypassSandbox = asBoolean(
+    config.dangerouslyBypassApprovalsAndSandbox,
+    asBoolean(config.dangerouslyBypassSandbox, false),
+  );
+  const env = parseObject(config.env);
   // Rewrite legacy model aliases (e.g. bare gpt-5.6) to the concrete slug Codex has metadata for,
   // so the ACP session config matches the CLI lane and avoids the fallback-metadata warning.
   const normalizedModel = normalizeCodexModel(
@@ -161,6 +167,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    // codex-acp controls the Codex sandbox independently from ACPX permission
+    // requests. Keep the ACP lane aligned with the CLI bypass setting.
+    ...(bypassSandbox
+      ? { env: { ...env, INITIAL_AGENT_MODE: "agent-full-access" } }
+      : {}),
     ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
