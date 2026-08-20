@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Schreibt die LLM-Tagesnotiz und die kumulative CSV in den Obsidian-Vault.
+
+Trennung mit Absicht: `vault_note` baut den Text (rein, testbar ohne Vault),
+dieses Modul fasst als einziges das Dateisystem an.
+"""
+import csv
+import os
+from datetime import date
+from pathlib import Path
+from typing import Optional
+
+import vault_note
+
+VAULT_ZIEL = Path(os.path.expanduser(
+    "~/Obsidian/WHITESTAG-Vault/Analysen/LLM-Nutzung"
+))
+CSV_UNTERORDNER = "_daten"
+CSV_NAME = "llm-nutzung.csv"
+CSV_KOPF = ["tag", "agent", "modell", "aufrufe", "token", "kosten_eur"]
+
+
+def schreibe_notiz(tag: date, modell_rows, agent_model_rows,
+                   ziel=VAULT_ZIEL) -> Optional[Path]:
+    """Notiz schreiben; None, wenn an dem Tag nichts lief (keine Karteileiche)."""
+    text = vault_note.build(tag, modell_rows, agent_model_rows)
+    if text is None:
+        return None
+    ziel = Path(ziel)
+    ziel.mkdir(parents=True, exist_ok=True)
+    pfad = ziel / vault_note.dateiname(tag)
+    pfad.write_text(text, encoding="utf-8")
+    return pfad
+
+
+def schreibe_tag(tag: date, modell_rows, agent_model_rows, ziel=VAULT_ZIEL):
+    """Notiz + CSV in einem Rutsch — die gemeinsame Klammer fuer Digest und Backfill.
+
+    Gibt (notiz_pfad, csv_pfad) zurueck, bei einem Tag ohne Aufrufe (None, None):
+    dann bleibt der Vault unberuehrt, auch die CSV.
+    """
+    notiz = schreibe_notiz(tag, modell_rows, agent_model_rows, ziel)
+    if notiz is None:
+        return None, None
+    return notiz, aktualisiere_csv(tag, agent_model_rows, ziel)
+
+
+def aktualisiere_csv(tag: date, agent_model_rows, ziel=VAULT_ZIEL) -> Path:
+    """Zeilen des Tages in die kumulative CSV einpflegen — idempotent.
+
+    Vorhandene Zeilen desselben Tages werden ersetzt, nicht ergaenzt. Sonst
+    zaehlte jeder Wiederholungslauf (manueller Aufruf, Backfill, erneuter
+    launchd-Start) den Tag ein weiteres Mal mit, und jede Langzeitauswertung
+    daraus waere still falsch.
+    """
+    ordner = Path(ziel) / CSV_UNTERORDNER
+    ordner.mkdir(parents=True, exist_ok=True)
+    pfad = ordner / CSV_NAME
+    tag_str = tag.isoformat()
+
+    bestand = []
+    if pfad.exists():
+        with open(pfad, encoding="utf-8", newline="") as fh:
+            leser = csv.reader(fh)
+            for i, zeile in enumerate(leser):
+                if i == 0 and zeile == CSV_KOPF:
+                    continue
+                if zeile and zeile[0] != tag_str:
+                    bestand.append(zeile)
+
+    neu = [[str(f) for f in z] for z in vault_note.csv_zeilen(tag, agent_model_rows)]
+    alle = sorted(bestand + neu, key=lambda z: (z[0], z[1], z[2]))
+
+    with open(pfad, "w", encoding="utf-8", newline="") as fh:
+        schreiber = csv.writer(fh)
+        schreiber.writerow(CSV_KOPF)
+        schreiber.writerows(alle)
+    return pfad
