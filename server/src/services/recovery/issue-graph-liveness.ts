@@ -126,6 +126,7 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  routineBackedIssueIds?: Set<string>;
   now?: Date | string;
 }
 
@@ -480,6 +481,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const routineBackedIssueIds = input.routineBackedIssueIds ?? new Set<string>();
 
   for (const relation of input.relations) {
     const list = blockersByBlockedIssueId.get(relation.blockedIssueId) ?? [];
@@ -517,7 +519,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues) ||
+      routineBackedIssueIds.has(issue.id);
   }
 
   function reviewFinding(
@@ -526,6 +529,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     dependencyPath: IssueLivenessIssueInput[],
   ): IssueLivenessFinding | null {
     if (reviewIssue.status !== "in_review") return null;
+    if (routineBackedIssueIds.has(reviewIssue.id)) return null;
     if (classifyIssueReviewPaths(input, reviewIssue).length > 0) return null;
 
     const ownerCandidates = ownerCandidatesForRecoveryIssue(reviewIssue, input.agents, agentsById, {
@@ -724,7 +728,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       if (chainFinding) findings.push(chainFinding);
     }
 
-    if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
+    if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id) && !routineBackedIssueIds.has(issue.id)) {
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
     }
