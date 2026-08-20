@@ -20,6 +20,7 @@ const apiPrefixes: Record<string, string> = {
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
+  "backups.ts": "/api",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
   "cloud.ts": "/api/cloud",
@@ -252,6 +253,18 @@ describe("openapi routes", () => {
     });
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
+
+    const backupImport = res.body.paths["/api/backups/import"].post;
+    expect(backupImport["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
+    expect(backupImport.requestBody.content["multipart/form-data"].schema).toMatchObject({
+      type: "object",
+      properties: { file: { type: "string", format: "binary" } },
+      required: ["file"],
+    });
+    expect(res.body.paths["/api/backups/{backupId}/download"].get.responses["200"].content).toHaveProperty(
+      "application/gzip",
+    );
+    expect(res.body.paths["/api/backups/{backupId}/restore"].post.responses["202"]).toBeDefined();
   });
 
   it("covers the mounted server routes exactly", () => {

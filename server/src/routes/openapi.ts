@@ -172,6 +172,19 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
+  // Portable backups
+  archiveBackupSchema,
+  backupHistoryActionResultSchema,
+  backupOverviewSchema,
+  backupRestorePreviewSchema,
+  backupRestoreStateSchema,
+  backupRunSchema,
+  backupSettingsSchema,
+  deleteBackupSchema,
+  rollbackRestoreRecoverySchema,
+  restoreBackupSchema,
+  unarchiveBackupSchema,
+  updateBackupSettingsSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -930,6 +943,17 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "GET /api/backups",
+  "POST /api/backups/run",
+  "PATCH /api/backups/settings",
+  "POST /api/backups/import",
+  "POST /api/backups/recovery/rollback",
+  "GET /api/backups/{backupId}/download",
+  "GET /api/backups/{backupId}/preview-restore",
+  "POST /api/backups/{backupId}/restore",
+  "POST /api/backups/{backupId}/archive",
+  "POST /api/backups/{backupId}/unarchive",
+  "POST /api/backups/{backupId}/delete",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
@@ -6029,6 +6053,187 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Trigger a database backup",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Portable backups ────────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/backups",
+  tags: ["backups"],
+  summary: "Get portable backup overview",
+  responses: { 200: r.ok(backupOverviewSchema), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/backups/run",
+  tags: ["backups"],
+  summary: "Start a portable backup",
+  responses: { 202: r.ok(backupRunSchema), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/backups/settings",
+  tags: ["backups"],
+  summary: "Update portable backup settings",
+  body: updateBackupSettingsSchema,
+  responses: {
+    200: r.ok(backupSettingsSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/backups/import",
+  tags: ["backups"],
+  summary: "Import a portable backup archive",
+  description: "Uploads a gzip-compressed portable backup archive in the `file` multipart field.",
+  request: {
+    body: {
+      content: {
+        "multipart/form-data": {
+          schema: {
+            type: "object",
+            properties: {
+              file: {
+                type: "string",
+                format: "binary",
+                description: "The gzip-compressed portable backup archive.",
+              },
+            },
+            required: ["file"],
+          },
+        },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    201: r.ok(backupRunSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/backups/recovery/rollback",
+  tags: ["backups"],
+  summary: "Roll back an interrupted portable restore",
+  body: rollbackRestoreRecoverySchema,
+  responses: {
+    202: r.ok(backupRestoreStateSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/backups/{backupId}/download",
+  tags: ["backups"],
+  summary: "Download a portable backup archive",
+  request: { params: z.object({ backupId: z.string() }) },
+  responses: {
+    200: {
+      description: "Gzip-compressed portable backup archive",
+      content: { "application/gzip": { schema: { type: "string", format: "binary" } } },
+    },
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/backups/{backupId}/preview-restore",
+  tags: ["backups"],
+  summary: "Preview a portable backup restore",
+  responses: {
+    200: r.ok(backupRestorePreviewSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/backups/{backupId}/restore",
+  tags: ["backups"],
+  summary: "Start a portable backup restore",
+  body: restoreBackupSchema,
+  responses: {
+    202: r.ok(backupRestoreStateSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/backups/{backupId}/archive",
+  tags: ["backups"],
+  summary: "Archive a portable backup",
+  body: archiveBackupSchema,
+  responses: {
+    200: r.ok(backupHistoryActionResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/backups/{backupId}/unarchive",
+  tags: ["backups"],
+  summary: "Unarchive a portable backup",
+  body: unarchiveBackupSchema,
+  responses: {
+    200: r.ok(backupHistoryActionResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/backups/{backupId}/delete",
+  tags: ["backups"],
+  summary: "Delete a portable backup",
+  body: deleteBackupSchema,
+  responses: {
+    200: r.ok(backupHistoryActionResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
 });
 
 // ─── LLM text endpoints ───────────────────────────────────────────────────────
