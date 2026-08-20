@@ -37,6 +37,10 @@ const TRANSIENT_LOCK_CONTENTION_ERROR_CODES = new Set([
   // stderr signature. It receives bounded backoff retries before any structural
   // circuit-breaker judgment (TSMC-20910).
   "antigravity_transient_silent_exit",
+  // Same class, hermes: non-zero exit with no stderr diagnostic. Measured
+  // 2026-08-18/19: 4/4 hermes adapter_failed runs were silent (codex 0/16);
+  // the breaker paused healthy lanes on them, stranding grok-quota work.
+  "hermes_transient_silent_exit",
 ]);
 
 // Resource ceilings are scoping verdicts, not lane failures: the task did not fit the budget it

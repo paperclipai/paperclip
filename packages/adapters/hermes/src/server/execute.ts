@@ -886,6 +886,27 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   }
 
+  // Silent exit: hermes died non-zero with NO diagnostic in stderr (only the
+  // session_id line, if that). Measured 2026-08-18/19: hermes adapter_failed
+  // runs were 4/4 silent while codex was 0/16 — the equivalent-failure breaker
+  // counted these as structural and paused healthy lanes (GrowthSEO-Hermes
+  // 05:04, the grok bench arm 23:5x), which is a large part of why grok quota
+  // sits unused. Same class as antigravity_transient_silent_exit (TSMC-20910):
+  // classify transient so the breaker ignores it and bounded retry applies.
+  // A non-zero exit WITH a real stderr signature keeps adapter_failed.
+  if (
+    result.exitCode !== 0 &&
+    result.exitCode !== null &&
+    !result.timedOut &&
+    !parsed.errorMessage &&
+    !parsed.stopReason &&
+    !tokenBudgetExceeded
+  ) {
+    executionResult.errorCode = "hermes_transient_silent_exit";
+    executionResult.errorMessage =
+      `Hermes exited ${result.exitCode} with no stderr diagnostic (transient silent exit; bounded retry, breaker-excluded).`;
+  }
+
   if (parsed.stopReason === "max_turns_exhausted") {
     executionResult.errorCode = "max_turns_exhausted";
     executionResult.errorMessage = extractedDisposition
