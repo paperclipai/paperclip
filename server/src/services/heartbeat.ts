@@ -18294,6 +18294,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceMigrationSessionResetReason = runtimeSessionResolution.resetReason;
     const resetTaskSessionForWorkspaceMigration = workspaceMigrationSessionResetReason !== null;
     const taskSessionForAdapter = resetTaskSessionForWorkspaceMigration ? null : taskSessionForRun;
+    // "Rotate once" must actually rotate ONCE. Legacy session rows carry no
+    // workspace-source stamp, and a migration run that ends without a session
+    // save (the codex null-message runs, 2026-08-20 run c1022f76) leaves the
+    // row unstamped — so every subsequent run re-fires the migration, skips
+    // resume, primes ~40K tokens of context for nothing, and records a silent
+    // success. Stamp the stored row project_primary AT FIRE TIME so the next
+    // run proceeds normally regardless of how this migration run ends.
+    if (resetTaskSessionForWorkspaceMigration && taskSessionForRun?.id) {
+      try {
+        const stampedParams = attachPaperclipSessionMetadataToSessionParams(
+          sessionCodec.deserialize(taskSessionForRun.sessionParamsJson ?? null),
+          null,
+          null,
+          "project_primary",
+        );
+        await db
+          .update(agentTaskSessions)
+          .set({
+            sessionParamsJson: sessionCodec.serialize(stampedParams),
+            updatedAt: new Date(),
+          })
+          .where(eq(agentTaskSessions.id, taskSessionForRun.id));
+      } catch (err) {
+        logger.warn(
+          { err, agentId: agent.id, taskSessionId: taskSessionForRun.id },
+          "failed to stamp workspace-migration rotation on task session",
+        );
+      }
+    }
     const effectiveSessionReset = resetTaskSession || resetTaskSessionForWorkspaceMigration;
     const effectiveSessionResetReasons = [
       ...sessionConfigFreshness.reasons,
