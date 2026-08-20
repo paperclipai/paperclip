@@ -146,8 +146,8 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Members");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
-    expect(container.textContent).toContain("Access");
-    expect(container.textContent).toContain("Heartbeats");
+    expect(container.textContent).not.toContain("Access");
+    expect(container.textContent).not.toContain("Heartbeats");
     expect(container.textContent).not.toContain("Tools & Access");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -173,20 +173,6 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings/instance/environments",
         label: "Environments",
-        end: true,
-      }),
-    );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/company/settings/instance/access",
-        label: "Access",
-        end: true,
-      }),
-    );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/company/settings/instance/heartbeats",
-        label: "Heartbeats",
         end: true,
       }),
     );

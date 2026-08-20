@@ -80,8 +80,8 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/instance/environments")).toBe("instance-environments");
-    expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
-    expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
+    expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("general");
+    expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
@@ -108,8 +108,6 @@ describe("CompanySettingsNav", () => {
           { value: "secrets", label: "Secrets" },
           { value: "instance-profile", label: "Profile" },
           { value: "instance-environments", label: "Environments" },
-          { value: "instance-access", label: "Access" },
-          { value: "instance-heartbeats", label: "Heartbeats" },
           { value: "instance-experimental", label: "Experimental" },
           { value: "instance-plugins", label: "Plugins" },
           { value: "instance-adapters", label: "Adapters" },
