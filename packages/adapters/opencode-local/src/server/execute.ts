@@ -84,16 +84,28 @@ function firstNonEmptyLine(text: string): string {
  *
  * This is a SOFT default, unlike the OPENCODE_DISABLE_PROJECT_CONFIG guard which
  * is force-set: call this AFTER the adapterConfig.env merge so a persisted
- * config value wins, and no-op when the process env sets it explicitly, so an
- * operator can still disable it with OPENCODE_ALLOW_ALL_MODELS=0. Pure for
- * testability.
+ * config value wins, and yield to the process env when it sets the flag
+ * explicitly, so an operator can still disable it with
+ * OPENCODE_ALLOW_ALL_MODELS=0.
+ *
+ * Yielding means COPYING the process-env value through, not skipping the write.
+ * Remote targets (SSH/sandbox) do not inherit the host process env — this map is
+ * the only channel they get — so leaving the key unset would silently drop a
+ * deployment-level override on exactly the paths that cannot recover it. Copying
+ * "0" through is equivalent to omitting it (isTruthyEnvFlag("0") is false), and
+ * copying "1" through is what makes the override reach the remote process. The
+ * local path is unaffected either way: it already reads
+ * `env.X ?? process.env.X`. Pure for testability.
  */
 export function applyOpenCodeAllowAllModelsDefault(
   env: Record<string, string>,
   processEnv: NodeJS.ProcessEnv = process.env,
 ): void {
   if (env.OPENCODE_ALLOW_ALL_MODELS !== undefined) return;
-  if (processEnv.OPENCODE_ALLOW_ALL_MODELS !== undefined) return;
+  if (processEnv.OPENCODE_ALLOW_ALL_MODELS !== undefined) {
+    env.OPENCODE_ALLOW_ALL_MODELS = processEnv.OPENCODE_ALLOW_ALL_MODELS;
+    return;
+  }
   env.OPENCODE_ALLOW_ALL_MODELS = "1";
 }
 
