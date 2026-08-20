@@ -215,25 +215,29 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   return candidate;
 }
 
+// `process.kill(pid, 0)` sends no signal; it only asks whether the caller could
+// signal that process. ESRCH is the only answer that means "gone". EPERM means
+// the process exists but belongs to another user or session — alive, just out
+// of reach. Swallowing every error reports those as dead, and callers that read
+// liveness as run liveness then kill something that is still working.
+function pidSignalReportsAlive(target: number) {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code === "EPERM";
+  }
+}
+
 export function isPidAlive(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return pidSignalReportsAlive(pid);
 }
 
 export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   if (process.platform === "win32") return false;
   if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
-  try {
-    process.kill(-processGroupId, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return pidSignalReportsAlive(-processGroupId);
 }
 
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {

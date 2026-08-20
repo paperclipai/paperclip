@@ -83,6 +83,11 @@ export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import {
+  activeRunExecutions,
+  adapterTracksLocalChildProcess,
+  isRunExecutingInProcess,
+} from "./run-execution-registry.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -764,18 +769,9 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "execution_changes_requested",
   "approval_approved",
 ]);
-const SESSIONED_LOCAL_ADAPTERS = new Set([
-  "claude_local",
-  "codex_local",
-  "cursor",
-  "gemini_local",
-  "hermes_local",
-  "opencode_local",
-  "pi_local",
-]);
-// Routes and the scheduler construct separate heartbeatService instances, but
-// they must agree on in-process adapter executions when reaping stale runs.
-const activeRunExecutions = new Set<string>();
+// `activeRunExecutions` and the local-child-process capability now live in
+// services/run-liveness.js, so the recovery backstop reads the same registry
+// this module writes instead of seeing only `runningProcesses`.
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
@@ -5895,7 +5891,7 @@ function isSameTaskScope(left: string | null, right: string | null) {
 }
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
-  return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
+  return adapterTracksLocalChildProcess(adapterType);
 }
 
 function isHeartbeatRunTerminalStatus(
@@ -6733,7 +6729,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const workspaceOperationsSvc = workspaceOperationService(db);
   const liveRunExecutions = {
     has(id: string) {
-      return runningProcesses.has(id) || activeRunExecutions.has(id);
+      return isRunExecutingInProcess(id);
     },
   };
   const budgetHooks = {
@@ -13502,7 +13498,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      if (isRunExecutingInProcess(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {

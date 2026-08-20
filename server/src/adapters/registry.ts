@@ -183,6 +183,7 @@ Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly 
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  tracksLocalChildProcess: true,
   execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   acp: {
@@ -256,6 +257,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  tracksLocalChildProcess: true,
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   acp: {
@@ -286,6 +288,7 @@ const codexLocalAdapter: ServerAdapterModule = {
 
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  tracksLocalChildProcess: true,
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -320,6 +323,7 @@ const cursorCloudAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  tracksLocalChildProcess: true,
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   acp: {
@@ -384,6 +388,7 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  tracksLocalChildProcess: true,
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
@@ -403,6 +408,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
 
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  tracksLocalChildProcess: true,
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,

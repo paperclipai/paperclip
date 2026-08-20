@@ -29,6 +29,7 @@ import {
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
+import { adapterTracksLocalChildProcess, isRunExecutingInProcess } from "../run-execution-registry.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
@@ -96,15 +97,11 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
-const SESSIONED_LOCAL_ADAPTERS = new Set([
-  "claude_local",
-  "codex_local",
-  "cursor",
-  "gemini_local",
-  "hermes_local",
-  "opencode_local",
-  "pi_local",
-]);
+// A run whose recorded process metadata is not authoritative can still be
+// declared dead once it has gone completely quiet for this long: no run event,
+// no row update, no freshly recorded child process. A crashed run stays quiet
+// forever, so this only delays its cleanup; a live run keeps resetting it.
+const ORPHANED_RUN_PROCESS_DEATH_QUIET_MS = 10 * 60 * 1000;
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
 // `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
@@ -1580,7 +1577,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
   }) {
-    if (!SESSIONED_LOCAL_ADAPTERS.has(input.runningAgent.adapterType)) {
+    if (!adapterTracksLocalChildProcess(input.runningAgent.adapterType)) {
       return {
         attempted: false,
         outcome: "skipped_non_local_adapter",
@@ -5485,6 +5482,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  // Resolves the adapter type behind a run, so the caller can tell whether the
+  // run's recorded process metadata describes the run itself. Returns null when
+  // the agent row is gone, which callers must read as "unknown", not "tracked".
+  async function getRunAdapterType(run: typeof heartbeatRuns.$inferSelect) {
+    if (!run.agentId) return null;
+    return db
+      .select({ adapterType: agents.adapterType })
+      .from(agents)
+      .where(eq(agents.id, run.agentId))
+      .then((rows) => rows[0]?.adapterType ?? null);
+  }
+
+  // The most recent moment this run demonstrably did something: its own row
+  // update, the child process it last recorded, or its newest run event.
+  // Returns epoch milliseconds, or null when the run has left no timestamp at
+  // all. A run that is still writing any of these is not a crashed run.
+  async function getRunLastActivityAt(run: typeof heartbeatRuns.$inferSelect) {
+    const latestEventAt = await db
+      .select({ createdAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt})` })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, run.id))
+      .then((rows) => rows[0]?.createdAt ?? null);
+    const timestamps = [run.updatedAt, run.processStartedAt, latestEventAt]
+      .map((value) => (value ? new Date(value).getTime() : Number.NaN))
+      .filter((value) => Number.isFinite(value));
+    return timestamps.length > 0 ? Math.max(...timestamps) : null;
+  }
+
   // Backstop reconciler: terminalizes a "running" run that can no longer reach a
   // terminal status on its own. The run finalizer writes the terminal status in
   // a step that is separate from the agent status=done PATCH. When the teardown
@@ -5504,9 +5529,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   //   authority that catches the reuse-lease path: the release stops the sandbox
   //   but keeps the server process alive, so the in-memory handle and the
   //   recorded pid can both persist.
-  // - Process-death authority: the run has no in-memory handle and its recorded
-  //   process and process group are both gone. This catches a hard server crash
-  //   that skipped the graceful teardown, even when the issue is not terminal.
+  // - Process-death authority: the run is not executing in this process and its
+  //   recorded process and process group are both gone. This catches a hard
+  //   server crash that skipped the graceful teardown, even when the issue is
+  //   not terminal. It requires the run's adapter to actually be carried by the
+  //   recorded child process (see adapterTracksLocalChildProcess) — an adapter
+  //   that works in-process and reports one transient child per tool call
+  //   records pids that are supposed to die mid-run, and reading those as run
+  //   death terminalized live runs in a kill/wake loop.
   async function terminalizeOrphanedRunningRun(
     run: typeof heartbeatRuns.$inferSelect,
     options?: {
@@ -5553,16 +5583,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     // Process-death authority. The run is live only when a process still backs
-    // it. Check the in-memory handle first, then the recorded pid and process
-    // group. Require recorded process metadata, so this authority never fires on
-    // a run that has not yet stored its pid.
+    // it. Check the in-memory registries first — a child-process handle or an
+    // in-process adapter.execute() call both mean this server is still running
+    // it — then the recorded pid and process group. Require recorded process
+    // metadata, so this authority never fires on a run that has not yet stored
+    // its pid.
     let processGone = false;
-    if (!runningProcesses.get(run.id)) {
+    if (!isRunExecutingInProcess(run.id)) {
       if (typeof pid === "number" || typeof processGroupId === "number") {
         const processAlive =
           (typeof pid === "number" && isPidAlive(pid)) ||
           (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
         processGone = !processAlive;
+      }
+    }
+    if (processGone) {
+      // The recorded pid only speaks for the run when the adapter's work is
+      // that child process. Otherwise it is an adapter-owned helper — an
+      // adapter that shells out per tool call reports one child per
+      // run_command — whose death says nothing about the run.
+      const adapterType = await getRunAdapterType(run);
+      if (!adapterTracksLocalChildProcess(adapterType ?? "")) {
+        processGone = false;
+      }
+    }
+    if (processGone) {
+      // Corroborate with silence even for a tracked child process. A crash
+      // leaves the row untouched forever, so waiting costs only the delay;
+      // a run still writing rows is alive whatever its recorded pid says.
+      const lastActivityAt = await getRunLastActivityAt(run);
+      if (lastActivityAt !== null && Date.now() - lastActivityAt < ORPHANED_RUN_PROCESS_DEATH_QUIET_MS) {
+        processGone = false;
       }
     }
 

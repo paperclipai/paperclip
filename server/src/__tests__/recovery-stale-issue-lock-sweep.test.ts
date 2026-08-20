@@ -57,6 +57,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await tempDb?.cleanup();
   });
 
+  // Comfortably older than the process-death authority's quiet window, so a run
+  // stamped with it reads as one that stopped writing rather than one at work.
+  function longAgo() {
+    return new Date(Date.now() - 60 * 60 * 1000);
+  }
+
   async function seed() {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -231,9 +237,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // The run recorded a pid, but the process and its sandbox are gone. A pid
     // this large never maps to a live process, so isPidAlive returns false.
     // The issue is not terminal, so only the process-death authority applies.
+    // Backdate the row past the quiet window: a crashed run stops writing rows,
+    // and the authority now requires that silence before it trusts a dead pid.
     await db
       .update(heartbeatRuns)
-      .set({ processPid: 2_000_000_000 })
+      .set({ processPid: 2_000_000_000, startedAt: longAgo(), updatedAt: longAgo() })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -276,6 +284,93 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("process and sandbox gone");
+  });
+
+  // An adapter that is not carried by a single local child process still
+  // records pids: a plugin adapter that shells out per tool call reports one
+  // per run_command, each of which exits within seconds while the run keeps
+  // working. The backstop read the newest of those dead pids as run death and
+  // killed ten consecutive live runs, each 30-150s after start, in a
+  // kill/wake loop.
+  it("leaves a running run alone when its adapter does not track a local child process", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db
+      .update(agents)
+      .set({ adapterType: "unregistered_plugin_local" })
+      .where(eq(agents.id, agentId));
+    // Same shape as the terminalized case above — dead pid, quiet row — so the
+    // adapter capability is the only thing keeping this run alive.
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: 2_000_000_000, startedAt: longAgo(), updatedAt: longAgo() })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Plugin adapter run — recorded pid is a finished tool call",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([]);
+    expect(result.cleared).toBe(0);
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+
+    const lock = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(lock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
+  });
+
+  // Second guard, for adapters that do track a local child process. A run that
+  // updated its row moments ago is writing to the database, so it is not the
+  // crashed run this authority exists to clean up, whatever its pid says.
+  it("leaves a tracked-adapter run alone while it is still writing rows", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: 2_000_000_000, startedAt: longAgo(), updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Dead pid, but the run is still writing",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([]);
+    const run = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]);
+    expect(run?.status).toBe("running");
   });
 
   it("terminalizes a running run whose issue is terminal, even while the process stays alive (reuse-lease path)", async () => {
@@ -528,10 +623,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid that never maps to a live process, so the sweep
     // decides to terminalize it. The issue is not terminal, so the
-    // process-death authority drives the terminalization here.
+    // process-death authority drives the terminalization here, so the row also
+    // has to be quiet for long enough that the dead pid counts as evidence.
     await db
       .update(heartbeatRuns)
-      .set({ processPid: 2_000_000_000 })
+      .set({ processPid: 2_000_000_000, startedAt: longAgo(), updatedAt: longAgo() })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
     await db.insert(issues).values({
