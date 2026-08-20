@@ -80,7 +80,7 @@
     "sharp": "^0.35.3",
     "ssh2": "^1.17.0",
     "ws": "^8.21.3",
-    "zod": "^3.24.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
