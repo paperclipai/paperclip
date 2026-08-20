@@ -1,5 +1,10 @@
 import { Command } from "commander";
-import { createAgentKeySchema, createBoardApiKeySchema, type Agent } from "@paperclipai/shared";
+import {
+  BOARD_API_KEY_SCOPE_PRESETS,
+  createAgentKeySchema,
+  createBoardApiKeySchema,
+  type Agent,
+} from "@paperclipai/shared";
 import {
   addCommonClientOptions,
   apiPath,
@@ -144,19 +149,26 @@ export function registerTokenCommands(program: Command): void {
     board
       .command("create")
       .description("Create a named board API key")
-      .option("-C, --company-id <id>", "Company ID used for audit context")
+      .requiredOption("-C, --company-id <id>", "Company ID to pin in the key scope")
       .option("--name <name>", "API key label", "cli-board")
       .option("--expires-at <iso8601>", "Expiration timestamp")
       .option("--ttl-days <days>", "Expiration in days from now")
       .option("--never-expires", "Create a non-expiring key")
       .action(async (opts: BoardTokenOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
           const expiresAt = resolveBoardKeyExpiresAt(opts);
+          const preset = BOARD_API_KEY_SCOPE_PRESETS.company_automation;
           const payload = createBoardApiKeySchema.parse({
             name: opts.name,
-            requestedCompanyId: opts.companyId ?? ctx.companyId ?? null,
             expiresAt,
+            scopeConfig: {
+              version: 1,
+              kind: "scoped",
+              companyIds: [ctx.companyId as string],
+              permissions: [...preset.permissions],
+              instanceCapabilities: [...preset.instanceCapabilities],
+            },
           });
           const key = await ctx.api.post<CreatedBoardKey>("/api/board-api-keys", payload);
           if (!key) throw new Error("Failed to create board API key");
@@ -228,17 +240,17 @@ async function resolveAgent(api: { get<T>(path: string): Promise<T | null> }, co
   return agent;
 }
 
-function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): Date | null | undefined {
+function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): string | null | undefined {
   if (opts.neverExpires) return null;
   if (opts.expiresAt?.trim()) {
     const date = new Date(opts.expiresAt.trim());
     if (!Number.isFinite(date.getTime())) throw new Error(`Invalid --expires-at value: ${opts.expiresAt}`);
-    return date;
+    return date.toISOString();
   }
   if (opts.ttlDays?.trim()) {
     const days = Number(opts.ttlDays);
     if (!Number.isFinite(days) || days <= 0) throw new Error(`Invalid --ttl-days value: ${opts.ttlDays}`);
-    return new Date(Date.now() + Math.floor(days * 24 * 60 * 60 * 1000));
+    return new Date(Date.now() + Math.floor(days * 24 * 60 * 60 * 1000)).toISOString();
   }
   return undefined;
 }

@@ -1,6 +1,22 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
+  BOARD_API_KEY_PERMISSION_KEYS,
+  BOARD_API_KEY_INSTANCE_CAPABILITIES,
+  BOARD_API_KEY_SCOPE_PRESETS,
+  boardApiKeyScopeConfigSchema,
+  storedBoardApiKeyScopeConfigSchema,
+  deriveBoardApiKeyStatus,
+  type BoardPermissionKey,
+  type BoardApiKeyInstanceCapability,
+  type BoardApiKeyScopeConfig,
+  type BoardApiKeyScopePreset,
+  type BoardApiKeyStatus,
+  type BoardApiKeyResponse,
+  type CreatedBoardApiKeyResponse,
+} from "./board-api-key-scope.js";
+
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,

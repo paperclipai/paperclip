@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import type { Command } from "commander";
+import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
 import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
@@ -89,10 +90,25 @@ export function resolveCommandContext(
           if (!shouldRecoverBoardAuth(error)) {
             return null;
           }
+          if (!companyId) {
+            throw new Error(
+              "Board authentication requires a company scope. Pass --company-id, set PAPERCLIP_COMPANY_ID, or configure a companyId in the current context.",
+            );
+          }
+          const preset = requestedAccess === "instance_admin_required"
+            ? BOARD_API_KEY_SCOPE_PRESETS.full_instance_admin
+            : BOARD_API_KEY_SCOPE_PRESETS.company_automation;
           const login = await loginBoardCli({
             apiBase,
             requestedAccess,
-            requestedCompanyId: companyId ?? null,
+            requestedCompanyId: companyId,
+            scopeConfig: {
+              version: 1,
+              kind: "scoped",
+              companyIds: [companyId],
+              permissions: [...preset.permissions],
+              instanceCapabilities: [...preset.instanceCapabilities],
+            },
             command: buildCliCommandLabel(),
           });
           return login.token;

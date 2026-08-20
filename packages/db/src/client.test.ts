@@ -258,13 +258,27 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           VALUES ('user-1', 'User One', 'user@example.com', true, now(), now())
         `);
         await sql.unsafe(`
-          INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
-          VALUES ('00000000-0000-0000-0000-000000000001', 'user-1', 'Key One', 'dup-hash', now())
+          INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "scope_config", "created_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000001',
+            'user-1',
+            'Key One',
+            'dup-hash',
+            '{"version":1,"kind":"scoped","companyIds":["11111111-1111-4111-8111-111111111111"],"permissions":["companies:read"],"instanceCapabilities":[]}'::jsonb,
+            now()
+          )
         `);
         await expect(
           sql.unsafe(`
-            INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
-            VALUES ('00000000-0000-0000-0000-000000000002', 'user-1', 'Key Two', 'dup-hash', now())
+            INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "scope_config", "created_at")
+            VALUES (
+              '00000000-0000-0000-0000-000000000002',
+              'user-1',
+              'Key Two',
+              'dup-hash',
+              '{"version":1,"kind":"scoped","companyIds":["11111111-1111-4111-8111-111111111111"],"permissions":["companies:read"],"instanceCapabilities":[]}'::jsonb,
+              now()
+            )
           `),
         ).rejects.toThrow();
       } finally {
