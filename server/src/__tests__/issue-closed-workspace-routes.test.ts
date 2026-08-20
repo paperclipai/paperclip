@@ -388,6 +388,10 @@ describe.sequential("closed isolated workspace issue routes", () => {
       },
       agentId,
       null,
+      {
+        checkoutRunId: "run-after-checkout",
+        executionRunId: "run-after-checkout",
+      },
     );
     expect(res.status).toBe(503);
   });
@@ -431,6 +435,10 @@ describe.sequential("closed isolated workspace issue routes", () => {
       }),
       agentId,
       null,
+      {
+        checkoutRunId: "run-after-checkout",
+        executionRunId: "run-after-checkout",
+      },
     );
     expect(res.status).toBe(409);
   });

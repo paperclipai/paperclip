@@ -8525,6 +8525,10 @@ export function issueService(db: Db) {
      * Compensate a failed post-checkout step by restoring the pre-checkout row.
      * Unlike `release` (generic re-queue → todo + wipe assignee), this is a snapshot
      * restore so a rejected checkout does not resurrect closed work or clear ownership.
+     *
+     * When `expectedOwnership` is provided, restore is a no-op unless the locked row
+     * still carries that post-checkout ownership — so a concurrent release / force-release
+     * / reassignment while reopen was in flight is not overwritten by a stale snapshot.
      */
     restoreCheckoutSnapshot: async (
       id: string,
@@ -8540,6 +8544,10 @@ export function issueService(db: Db) {
       },
       actorAgentId?: string,
       actorRunId?: string | null,
+      expectedOwnership?: {
+        checkoutRunId: string | null;
+        executionRunId: string | null;
+      },
     ) =>
       db.transaction(async (tx) => {
         await tx.execute(
@@ -8552,6 +8560,16 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
+        if (
+          expectedOwnership
+          && (
+            existing.checkoutRunId !== expectedOwnership.checkoutRunId
+            || existing.executionRunId !== expectedOwnership.executionRunId
+          )
+        ) {
+          const [enriched] = await withIssueLabels(tx, [existing]);
+          return enriched;
+        }
         if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
           throw conflict("Only assignee can restore checkout snapshot");
         }

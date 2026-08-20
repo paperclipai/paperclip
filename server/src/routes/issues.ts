@@ -10717,6 +10717,10 @@ export function issueRoutes(
                 },
                 req.body.agentId,
                 checkoutRunId,
+                {
+                  checkoutRunId: updated.checkoutRunId,
+                  executionRunId: updated.executionRunId,
+                },
               );
             } catch (err) {
               logger.warn(
