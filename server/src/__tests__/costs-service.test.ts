@@ -476,6 +476,75 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(agent?.spentMonthlyCents).toBe(0);
   });
 
+  it("dedups a retried heartbeat cost line and preserves distinct lines (JAC-4532)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const otherRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Heartbeat Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const occurredAt = new Date(Date.now());
+    const baseLine = {
+      agentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "metered_api" as const,
+      costStatus: "reported" as const,
+      model: "gpt-5",
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 50,
+      costCents: 500,
+      occurredAt,
+      sourceSystem: "heartbeat",
+      sourceEventId: runId,
+    };
+
+    // First ingest of the run's cost line.
+    const first = await costs.createEvent(companyId, baseLine);
+    // A genuine retry / re-finalization of the SAME run re-emits an identical line.
+    const retry = await costs.createEvent(companyId, baseLine);
+
+    // Same logical event -> same row, no second insert.
+    expect(retry.id).toBe(first.id);
+    const rowsForRun = await db
+      .select()
+      .from(costEvents)
+      .where(eq(costEvents.sourceEventId, runId));
+    expect(rowsForRun).toHaveLength(1);
+
+    // Monthly spend is not double-counted by the retry.
+    const [agentAfterRetry] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agentAfterRetry?.spentMonthlyCents).toBe(500);
+
+    // A genuinely distinct cost line (different run.id) still inserts.
+    await costs.createEvent(companyId, { ...baseLine, sourceEventId: otherRunId, costCents: 300 });
+    const allRows = await db
+      .select()
+      .from(costEvents)
+      .where(eq(costEvents.companyId, companyId));
+    expect(allRows).toHaveLength(2);
+    const [agentAfterSecond] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agentAfterSecond?.spentMonthlyCents).toBe(800);
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

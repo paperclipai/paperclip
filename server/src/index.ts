@@ -98,6 +98,10 @@ import {
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
+  configureMemoryPlaneObserver,
+  checkHonchoReachability,
+} from "./services/memory-plane-observer.js";
+import {
   createEmbeddedPostgresSupervisor,
   type EmbeddedPostgresSupervisor,
   type SupervisedEmbeddedPostgres,
@@ -1587,6 +1591,36 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
     throw err;
   }
+
+  // Configure the memory-plane observer so that Routine/Goal lifecycle events
+  // are published to the OB1, Hindsight, Honcho, and Holographic memory planes.
+  // Honcho reachability depends on HONCHO_API_KEY being present; the call is
+  // fail-safe — a missing URL/key simply disables that plane.
+  configureMemoryPlaneObserver({
+    honchoUrl: process.env.HONCHO_URL || null,
+    honchoApiKey: process.env.HONCHO_API_KEY || null,
+    honchoWorkspaceId: process.env.HONCHO_WORKSPACE_ID || null,
+    hindsightUrl: process.env.HINDSIGHT_URL || null,
+    holographicUrl: process.env.HOLOGRAPHIC_URL || null,
+    holographicApiKey: process.env.HOLOGRAPHIC_API_KEY || null,
+  });
+
+  // One-shot startup probe so the Honcho plane's reachability is observable in
+  // logs instead of only failing lazily on the first publish attempt.
+  void checkHonchoReachability()
+    .then((result) => {
+      if (result.reachable) {
+        logger.info({ status: result.status }, "Honcho memory plane reachable");
+      } else {
+        logger.warn(
+          { status: result.status, error: result.error },
+          "Honcho memory plane not reachable",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.warn(`Honcho reachability probe failed: ${String(err)}`);
+    });
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {

@@ -8,6 +8,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
+import { approvals } from "./approvals.js";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -39,6 +40,9 @@ export const issueWorkProducts = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // JAC-4538 (migration 0229): FK to approvals — set when this work product was
+    // created from an approved publish_full_artifact approval.
+    publicationApprovalId: uuid("publication_approval_id").references(() => approvals.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

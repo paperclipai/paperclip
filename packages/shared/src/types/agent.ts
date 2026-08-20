@@ -94,6 +94,7 @@ export interface Agent {
   adapterConfig: Record<string, unknown>;
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
+  folderId?: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;

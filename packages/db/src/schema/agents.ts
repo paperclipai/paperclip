@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
+import { agentFolders } from "./agent_folders.js";
 
 export const agents = pgTable(
   "agents",
@@ -27,6 +28,7 @@ export const agents = pgTable(
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
+    folderId: uuid("folder_id").references(() => agentFolders.id, { onDelete: "set null" }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     pauseReason: text("pause_reason"),
@@ -42,5 +44,6 @@ export const agents = pgTable(
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
     companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
     companyDefaultEnvironmentIdx: index("agents_company_default_environment_idx").on(table.companyId, table.defaultEnvironmentId),
+    companyFolderIdx: index("agents_company_folder_idx").on(table.companyId, table.folderId),
   }),
 );

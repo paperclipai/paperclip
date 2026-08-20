@@ -73,6 +73,11 @@ import {
   moveFolderItemSchema,
   moveFolderSchema,
   updateFolderSchema,
+  // Agent folders
+  createAgentFolderSchema,
+  updateAgentFolderSchema,
+  moveAgentFolderSchema,
+  moveAgentToFolderSchema,
   // Goal
   createGoalSchema,
   updateGoalSchema,
@@ -6667,6 +6672,80 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/folders/{folderId}",
   tags: ["folders"],
   summary: "Delete a folder",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-folders",
+  tags: ["agent-folders"],
+  summary: "List agent folders for a company",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/agent-folders",
+  tags: ["agent-folders"],
+  summary: "Create an agent folder",
+  body: createAgentFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}",
+  tags: ["agent-folders"],
+  summary: "Get an agent folder",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}",
+  tags: ["agent-folders"],
+  summary: "Update an agent folder",
+  body: updateAgentFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}/move",
+  tags: ["agent-folders"],
+  summary: "Move or reorder an agent folder",
+  body: moveAgentFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}",
+  tags: ["agent-folders"],
+  summary: "Delete an agent folder",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}/agents",
+  tags: ["agent-folders"],
+  summary: "Assign agents to an agent folder",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}/agents",
+  tags: ["agent-folders"],
+  summary: "List agents in an agent folder",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/agent-folders/agents/{agentId}/move",
+  tags: ["agent-folders"],
+  summary: "Move an agent into or out of an agent folder",
+  body: moveAgentToFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-folders/{folderId}/instructions-bundle",
+  tags: ["agent-folders"],
+  summary: "Get the merged instructions bundle for an agent folder",
 });
 
 registerCurrentRoute({

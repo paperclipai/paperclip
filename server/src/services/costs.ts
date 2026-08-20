@@ -64,6 +64,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw unprocessable("Agent does not belong to company");
       }
 
+      // JAC-4532 idempotency: dedup on the cost_events_source_event_uq index
+      // (company_id, source_system, source_event_id, event_kind, attempt_index).
+      // Postgres treats NULL source_event_id as distinct, so producers that omit
+      // it (e.g. manual API cost entries) never conflict and keep prior behavior;
+      // producers that set a stable source_event_id (e.g. heartbeat run.id) have
+      // duplicate re-ingests collapsed to a no-op here.
       const event = await db
         .insert(costEvents)
         .values({
@@ -73,8 +79,43 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           billingType: data.billingType ?? "unknown",
           cachedInputTokens: data.cachedInputTokens ?? 0,
         })
+        .onConflictDoNothing({
+          target: [
+            costEvents.companyId,
+            costEvents.sourceSystem,
+            costEvents.sourceEventId,
+            costEvents.eventKind,
+            costEvents.attemptIndex,
+          ],
+        })
         .returning()
         .then((rows) => rows[0]);
+
+      if (!event) {
+        // Conflict on the idempotency index: this logical event was already
+        // recorded. Return the existing row and do NOT re-apply the monthly
+        // spend recalculation or budget evaluation, so a retry never
+        // double-counts. (Only reachable when source_event_id is non-null.)
+        const existing = await db
+          .select()
+          .from(costEvents)
+          .where(
+            and(
+              eq(costEvents.companyId, companyId),
+              eq(costEvents.sourceSystem, data.sourceSystem ?? "paperclip"),
+              data.sourceEventId == null
+                ? isNull(costEvents.sourceEventId)
+                : eq(costEvents.sourceEventId, data.sourceEventId),
+              eq(costEvents.eventKind, data.eventKind ?? "cost_report"),
+              eq(costEvents.attemptIndex, data.attemptIndex ?? 0),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (existing) return existing;
+        // Defensive: conflict reported but the row could not be re-read (e.g. a
+        // concurrent delete). Surface rather than silently returning nothing.
+        throw unprocessable("Cost event conflict could not be resolved");
+      }
 
       const [agentMonthSpend, companyMonthSpend] = await Promise.all([
         getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),

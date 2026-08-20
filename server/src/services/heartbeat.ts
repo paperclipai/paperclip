@@ -13826,6 +13826,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outputTokens,
         costCents: additionalCostCents,
         occurredAt: new Date(),
+        // JAC-4532 idempotency: a finalized heartbeat run emits exactly one cost
+        // line (the failure path passes a usage-less result and is gated out
+        // above), and a legitimate re-attempt is always a NEW run with a new
+        // run.id (see scheduleBoundedRetryForRun -> insert(heartbeatRuns) with
+        // retryOfRunId). So run.id is a stable, 1:1 identifier for this cost
+        // line: a duplicate finalization of the SAME run collides on the
+        // cost_events_source_event_uq index and is deduped, while distinct runs
+        // (including retries) get distinct ids and both persist.
+        sourceSystem: "heartbeat",
+        sourceEventId: run.id,
       });
     }
   }

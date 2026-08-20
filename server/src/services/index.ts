@@ -21,6 +21,17 @@ export {
   type BuiltInAgentStatus,
 } from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export { agentFolderService } from "./agent-folders.js";
+export {
+  folderMigrationService,
+  FolderMigrationService,
+} from "./folder-migration.js";
+export {
+  writeAgentFolderPointerFile,
+  removeAgentFolderPointerFile,
+  resolveFolderInstructionsDir,
+  type AgentLikeForInheritance,
+} from "./agent-instructions-inheritance.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { statusCardService } from "./status-cards.js";
@@ -191,4 +202,14 @@ export {
   type CodexAuthReconciliationSummary,
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
+export {
+  configureMemoryPlaneObserver,
+  checkHonchoReachability,
+  createLifecycleEvent,
+  publishLifecycleEvent,
+  getObserverConfig,
+  getDeadLetterEntries,
+  clearDeadLetterEntries,
+  type HonchoReachabilityResult,
+} from "./memory-plane-observer.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

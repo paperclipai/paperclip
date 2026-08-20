@@ -491,6 +491,13 @@ export interface ServerAdapterModule {
   instructionsPathKey?: string;
 
   /**
+   * Optional: supplementary instruction filenames this adapter also reads
+   * alongside the primary instructions file (e.g. { claude: "CLAUDE.md" }),
+   * keyed by adapter/runtime. Used when resolving merged folder instructions.
+   */
+  instructionsSupplementaryFiles?: Record<string, string>;
+
+  /**
    * Adapter needs runtime skill entries materialized (written to disk)
    * before being passed via config. Used by adapters that scan a directory
    * rather than reading config.paperclipRuntimeSkills.

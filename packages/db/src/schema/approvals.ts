@@ -15,6 +15,12 @@ export const approvals = pgTable(
     decisionNote: text("decision_note"),
     decidedByUserId: text("decided_by_user_id"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
+    // JAC-4538 (migration 0230): publication artifact fields for the
+    // publish_full_artifact approval type.
+    artifactKind: text("artifact_kind"),
+    artifactPointer: text("artifact_pointer"),
+    artifactSha256: text("artifact_sha256"),
+    redactionState: text("redaction_state").notNull().default("unredacted"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
