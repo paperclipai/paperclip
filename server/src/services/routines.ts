@@ -16,6 +16,7 @@ import {
   goals,
   heartbeatRuns,
   issueInboxArchives,
+  issueRelations,
   issues,
   pluginManagedResources,
   plugins,
@@ -1552,7 +1553,11 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
-  async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
+  async function finalizeRun(
+    runId: string,
+    patch: Partial<typeof routineRuns.$inferInsert>,
+    executor: Pick<Db, "update"> = db,
+  ) {
     return executor
       .update(routineRuns)
       .set({
@@ -3169,6 +3174,7 @@ export function routineService(
       const issue = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
@@ -3183,8 +3189,10 @@ export function routineService(
           status: routineRuns.status,
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
+          parentIssueId: routines.parentIssueId,
         })
         .from(routineRuns)
+        .innerJoin(routines, eq(routines.id, routineRuns.routineId))
         .where(eq(routineRuns.id, issue.originRunId))
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
@@ -3192,23 +3200,35 @@ export function routineService(
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-        return finalizeRun(issue.originRunId, {
-          status: "completed",
-          failureReason: null,
-          completedAt: new Date(),
-          ...(transientFailureStatus
-            ? {
-              triggerPayload: {
-                ...(run.triggerPayload ?? {}),
-                transientFailure: {
-                  code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
-                  status: transientFailureStatus,
-                  reason: executionIssueTransientFailureReason(transientFailureStatus),
-                  clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
+        return db.transaction(async (tx) => {
+          if (run.parentIssueId) {
+            await tx
+              .delete(issueRelations)
+              .where(and(
+                eq(issueRelations.companyId, issue.companyId),
+                eq(issueRelations.issueId, issue.id),
+                eq(issueRelations.relatedIssueId, run.parentIssueId),
+                eq(issueRelations.type, "blocks"),
+              ));
+          }
+          return finalizeRun(run.id, {
+            status: "completed",
+            failureReason: null,
+            completedAt: new Date(),
+            ...(transientFailureStatus
+              ? {
+                triggerPayload: {
+                  ...(run.triggerPayload ?? {}),
+                  transientFailure: {
+                    code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+                    status: transientFailureStatus,
+                    reason: executionIssueTransientFailureReason(transientFailureStatus),
+                    clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
+                  },
                 },
-              },
-            }
-            : {}),
+              }
+              : {}),
+          }, tx);
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {

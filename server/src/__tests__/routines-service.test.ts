@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
+  issueRelations,
   issues,
   projectWorkspaces,
   projects,
@@ -367,6 +368,37 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run?.triggerPayload).toMatchObject({
       transientFailure: { clearedAt: expect.any(String) },
     });
+  });
+
+  it("clears a routine execution issue blocker edge to its standing parent on completion", async () => {
+    const { companyId, issueSvc, projectId, routine, svc } = await seedFixture();
+    const parentIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: "Standing readiness target",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.update(routines).set({ parentIssueId: parentIssue.id }).where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toEqual(expect.any(String));
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: run.linkedIssueId!,
+      relatedIssueId: parentIssue.id,
+      type: "blocks",
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, run.linkedIssueId!));
+
+    await svc.syncRunStatusForIssue(run.linkedIssueId!);
+
+    const blockerEdges = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, run.linkedIssueId!));
+    expect(blockerEdges).toEqual([]);
   });
 
   it("filters listed routines by project", async () => {
