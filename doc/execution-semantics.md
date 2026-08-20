@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-07-23
+Date: 2026-08-12
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -373,6 +373,48 @@ The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` i
 Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
+
+#### Managed runtime coherence
+
+This subsection is the accepted target contract for ongoing managed-runtime coherence work. It defines the required end state; it does not claim that every current runtime or completion path enforces these rules yet.
+
+Every managed runtime-service command must finish with one coherent, inspectable postcondition. Desired state and actual state are separate values:
+
+- desired state records the operator's intent, such as `running` or `stopped`
+- actual state records the current configured service process observed by Paperclip, such as `starting`, `running`, `stopped`, or `failed`
+- desired `running` is not evidence that a process started, is ready, or still owns its recorded port
+- reads must select at most the current runtime row that matches the effective configured service for the execution workspace; unrelated sibling rows and historical stopped rows must not be substituted for it
+
+A successful command has a durable terminal workspace operation and a matching actual-state postcondition:
+
+- a successful start or restart leaves the current configured runtime row in actual state `running`; its execution workspace, assigned port, rendered URL, process ownership, and health/readiness identify the process that the command started
+- a successful stop leaves that row in actual state `stopped` only after the managed process tree is proven to have exited
+- API reads and every UI surface that offers the command expose the same effective configuration and current row, so a success cannot be reported from desired state alone
+
+A failed command also has a durable terminal postcondition. Paperclip must preserve the actual state rather than fabricate the requested state, mark the current configured row `failed` when the start/readiness attempt created that row, and persist a structured failure on the workspace operation or a direct reference to it. The API response and read model must expose a non-secret failure code, the failed phase, a safe remediation, and the operation reference. A port conflict may include the requested port and an authorized reference to the owning workspace; it must not expose a host path, PID, or workspace identity the actor cannot access. A generic `500`, an empty runtime-service projection, or a desired-state-only display is not a valid failed-command postcondition.
+
+For a persisted isolated execution workspace, a configured fixed port is a preferred base, not an exclusive reservation. If a sibling workspace owns that port, Paperclip must leave the sibling running and try a deterministic, finite set of alternative ports. The allocation attempt must:
+
+- remain inside company, project/workspace, and service ownership boundaries
+- test each candidate at most once for the command, with concurrency-safe ownership or bind verification
+- persist the actual selected port and derived URL on success
+- stop after the bounded candidate set is exhausted and return a structured HTTP `409` conflict with a safe next action
+
+Intentional sharing remains strict. A service configured to reuse one shared runtime, or a command without a distinct persisted isolated-workspace identity, must keep its exact fixed-port semantics and must not silently split the shared service across alternative ports.
+
+These postconditions preserve the non-terminal liveness invariants:
+
+1. **Productive work continues.** A valid sibling keeps its process and port while the isolated workspace receives a bounded alternative automatically.
+2. **Only real blockers stop work.** Exhausted allocation, missing runtime configuration, unsafe ownership, or failed readiness becomes a visible structured failure with an owner/action; an opaque error or hidden failed row does not count as a healthy stop.
+3. **Recovery cannot loop.** One command performs one bounded allocation attempt and records one terminal operation/failure fingerprint. Paperclip must not recursively restart the command or repeatedly stop/restart sibling processes for the same failure.
+
+Task and execution-workspace UI must render inherited and local effective runtime configuration consistently. Each command surface shows desired state separately from actual state, the actual port/URL/health when present, and the latest structured failure with remediation and a link to its operation log. Stopped or failed current configured rows remain visible; operators must not need to discover the failure by navigating to a separate log surface first.
+
+#### Delivery evidence for claimed fixes
+
+This subsection continues the target contract above; it does not claim that every current completion path enforces delivery evidence yet.
+
+An issue that claims a code fix is complete must register inspectable delivery evidence appropriate to the requested handoff: the branch, commit, or pull-request work product that contains the fix, plus ancestry or pull-request-head evidence that the cited change is actually on that delivery path. A local commit proves implementation but does not prove upstream delivery when the requested outcome is a pull request or merged change. Tests, screenshots, comments, and runtime logs remain verification evidence; they do not replace branch/commit/pull-request delivery evidence.
 
 ### Explicit recovery actions
 
