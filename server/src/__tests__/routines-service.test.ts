@@ -450,6 +450,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .then((rows) => rows[0]!);
     const { executionIssue: _executionIssue, ...legacyPayload } = storedRun.triggerPayload as Record<string, unknown>;
     await db.update(routineRuns).set({ triggerPayload: legacyPayload }).where(eq(routineRuns.id, storedRun.id));
+    await db.update(routines).set({ parentIssueId: null }).where(eq(routines.id, routine.id));
 
     const replacementParent = await issueSvc.create(companyId, {
       projectId,

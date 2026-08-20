@@ -134,6 +134,11 @@ function executionIssueParentIdFromPayload(payload: unknown): string | null | un
   return typeof parentId === "string" ? parentId : parentId === null ? null : undefined;
 }
 
+function routineRevisionParentIssueIdFromSnapshot(snapshot: unknown): string | null | undefined {
+  const parsed = routineRevisionSnapshotSchema.safeParse(snapshot);
+  return parsed.success ? parsed.data.routine.parentIssueId : undefined;
+}
+
 function legacyExecutionIssueTransientFailureStatus(
   failureReason: string | null,
 ): ExecutionIssueTransientFailureStatus | null {
@@ -3204,9 +3209,11 @@ export function routineService(
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
           parentIssueId: routines.parentIssueId,
+          revisionSnapshot: routineRevisions.snapshot,
         })
         .from(routineRuns)
         .innerJoin(routines, eq(routines.id, routineRuns.routineId))
+        .leftJoin(routineRevisions, eq(routineRevisions.id, routineRuns.routineRevisionId))
         .where(eq(routineRuns.id, issue.originRunId))
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
@@ -3215,8 +3222,9 @@ export function routineService(
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
         const snapshottedParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload);
+        const revisionParentIssueId = routineRevisionParentIssueIdFromSnapshot(run.revisionSnapshot);
         const standingParentIssueId = snapshottedParentIssueId === undefined
-          ? run.parentIssueId
+          ? revisionParentIssueId === undefined ? run.parentIssueId : revisionParentIssueId
           : snapshottedParentIssueId;
         return db.transaction(async (tx) => {
           if (standingParentIssueId !== null) {
