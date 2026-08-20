@@ -2587,7 +2587,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // The issue assignee remains the owner of record even if a helper run
     // executes under another agent during recovery.
     const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId;
-    const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
+    const returnOwnerAgentId = originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
       input.recoveryCause === "codex_output_inactivity_monitor";
@@ -3339,21 +3339,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const executionState = parseIssueExecutionState(input.issue.executionState);
-    const stageParticipantAgentId = executionState?.status === "pending" && executionState.currentParticipant?.type === "agent"
-      ? executionState.currentParticipant.agentId
-      : null;
-    const preservesSourceAssignee =
-      Boolean(recoveryAction.ownerAgentId) &&
-      Boolean(input.issue.assigneeAgentId) &&
-      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId &&
-      recoveryAction.ownerAgentId !== stageParticipantAgentId;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: preservesSourceAssignee
-        ? input.issue.assigneeAgentId
-        : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3502,11 +3490,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(eq(issues.id, input.issue.id))
         .limit(1);
-      if (
-        currentIssue &&
-        (currentIssue.status !== "blocked" ||
-          currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
-      ) {
+      if (currentIssue && currentIssue.status !== "blocked") {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
