@@ -32,7 +32,10 @@ import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
+import {
+  resolveAdapterTestEnvironmentId,
+  resolveLocalDefaultEnvironmentId,
+} from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -589,8 +592,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
       }),
-    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId],
+    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId, environments],
   );
   const effectiveLoginEnvironment = useMemo(
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
@@ -873,6 +877,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
