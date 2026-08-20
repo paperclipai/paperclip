@@ -4277,16 +4277,28 @@ async function hasLoopbackPortListener(port: number): Promise<boolean> {
 }
 
 /**
- * True when an EADDRINUSE failure text names the given port as the address.
+ * True when one line of the failure text reports an EADDRINUSE bind conflict on
+ * the given port.
+ *
+ * Node prints the failing bind on a single line, for example
+ * `Error: listen EADDRINUSE: address already in use 127.0.0.1:42000`. The match
+ * requires the EADDRINUSE marker and the port on the SAME line. So an
+ * auxiliary-port conflict on one line cannot combine with an unrelated
+ * assigned-port mention on a different, benign line and trigger a wrong
+ * quarantine.
  *
  * Node formats a bind address as `host:port`, so the failing port always
  * follows a colon (for example `127.0.0.1:42000` or `:::42000`). The match
- * requires that colon and a full-number boundary. So an auxiliary-port
- * conflict — a different port that the guest also tried to bind — cannot look
- * like the assigned app or HMR port, and port 4200 never matches `:42000`.
+ * requires that colon and a full-number boundary. So a different port in the
+ * same line cannot look like the assigned app or HMR port, and port 4200 never
+ * matches `:42000`.
  */
 function eaddrinuseTextNamesPort(text: string, port: number): boolean {
-  return new RegExp(`:${port}(?![0-9])`).test(text);
+  const eaddrinusePattern = /EADDRINUSE|address already in use/i;
+  const portPattern = new RegExp(`:${port}(?![0-9])`);
+  return text
+    .split(/\r?\n/)
+    .some((line) => eaddrinusePattern.test(line) && portPattern.test(line));
 }
 
 async function readReservedRuntimePorts(input: {

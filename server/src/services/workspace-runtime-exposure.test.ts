@@ -148,6 +148,23 @@ process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address alread
 process.exit(1);
 `;
 
+/**
+ * A guest that fails with `EADDRINUSE` on an unrelated auxiliary port, and also
+ * prints the assigned app port on a separate, benign line. It models mixed
+ * startup output: one line names the assigned port for an informational reason,
+ * a different line reports the auxiliary-port conflict. The parser must match the
+ * error and the port on the same line, so the benign mention of the assigned port
+ * must not trigger a wrong quarantine. The managed start must surface the failure
+ * terminally after a single allocation.
+ */
+const EADDRINUSE_ON_AUXILIARY_PORT_WITH_ASSIGNED_MENTION_GUEST = `
+import http from "node:http";
+const p = Number(process.env.PORT);
+process.stderr.write("[dev] server ready on http://127.0.0.1:" + p + "/\\n");
+process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address already in use 127.0.0.1:39999\\n");
+process.exit(1);
+`;
+
 beforeAll(async () => {
   guestDir = await fs.mkdtemp(path.join(os.tmpdir(), "pap-17256-guest-"));
   await fs.writeFile(path.join(guestDir, "dev-runner.mjs"), PRE_MANAGED_EXPOSURE_GUEST);
@@ -172,6 +189,14 @@ beforeAll(async () => {
   await fs.writeFile(
     path.join(guestDir, "dev-runner-eaddrinuse-auxiliary.mjs"),
     EADDRINUSE_ON_AUXILIARY_PORT_GUEST,
+  );
+  // A guest that fails on an auxiliary port and also prints the assigned app port
+  // on a separate, benign line. It models mixed output where the assigned port
+  // appears for an unrelated reason. The parser must match the error and the port
+  // on the same line, so the start must not quarantine the valid exposure pair.
+  await fs.writeFile(
+    path.join(guestDir, "dev-runner-eaddrinuse-auxiliary-mixed.mjs"),
+    EADDRINUSE_ON_AUXILIARY_PORT_WITH_ASSIGNED_MENTION_GUEST,
   );
 });
 
@@ -767,6 +792,44 @@ describe("recovers when a guest loses its assigned exposure port during startup 
     expect(reservedAppPorts).toEqual([42_000]);
 
     // No quarantine and no re-allocation happened for the auxiliary conflict.
+    const diagnosis = logs.join("");
+    expect(diagnosis).not.toContain("Quarantined pair");
+    expect(diagnosis).not.toContain("collided during startup");
+  }, 25_000);
+
+  it("does not quarantine when an auxiliary EADDRINUSE mixes with a benign assigned-port line", async () => {
+    const { broker } = createBroker();
+    const reservedAppPorts: number[] = [];
+    const recordingBroker: BrokerClient = {
+      ...broker,
+      async reserve(runtimeId, requested) {
+        reservedAppPorts.push(requested[0]!.port);
+        return broker.reserve(runtimeId, requested);
+      },
+    };
+    installDeps({ broker: recordingBroker });
+
+    const logs: string[] = [];
+    const error = await startRuntimeServicesForWorkspaceControl({
+      ...startInput({
+        serviceName: "paperclip-dev",
+        command: `${guestCommand("dev-runner-eaddrinuse-auxiliary-mixed.mjs")} --bind lan`,
+        expose: LEGACY_HTTP_EXPOSE,
+        port: { type: "auto", envKey: "PORT" },
+      }),
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    }).then(() => null, (err: unknown) => err as Error);
+
+    // The assigned port 42000 appears on a benign line, but EADDRINUSE names only
+    // the auxiliary port 39999. The parser matches the error and the port on the
+    // same line, so the assigned pair is not a collision. The start fails
+    // terminally after ONE allocation and never quarantines the valid pair.
+    expect(error).not.toBeNull();
+    expect(error!.message).toContain("39999");
+    expect(reservedAppPorts).toEqual([42_000]);
+
     const diagnosis = logs.join("");
     expect(diagnosis).not.toContain("Quarantined pair");
     expect(diagnosis).not.toContain("collided during startup");
