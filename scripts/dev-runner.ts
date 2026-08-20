@@ -11,6 +11,7 @@ import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
+  findConflictingLocalService,
   removeLocalServiceRegistryRecord,
   touchLocalServiceRegistryRecord,
   writeLocalServiceRegistryRecord,
@@ -198,6 +199,27 @@ if (existingRunner) {
     `[paperclip] ${devService.serviceName} already running (pid ${existingRunner.pid}${typeof existingRunner.metadata?.childPid === "number" ? `, child ${existingRunner.metadata.childPid}` : ""})`,
   );
   process.exit(0);
+}
+
+// A second dev runner on the same instance is not a second app: both talk to the same
+// database, and each boot reaps the other's in-flight heartbeat runs. `pnpm dev` and
+// `pnpm dev:once` have different service keys, so the adoption check above does not
+// catch the pairing, and a port fallback does not separate them either (OLY-102).
+const conflictingRunner = await findConflictingLocalService({
+  serviceKey: devService.serviceKey,
+  profileKind: devService.profileKind,
+});
+if (conflictingRunner) {
+  console.error(
+    `[paperclip] refusing to start ${devService.serviceName}: ${conflictingRunner.serviceName} already serves this instance from ${conflictingRunner.cwd} on port ${conflictingRunner.port ?? "unknown"} (pid ${conflictingRunner.pid}).`,
+  );
+  console.error(
+    "[paperclip] Two dev runners share one instance database and reap each other's in-flight runs.",
+  );
+  console.error(
+    "[paperclip] Stop the running one with `pnpm dev:stop` first, or target a different instance with PAPERCLIP_INSTANCE_ID.",
+  );
+  process.exit(1);
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";

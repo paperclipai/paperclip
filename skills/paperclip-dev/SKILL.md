@@ -25,7 +25,7 @@ These are the most common commands. For full option tables and details, see `doc
 | Start server (first time or normal) | `npx paperclipai run` |
 | Start server for an instance agents run against | `pnpm dev:once` |
 | Dev mode with hot reload (no live agents only) | `pnpm dev` |
-| Deploy a change to a `dev:once` server | `curl -X POST http://127.0.0.1:3100/api/health/dev-server/restart` |
+| Deploy a change to a `dev:once` server | `pnpm dev:stop && pnpm dev:once` while the instance is idle |
 | Stop dev server | `pnpm dev:stop` |
 | Build | `pnpm build` |
 | Type-check | `pnpm typecheck` |
@@ -54,10 +54,16 @@ against a company that had never seen one before.
 2. `pnpm dev:once` is not "no reload" — the supervisor still tracks changed paths and restarts
    when the instance is idle (`activeRunCount === 0`), gated on the `autoRestartDevServerWhenIdle`
    experimental setting.
-3. To deploy immediately without waiting for idle, `POST /api/health/dev-server/restart`. Do not
-   kill the server by PID to pick up a code change.
+3. There is no restart endpoint. To deploy, either enable `autoRestartDevServerWhenIdle` and
+   let rule 2 recycle the server, or run `pnpm dev:stop && pnpm dev:once` yourself once
+   `GET /api/health` reports `devServer.activeRunCount === 0`. Restarting while runs are in
+   flight fails them as `process_lost` — the same outage, just triggered by hand.
 4. `pnpm dev` is fine for a checkout with no live agents (solo UI/server work, worktrees you
    are the only user of).
+5. Only one dev runner may serve an instance. A second one shares the database and reaps the
+   first's runs, so `dev-runner.ts` refuses to start when another is already registered. Use
+   `PAPERCLIP_INSTANCE_ID` or a worktree (which gets its own `PAPERCLIP_HOME`) for a second
+   control plane — a different `PORT` is not enough.
 
 ## Pulling from Master
 

@@ -5,6 +5,8 @@ import { createLocalServiceKey } from "../server/src/services/local-service-supe
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+export const DEV_SERVICE_PROFILE_KIND = "paperclip-dev";
+
 export function createDevServiceIdentity(input: {
   mode: "watch" | "dev";
   forwardedArgs: string[];
@@ -24,7 +26,7 @@ export function createDevServiceIdentity(input: {
 
   const serviceName = input.mode === "watch" ? "paperclip-dev-watch" : "paperclip-dev-once";
   const serviceKey = createLocalServiceKey({
-    profileKind: "paperclip-dev",
+    profileKind: DEV_SERVICE_PROFILE_KIND,
     serviceName,
     cwd: repoRoot,
     command: "dev-runner.ts",
@@ -40,5 +42,6 @@ export function createDevServiceIdentity(input: {
     serviceKey,
     serviceName,
     envFingerprint,
+    profileKind: DEV_SERVICE_PROFILE_KIND,
   };
 }

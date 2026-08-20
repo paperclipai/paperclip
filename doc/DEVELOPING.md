@@ -49,13 +49,17 @@ This starts:
 > Use `pnpm dev:once` for any instance that agents run against. It uses the same entrypoint
 > with no file watcher, and it still picks up code changes — the supervisor tracks changed
 > paths and restarts only when the instance is idle (`activeRunCount === 0`), gated on the
-> `autoRestartDevServerWhenIdle` experimental setting. To deploy a change immediately, call
-> `POST /api/health/dev-server/restart`; the supervisor restarts on the next poll without
-> waiting for idle. `pnpm dev` (watch) is for solo work on a checkout with no live agents.
+> `autoRestartDevServerWhenIdle` experimental setting. There is no restart endpoint: to deploy
+> a change, enable that setting, or run `pnpm dev:stop && pnpm dev:once` yourself once
+> `GET /api/health` reports `devServer.activeRunCount === 0`. Restarting while runs are in
+> flight fails them as `process_lost`. `pnpm dev` (watch) is for solo work on a checkout with
+> no live agents.
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
+
+A runner also refuses to start when a *different* dev runner already serves the same instance — `pnpm dev` next to a running `pnpm dev:once`, for example. The two have different service keys, so the idempotency check above does not pair them, but they share one database and each boot reaps the other's in-flight runs. A different `PORT` does not separate them; use `PAPERCLIP_INSTANCE_ID` or a worktree for a genuinely separate control plane.
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 

@@ -272,6 +272,27 @@ export async function findAdoptableLocalService(input: {
   return record;
 }
 
+// The registry directory lives under the resolved Paperclip instance root, so every
+// record visible here belongs to the same instance -- and therefore the same database.
+// A second runner is a second control plane on that database no matter which port or
+// checkout it was launched from, so neither is part of the match.
+export async function findConflictingLocalService(input: {
+  serviceKey: string;
+  profileKind: string;
+}) {
+  const records = await listLocalServiceRegistryRecords({ profileKind: input.profileKind });
+  for (const record of records) {
+    if (record.serviceKey === input.serviceKey) continue;
+    if (!isPidAlive(record.pid) || !(await isLikelyMatchingCommand(record))) {
+      await removeLocalServiceRegistryRecord(record.serviceKey);
+      continue;
+    }
+    return record;
+  }
+
+  return null;
+}
+
 export async function touchLocalServiceRegistryRecord(
   serviceKey: string,
   patch?: Partial<Omit<LocalServiceRegistryRecord, "serviceKey" | "version">>,
