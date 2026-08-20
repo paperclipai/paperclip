@@ -58,6 +58,7 @@ import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  isPluginManagedIssueLifecycle,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
@@ -2525,8 +2526,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function resolveStrandedIssueRecoveryOwnerAgentId(
     issue: typeof issues.$inferSelect,
+    preferredOwnerAgentId?: string | null,
   ) {
     const candidateIds: string[] = [];
+    if (preferredOwnerAgentId) candidateIds.push(preferredOwnerAgentId);
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
       if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
@@ -2579,6 +2582,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
+    preferredOwnerAgentId?: string | null;
   }) {
     // The source issue assignee remains the source of truth for who owns the
     // work. A recovery/helper run may execute under a different agent, but that
@@ -2592,7 +2596,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const retryAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
       if (!retryAgentId) {
         return {
-          ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
+          ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(
+            input.issue,
+            input.preferredOwnerAgentId,
+          ),
           returnOwnerAgentId: originalAgentId,
           routingFallbackReason: "The original assignee is not invokable; quota recovery fell through to the manager ladder.",
         };
@@ -2609,13 +2616,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return { ownerAgentId, returnOwnerAgentId: originalAgentId, routingFallbackReason: null };
       }
       return {
-        ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
+        ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(
+          input.issue,
+          input.preferredOwnerAgentId,
+        ),
         returnOwnerAgentId: originalAgentId,
         routingFallbackReason: "The original assignee is not invokable; recovery fell through to the manager ladder.",
       };
     }
     return {
-      ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
+      ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(
+        input.issue,
+        input.preferredOwnerAgentId,
+      ),
       returnOwnerAgentId,
       routingFallbackReason: null,
     };
@@ -2868,6 +2881,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
+    recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
@@ -2875,6 +2889,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue: input.issue,
       latestRun: input.latestRun,
       recoveryCause,
+      preferredOwnerAgentId: input.recoveryOwnerAgentId,
     });
     const ownerAgentId = routing.ownerAgentId;
     const now = new Date();
@@ -3339,6 +3354,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
       recoveryCause,
+      recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
@@ -4157,6 +4173,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
+        if (isPluginManagedIssueLifecycle(issue)) {
+          result.skipped += 1;
+          continue;
+        }
         if (!handoffEvidence.exhausted) {
           result.skipped += 1;
           continue;
