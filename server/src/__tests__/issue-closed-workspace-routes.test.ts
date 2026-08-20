@@ -26,6 +26,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   checkout: vi.fn(),
+  release: vi.fn(),
   addComment: vi.fn(),
 }));
 
@@ -330,8 +331,21 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("returns 503 when the rebuild fails after a successful non-terminal checkout", async () => {
-    mockIssueService.checkout.mockResolvedValue({ ...makeIssue(), status: "in_progress" });
+  it("returns 503 and releases ownership when rebuild fails after a mutating checkout", async () => {
+    const checkedOut = {
+      ...makeIssue(),
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    };
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+    mockIssueService.release.mockResolvedValue({
+      ...checkedOut,
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+      assigneeAgentId: null,
+    });
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
       code: "rebuild_failed",
@@ -346,6 +360,65 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(mockIssueService.checkout).toHaveBeenCalled();
+    expect(mockIssueService.release).toHaveBeenCalledWith(issueId, agentId, null);
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 409 and releases ownership when reopen is not possible after a mutating checkout", async () => {
+    const checkedOut = {
+      ...makeIssue(),
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    };
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+    mockIssueService.release.mockResolvedValue({
+      ...checkedOut,
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+      assigneeAgentId: null,
+    });
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "not_reopenable",
+      message: "Execution workspace is not reopenable",
+    });
+
+    const res = await (await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(mockIssueService.release).toHaveBeenCalledWith(issueId, agentId, null);
+    expect(res.status).toBe(409);
+  });
+
+  it("does not release ownership when reopen fails but checkout did not mutate the row", async () => {
+    const alreadyOwned = {
+      ...makeIssue(),
+      status: "in_progress" as const,
+      checkoutRunId: "existing-run",
+      executionRunId: "existing-run",
+    };
+    mockIssueService.getById.mockResolvedValue(alreadyOwned);
+    mockIssueService.checkout.mockResolvedValue(alreadyOwned);
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "rebuild_failed",
+      message: "Failed to rebuild the execution workspace",
+    });
+
+    const res = await (await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_progress"],
+      });
+
+    expect(mockIssueService.release).not.toHaveBeenCalled();
     expect(res.status).toBe(503);
   });
 

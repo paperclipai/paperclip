@@ -10691,6 +10691,25 @@ export function issueRoutes(
           closedExecutionWorkspace,
         );
         if (reopenOutcome === null) {
+          // Checkout already ran before reopen. A 409/503 reopen response must not
+          // leave the caller holding ownership that retries cannot reclaim with the
+          // usual expectedStatuses set. Release only when this request mutated the
+          // row; a pre-existing lock holder keeps their checkout.
+          const checkoutMutatedOnReopenFailure =
+            updated.status !== issue.status
+            || updated.checkoutRunId !== issue.checkoutRunId
+            || updated.executionRunId !== issue.executionRunId
+            || updated.assigneeAgentId !== issue.assigneeAgentId;
+          if (checkoutMutatedOnReopenFailure) {
+            try {
+              await svc.release(id, req.body.agentId, checkoutRunId);
+            } catch (err) {
+              logger.warn(
+                { err, issueId: id },
+                "failed to release checkout after closed-workspace reopen failure",
+              );
+            }
+          }
           return;
         }
         // Install the guard only when this request set the reopen-pending flag. A
