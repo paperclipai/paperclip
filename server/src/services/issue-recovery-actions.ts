@@ -123,6 +123,16 @@ export function issueRecoveryActionService(db: Db) {
     }
   }
 
+  async function getById(id: string): Promise<IssueRecoveryAction | null> {
+    const row = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row ? toReadModel(row) : null;
+  }
+
   async function getActiveForIssue(companyId: string, sourceIssueId: string): Promise<IssueRecoveryAction | null> {
     const row = await db
       .select()
@@ -299,6 +309,7 @@ export function issueRecoveryActionService(db: Db) {
   }
 
   return {
+    getById,
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
