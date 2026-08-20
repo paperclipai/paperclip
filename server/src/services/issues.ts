@@ -8191,7 +8191,7 @@ export function issueService(db: Db) {
         if (stale) {
           const now = new Date();
           const adoptionSet: Record<string, unknown> = {
-            assigneeAgentId: agentId,
+            assigneeAgentId: current.assigneeAgentId,
             checkoutRunId,
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
