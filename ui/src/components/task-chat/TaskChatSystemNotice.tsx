@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   ChevronDown,
   CircleCheck,
@@ -42,7 +42,14 @@ const TONE_ICON_CLASS: Record<SystemNoticeTone, string> = {
  * markdown-rendered body plus any structured metadata sections; nothing is
  * suppressed, only folded.
  */
-export function TaskChatSystemNotice({ item }: { item: TaskChatMessageItem }) {
+export function TaskChatSystemNotice({
+  item,
+  action,
+}: {
+  item: TaskChatMessageItem;
+  /** Optional action that remains reachable whether the notice is folded or expanded. */
+  action?: ReactNode;
+}) {
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
   const { title, tone, detail } = humanizeSystemNotice({
@@ -57,26 +64,29 @@ export function TaskChatSystemNotice({ item }: { item: TaskChatMessageItem }) {
 
   return (
     <div className="tc-enter-bubble flex flex-col items-center py-1" data-testid="task-chat-system-notice">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={detailsId}
-        className={cn(
-          "flex max-w-(--pct-85) items-center gap-1.5 rounded-md px-2 py-0.5 text-xs text-muted-foreground",
-          "hover:bg-muted/50 hover:text-foreground",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-        )}
-      >
-        <ToneIcon className={cn("h-3.5 w-3.5 shrink-0", TONE_ICON_CLASS[tone])} aria-hidden />
-        <span className="truncate font-medium">{title}</span>
-        {detail ? <span className="hidden truncate sm:inline">· {detail}</span> : null}
-        {relative ? <span className="shrink-0 text-muted-foreground/70">· {relative}</span> : null}
-        <ChevronDown
-          className={cn("tc-notice-chevron h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")}
-          aria-hidden
-        />
-      </button>
+      <div className="flex max-w-(--pct-85) items-center justify-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls={detailsId}
+          className={cn(
+            "flex min-w-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-xs text-muted-foreground",
+            "hover:bg-muted/50 hover:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          )}
+        >
+          <ToneIcon className={cn("h-3.5 w-3.5 shrink-0", TONE_ICON_CLASS[tone])} aria-hidden />
+          <span className="truncate font-medium">{title}</span>
+          {detail ? <span className="hidden truncate sm:inline">· {detail}</span> : null}
+          {relative ? <span className="shrink-0 text-muted-foreground/70">· {relative}</span> : null}
+          <ChevronDown
+            className={cn("tc-notice-chevron h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")}
+            aria-hidden
+          />
+        </button>
+        {action}
+      </div>
       {open ? (
         <div
           id={detailsId}

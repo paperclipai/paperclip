@@ -65,6 +65,17 @@ function toMs(value: Date | string | null | undefined): number {
 const SETTLING_TAIL_MAX_MS = 15_000;
 const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 
+function systemNoticeReferencesRecoveryAction(item: TaskChatMessageItem, actionId: string): boolean {
+  if (item.author !== "system") return false;
+  return item.metadata?.sections.some((section) =>
+    section.rows.some((row) =>
+      row.type === "key_value" &&
+      row.label.trim().toLowerCase() === "recovery action" &&
+      row.value === actionId,
+    ),
+  ) ?? false;
+}
+
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
 /**
@@ -90,6 +101,8 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
+  const recoveryRetryInFlightRef = useRef(false);
+  const [recoveryRetryInFlight, setRecoveryRetryInFlight] = useState(false);
   const {
     comments,
     interactions,
@@ -136,6 +149,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     blockedBy = [],
     blockerAttention,
     liveIssueIds,
+    recoveryAction,
+    onResolveRecoveryAction,
+    recoveryActionPending,
   } = props;
 
   const liveWorkLinks = useMemo(
@@ -612,6 +628,57 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [interruptingQueuedRunId, onInterruptQueued],
   );
 
+  const handleRecoveryTryAgain = useCallback(() => {
+    if (!onResolveRecoveryAction || recoveryRetryInFlightRef.current) return;
+    recoveryRetryInFlightRef.current = true;
+    setRecoveryRetryInFlight(true);
+    void (async () => {
+      try {
+        await onResolveRecoveryAction("todo");
+      } catch {
+        // The mutation owns user-visible error reporting.
+      } finally {
+        recoveryRetryInFlightRef.current = false;
+        setRecoveryRetryInFlight(false);
+      }
+    })();
+  }, [onResolveRecoveryAction]);
+
+  const renderSystemNoticeAction = useCallback(
+    (item: TaskChatMessageItem) => {
+      if (
+        !recoveryAction ||
+        recoveryAction.kind !== "stranded_assigned_issue" ||
+        recoveryAction.status === "resolved" ||
+        recoveryAction.status === "cancelled" ||
+        !onResolveRecoveryAction ||
+        !systemNoticeReferencesRecoveryAction(item, recoveryAction.id)
+      ) {
+        return null;
+      }
+
+      return (
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          data-testid="task-chat-recovery-try-again"
+          disabled={recoveryActionPending || recoveryRetryInFlight}
+          onClick={handleRecoveryTryAgain}
+        >
+          Try again
+        </Button>
+      );
+    },
+    [
+      handleRecoveryTryAgain,
+      onResolveRecoveryAction,
+      recoveryAction,
+      recoveryActionPending,
+      recoveryRetryInFlight,
+    ],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -680,6 +747,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
+            renderSystemNoticeAction={renderSystemNoticeAction}
             renderQueuedAction={renderQueuedAction}
             tail={tailRunId || bottomBlockerLinks ? (
               <>

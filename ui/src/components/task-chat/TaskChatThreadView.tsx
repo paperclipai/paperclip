@@ -41,6 +41,8 @@ interface TaskChatThreadViewProps {
    * fixtures omit it and the bubbles render actionless.
    */
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
+  /** Renders an action beside a system notice's disclosure control. */
+  renderSystemNoticeAction?: (item: TaskChatMessageItem) => ReactNode;
   /** Renders an interrupt action beside a queued human message. */
   renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode;
   /** Content appended inside the transcript scroller after the settled thread. */
@@ -58,6 +60,7 @@ function renderItem(
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode,
   renderBrief?: () => ReactNode,
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode,
+  renderSystemNoticeAction?: (item: TaskChatMessageItem) => ReactNode,
   renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode,
 ) {
   switch (item.kind) {
@@ -72,6 +75,7 @@ function renderItem(
         <TaskChatBubble
           item={item}
           actions={actions}
+          systemNoticeAction={renderSystemNoticeAction?.(item)}
           queuedAction={renderQueuedAction?.(item)}
           attachedTurn={
             item.attachedTurn ? (
@@ -139,6 +143,7 @@ export function TaskChatThreadView({
   renderInteraction,
   renderBrief,
   renderMessageActions,
+  renderSystemNoticeAction,
   renderQueuedAction,
   tail,
   contentKey,
@@ -160,6 +165,7 @@ export function TaskChatThreadView({
             renderInteraction,
             renderBrief,
             renderMessageActions,
+            renderSystemNoticeAction,
             renderQueuedAction,
           )}
         </div>

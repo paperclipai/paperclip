@@ -116,6 +116,169 @@ describe("TaskChatThread draft pass-through", () => {
   });
 });
 
+describe("TaskChatThread recovery actions", () => {
+  const recoveryAction = {
+    id: "recovery-action-1",
+    companyId: "company-1",
+    sourceIssueId: "issue-1",
+    recoveryIssueId: null,
+    kind: "stranded_assigned_issue" as const,
+    status: "active" as const,
+    ownerType: "agent" as const,
+    ownerAgentId: "agent-2",
+    ownerUserId: null,
+    previousOwnerAgentId: "agent-1",
+    returnOwnerAgentId: "agent-1",
+    cause: "issue_continuation_needed",
+    fingerprint: "stranded-issue-1",
+    evidence: { sourceRunId: "run-1" },
+    nextAction: "Restore a live execution path.",
+    wakePolicy: null,
+    monitorPolicy: null,
+    attemptCount: 1,
+    maxAttempts: 3,
+    timeoutAt: null,
+    lastAttemptAt: null,
+    outcome: null,
+    resolutionNote: null,
+    resolvedAt: null,
+    createdAt: "2026-08-18T10:00:00.000Z",
+    updatedAt: "2026-08-18T10:00:00.000Z",
+  };
+
+  const recoveryComment = {
+    id: "comment-recovery",
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorType: "system" as const,
+    authorAgentId: null,
+    authorUserId: null,
+    body:
+      "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live execution disappeared, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+    presentation: {
+      kind: "system_notice" as const,
+      tone: "danger" as const,
+      title: "No live execution path",
+      detailsDefaultOpen: false,
+    },
+    metadata: {
+      version: 1 as const,
+      sourceRunId: "run-1",
+      sections: [{
+        title: "Recovery",
+        rows: [{ type: "key_value" as const, label: "Recovery action", value: recoveryAction.id }],
+      }],
+    },
+    createdAt: new Date("2026-08-18T10:00:00.000Z"),
+    updatedAt: new Date("2026-08-18T10:00:00.000Z"),
+  };
+
+  it("keeps Try again visible in folded and expanded recovery notices and resolves to todo", () => {
+    const onResolveRecoveryAction = vi.fn();
+    render(
+      <TaskChatThread
+        comments={[recoveryComment]}
+        onAdd={async () => {}}
+        issueId="issue-1"
+        issueStatus="blocked"
+        recoveryAction={recoveryAction}
+        onResolveRecoveryAction={onResolveRecoveryAction}
+      />,
+    );
+
+    const disclosure = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-system-notice"] button[aria-controls]',
+    )!;
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-recovery-try-again"]',
+    )!;
+
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(retry.textContent).toBe("Try again");
+
+    flushSync(() => disclosure.click());
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('[data-testid="task-chat-system-notice-details"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-recovery-try-again"]')).not.toBeNull();
+
+    flushSync(() => retry.click());
+    expect(onResolveRecoveryAction).toHaveBeenCalledTimes(1);
+    expect(onResolveRecoveryAction).toHaveBeenLastCalledWith("todo");
+  });
+
+  it("does not attach the active action to a stale recovery notice", () => {
+    render(
+      <TaskChatThread
+        comments={[{
+          ...recoveryComment,
+          metadata: {
+            ...recoveryComment.metadata,
+            sections: [{
+              title: "Recovery",
+              rows: [{ type: "key_value" as const, label: "Recovery action", value: "older-action" }],
+            }],
+          },
+        }]}
+        onAdd={async () => {}}
+        issueId="issue-1"
+        issueStatus="blocked"
+        recoveryAction={recoveryAction}
+        onResolveRecoveryAction={() => {}}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-recovery-try-again"]')).toBeNull();
+  });
+
+  it("disables Try again while recovery resolution is pending", () => {
+    const onResolveRecoveryAction = vi.fn();
+    render(
+      <TaskChatThread
+        comments={[recoveryComment]}
+        onAdd={async () => {}}
+        issueId="issue-1"
+        issueStatus="blocked"
+        recoveryAction={recoveryAction}
+        onResolveRecoveryAction={onResolveRecoveryAction}
+        recoveryActionPending
+      />,
+    );
+
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-recovery-try-again"]',
+    )!;
+    expect(retry.disabled).toBe(true);
+
+    flushSync(() => retry.click());
+    expect(onResolveRecoveryAction).not.toHaveBeenCalled();
+  });
+
+  it("submits only once across rapid clicks before pending state renders", () => {
+    const onResolveRecoveryAction = vi.fn(() => new Promise<void>(() => {}));
+    render(
+      <TaskChatThread
+        comments={[recoveryComment]}
+        onAdd={async () => {}}
+        issueId="issue-1"
+        issueStatus="blocked"
+        recoveryAction={recoveryAction}
+        onResolveRecoveryAction={onResolveRecoveryAction}
+      />,
+    );
+
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-recovery-try-again"]',
+    )!;
+    flushSync(() => {
+      retry.click();
+      retry.click();
+    });
+
+    expect(onResolveRecoveryAction).toHaveBeenCalledTimes(1);
+    expect(retry.disabled).toBe(true);
+  });
+});
+
 describe("TaskChatThread composer alignment (PAP-498)", () => {
   it("matches the thread width on mobile and stays narrower on larger screens", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} />);

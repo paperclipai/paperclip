@@ -20,6 +20,8 @@ import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
+  /** Action rendered beside a system notice's disclosure control. */
+  systemNoticeAction?: ReactNode;
   /** Action shown beside the queued state for an interruptible message. */
   queuedAction?: ReactNode;
   /**
@@ -63,7 +65,13 @@ function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
   };
 }
 
-export function TaskChatBubble({ item, queuedAction, attachedTurn, actions }: TaskChatBubbleProps) {
+export function TaskChatBubble({
+  item,
+  queuedAction,
+  attachedTurn,
+  actions,
+  systemNoticeAction,
+}: TaskChatBubbleProps) {
   // Clicking an embedded image opens the full-screen lightbox (with download);
   // arrow keys walk across the other images in the same bubble.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -77,7 +85,7 @@ export function TaskChatBubble({ item, queuedAction, attachedTurn, actions }: Ta
 
   if (item.author === "system") {
     // Collapsed humanized one-liner, expandable to the full detail (PAP-443).
-    return <TaskChatSystemNotice item={item} />;
+    return <TaskChatSystemNotice item={item} action={systemNoticeAction} />;
   }
 
   const isHuman = item.author === "human";
