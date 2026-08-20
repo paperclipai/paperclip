@@ -420,6 +420,11 @@ describe("claude_local ACP lane", () => {
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     setNodeVersion("v24.11.0");
 
+    // The ACP lane now verifies auth: without a credential the lane runs a real
+    // host login probe, so its status depends on the host login state. Give the
+    // config a Bedrock credential to make the auth path deterministic. Bedrock
+    // gates off the host login probe, so the result reflects only the ACP
+    // prerequisites, and a valid credential lets the lane report a pass.
     const result = await testClaudeAcpEnvironment({
       adapterType: "claude_local",
       companyId: "company-1",
@@ -427,6 +432,7 @@ describe("claude_local ACP lane", () => {
         engine: "acp",
         cwd: root,
         agentCommand: commandPath,
+        env: { CLAUDE_CODE_USE_BEDROCK: "1" },
       },
     });
 
@@ -440,6 +446,12 @@ describe("claude_local ACP lane", () => {
     expect(result.checks).toContainEqual(
       expect.objectContaining({
         code: "claude_acp_command_resolvable",
+        level: "info",
+      }),
+    );
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "claude_acp_bedrock_auth",
         level: "info",
       }),
     );

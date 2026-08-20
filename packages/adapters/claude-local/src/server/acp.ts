@@ -799,15 +799,20 @@ export async function testClaudeAcpEnvironment(
 
   // Run a real hello probe for every target when subscription auth is the only
   // credential source left after the branches above rule out Bedrock and an
-  // API key. The CLI lane already probes every target; the ACP lane now matches
-  // it, so a local or SSH target no longer reports a pass without a credential
-  // check. Prepare the sandbox the same way the CLI lane does — install the
-  // Claude CLI when it is absent and materialize the managed CLAUDE_CONFIG_DIR.
-  // The preparation is a no-op for a local or SSH target. The probe returns the
-  // canonical adapter_auth_missing signal only for a sandbox target, and a
-  // distinct warn check when the probe cannot run. The user interface reads the
-  // canonical signal to offer login on the sandbox ACP path.
-  if (!hasBedrock && !isNonEmpty(configApiKey)) {
+  // API key. A local target inherits the host environment, so a host
+  // ANTHROPIC_API_KEY counts the same as a config API key here: the real ACP
+  // run authenticates with the host key, so the login probe must not report a
+  // false auth-required. The API-key branch above already emits a warn, so the
+  // skip never turns a missing credential into a pass. The CLI lane already
+  // probes every target; the ACP lane now matches it, so a local or SSH target
+  // no longer reports a pass without a credential check. Prepare the sandbox the
+  // same way the CLI lane does — install the Claude CLI when it is absent and
+  // materialize the managed CLAUDE_CONFIG_DIR. The preparation is a no-op for a
+  // local or SSH target. The probe returns the canonical adapter_auth_missing
+  // signal only for a sandbox target, and a distinct warn check when the probe
+  // cannot run. The user interface reads the canonical signal to offer login on
+  // the sandbox ACP path.
+  if (!hasBedrock && !isNonEmpty(configApiKey) && !isNonEmpty(hostApiKey)) {
     const probeEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(envConfig)) {
       if (typeof value === "string") probeEnv[key] = value;

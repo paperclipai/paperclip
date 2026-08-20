@@ -502,4 +502,31 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(spawnedEnv.HTTPS_PROXY).toBe("http://trusted-proxy:8443");
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
   });
+
+  it("skips the host login probe on a local target when the host provides ANTHROPIC_API_KEY", async () => {
+    // A local ACP run inherits the host environment, so a host ANTHROPIC_API_KEY
+    // authenticates the real run. The Test lane must not run the subscription
+    // login probe for that config, because the probe would report a false
+    // auth-required when no stored login exists. The lane reports the API-key
+    // check instead.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-host-key";
+
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "acp" },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    // The login probe never runs, so no false auth-required and no
+    // probe-unavailable check reaches the result.
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
+    // The lane still reports that API-key auth is in use.
+    expect(result.checks.some((check) => check.code === "claude_acp_anthropic_api_key_detected")).toBe(true);
+    // The host key value never enters a check.
+    expect(JSON.stringify(result.checks)).not.toContain("sk-ant-host-key");
+  });
 });
