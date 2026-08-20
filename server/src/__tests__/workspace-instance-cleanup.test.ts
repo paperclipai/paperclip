@@ -114,7 +114,7 @@ describe("worktree instance cleanup", () => {
     await expect(fs.stat(instanceRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("falls back to deterministic instance ownership when persisted root metadata is absent", async () => {
+  it("preserves a collision-resistant active instance when persisted ownership is absent", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
     const instanceId = deriveWorktreeInstanceId(workspacePath);
@@ -133,8 +133,9 @@ describe("worktree instance cleanup", () => {
       worktreesDir,
     });
 
-    expect(result).toMatchObject({ status: "removed", instanceRoot });
-    await expect(fs.stat(instanceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result).toMatchObject({ status: "refused", instanceRoot });
+    expect((result as { warning: string }).warning).toContain("no persisted instance root");
+    await expect(fs.readFile(path.join(instanceRoot, "marker"), "utf8")).resolves.toBe("remove me");
   });
 
   it("refuses and logs an instance pointer outside the managed worktree root", async () => {

@@ -163,6 +163,9 @@ Mimic this register; do not invent a "professional" tone.
 - **"WHATS NEXT" is forward-looking themes**, not a literal sprint list. 3–5
   bullets is the right size. Pull these from active goals, in-flight projects,
   and recent issues the team is working on — do not invent themes.
+- **Highlights follow the changelog skill's delta rule**: a feature the
+  previous announcement already introduced appears only for what changed
+  this release, and does not headline twice for follow-through work.
 - **"What's on my mind"** is dotta's personal/strategic thinking — docs gaps,
   philosophical positioning ("we're the human control plane for ai labor"),
   invitations ("if you've ever wanted to write about how you use Paperclip,

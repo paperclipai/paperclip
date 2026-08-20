@@ -104,6 +104,10 @@ import type {
   PluginSetupTokenPtyInputParams,
   PluginSetupTokenPtyStopParams,
   PluginSetupTokenPtyCloseParams,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -111,6 +115,8 @@ import type {
 import {
   SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
   SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
@@ -1396,6 +1402,30 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      duplexChannel: {
+        data(workerSessionId: string, chunk: string): void {
+          // Forward one raw data chunk of a persistent duplex channel. The
+          // notification carries the worker session identifier, so the host binds
+          // the chunk to the open route by that identifier while the route is
+          // open. The host drops an unknown or a mismatched identifier and never
+          // logs the raw bytes. This notification carries no invocation id,
+          // because it fires after the open reply returns.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, { workerSessionId, chunk });
+        },
+        exit(workerSessionId: string, exitCode: number | null): void {
+          // Forward the child exit of a persistent duplex channel. The host
+          // resolves the open route's wait promise by the worker session
+          // identifier while the route is open.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(DUPLEX_CHANNEL_EXIT_NOTIFICATION, {
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+          });
+        },
+      },
+
       tools: {
         register(
           name: string,
@@ -1624,6 +1654,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "setupTokenPtyClose":
         return handleSetupTokenPtyClose(params as PluginSetupTokenPtyCloseParams);
 
+      case "duplexChannelOpen":
+        return handleDuplexChannelOpen(params as PluginDuplexChannelOpenParams);
+
+      case "duplexChannelWrite":
+        return handleDuplexChannelWrite(params as PluginDuplexChannelWriteParams);
+
+      case "duplexChannelStop":
+        return handleDuplexChannelStop(params as PluginDuplexChannelStopParams);
+
+      case "duplexChannelClose":
+        return handleDuplexChannelClose(params as PluginDuplexChannelCloseParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1679,6 +1721,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onSetupTokenPtyInput) supportedMethods.push("setupTokenPtyInput");
     if (plugin.definition.onSetupTokenPtyStop) supportedMethods.push("setupTokenPtyStop");
     if (plugin.definition.onSetupTokenPtyClose) supportedMethods.push("setupTokenPtyClose");
+    if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
+    if (plugin.definition.onDuplexChannelWrite) supportedMethods.push("duplexChannelWrite");
+    if (plugin.definition.onDuplexChannelStop) supportedMethods.push("duplexChannelStop");
+    if (plugin.definition.onDuplexChannelClose) supportedMethods.push("duplexChannelClose");
 
     return { ok: true, supportedMethods };
   }
@@ -2053,6 +2099,34 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("setupTokenPtyClose");
     }
     return plugin.definition.onSetupTokenPtyClose(params);
+  }
+
+  async function handleDuplexChannelOpen(params: PluginDuplexChannelOpenParams) {
+    if (!plugin.definition.onDuplexChannelOpen) {
+      throw methodNotImplemented("duplexChannelOpen");
+    }
+    return plugin.definition.onDuplexChannelOpen(params);
+  }
+
+  async function handleDuplexChannelWrite(params: PluginDuplexChannelWriteParams) {
+    if (!plugin.definition.onDuplexChannelWrite) {
+      throw methodNotImplemented("duplexChannelWrite");
+    }
+    return plugin.definition.onDuplexChannelWrite(params);
+  }
+
+  async function handleDuplexChannelStop(params: PluginDuplexChannelStopParams) {
+    if (!plugin.definition.onDuplexChannelStop) {
+      throw methodNotImplemented("duplexChannelStop");
+    }
+    return plugin.definition.onDuplexChannelStop(params);
+  }
+
+  async function handleDuplexChannelClose(params: PluginDuplexChannelCloseParams) {
+    if (!plugin.definition.onDuplexChannelClose) {
+      throw methodNotImplemented("duplexChannelClose");
+    }
+    return plugin.definition.onDuplexChannelClose(params);
   }
 
   // -----------------------------------------------------------------------

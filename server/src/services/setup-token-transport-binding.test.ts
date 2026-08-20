@@ -30,7 +30,6 @@ import {
 const SCOPE: SetupTokenSessionScope = {
   companyId: "company-1",
   ownerUserId: "user-1",
-  targetAgentId: null,
   adapterType: "claude_local",
   environmentId: "env-1",
 };

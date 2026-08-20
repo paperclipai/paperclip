@@ -10,14 +10,13 @@ const items = [
   { value: "members", label: "Members", href: "/company/settings/members" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
-  { value: "instance-profile", label: "Instance profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
-  { value: "instance-general", label: "Instance general", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/general` },
-  { value: "instance-environments", label: "Instance environments", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
-  { value: "instance-access", label: "Instance access", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
-  { value: "instance-heartbeats", label: "Instance heartbeats", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats` },
-  { value: "instance-experimental", label: "Instance experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
-  { value: "instance-plugins", label: "Instance plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
-  { value: "instance-adapters", label: "Instance adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
+  { value: "instance-profile", label: "Profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
+  { value: "instance-environments", label: "Environments", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
+  { value: "instance-access", label: "Access", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
+  { value: "instance-heartbeats", label: "Heartbeats", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats` },
+  { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
+  { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
+  { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -27,12 +26,12 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "instance-profile";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/access`)) {
-    return "instance-access";
-  }
-
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`)) {
     return "instance-environments";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/access`)) {
+    return "instance-access";
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`)) {
@@ -52,7 +51,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/general`)) {
-    return "instance-general";
+    return "general";
   }
 
   if (pathname.includes("/company/settings/environments")) {

@@ -2218,6 +2218,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
+      const { refreshPersistedRuntimeServiceHealth } = await import("./workspace-runtime.js");
+      await refreshPersistedRuntimeServiceHealth({
+        db,
+        companyId: row.companyId,
+        executionWorkspaceId: row.id,
+        projectWorkspaceId: row.projectWorkspaceId,
+      });
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
       return hydrateWorkspace(
         row,
