@@ -3336,10 +3336,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     let blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const executionState = input.issue.status === "in_review"
+      ? parseIssueExecutionState(input.issue.executionState)
+      : null;
+    const stageParticipantAgentId = executionState?.status === "pending" &&
+        executionState.currentParticipant?.type === "agent"
+      ? executionState.currentParticipant.agentId
+      : null;
     const preservesSourceAssignee =
       Boolean(recoveryAction.ownerAgentId) &&
       Boolean(input.issue.assigneeAgentId) &&
-      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
+      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId &&
+      recoveryAction.ownerAgentId !== stageParticipantAgentId;
     const takeoverRecoveryIssue = preservesSourceAssignee
       ? await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
