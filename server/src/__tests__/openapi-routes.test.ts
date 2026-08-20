@@ -209,6 +209,19 @@ describe("openapi routes", () => {
         name: { type: "string" },
       },
     });
+    expect(
+      res.body.paths["/api/routines/{id}"].patch.requestBody.content["application/json"].schema,
+    ).toMatchObject({
+      type: "object",
+      properties: {
+        assigneeAdapterOverrides: {
+          type: "object",
+          properties: {
+            modelProfile: { type: "string", enum: ["cheap"] },
+          },
+        },
+      },
+    });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
     expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,

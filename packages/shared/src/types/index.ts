@@ -804,6 +804,7 @@ export type {
 } from "./secrets.js";
 export type {
   Routine,
+  RoutineAssigneeAdapterOverrides,
   RoutineEnvConfig,
   RoutineManagedByPlugin,
   RoutineDescriptionDocument,

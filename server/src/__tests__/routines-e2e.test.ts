@@ -260,17 +260,21 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(createRes.body.activityGateScope).toBe("project");
 
     const routineId = createRes.body.id as string;
+    const initialRevisionId = createRes.body.latestRevisionId as string;
 
     const updateRes = await request(app)
       .patch(`/api/routines/${routineId}`)
       .send({
         activityGatePolicy: "always",
         activityGateScope: "company",
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
       });
 
     expect(updateRes.status).toBe(200);
     expect(updateRes.body.activityGatePolicy).toBe("always");
     expect(updateRes.body.activityGateScope).toBe("company");
+    expect(updateRes.body.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
+    expect(updateRes.body.latestRevisionId).not.toBe(initialRevisionId);
 
     const triggerRes = await request(app)
       .post(`/api/routines/${routineId}/triggers`)
@@ -311,6 +315,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(detailRes.status).toBe(200);
     expect(detailRes.body.activityGatePolicy).toBe("always");
     expect(detailRes.body.activityGateScope).toBe("company");
+    expect(detailRes.body.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
     expect(detailRes.body.triggers).toHaveLength(1);
     expect(detailRes.body.triggers[0]?.id).toBe(createdTrigger.id);
     expect(detailRes.body.recentRuns).toHaveLength(1);
@@ -331,6 +336,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         originId: issues.originId,
         originKind: issues.originKind,
         executionRunId: issues.executionRunId,
+        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
       })
       .from(issues)
       .where(eq(issues.id, runRes.body.linkedIssueId));
@@ -339,6 +345,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       id: runRes.body.linkedIssueId,
       originId: routineId,
       originKind: "routine_execution",
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
     });
     expect(issue?.executionRunId).toBeTruthy();
 

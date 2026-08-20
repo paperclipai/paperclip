@@ -1376,6 +1376,7 @@ export type {
   CreateToolTrustRuleFromActionRequest,
   RevokeToolTrustRule,
   Routine,
+  RoutineAssigneeAdapterOverrides,
   RoutineEnvConfig,
   RoutineManagedByPlugin,
   RoutineDescriptionDocument,

@@ -553,6 +553,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     title: routine.title,
     description: routine.description,
     assigneeAgentId: routine.assigneeAgentId,
+    assigneeAdapterOverrides: routine.assigneeAdapterOverrides ?? null,
     priority: routine.priority as RoutineRevisionSnapshotV1["routine"]["priority"],
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
@@ -1885,6 +1886,9 @@ export function routineService(
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId,
+            assigneeAdapterOverrides: input.routine.assigneeAdapterOverrides
+              ? { ...input.routine.assigneeAdapterOverrides }
+              : null,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
             responsibleUserId,
@@ -2199,6 +2203,7 @@ export function routineService(
             title: input.title,
             description: input.description ?? null,
             assigneeAgentId: input.assigneeAgentId ?? null,
+            assigneeAdapterOverrides: input.assigneeAdapterOverrides ?? null,
             priority: input.priority,
             status,
             concurrencyPolicy: input.concurrencyPolicy,
@@ -2314,6 +2319,9 @@ export function routineService(
           title: nextTitle,
           description: nextDescription,
           assigneeAgentId: nextAssigneeAgentId,
+          assigneeAdapterOverrides: patch.assigneeAdapterOverrides === undefined
+            ? locked.assigneeAdapterOverrides
+            : patch.assigneeAdapterOverrides,
           priority: patch.priority ?? locked.priority,
           status: nextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
@@ -2379,6 +2387,7 @@ export function routineService(
             title: candidate.title,
             description: candidate.description,
             assigneeAgentId: candidate.assigneeAgentId,
+            assigneeAdapterOverrides: candidate.assigneeAdapterOverrides,
             priority: candidate.priority,
             status: candidate.status,
             concurrencyPolicy: candidate.concurrencyPolicy,
@@ -2717,6 +2726,7 @@ export function routineService(
             title: routineSnapshot.title,
             description: routineSnapshot.description,
             assigneeAgentId: routineSnapshot.assigneeAgentId,
+            assigneeAdapterOverrides: routineSnapshot.assigneeAdapterOverrides,
             priority: routineSnapshot.priority,
             status: routineSnapshot.status,
             concurrencyPolicy: routineSnapshot.concurrencyPolicy,

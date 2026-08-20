@@ -1242,6 +1242,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             description: declaration.description ?? null,
             responsibleUserId: null,
             assigneeAgentId,
+            assigneeAdapterOverrides: null,
             priority: declaration.priority ?? "medium",
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
             concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",

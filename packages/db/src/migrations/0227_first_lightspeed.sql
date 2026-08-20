@@ -1,0 +1,1 @@
+ALTER TABLE "routines" ADD COLUMN "assignee_adapter_overrides" jsonb;
