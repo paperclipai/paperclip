@@ -857,6 +857,42 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
+  it("creates routine and document revisions without run attribution when the actor runId is unknown", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    const unknownRunId = randomUUID();
+
+    const created = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "unknown run routine",
+        description: "Persist this without crashing",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      { agentId, runId: unknownRunId },
+    );
+
+    expect(created.latestRevisionId).toBeTruthy();
+    const [routineRevision] = await db
+      .select({ createdByRunId: routineRevisions.createdByRunId })
+      .from(routineRevisions)
+      .where(eq(routineRevisions.id, created.latestRevisionId!));
+    expect(routineRevision?.createdByRunId).toBeNull();
+
+    const [documentRevision] = await db
+      .select({ createdByRunId: documentRevisions.createdByRunId })
+      .from(documentRevisions)
+      .innerJoin(routineDocuments, eq(routineDocuments.documentId, documentRevisions.documentId))
+      .where(eq(routineDocuments.routineId, created.id));
+    expect(documentRevision?.createdByRunId).toBeNull();
+  });
+
   it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
     const { agentId, companyId, projectId, svc } = await seedFixture();
     const secrets = secretService(db);
