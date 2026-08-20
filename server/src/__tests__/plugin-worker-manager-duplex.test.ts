@@ -512,6 +512,57 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("ends the route when batched pre-bind frames pass the frame count bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 2 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the three data frames with the open reply, so all
+          // three frames arrive before the route binds. No listener attaches, so
+          // the replay buffers them. The third frame passes the frame-count bound
+          // and the route ends. The pre-open hold must not drop the third frame
+          // before the buffered bound can end the route.
+          batchWithOpenReply: true,
+          data: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a batched pre-bind chunk that a later listener drains before the byte cap ends the route", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the two data frames with the open reply, so both
+          // frames arrive before the route binds and before a listener attaches.
+          // "€" is three bytes in UTF-8. The first chunk (3 bytes ≤ 4) buffers.
+          // The second chunk brings the total to 6 bytes (> 4), so the route ends.
+          // The route end must not discard the buffered first chunk. The listener
+          // attaches after the open resolves and drains the first chunk.
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["€"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Authoritative closure and worker retirement.
   // -------------------------------------------------------------------------

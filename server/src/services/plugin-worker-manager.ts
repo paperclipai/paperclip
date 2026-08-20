@@ -176,6 +176,23 @@ const MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS = 8 * 1024 * 1024;
  */
 const MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES = 10_000;
 /**
+ * The maximum number of data or exit frames the host holds for one duplex
+ * channel route before the route binds. A worker can batch frames with the open
+ * reply, so the host reads them before it knows the bound worker session id and
+ * before it can apply the per-frame bounds. The host holds these frames and
+ * replays them after the bind. This ceiling bounds the hold, so a worker that
+ * floods frames before it replies to the open cannot make the host hold an
+ * unbounded number of frames.
+ *
+ * This ceiling is separate from the pre-bind buffered-frame bound. The buffered
+ * bound governs how many valid frames the host keeps for a listener that has not
+ * attached yet, and a caller can lower it. The replay after the bind applies
+ * that buffered bound to each held frame. So this hold ceiling must stay above
+ * the buffered bound, or it would drop a frame before the buffered bound can end
+ * the route.
+ */
+const MAX_DUPLEX_CHANNEL_PRE_OPEN_HOLD_FRAMES = 10_000;
+/**
  * The default maximum number of in-flight host→worker requests for one duplex
  * channel route. A worker that never replies cannot make the host hold an
  * unbounded number of pending requests.
@@ -1536,8 +1553,12 @@ export function createPluginWorkerHandle(
     route.terminalized = true;
     route.state = "closed";
     route.listener = null;
-    route.buffered = [];
-    route.bufferedChars = 0;
+    // Keep the buffered chunks that the host accepted before the route ended, so
+    // a listener that attaches after the end still drains them. A frame can end
+    // the route during the pre-open replay, before a listener attaches, and the
+    // buffered chunks the host accepted before that frame are valid data the
+    // listener must still receive. The buffered bytes stay bounded by the
+    // pre-bind buffered bound, and `onData` clears them once it drains them.
     route.preOpen = [];
     clearDuplexChannelLifetimeTimer(route);
     // A terminalized route reports a null exit code, which the caller treats as a
@@ -1568,14 +1589,20 @@ export function createPluginWorkerHandle(
 
   // Hold one data or exit notification that arrives before the route binds. The
   // host replays the held frames in order after it binds the route. Bound the
-  // hold by the pre-bind frame count, so a worker that floods frames before it
+  // hold by a separate pre-open ceiling, so a worker that floods frames before it
   // replies to the open cannot make the host hold an unbounded number of frames.
-  // Count one protocol error for each frame past the bound.
+  // Count one protocol error for each frame past the ceiling.
+  //
+  // This ceiling is separate from the pre-bind buffered-frame bound. The replay
+  // after the bind applies the buffered bound to each held frame, so the buffered
+  // bound ends the route when a caller lowers it. The hold ceiling must stay
+  // above the buffered bound, or it would drop a frame before the buffered bound
+  // can end the route.
   function bufferPreOpenDuplexChannelNotification(
     route: DuplexChannelRoute,
     notification: JsonRpcNotification,
   ): void {
-    if (route.preOpen.length >= maxDuplexChannelPreBindFrames) {
+    if (route.preOpen.length >= MAX_DUPLEX_CHANNEL_PRE_OPEN_HOLD_FRAMES) {
       recordDuplexChannelProtocolError(route);
       return;
     }
