@@ -770,8 +770,8 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "approval_approved",
 ]);
 // `activeRunExecutions` and the local-child-process capability now live in
-// services/run-liveness.js, so the recovery backstop reads the same registry
-// this module writes instead of seeing only `runningProcesses`.
+// services/run-execution-registry.js, so the recovery backstop reads the same
+// registry this module writes instead of seeing only `runningProcesses`.
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
