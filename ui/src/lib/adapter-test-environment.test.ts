@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { Environment } from "@paperclipai/shared";
 
 import {
+  ManagedSandboxUnavailableForTestError,
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
 } from "./adapter-test-environment";
 
 function makeEnvironment(overrides: Partial<Environment>): Environment {
@@ -82,6 +84,109 @@ describe("resolveAdapterTestEnvironmentId", () => {
         localDefaultEnvironmentId: null,
       }),
     ).toBeNull();
+  });
+
+  it("redirects a local-default resolution to the managed sandbox under managed-sandbox-only", () => {
+    // The real run redirects a local resolution to the managed sandbox, so the
+    // Test must probe the managed sandbox, not the local default.
+    expect(
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toBe("managed-env");
+  });
+
+  it("redirects a no-tier resolution to the managed sandbox under managed-sandbox-only", () => {
+    // The policy hides the local tier, so the list holds no local row and the
+    // resolution lands on no tier. The real run still resolves to local and
+    // redirects to the managed sandbox, so the Test does the same.
+    expect(
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: null,
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toBe("managed-env");
+  });
+
+  it("fails closed when managed-sandbox-only is on but no managed sandbox exists", () => {
+    // The real run fails closed, so the Test must not fall back to a local host
+    // probe that reports a result for a target the run never uses.
+    expect(() =>
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: null,
+      }),
+    ).toThrow(ManagedSandboxUnavailableForTestError);
+  });
+
+  it("leaves a non-local default untouched under managed-sandbox-only", () => {
+    // The policy hides local; it does not forbid an ssh or a user sandbox that
+    // an agent or instance default names, so the Test probes that environment.
+    expect(
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: "ssh-env",
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toBe("ssh-env");
+  });
+
+  it("ignores the managed-sandbox redirect when the policy is off", () => {
+    expect(
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: false,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toBe("local-env");
+  });
+});
+
+describe("resolveManagedSandboxEnvironmentId", () => {
+  it("finds the non-local platform-managed environment", () => {
+    const environments = [
+      makeEnvironment({
+        id: "local-1",
+        driver: "local",
+        metadata: { managedByPaperclip: true, defaultForInstance: true },
+      }),
+      makeEnvironment({
+        id: "sandbox-1",
+        driver: "sandbox",
+        metadata: { managedByPaperclip: true },
+      }),
+    ];
+    // The local-default row also carries the managed stamp, so the resolver must
+    // exclude the local driver and return the sandbox row.
+    expect(resolveManagedSandboxEnvironmentId(environments)).toBe("sandbox-1");
+  });
+
+  it("returns null when no managed sandbox environment exists", () => {
+    const environments = [
+      makeEnvironment({ id: "sandbox-1", driver: "sandbox", metadata: null }),
+      makeEnvironment({
+        id: "local-1",
+        driver: "local",
+        metadata: { managedByPaperclip: true, defaultForInstance: true },
+      }),
+    ];
+    expect(resolveManagedSandboxEnvironmentId(environments)).toBeNull();
+    expect(resolveManagedSandboxEnvironmentId([])).toBeNull();
+    expect(resolveManagedSandboxEnvironmentId(null)).toBeNull();
   });
 });
 

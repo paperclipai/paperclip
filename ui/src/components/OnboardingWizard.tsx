@@ -20,6 +20,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
 } from "../lib/adapter-test-environment";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
@@ -991,8 +992,9 @@ function OnboardingWizardInner({
       // probe, which would report a false result.
       let environmentList: Environment[];
       let settings: InstanceSettings;
+      let managedSandboxOnly: boolean;
       try {
-        [environmentList, settings] = await Promise.all([
+        const [list, generalSettings, experimentalSettings] = await Promise.all([
           queryClient.ensureQueryData({
             queryKey: queryKeys.environments.list(createdCompanyId),
             queryFn: () => environmentsApi.list(createdCompanyId),
@@ -1001,17 +1003,31 @@ function OnboardingWizardInner({
             queryKey: queryKeys.instance.settings,
             queryFn: () => instanceSettingsApi.get(),
           }),
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.experimentalSettings,
+            queryFn: () => instanceSettingsApi.getExperimental(),
+          }),
         ]);
+        environmentList = list;
+        settings = generalSettings;
+        managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
       } catch {
         setAdapterEnvError(
           "Could not load environment settings to determine which environment to test in. Retry the test.",
         );
         return null;
       }
+      // Mirror the server run-time resolution, including the managed-sandbox-only
+      // redirect: when the resolution lands on the local environment and the
+      // policy is on, probe the managed sandbox the real run uses instead. The
+      // resolver throws when no managed sandbox is available, which the outer
+      // catch surfaces as a fail-closed error rather than a local host probe.
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
       });
       const result = await agentsApi.testEnvironment(
         createdCompanyId,
@@ -2079,8 +2095,11 @@ function OnboardingWizardInner({
                       {adapterEnvResult &&
                       adapterEnvResult.status === "pass" ? (
                         <div className="space-y-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
-                          <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300">
-                            <Check className="h-3.5 w-3.5 shrink-0" />
+                          {/* Match the tokenized status box below: the shared
+                              text-size token, the same padding, and the success
+                              green shades the result box uses for a pass. */}
+                          <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-2.5 py-2 text-(length:--text-micro) text-green-700 dark:text-green-300">
+                            <Check className="size-3.5 shrink-0" />
                             <span className="font-medium">Passed</span>
                           </div>
                           {/* Show the checks on a pass too, so the target and the
