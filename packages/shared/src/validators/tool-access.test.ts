@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  connectToolAppSchema,
   connectionTokenRequestSchema,
   createToolConnectionSchema,
   startConnectionAuthorizationSchema,
@@ -64,6 +65,19 @@ describe("tool access validators", () => {
     });
 
     expect(parsed.success).toBe(true);
+  });
+
+  it("accepts a stable connection id when saving an edited app draft", () => {
+    const connectionId = "33333333-3333-4333-8333-333333333333";
+    expect(connectToolAppSchema.parse({
+      link: "https://mcp.example.test/project/edited",
+      name: "Edited project",
+      connectionId,
+    })).toMatchObject({ connectionId });
+    expect(connectToolAppSchema.safeParse({
+      link: "https://mcp.example.test/project/edited",
+      connectionId: "not-a-uuid",
+    }).success).toBe(false);
   });
 
   it("keeps invocation payload summaries redacted and bounded", () => {

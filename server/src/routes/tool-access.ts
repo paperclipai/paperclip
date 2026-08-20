@@ -257,13 +257,7 @@ export function toolAccessRoutes(
     assertToolAppMutationAccess(req, companyId);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
-      if (result.auth?.kind === "oauth") {
-        const start = await svc.startOAuth(companyId, result.connectionId, {
-          redirectUri: oauthRedirectUri(),
-          actor: getActorInfo(req),
-        });
-        result.auth.startUrl = start.authorizationUrl;
-      }
+      const operation = req.body.connectionId ? "updated" : "created";
       await logActivity(db, {
         companyId,
         actorType: "user",
@@ -275,12 +269,13 @@ export function toolAccessRoutes(
           galleryKey: req.body.galleryKey ?? null,
           link: req.body.link ?? null,
           applicationId: result.application.id,
+          operation,
           catalogEntryCount: result.catalog.length,
           readOnlyActionCount: result.actions.readOnly.length,
           canMakeChangesActionCount: result.actions.canMakeChanges.length,
         },
       });
-      res.status(201).json(result);
+      res.status(operation === "updated" ? 200 : 201).json(result);
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }

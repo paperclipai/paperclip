@@ -3076,7 +3076,12 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialSecretRefs: [],
       config: expect.objectContaining({ sourceTemplateKey: "slack" }),
     });
-    const startUrl = new URL(connectRes.body.auth.startUrl);
+    expect(connectRes.body.auth).toEqual({ kind: "oauth", startUrl: null });
+    const startRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .send({})
+      .expect(200);
+    const startUrl = new URL(startRes.body.authorizationUrl);
     expect(`${startUrl.origin}${startUrl.pathname}`).toBe("https://slack.com/oauth/v2/authorize");
     expect(startUrl.searchParams.get("client_id")).toBe("slack-client-id");
     expect(startUrl.searchParams.get("code_challenge_method")).toBe("S256");
@@ -3158,7 +3163,12 @@ describeEmbeddedPostgres("tool access service", () => {
       .post(`/api/companies/${company.id}/tools/apps/connect`)
       .send({ galleryKey: "slack", name: "Slack redirect" })
       .expect(201);
-    const redirectState = new URL(redirectConnectRes.body.auth.startUrl).searchParams.get("state");
+    expect(redirectConnectRes.body.auth).toEqual({ kind: "oauth", startUrl: null });
+    const redirectStartRes = await request(app)
+      .post(`/api/tools/oauth/${redirectConnectRes.body.connectionId}/start`)
+      .send({})
+      .expect(200);
+    const redirectState = new URL(redirectStartRes.body.authorizationUrl).searchParams.get("state");
     expect(redirectState).toBeTruthy();
     const redirectCallbackRes = await request(app)
       .get("/api/tools/oauth/callback")
@@ -4538,6 +4548,242 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(clearedRes.body.apps).toEqual([]);
   });
 
+  it("persists an OAuth draft before startup and updates that draft in place", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+
+    const first = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion", name: "PostHog project" })
+      .expect(201);
+
+    expect(first.body.auth).toEqual({ kind: "oauth", startUrl: null });
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("provider unavailable"));
+    const start = await request(app)
+      .post(`/api/tools/oauth/${first.body.connectionId}/start`)
+      .send({});
+    expect(start.status).toBeGreaterThanOrEqual(400);
+
+    const second = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        galleryKey: "notion",
+        name: "PostHog production project",
+        connectionId: first.body.connectionId,
+      })
+      .expect(200);
+
+    expect(second.body.connectionId).toBe(first.body.connectionId);
+    expect(second.body.application.id).toBe(first.body.application.id);
+    expect(second.body.application.name).toBe("PostHog production project");
+    expect(second.body.connection.name).toBe("PostHog production project");
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(1);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, first.body.connectionId));
+    expect(activities.map((row) => row.details)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "created" }),
+      expect.objectContaining({ operation: "updated" }),
+    ]));
+
+    const collision = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "slack", name: "Reserved app name" })
+      .expect(201);
+    expect(collision.body.application.id).not.toBe(first.body.application.id);
+
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        galleryKey: "notion",
+        name: "Reserved app name",
+        connectionId: first.body.connectionId,
+      })
+      .expect(409);
+    const [unchanged] = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, first.body.application.id));
+    expect(unchanged.name).toBe("PostHog production project");
+  });
+
+  it("serializes concurrent updates to the same app connection draft", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const concurrentService = toolAccessService(db);
+    const initialFetch = mockToolsList([{ name: "read_project", annotations: { readOnlyHint: true } }]);
+    const draft = await service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/one",
+      name: "PostHog project",
+    }, { actorType: "user", actorId: "board" });
+    initialFetch.mockRestore();
+
+    let releaseHealthCheck!: (response: Response) => void;
+    const healthCheckGate = new Promise<Response>((resolve) => {
+      releaseHealthCheck = resolve;
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(() => healthCheckGate)
+      .mockResolvedValue(mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: [{ name: "read_project", annotations: { readOnlyHint: true } }] },
+      }));
+
+    const firstUpdate = service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/two",
+      name: "PostHog production",
+      connectionId: draft.connectionId,
+    }, { actorType: "user", actorId: "board" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    let concurrentSettled = false;
+    const concurrentUpdate = concurrentService.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/three",
+      name: "PostHog concurrent retry",
+      connectionId: draft.connectionId,
+    }, { actorType: "user", actorId: "board" }).finally(() => {
+      concurrentSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(concurrentSettled).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    releaseHealthCheck(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: { tools: [{ name: "read_project", annotations: { readOnlyHint: true } }] },
+    }));
+    const [updated, concurrent] = await Promise.all([firstUpdate, concurrentUpdate]);
+
+    expect(updated.connection).toMatchObject({
+      id: draft.connectionId,
+      name: "PostHog production",
+      config: {
+        url: "https://posthog.example.test/project/two",
+        quarantineNewEntries: true,
+      },
+    });
+    expect(concurrent.connection).toMatchObject({
+      id: draft.connectionId,
+      name: "PostHog concurrent retry",
+      config: {
+        url: "https://posthog.example.test/project/three",
+        quarantineNewEntries: true,
+      },
+    });
+  });
+
+  it("fails closed when a draft update crosses company, source, application, or status boundaries", async () => {
+    const company = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const service = toolAccessService(db);
+    const draft = await service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      name: "Guarded draft",
+    });
+
+    await expect(service.connectGalleryApp(otherCompany.id, {
+      galleryKey: "slack",
+      connectionId: draft.connectionId,
+    })).rejects.toMatchObject({ status: 404 });
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      connectionId: draft.connectionId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "tool_connection_draft_source_mismatch" },
+    });
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      applicationId: randomUUID(),
+      connectionId: draft.connectionId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "tool_connection_draft_application_mismatch" },
+    });
+
+    await db.update(toolConnections)
+      .set({ status: "active", enabled: true })
+      .where(eq(toolConnections.id, draft.connectionId));
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      connectionId: draft.connectionId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "tool_connection_draft_not_editable" },
+    });
+  });
+
+  it("replaces draft credentials after validation and restores the prior draft when validation fails", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = mockToolsList([{ name: "read_project", annotations: { readOnlyHint: true } }]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/one",
+      name: "PostHog project",
+      credentialValues: { "credentials.authorization": "old-secret" },
+    }, { actorType: "user", actorId: "board" });
+    const oldSecretId = first.connection.credentialSecretRefs[0]!.secretId;
+
+    const updated = await service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/two",
+      name: "PostHog production",
+      credentialValues: { "credentials.authorization": "new-secret" },
+      connectionId: first.connectionId,
+    }, { actorType: "user", actorId: "board" });
+    const retainedSecretId = updated.connection.credentialSecretRefs[0]!.secretId;
+
+    expect(updated.connectionId).toBe(first.connectionId);
+    expect(updated.application.id).toBe(first.application.id);
+    expect(updated.application.name).toBe("PostHog production");
+    expect(updated.connection.config.url).toBe("https://posthog.example.test/project/two");
+    expect(retainedSecretId).not.toBe(oldSecretId);
+    await expect(db.select().from(companySecrets)).resolves.toEqual([
+      expect.objectContaining({ id: retainedSecretId }),
+    ]);
+    const updatedBindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, first.connectionId));
+    expect(new Set(updatedBindings.map((binding) => binding.secretId))).toEqual(new Set([retainedSecretId]));
+
+    fetchMock.mockRejectedValue(new Error("validation unavailable"));
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/broken",
+      name: "Should roll back",
+      credentialValues: { "credentials.authorization": "do-not-keep" },
+      connectionId: first.connectionId,
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 502 });
+
+    const [applicationAfterRollback] = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, first.application.id));
+    const [connectionAfterRollback] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, first.connectionId));
+    expect(applicationAfterRollback.name).toBe("PostHog production");
+    expect(connectionAfterRollback).toMatchObject({
+      name: "PostHog production",
+      config: { url: "https://posthog.example.test/project/two", quarantineNewEntries: true },
+      credentialSecretRefs: [expect.objectContaining({ secretId: retainedSecretId })],
+    });
+    await expect(db.select().from(companySecrets)).resolves.toEqual([
+      expect.objectContaining({ id: retainedSecretId }),
+    ]);
+    const restoredBindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, first.connectionId));
+    expect(new Set(restoredBindings.map((binding) => binding.secretId))).toEqual(new Set([retainedSecretId]));
+  });
+
   it("rolls back app connect drafts when health check fails", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -4827,8 +5073,12 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({ link: "https://generic.example.test/mcp", name: "Generic OAuth MCP" });
 
     expect(connectRes.status).toBe(201);
-    expect(connectRes.body.auth).toMatchObject({ kind: "oauth" });
-    const startUrl = new URL(connectRes.body.auth.startUrl);
+    expect(connectRes.body.auth).toEqual({ kind: "oauth", startUrl: null });
+    const startRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .send({})
+      .expect(200);
+    const startUrl = new URL(startRes.body.authorizationUrl);
     expect(`${startUrl.origin}${startUrl.pathname}`).toBe("https://generic.example.test/oauth/authorize");
     expect(startUrl.searchParams.get("client_id")).toBe("generic-client-id");
     expect(startUrl.searchParams.get("scope")).toBe("tools.read tools.write");

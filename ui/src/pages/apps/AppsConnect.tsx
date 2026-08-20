@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   Check,
@@ -134,6 +134,7 @@ function reusableOAuthConnection(
 
 export function AppsConnect() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const routeParams = useParams<{ appKey?: string }>();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -278,6 +279,7 @@ export function AppsConnect() {
           credentialValues: credentials,
           configValues: isGoogleSheetsEntry(connectEntry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
           applicationId: prefill.applicationId,
+          ...(connectResult?.connectionId ? { connectionId: connectResult.connectionId } : {}),
         });
       }
       const trimmedKey = linkNeedsKey ? linkKey.trim() : "";
@@ -287,11 +289,17 @@ export function AppsConnect() {
         name: trimmedName || undefined,
         credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
         applicationId: prefill.applicationId,
+        ...(connectResult?.connectionId ? { connectionId: connectResult.connectionId } : {}),
       });
     },
     onSuccess: (result) => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) }),
+      ]);
       if (result.auth?.kind === "oauth") {
         setConnectResult(result);
+        setOAuthError(null);
         const startUrl = result.auth.startUrl?.trim();
         if (!startUrl) {
           setOAuthPhase("starting");
@@ -630,9 +638,14 @@ export function AppsConnect() {
           }}
           keyValue={linkKey}
           onKeyChange={setLinkKey}
-          submitting={connectMutation.isPending}
-          onBack={() => setStep("gallery")}
-          onConnect={() => connectMutation.mutate(undefined)}
+          submitting={connectMutation.isPending || oauthStartMutation.isPending}
+          oauthError={oauthPhase === "error" ? oauthError : null}
+          hasOAuthDraft={connectResult?.auth?.kind === "oauth"}
+          onBack={openGallery}
+          onConnect={() => {
+            setOAuthError(null);
+            connectMutation.mutate(undefined);
+          }}
         />
       )}
 
@@ -1175,6 +1188,8 @@ function LinkConnectStep({
   keyValue,
   onKeyChange,
   submitting,
+  oauthError,
+  hasOAuthDraft,
   onBack,
   onConnect,
 }: {
@@ -1186,6 +1201,8 @@ function LinkConnectStep({
   keyValue: string;
   onKeyChange: (next: string) => void;
   submitting: boolean;
+  oauthError: string | null;
+  hasOAuthDraft: boolean;
   onBack: () => void;
   onConnect: () => void;
 }) {
@@ -1202,6 +1219,11 @@ function LinkConnectStep({
       </div>
 
       <div className="mt-8 space-y-6">
+        {oauthError && (
+          <InlineBanner tone="warning" compact>
+            {oauthError} Edit these settings if needed, then continue to sign in.
+          </InlineBanner>
+        )}
         <div>
           <label className="text-sm font-medium text-foreground">Name</label>
           <Input
@@ -1273,7 +1295,7 @@ function LinkConnectStep({
           </span>
           <Button onClick={onConnect} disabled={submitting || (needsKey && keyValue.trim().length === 0)}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {submitting ? "Checking…" : "Check link"}
+            {submitting ? "Checking…" : hasOAuthDraft ? "Continue to sign in" : "Check link"}
           </Button>
         </div>
       </div>

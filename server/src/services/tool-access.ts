@@ -169,6 +169,7 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+  appDraftEditLockHeld?: boolean;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -4825,11 +4826,78 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
+    if (input.connectionId && !options.appDraftEditLockHeld) {
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`tool_app_draft_edit:${companyId}:${input.connectionId}`}, 0))`,
+        );
+        return toolAccessService(tx as unknown as Db, {
+          ...options,
+          appDraftEditLockHeld: true,
+        }).connectGalleryApp(companyId, input, actor);
+      });
+    }
+    return connectGalleryAppLocked(companyId, input, actor);
+  }
+
+  async function connectGalleryAppLocked(
+    companyId: string,
+    input: ConnectToolApp,
+    actor?: ActorInfo,
+  ): Promise<ConnectToolAppResult> {
     const galleryEntry = input.galleryKey ? getConnectableAppDefinition(input.galleryKey) : null;
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
+    const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
-    if (input.applicationId) {
+    let editableConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
+    if (input.connectionId) {
+      const [connection] = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.id, input.connectionId),
+        eq(toolConnections.companyId, companyId),
+      ));
+      if (!connection) throw notFound("App connection not found");
+      const [application] = await db.select().from(toolApplications).where(and(
+        eq(toolApplications.id, connection.applicationId),
+        eq(toolApplications.companyId, companyId),
+      ));
+      if (!application) throw notFound("App not found");
+      if (connection.status !== "draft" || connection.enabled || application.status === "archived") {
+        throw conflict("Only editable app connection drafts can be updated", {
+          code: "tool_connection_draft_not_editable",
+        });
+      }
+      if (input.applicationId && input.applicationId !== application.id) {
+        throw conflict("The app connection draft does not belong to that app", {
+          code: "tool_connection_draft_application_mismatch",
+        });
+      }
+
+      const connectionSource = typeof connection.config.sourceTemplateKey === "string"
+        ? connection.config.sourceTemplateKey
+        : null;
+      const applicationMetadata = asRecord(application.metadata);
+      const applicationSource = typeof applicationMetadata.sourceTemplateKey === "string"
+        ? applicationMetadata.sourceTemplateKey
+        : typeof applicationMetadata.galleryKey === "string"
+          ? applicationMetadata.galleryKey
+          : null;
+      const sourceMatches = galleryEntry
+        ? connectionSource === galleryEntry.slug
+          && applicationSource === galleryEntry.slug
+          && connection.transport === method?.transport
+          && connection.authKind === method?.auth
+        : applicationMetadata.source === "link"
+          && connectionSource === null
+          && connection.transport === "mcp_remote";
+      if (!sourceMatches) {
+        throw conflict("The app connection draft was created from a different setup source", {
+          code: "tool_connection_draft_source_mismatch",
+        });
+      }
+      existingApplication = application;
+      editableConnectionPrevious = connection;
+    } else if (input.applicationId) {
       const [row] = await db.select().from(toolApplications).where(and(
         eq(toolApplications.id, input.applicationId),
         eq(toolApplications.companyId, companyId),
@@ -4839,7 +4907,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
-    const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
     const transport = method?.transport ?? "mcp_remote";
     const baseConfig = transport === "mcp_remote"
       ? { url: method?.defaults?.serverUrl ?? input.link ?? "" }
@@ -4875,6 +4942,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
+    let result: ConnectToolAppResult | null = null;
 
     try {
       const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : linkCredentialFields(credentialValues);
@@ -4911,7 +4979,33 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       }
 
-      if (existingApplication) {
+      if (editableConnectionPrevious && existingApplication?.status === "draft") {
+        [applicationRow] = await db.update(toolApplications)
+          .set({
+            name,
+            description: galleryEntry?.description ?? `Connected app at ${input.link}`,
+            type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            metadata: galleryEntry
+              ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug }
+              : { source: "link" },
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(toolApplications.id, existingApplication.id),
+            eq(toolApplications.companyId, companyId),
+            eq(toolApplications.status, "draft"),
+            eq(toolApplications.name, existingApplication.name),
+            sql`${toolApplications.description} is not distinct from ${existingApplication.description}`,
+            eq(toolApplications.type, existingApplication.type),
+            sql`${toolApplications.metadata} = ${JSON.stringify(existingApplication.metadata)}::jsonb`,
+          ))
+          .returning();
+        if (!applicationRow) {
+          throw conflict("The app connection draft changed while it was being updated", {
+            code: "tool_connection_draft_changed",
+          });
+        }
+      } else if (existingApplication) {
         if (existingApplication.status !== "active") {
           [applicationRow] = await db.update(toolApplications)
             .set({ status: "draft", archivedAt: null, updatedAt: new Date() })
@@ -4936,7 +5030,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // Reconnecting an app revives its most recent archived connection instead
       // of inserting a fresh row: keeps the connection id (and its activity
       // history) stable and avoids the unique (company, name) constraint.
-      if (existingApplication) {
+      if (existingApplication && !editableConnectionPrevious) {
         const [archived] = await db
           .select()
           .from(toolConnections)
@@ -4949,7 +5043,36 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .limit(1);
         revivedConnectionPrevious = archived ?? null;
       }
-      if (revivedConnectionPrevious) {
+      if (editableConnectionPrevious) {
+        [connectionRow] = await db.update(toolConnections).set({
+          name,
+          authKind: galleryEntry ? method!.auth : editableConnectionPrevious.authKind,
+          transport,
+          status: "draft",
+          enabled: false,
+          config,
+          transportConfig: config,
+          credentialRefs,
+          credentialSecretRefs,
+          healthStatus: "unchecked",
+          healthMessage: null,
+          healthCheckedAt: null,
+          lastHealthAt: null,
+          lastCatalogRefreshAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(toolConnections.id, editableConnectionPrevious.id),
+          eq(toolConnections.companyId, companyId),
+          eq(toolConnections.applicationId, applicationRow.id),
+          eq(toolConnections.status, "draft"),
+        )).returning();
+        if (!connectionRow) {
+          throw conflict("The app connection draft changed while it was being updated", {
+            code: "tool_connection_draft_changed",
+          });
+        }
+      } else if (revivedConnectionPrevious) {
         [connectionRow] = await db.update(toolConnections).set({
           name,
           transport,
@@ -4986,7 +5109,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await ensureRuntimeSlot(connectionRow);
 
       if (galleryEntry && connectionMethodFor(galleryEntry).auth === "oauth") {
-        return {
+        result = {
           connectionId: connectionRow.id,
           application: toApplication(applicationRow),
           connection: toConnection(connectionRow),
@@ -4995,16 +5118,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           suggestedDefaults: recommendedDefaultsForApp(galleryEntry),
           auth: { kind: "oauth", startUrl: null },
         };
-      }
-
-      try {
-        await checkConnectionHealth(connectionRow.id, actor);
-      } catch (error) {
-        if (!galleryEntry && error instanceof HttpError && asRecord(error.details).code === "oauth_challenge") {
-          const [oauthConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionRow.id));
-          const endpoints = await discoverOAuthEndpoints(oauthConnection).catch(() => null);
-          if (!endpoints) throw error;
-          return {
+      } else {
+        let oauthConnection: typeof toolConnections.$inferSelect | null = null;
+        try {
+          await checkConnectionHealth(connectionRow.id, actor);
+        } catch (error) {
+          if (!galleryEntry && error instanceof HttpError && asRecord(error.details).code === "oauth_challenge") {
+            [oauthConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionRow.id));
+            const endpoints = oauthConnection
+              ? await discoverOAuthEndpoints(oauthConnection).catch(() => null)
+              : null;
+            if (!endpoints) throw error;
+          } else {
+            throw error;
+          }
+        }
+        if (oauthConnection) {
+          result = {
             connectionId: oauthConnection.id,
             application: toApplication(applicationRow),
             connection: toConnection(oauthConnection),
@@ -5016,44 +5146,72 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             },
             auth: { kind: "oauth", startUrl: null },
           };
+        } else {
+          const refresh = await refreshCatalog(connectionRow.id, actor);
+          const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
+          result = {
+            connectionId: refresh.connection.id,
+            application: toApplication(application),
+            connection: refresh.connection,
+            catalog: refresh.catalog,
+            actions: groupedActions(refresh.catalog),
+            suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
+              access: "all_agents",
+              askFirstRiskLevels: ["write", "destructive"],
+            },
+          };
         }
-        throw error;
       }
-      const refresh = await refreshCatalog(connectionRow.id, actor);
-      const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
-      return {
-        connectionId: refresh.connection.id,
-        application: toApplication(application),
-        connection: refresh.connection,
-        catalog: refresh.catalog,
-        actions: groupedActions(refresh.catalog),
-        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
-          access: "all_agents",
-          askFirstRiskLevels: ["write", "destructive"],
-        },
-      };
     } catch (error) {
-      if (connectionRow && revivedConnectionPrevious) {
-        await db.update(toolConnections).set({
-          name: revivedConnectionPrevious.name,
-          transport: revivedConnectionPrevious.transport,
-          status: revivedConnectionPrevious.status,
-          enabled: revivedConnectionPrevious.enabled,
-          config: revivedConnectionPrevious.config,
-          transportConfig: revivedConnectionPrevious.transportConfig,
-          credentialRefs: revivedConnectionPrevious.credentialRefs,
-          credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
-          updatedAt: new Date(),
-        }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).catch(() => undefined);
+      const connectionPrevious = editableConnectionPrevious ?? revivedConnectionPrevious;
+      if (connectionRow && connectionPrevious) {
+        const [restored] = await db.update(toolConnections).set({
+          name: connectionPrevious.name,
+          authKind: connectionPrevious.authKind,
+          transport: connectionPrevious.transport,
+          status: connectionPrevious.status,
+          enabled: connectionPrevious.enabled,
+          config: connectionPrevious.config,
+          transportConfig: connectionPrevious.transportConfig,
+          credentialRefs: connectionPrevious.credentialRefs,
+          credentialSecretRefs: connectionPrevious.credentialSecretRefs,
+          healthStatus: connectionPrevious.healthStatus,
+          healthMessage: connectionPrevious.healthMessage,
+          healthCheckedAt: connectionPrevious.healthCheckedAt,
+          lastHealthAt: connectionPrevious.lastHealthAt,
+          lastCatalogRefreshAt: connectionPrevious.lastCatalogRefreshAt,
+          lastError: connectionPrevious.lastError,
+          updatedAt: connectionPrevious.updatedAt,
+        }).where(eq(toolConnections.id, connectionPrevious.id)).returning().catch(() => []);
+        if (restored) await syncCredentialBindings(restored).catch(() => undefined);
       } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
       }
       if (applicationRow && !existingApplication) {
         await db.delete(toolApplications).where(eq(toolApplications.id, applicationRow.id)).catch(() => undefined);
-      } else if (existingApplication && applicationRow && applicationRow.status !== existingApplication.status) {
+      } else if (existingApplication && applicationRow && (
+        applicationRow.name !== existingApplication.name
+        || applicationRow.status !== existingApplication.status
+        || applicationRow.description !== existingApplication.description
+      )) {
         await db.update(toolApplications)
-          .set({ status: existingApplication.status, archivedAt: existingApplication.archivedAt, updatedAt: new Date() })
-          .where(eq(toolApplications.id, existingApplication.id))
+          .set({
+            name: existingApplication.name,
+            description: existingApplication.description,
+            type: existingApplication.type,
+            status: existingApplication.status,
+            metadata: existingApplication.metadata,
+            archivedAt: existingApplication.archivedAt,
+            updatedAt: existingApplication.updatedAt,
+          })
+          .where(and(
+            eq(toolApplications.id, existingApplication.id),
+            eq(toolApplications.name, applicationRow.name),
+            sql`${toolApplications.description} is not distinct from ${applicationRow.description}`,
+            eq(toolApplications.type, applicationRow.type),
+            eq(toolApplications.status, applicationRow.status),
+            sql`${toolApplications.metadata} = ${JSON.stringify(applicationRow.metadata)}::jsonb`,
+          ))
           .catch(() => undefined);
       }
       for (const secretId of createdSecretIds) {
@@ -5061,6 +5219,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
       throw error;
     }
+
+    if (!result) throw new Error("App connection setup completed without a result");
+    if (editableConnectionPrevious) {
+      const retainedSecretIds = new Set([
+        ...credentialRefs.map((ref) => ref.secretId),
+        ...credentialSecretRefs.map((ref) => ref.secretId),
+      ]);
+      const supersededSecretIds = new Set([
+        ...editableConnectionPrevious.credentialRefs.map((ref) => ref.secretId),
+        ...editableConnectionPrevious.credentialSecretRefs.map((ref) => ref.secretId),
+      ].filter((secretId) => !retainedSecretIds.has(secretId)));
+      for (const secretId of supersededSecretIds) await secrets.remove(secretId).catch(() => undefined);
+    }
+    return result;
   }
 
   async function assertCatalogEntriesForConnection(

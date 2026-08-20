@@ -482,6 +482,65 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("saves edited link settings into the prepared OAuth draft before retrying sign-in", async () => {
+    const draftResult = {
+      connectionId: "conn-posthog",
+      application: { id: "app-posthog", name: "PostHog project" },
+      connection: { id: "conn-posthog", name: "PostHog project" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: null },
+    };
+    connectAppMock
+      .mockResolvedValueOnce(draftResult)
+      .mockResolvedValueOnce({
+        ...draftResult,
+        application: { id: "app-posthog", name: "PostHog production" },
+        connection: { id: "conn-posthog", name: "PostHog production" },
+      });
+    startOAuthMock
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({
+        connectionId: "conn-posthog",
+        provider: "posthog",
+        authorizationUrl: "https://posthog.example.test/oauth?state=retry",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+
+    await render();
+    await gotoLinkFrame(container, "https://mcp.posthog.example/project/one");
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Provider unavailable");
+    expect(buttonByText("Continue to sign in")).toBeTruthy();
+    const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find(
+      (input) => input.getAttribute("placeholder") === "My app",
+    );
+    await act(async () => setInputValue(nameInput!, "PostHog production"));
+    await act(async () => {
+      buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(2);
+    expect(connectAppMock).toHaveBeenLastCalledWith("company-1", {
+      link: "https://mcp.posthog.example/project/one",
+      name: "PostHog production",
+      credentialValues: undefined,
+      applicationId: undefined,
+      connectionId: "conn-posthog",
+    });
+    expect(startOAuthMock).toHaveBeenCalledTimes(2);
+    expect(startOAuthMock).toHaveBeenLastCalledWith("conn-posthog");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://posthog.example.test/oauth?state=retry",
+    );
+  });
+
   it("recovers a response-lost Notion draft before retrying creation", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
