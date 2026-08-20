@@ -3363,40 +3363,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const wakePolicyType = typeof recoveryAction.wakePolicy === "object" &&
-        recoveryAction.wakePolicy &&
-        "type" in recoveryAction.wakePolicy &&
-        typeof recoveryAction.wakePolicy.type === "string"
-      ? recoveryAction.wakePolicy.type
-      : null;
-    const preservesSourceAssignee =
-      Boolean(recoveryAction.ownerAgentId) &&
-      Boolean(input.issue.assigneeAgentId) &&
-      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: preservesSourceAssignee
-        ? input.issue.assigneeAgentId
-        : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
-    const takeoverRecoveryIssue = preservesSourceAssignee && wakePolicyType === "wake_owner"
-      ? await ensureStrandedIssueRecoveryIssue({
-        issue: input.issue,
-        latestRun: input.latestRun,
-        previousStatus: input.previousStatus,
-        recoveryCause,
-        recoveryOwnerAgentId: recoveryAction.ownerAgentId,
-        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-      })
-      : null;
-    const blockerIdsWithTakeover = takeoverRecoveryIssue
-      ? [...new Set([...blockerIds, takeoverRecoveryIssue.id])]
-      : blockerIds;
-    if (takeoverRecoveryIssue) {
-      await ensureBlockingEdge(input.issue.companyId, takeoverRecoveryIssue.id, input.issue.id);
-    }
     if (isProviderQuotaWait) return updated;
 
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
@@ -3523,20 +3494,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryOwnerAgentId: recoveryAction.ownerAgentId,
         previousOwnerAgentId: recoveryAction.previousOwnerAgentId,
         returnOwnerAgentId: recoveryAction.returnOwnerAgentId,
-        blockerIssueIds: blockerIdsWithTakeover,
+        blockerIssueIds: blockerIds,
       },
     });
 
-    if (!takeoverRecoveryIssue) {
-      await enqueueSourceScopedStrandedRecoveryWake({
-        action: recoveryAction,
-        issue: input.issue,
-        latestRun: input.latestRun,
-        recoveryCause,
-      });
-    }
+    await enqueueSourceScopedStrandedRecoveryWake({
+      action: recoveryAction,
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+    });
 
-    if (!takeoverRecoveryIssue && recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
@@ -3547,13 +3516,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (
         currentIssue &&
-        (currentIssue.status !== "blocked" ||
-          currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
+        currentIssue.status !== "blocked"
       ) {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
-          assigneeAgentId: recoveryAction.ownerAgentId,
         });
         if (reblocked) return reblocked;
       }
