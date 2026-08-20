@@ -8099,8 +8099,8 @@ export function issueService(db: Db) {
       }
 
       // Adopt stale executionRunId — if the execution lock points to a terminal/missing run, clear it and proceed.
-      // Only adopts when the caller's expectedStatuses guard still holds; preserves any existing assigneeUserId
-      // and preserves the original startedAt when the issue is already in_progress.
+      // Only adopts when the caller's expectedStatuses guard still holds; preserves the recorded assignee and
+      // any existing assigneeUserId, and preserves the original startedAt when the issue is already in_progress.
       if (
         checkoutRunId &&
         current.executionRunId &&
@@ -8111,7 +8111,6 @@ export function issueService(db: Db) {
         if (stale) {
           const now = new Date();
           const adoptionSet: Record<string, unknown> = {
-            assigneeAgentId: agentId,
             checkoutRunId,
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,

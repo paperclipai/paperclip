@@ -5689,6 +5689,97 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       executionRunId: successorRunId,
     });
   });
+
+  it("checkout adoption of a stale executionRunId preserves the issue's assigneeAgentId", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const recoveryAgentId = randomUUID();
+    const issueId = randomUUID();
+    const failedExecutionRunId = randomUUID();
+    const recoveryRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Codex DevOps",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: recoveryAgentId,
+        companyId,
+        name: "Claude CEO",
+        role: "manager",
+        status: "active",
+        adapterType: "claude_code",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedExecutionRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: recoveryRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        invocationSource: "automation",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale execution lock keeps standing assignee",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId,
+      checkoutRunId: null,
+      executionRunId: failedExecutionRunId,
+      executionAgentNameKey: "codexdevops",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+    });
+
+    const result = await svc.checkout(issueId, assigneeAgentId, ["todo", "in_progress"], recoveryRunId);
+    expect(result).toBeTruthy();
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId,
+      checkoutRunId: recoveryRunId,
+      executionRunId: recoveryRunId,
+    });
+    expect(row?.assigneeAgentId).not.toBe(recoveryAgentId);
+  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
