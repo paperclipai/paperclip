@@ -252,6 +252,27 @@ describe("CompanyExport", () => {
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
   });
 
+  it("shows a retryable error instead of a false loading state", async () => {
+    mockCompaniesApi.exportPreview
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(buildExportPreviewResult());
+
+    await renderPage();
+
+    expect(container.textContent).toContain("Export preview failed");
+    expect(container.textContent).toContain("Failed to fetch");
+    expect(container.textContent).not.toContain("Loading export data");
+
+    const retry = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry preview"),
+    );
+    expect(retry).toBeDefined();
+    await clickElement(retry!);
+
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Paperclip export");
+  });
+
   it("starts the preview without waiting for sidebar-order dependencies", async () => {
     let resolveSession!: (value: { user: { id: string } }) => void;
     let resolveAgents!: (value: never[]) => void;
@@ -312,6 +333,84 @@ describe("CompanyExport", () => {
       "tasks/one-off/TASK.md",
       "tasks/weekly-report/TASK.md",
     ]);
+  });
+
+  it("keeps controls mounted and aborts a slow task refetch when Tasks is unticked", async () => {
+    let requestCount = 0;
+    let slowRequestSignal: AbortSignal | undefined;
+    mockCompaniesApi.exportPreview.mockImplementation((_companyId, _request, options) => {
+      requestCount += 1;
+      if (requestCount !== 2) return Promise.resolve(buildRichExportPreviewResult());
+      slowRequestSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+    });
+
+    await renderPage();
+    await clickElement(categoryInput("tasks"));
+
+    expect(container.textContent).toContain("Updating export preview");
+    expect(categoryInput("tasks").checked).toBe(true);
+    expect(container.querySelector('[role="tree"]')).not.toBeNull();
+    expect(exportButton()).toBeDefined();
+
+    await clickElement(categoryInput("tasks"));
+
+    expect(slowRequestSignal?.aborted).toBe(true);
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(3);
+    expect(mockCompaniesApi.exportPreview.mock.calls[2]?.[1]).toMatchObject({
+      include: { issues: false },
+    });
+    expect(categoryInput("tasks").checked).toBe(false);
+    expect(container.textContent).not.toContain("Updating export preview");
+  });
+
+  it("lets the user cancel a slow refetch without losing the export surface", async () => {
+    let requestCount = 0;
+    let slowRequestSignal: AbortSignal | undefined;
+    mockCompaniesApi.exportPreview.mockImplementation((_companyId, _request, options) => {
+      requestCount += 1;
+      if (requestCount === 1) return Promise.resolve(buildRichExportPreviewResult());
+      slowRequestSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+    });
+
+    await renderPage();
+    await clickElement(categoryInput("tasks"));
+
+    const cancel = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Cancel update"),
+    );
+    expect(cancel).toBeDefined();
+    await clickElement(cancel!);
+
+    expect(slowRequestSignal?.aborted).toBe(true);
+    expect(container.textContent).toContain("Preview update cancelled");
+    expect(categoryInput("tasks")).toBeDefined();
+    expect(container.querySelector('[role="tree"]')).not.toBeNull();
+    expect(exportButton()).toBeDefined();
+  });
+
+  it("uses the Skills category for preview and bundle generation", async () => {
+    mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
+
+    await renderPage();
+    await clickElement(categoryInput("skills"));
+
+    expect(mockCompaniesApi.exportPreview.mock.calls.at(-1)?.[1]).toMatchObject({
+      include: { skills: false },
+    });
+    await clickElement(exportButton());
+    expect(mockCompaniesApi.exportBundle.mock.calls[0]?.[1]).toMatchObject({
+      include: { skills: false },
+    });
   });
 
   it("toggling Tasks off drops one-off task files and their blobs but keeps routines", async () => {

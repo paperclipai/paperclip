@@ -517,6 +517,7 @@ describe("company portability", () => {
         agents: true,
         projects: false,
         issues: false,
+        skills: true,
       },
     });
 
@@ -549,6 +550,25 @@ describe("company portability", () => {
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
+  });
+
+  it("does not load or emit skills when agents are included but skills are disabled", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+        skills: false,
+      },
+    });
+
+    expect(companySkillSvc.listFull).not.toHaveBeenCalled();
+    expect(Object.keys(exported.files).some((filePath) => filePath.startsWith("skills/"))).toBe(false);
+    expect(exported.manifest.skills).toEqual([]);
+    expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain(`- "${paperclipKey}"`);
   });
 
   it("exports agent permission grants through the Paperclip extension and manifest", async () => {
@@ -757,6 +777,7 @@ describe("company portability", () => {
         agents: true,
         projects: false,
         issues: false,
+        skills: true,
       },
       expandReferencedSkills: true,
     });
@@ -1023,6 +1044,7 @@ describe("company portability", () => {
         agents: true,
         projects: false,
         issues: false,
+        skills: true,
       },
     });
 

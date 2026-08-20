@@ -3809,7 +3809,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     const builtInAgentRows = liveAgentRows.filter((agent) => readBuiltInAgentMarker(agent.metadata));
     const portableAgentRows = liveAgentRows.filter((agent) => !readBuiltInAgentMarker(agent.metadata));
-    const companySkillRowsRaw = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
+    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     if (include.agents) {
