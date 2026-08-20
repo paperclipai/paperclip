@@ -84,6 +84,8 @@ describe("terminal heartbeat cleanup fallback", () => {
   it("continues required cleanup after earlier steps fail", async () => {
     const calls: string[] = [];
     const onError = vi.fn();
+    let observedReleaseOptions: { suppressImmediateRecovery: boolean; suppressDeferredPromotion: boolean } | null =
+      null;
 
     await completeTerminalCleanupFallback({
       finalizeWakeup: async () => {
@@ -95,10 +97,7 @@ describe("terminal heartbeat cleanup fallback", () => {
       },
       releaseIssue: async (options) => {
         calls.push("issue_release");
-        expect(options).toEqual({
-          suppressImmediateRecovery: false,
-          suppressDeferredPromotion: false,
-        });
+        observedReleaseOptions = options;
         throw new Error("release failed");
       },
       finalizeAgent: async () => {
@@ -108,6 +107,10 @@ describe("terminal heartbeat cleanup fallback", () => {
     });
 
     expect(calls).toEqual(["wakeup", "retry", "issue_release", "agent"]);
+    expect(observedReleaseOptions).toEqual({
+      suppressImmediateRecovery: false,
+      suppressDeferredPromotion: false,
+    });
     expect(onError.mock.calls.map(([step]) => step)).toEqual(["wakeup", "issue_release"]);
   });
 
@@ -135,10 +138,12 @@ describe("terminal heartbeat cleanup fallback", () => {
 
   it("keeps recovery suppressed after an ambiguous earlier retry failure", async () => {
     const releaseIssue = vi.fn(async () => undefined);
+    const finalizeAgent = vi.fn(async () => undefined);
 
     await completeTerminalCleanupFallback({
       suppressRecoveryBeforeRetry: true,
       releaseIssue,
+      finalizeAgent,
       onError: vi.fn(),
     });
 
@@ -146,6 +151,8 @@ describe("terminal heartbeat cleanup fallback", () => {
       suppressImmediateRecovery: true,
       suppressDeferredPromotion: true,
     });
+    // Agent finalization still runs even when recovery is suppressed.
+    expect(finalizeAgent).toHaveBeenCalledOnce();
   });
 
   it("skips omitted steps without reporting them", async () => {

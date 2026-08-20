@@ -16420,6 +16420,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       terminalCleanup.wakeupFinalized = true;
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
+      // Refresh the fallback capture with the same inputs the normal
+      // finalizeAgentStatus call below uses, so an exception after liveness
+      // classification cannot strand the agent on a stale pre-classification
+      // provider-quota read.
+      terminalCleanup.keepIdleOnFailure =
+        outcome === "failed" &&
+        ((finalizedRun
+          ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
+          : runErrorCode === "provider_quota") ||
+          isWorkspaceSyncConflictFailure(adapterResult.errorMessage));
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -16648,7 +16658,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         wakeupStatus: "failed" as const,
         error: message,
         failureReason: message,
-        keepIdleOnFailure: false,
+        // Mirror the normal finalizeAgentStatus call at the end of this catch
+        // block: a workspace-sync-conflict failure must keep the agent idle so
+        // the fallback does not strand it in an error state.
+        keepIdleOnFailure: isWorkspaceSyncConflictFailure(message),
         retryOptions: null,
         retryAttempted: false,
         retryCompleted: false,
