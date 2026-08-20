@@ -289,10 +289,20 @@ export function runGateService(db: Db) {
   }
 
   async function countRunningRunsGlobal(): Promise<number> {
+    // Exempt adapters must not OCCUPY the cap either: shell handlers are
+    // near-zero cost and were never meant to be governed by it, but their
+    // running rows filled the counter that gates real LLM runs — a shell
+    // rail burst deferred claude/codex work behind phantom occupancy
+    // (2026-08-20: 5 LLM runs "hit" a cap of 20). Exemption must be
+    // symmetric: not blocked by the cap, not counted against it.
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "running"));
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(and(
+        eq(heartbeatRuns.status, "running"),
+        sql`${agents.adapterType} NOT IN ('paperclip_shell_handler')`,
+      ));
     return Number(row?.count ?? 0);
   }
 
