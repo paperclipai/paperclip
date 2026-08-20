@@ -113,6 +113,45 @@ describe("resolveCanonicalWorktreeSeedSource", () => {
     })).toThrow(/cannot be inspected \(ENOTDIR\)/);
   });
 
+  it("rejects a dangling .paperclip symlink instead of falling back to the named source", () => {
+    const baseCwd = makePlainCheckout();
+    // Resolving `.paperclip` fails before the probe reaches config.json, so the config
+    // entry reports ENOENT even though this workspace is malformed rather than plain.
+    fs.symlinkSync(path.join(baseCwd, "absent-dir"), path.join(baseCwd, ".paperclip"));
+    const source = makeInstanceRoot("default");
+    const target = makeInstance("paperclip-seed-dangling-parent-target-", "target-instance");
+
+    expect(() => resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: baseCwd,
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: { configPath: source.configPath, instanceId: source.instanceId },
+      manifestTargetInstanceId: target.instanceId,
+    })).toThrow(/cannot be inspected \(ENOENT on its \.paperclip symlink target\)/);
+  });
+
+  it("takes the named source when .paperclip is a symlink to a directory with no config", () => {
+    const baseCwd = makePlainCheckout();
+    const linked = path.join(baseCwd, "linked-config-dir");
+    fs.mkdirSync(linked, { recursive: true });
+    fs.symlinkSync(linked, path.join(baseCwd, ".paperclip"));
+    const source = makeInstanceRoot("default");
+    const target = makeInstance("paperclip-seed-linked-empty-target-", "target-instance");
+
+    const resolved = resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: baseCwd,
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: { configPath: source.configPath, instanceId: source.instanceId },
+      manifestTargetInstanceId: target.instanceId,
+    });
+
+    expect(resolved.configPath).toBe(source.configPath);
+    expect(resolved.instanceId).toBe("default");
+  });
+
   it("fails closed when the base workspace carries no config and none is named", () => {
     const baseCwd = makePlainCheckout();
     const target = makeInstance("paperclip-seed-unnamed-target-", "target-instance");

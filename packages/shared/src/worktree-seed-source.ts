@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import path from "node:path";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
 
@@ -44,28 +44,54 @@ function readInstanceId(configPath: string, label: "source" | "target"): string 
   throw new Error(`Registered ${label} Paperclip config has no PAPERCLIP_INSTANCE_ID binding.`);
 }
 
+function errorCode(error: unknown): string {
+  return (error as NodeJS.ErrnoException | null)?.code ?? "unknown error";
+}
+
+/**
+ * Inspect a directory entry without following it, returning null only when it is absent.
+ *
+ * Any other failure means the declared path is unreadable or malformed, and a guess there
+ * would silently seed from a different instance.
+ */
+function inspectDeclaredEntry(entryPath: string, configPath: string, detail?: string): Stats | null {
+  try {
+    return lstatSync(entryPath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return null;
+    throw new Error(
+      `Registered base project workspace Paperclip config at ${configPath} cannot be inspected (${errorCode(error)}${detail ?? ""}).`,
+    );
+  }
+}
+
 /**
  * Whether a base project workspace declares an instance config of its own.
  *
- * This tests the directory entry and does not follow it. A dangling or aliased
- * symlink still counts as a declared config, so the resolver rejects the malformed
- * source instead of falling back to another one.
+ * This tests directory entries and does not follow them. A dangling or aliased symlink,
+ * at the config itself or at the `.paperclip` directory holding it, still counts as a
+ * declared config, so the resolver rejects the malformed source instead of falling back
+ * to another one.
  */
 export function baseWorkspaceDeclaresInstanceConfig(baseWorkspaceCwd: string): boolean {
-  const configPath = path.join(baseWorkspaceCwd, ".paperclip", "config.json");
-  try {
-    lstatSync(configPath);
-    return true;
-  } catch (error) {
-    // Only a genuinely absent entry lets the caller name another source. Any other
-    // error means the declared config is unreadable or its path is malformed, and a
-    // guess there would silently seed from a different instance.
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    if (code === "ENOENT") return false;
-    throw new Error(
-      `Registered base project workspace Paperclip config at ${configPath} cannot be inspected (${code ?? "unknown error"}).`,
-    );
+  const configDir = path.join(baseWorkspaceCwd, ".paperclip");
+  const configPath = path.join(configDir, "config.json");
+  if (inspectDeclaredEntry(configPath, configPath)) return true;
+
+  // The probe above resolves `.paperclip` before it reaches the config, so a broken link
+  // there also reports ENOENT. Only an absent or traversable `.paperclip` lets the caller
+  // name another source; a link that hides whatever it points at is malformed, not empty.
+  const configDirEntry = inspectDeclaredEntry(configDir, configPath, " on its .paperclip entry");
+  if (configDirEntry?.isSymbolicLink()) {
+    try {
+      statSync(configDir);
+    } catch (error) {
+      throw new Error(
+        `Registered base project workspace Paperclip config at ${configPath} cannot be inspected (${errorCode(error)} on its .paperclip symlink target).`,
+      );
+    }
   }
+  return false;
 }
 
 function canonicalRegularFile(filePath: string, label: string): string {

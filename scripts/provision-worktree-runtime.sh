@@ -73,6 +73,10 @@ fi
 # a plain checkout carries no instance config of its own, so name the control plane's
 # own registered instance config explicitly. The seed manifest stays diagnostic
 # evidence only and must never choose the clone source.
+if [[ -L "$base_cwd/.paperclip" && ! -d "$base_cwd/.paperclip" ]]; then
+  echo "Registered base project workspace .paperclip is a broken symlink: $base_cwd/.paperclip" >&2
+  exit 1
+fi
 source_config_args=()
 if [[ ! -e "$base_cwd/.paperclip/config.json" && ! -L "$base_cwd/.paperclip/config.json" ]]; then
   source_config_path="${PAPERCLIP_CONFIG:-$paperclip_home/instances/$paperclip_instance_id/config.json}"

@@ -192,6 +192,18 @@ test("rejects a dangling base workspace config symlink instead of falling back",
   assert.match(result.stderr, /is missing or is not a canonical file/);
 });
 
+test("rejects a dangling base workspace .paperclip symlink instead of falling back", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  // `-e`/`-L` on the config resolve `.paperclip` first, so the config reads as absent
+  // here even though the workspace is malformed rather than a plain checkout.
+  fs.symlinkSync(path.join(baseCwd, "absent-dir"), path.join(baseCwd, ".paperclip"));
+
+  const { result } = runProvision(baseCwd);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /\.paperclip is a broken symlink/);
+});
+
 test("falls back to an isolated config when the base CLI cannot boot", () => {
   // Simulates the dangling pnpm symlink incident: the runner and entry files
   // exist, but booting the CLI fails ESM resolution. The base has no
