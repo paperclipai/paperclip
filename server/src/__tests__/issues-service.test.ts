@@ -5942,6 +5942,82 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
     expect(row?.assigneeAgentId).not.toBe(recoveryAgentId);
   });
+
+  it("checkout adoption of a stale executionRunId does not auto-assign an unowned issue", async () => {
+    const companyId = randomUUID();
+    const recoveryAgentId = randomUUID();
+    const issueId = randomUUID();
+    const failedExecutionRunId = randomUUID();
+    const recoveryRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: recoveryAgentId,
+      companyId,
+      name: "Claude CEO",
+      role: "manager",
+      status: "active",
+      adapterType: "claude_code",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedExecutionRunId,
+        companyId,
+        agentId: recoveryAgentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: recoveryRunId,
+        companyId,
+        agentId: recoveryAgentId,
+        status: "running",
+        invocationSource: "automation",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale execution lock keeps source issue unowned",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: failedExecutionRunId,
+      executionAgentNameKey: "claudeceo",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+    });
+
+    const result = await svc.checkout(issueId, recoveryAgentId, ["todo", "in_progress"], recoveryRunId);
+    expect(result).toBeTruthy();
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: null,
+      checkoutRunId: recoveryRunId,
+      executionRunId: recoveryRunId,
+    });
+  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
