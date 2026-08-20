@@ -75,7 +75,7 @@ import {
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
-import { Stepper, agentArcStepFor } from "./onboarding/Stepper";
+import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
 import { DEFAULT_AGENT_NAME, nextAgentNameForRole } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
@@ -1370,6 +1370,11 @@ function OnboardingWizardInner({
 
   if (!effectiveOnboardingOpen) return null;
 
+  // The arc strip stands in for the full-length bar only when the run began on
+  // the arc — the Cloud-first path, where the company already exists and steps
+  // 1-2 never happen. A run that started at step 1 keeps one continuous count.
+  const showsAgentArcStepper = agentArcStepFor(step) !== null && entryStep >= 3;
+
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
@@ -1417,7 +1422,12 @@ function OnboardingWizardInner({
           >
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
               {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
-                  filled once step ≥ N. Completed segments jump back. */}
+                  filled once step ≥ N. Completed segments jump back.
+                  Hidden for a run that entered on the agent arc: the arc strip
+                  below counts that run's three steps, and showing both put two
+                  progress bars on the same screen. A run that started at step 1
+                  keeps this one throughout, so its count never restarts. */}
+              {!showsAgentArcStepper && (
               <div className="flex items-center gap-1.5 mb-8">
                 {([1, 2, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
@@ -1443,12 +1453,23 @@ function OnboardingWizardInner({
                   );
                 })}
               </div>
+              )}
 
               {/* The agent arc's progress strip. Numbered 1–3 over the wizard's
                   steps 3–5, because company creation already happened in Cloud
                   and the mission step is skipped when it did. */}
-              {agentArcStepFor(step) !== null && (
-                <Stepper step={agentArcStepFor(step)!} />
+              {showsAgentArcStepper && (
+                <Stepper
+                  step={agentArcStepFor(step)!}
+                  canJumpToStep={(target) =>
+                    canJumpToOnboardingStep({
+                      targetStep: AGENT_ARC_WIZARD_STEPS[target - 1]!,
+                      currentStep: step,
+                      entryStep,
+                    })
+                  }
+                  onJumpToStep={(target) => setStep(AGENT_ARC_WIZARD_STEPS[target - 1]! as Step)}
+                />
               )}
 
               {/* Persistent evolving capsule (steps 3–5): a single AgentCapsule

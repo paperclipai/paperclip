@@ -262,8 +262,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
     expect(nameInput?.value).toBe("Ops Lead");
+    // The run entered on the agent arc, so the arc strip is the progress
+    // indicator and counts 1-3 over the wizard's steps 3-5. Segments are
+    // labelled by destination: the wizard has its own numbering, and two
+    // controls both announcing "Step 1" would mean different things.
     const currentStep = document.body.querySelector('[aria-current="step"]');
-    expect(currentStep?.getAttribute("aria-label")).toBe("Step 3");
+    expect(currentStep?.getAttribute("aria-label")).toBe("Create your first agent");
+    expect(document.body.textContent).toContain("Step 1 of 3");
 
     await act(async () => {
       root.unmount();

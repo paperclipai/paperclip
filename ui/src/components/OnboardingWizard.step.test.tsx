@@ -915,10 +915,20 @@ describe("OnboardingWizard — which step it lands on", () => {
       );
       expect(back).toBeUndefined();
 
-      const nameSegment = document.body.querySelector(
-        '[aria-label="Step 1"]',
-      ) as HTMLButtonElement | null;
-      expect(nameSegment?.disabled).toBe(true);
+      // The progress strip's segments are the only jump controls on this
+      // screen. Entering here means there is nowhere behind to return to, so
+      // every one of them is inert — asserted over the whole set rather than
+      // one segment, since a single enabled one is the whole defect.
+      const segments = [...document.body.querySelectorAll("button")].filter((b) =>
+        ["Create your first agent", "Connect a model", "Review"].includes(
+          b.getAttribute("aria-label") ?? "",
+        ),
+      ) as HTMLButtonElement[];
+      expect(segments).toHaveLength(3);
+      expect(segments.every((segment) => segment.disabled)).toBe(true);
+
+      // And company creation is genuinely unreachable, not merely unlinked.
+      expect(document.body.textContent).not.toContain("Name your company");
     });
   });
 });

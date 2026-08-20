@@ -7,8 +7,20 @@ import { cn } from "../../lib/utils";
  */
 export const AGENT_ARC_TOTAL_STEPS = 3;
 
+/**
+ * What each segment goes to. These are the labels assistive tech reads, in
+ * place of a bare number: the wizard has its own step numbering, and two
+ * controls both announcing "Step 1" while meaning different steps is worse
+ * than no number at all. The visible "Step N of 3" line carries the count.
+ */
+export const AGENT_ARC_STEP_LABELS = [
+  "Create your first agent",
+  "Connect a model",
+  "Review",
+] as const;
+
 /** Wizard step numbers that make up the arc, in order. */
-const AGENT_ARC_WIZARD_STEPS = [3, 4, 5] as const;
+export const AGENT_ARC_WIZARD_STEPS = [3, 4, 5] as const;
 
 /**
  * Map a wizard step onto its position in the arc, or `null` when the step is
@@ -27,22 +39,49 @@ export function agentArcStepFor(wizardStep: number): number | null {
   return index === -1 ? null : index + 1;
 }
 
-/** Segmented progress strip with a "Step N of M" label. */
-export function Stepper({ step, total = AGENT_ARC_TOTAL_STEPS }: { step: number; total?: number }) {
+/**
+ * Segmented progress strip with a "Step N of M" label.
+ *
+ * Segments double as the way back to a step already completed, which is the
+ * affordance the wizard's full-length bar provides outside the arc. A segment
+ * the customer may not return to stays a disabled button rather than
+ * disappearing: the wizard can be entered partway in, and a strip that simply
+ * omitted the steps behind the entry point would misreport how far along they
+ * are.
+ */
+export function Stepper({
+  step,
+  total = AGENT_ARC_TOTAL_STEPS,
+  canJumpToStep,
+  onJumpToStep,
+}: {
+  step: number;
+  total?: number;
+  canJumpToStep?: (target: number) => boolean;
+  onJumpToStep?: (target: number) => void;
+}) {
   return (
     <div className="mb-7 flex flex-col gap-3.5">
-      <div className="flex items-center gap-2" aria-hidden="true">
-        {Array.from({ length: total }, (_, index) => index + 1).map((segment) => (
-          <span
-            key={segment}
-            className={cn(
-              "h-(--sz-3px) flex-1 rounded-full transition-colors",
-              segment <= step ? "bg-foreground" : "bg-border",
-            )}
-          />
-        ))}
+      <div className="flex items-center gap-2">
+        {Array.from({ length: total }, (_, index) => index + 1).map((segment) => {
+          const jumpable = Boolean(canJumpToStep?.(segment) && onJumpToStep);
+          return (
+            <button
+              key={segment}
+              type="button"
+              aria-label={AGENT_ARC_STEP_LABELS[segment - 1] ?? `Step ${segment}`}
+              aria-current={segment === step ? "step" : undefined}
+              disabled={!jumpable}
+              onClick={() => jumpable && onJumpToStep?.(segment)}
+              className={cn(
+                "h-(--sz-3px) flex-1 rounded-full transition-colors",
+                segment <= step ? "bg-foreground" : "bg-border",
+                jumpable ? "cursor-pointer" : "cursor-default",
+              )}
+            />
+          );
+        })}
       </div>
-      {/* The segments are decorative; this line is what a screen reader gets. */}
       <span className="text-(length:--text-micro) font-medium uppercase tracking-widest text-muted-foreground">
         Step {step} of {total}
       </span>
