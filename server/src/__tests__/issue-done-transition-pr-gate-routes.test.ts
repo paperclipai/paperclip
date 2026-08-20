@@ -394,6 +394,57 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
     expect(getRes.body.status).toBe("in_progress");
   });
 
+  it("allows done when the same PATCH removes the issue's only (bad) pull-request reference", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(110, {
+      state: "open",
+      merged: false,
+      headSha: "sha-open-110",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Sanity check: with the description untouched, the open PR still gates.
+    const stillGatedRes = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+    expect(stillGatedRes.status, JSON.stringify(stillGatedRes.body)).toBe(422);
+
+    // The same request that requests `done` also rewrites the description to
+    // drop the PR #110 reference entirely (e.g. the user decided this issue
+    // no longer depends on that PR). listForIssue still reflects the *old*
+    // persisted description mentioning #110, but the PR is being removed by
+    // this very request, so it must not block the transition.
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", description: "No longer needs a PR." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  it("still gates done when a removed pull-request reference is also linked from a comment", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(111, {
+      state: "open",
+      merged: false,
+      headSha: "sha-open-111",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+    const commentRes = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Also see https://github.com/acme/app/pull/111" });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    // The description no longer mentions PR #111, but it is still linked via
+    // the comment above -- removing it from the description alone must not
+    // bypass the gate.
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", description: "No longer in the description, but still commented." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#111");
+  });
+
   it("does not gate issues with no linked pull request", async () => {
     stubGitHubFetch();
     const createRes = await request(app)

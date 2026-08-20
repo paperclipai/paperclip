@@ -392,6 +392,8 @@ async function assertNoBlockingLinkedPullRequest(
   companyId: string,
   textMightReferencePullRequest: boolean,
   candidateNewPullRequestRefs: GitHubPullRequestRef[],
+  textIsChanging: boolean,
+  effectivePullRequestRefKeys: Set<string>,
 ) {
   let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
   try {
@@ -481,6 +483,20 @@ async function assertNoBlockingLinkedPullRequest(
     if (!object || object.objectType !== "pull_request") continue;
     const data = (object.data ?? {}) as Record<string, unknown>;
     if (data.provider !== "github") continue;
+    if (textIsChanging) {
+      // This same PATCH is replacing the issue's title and/or description.
+      // If this PR was only ever mentioned there (never in a comment or
+      // document) and the proposed new text no longer references it, it is
+      // being removed by this very request -- not something to gate on.
+      const sourceKinds = new Set(group.mentions.map((mention) => mention.sourceKind));
+      const onlyFromIssueText = [...sourceKinds].every((kind) => kind === "title" || kind === "description");
+      if (onlyFromIssueText) {
+        const owner = typeof data.owner === "string" ? data.owner : "";
+        const repo = typeof data.repo === "string" ? data.repo : "";
+        const number = typeof data.number === "number" ? data.number : -1;
+        if (!effectivePullRequestRefKeys.has(githubPullRequestRefKey(owner, repo, number))) continue;
+      }
+    }
     const reason = doneTransitionPrGateReason(data)
       ?? (unconfirmedObjectIds.has(object.id) ? "unverified" : null);
     if (!reason) continue;
@@ -9568,6 +9584,17 @@ export function issueRoutes(
         ...extractGitHubPullRequestRefs(typeof updateFields.title === "string" ? updateFields.title : null),
         ...extractGitHubPullRequestRefs(typeof updateFields.description === "string" ? updateFields.description : null),
       ];
+      const textIsChanging = updateFields.title !== undefined || updateFields.description !== undefined;
+      const effectiveTitle = updateFields.title !== undefined
+        ? (typeof updateFields.title === "string" ? updateFields.title : null)
+        : existing.title;
+      const effectiveDescription = updateFields.description !== undefined
+        ? (typeof updateFields.description === "string" ? updateFields.description : null)
+        : existing.description;
+      const effectivePullRequestRefKeys = new Set([
+        ...extractGitHubPullRequestRefs(effectiveTitle),
+        ...extractGitHubPullRequestRefs(effectiveDescription),
+      ].map((ref) => githubPullRequestRefKey(ref.owner, ref.repo, ref.number)));
       await assertNoBlockingLinkedPullRequest(
         db,
         externalObjectsSvc,
@@ -9575,6 +9602,8 @@ export function issueRoutes(
         existing.companyId,
         mightReferencePullRequest,
         candidateNewPullRequestRefs,
+        textIsChanging,
+        effectivePullRequestRefKeys,
       );
     }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
