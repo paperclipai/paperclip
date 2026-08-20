@@ -938,7 +938,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "blocked",
       assigneeAgentId: coderId,
     });
-    const [takeoverIssue] = await db
+    const recoveryIssues = await db
       .select()
       .from(issues)
       .where(and(
@@ -946,21 +946,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         eq(issues.originKind, "stranded_issue_recovery"),
         eq(issues.originId, sourceIssueId),
       ));
-    expect(takeoverIssue).toMatchObject({
-      assigneeAgentId: managerId,
-      parentId: sourceIssueId,
-      status: "todo",
-    });
-    const [blockerLink] = await db
-      .select()
-      .from(issueRelations)
-      .where(and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.issueId, takeoverIssue!.id),
-        eq(issueRelations.relatedIssueId, sourceIssueId),
-        eq(issueRelations.type, "blocks"),
-      ));
-    expect(blockerLink).toBeTruthy();
+    expect(recoveryIssues).toHaveLength(0);
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
     const [action] = await db.select().from(issueRecoveryActions);

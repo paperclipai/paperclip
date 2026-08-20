@@ -3363,6 +3363,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const wakePolicyType = typeof recoveryAction.wakePolicy === "object" &&
+        recoveryAction.wakePolicy &&
+        "type" in recoveryAction.wakePolicy &&
+        typeof recoveryAction.wakePolicy.type === "string"
+      ? recoveryAction.wakePolicy.type
+      : null;
     const preservesSourceAssignee =
       Boolean(recoveryAction.ownerAgentId) &&
       Boolean(input.issue.assigneeAgentId) &&
@@ -3375,7 +3381,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
-    const takeoverRecoveryIssue = preservesSourceAssignee
+    const takeoverRecoveryIssue = preservesSourceAssignee && wakePolicyType === "wake_owner"
       ? await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
         latestRun: input.latestRun,
