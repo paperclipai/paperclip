@@ -25,6 +25,7 @@ import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
+export const DEFAULT_PRODUCTIVITY_REVIEW_SUSPECTED_STUCK_HOURS = 2;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
@@ -49,6 +50,7 @@ type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
   longActiveMs: number;
+  suspectedStuckMs: number;
   highChurnHourly: number;
   highChurnSixHours: number;
   resolvedSnoozeMs: number;
@@ -68,6 +70,7 @@ type ProductivityReviewEvidence = {
   totalRunCount: number;
   terminalRunCount: number;
   activeRunCount: number;
+  suspectedStuckRunCount: number;
   runCountLastHour: number;
   runCountLastSixHours: number;
   commentCount: number;
@@ -151,6 +154,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
     longActiveMs: readPositiveInteger(
       overrides?.longActiveMs ?? DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000,
       DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000,
+    ),
+    suspectedStuckMs: readPositiveInteger(
+      overrides?.suspectedStuckMs ?? DEFAULT_PRODUCTIVITY_REVIEW_SUSPECTED_STUCK_HOURS * 60 * 60 * 1000,
+      DEFAULT_PRODUCTIVITY_REVIEW_SUSPECTED_STUCK_HOURS * 60 * 60 * 1000,
     ),
     highChurnHourly: readPositiveInteger(
       overrides?.highChurnHourly ?? DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY,
@@ -524,20 +531,35 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         .then((rows) => rows[0] ?? { costCents: 0 }),
     ]);
 
-    const activeRunCount = latestRuns.filter((run) =>
+    const activeRuns = latestRuns.filter((run) =>
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
-    ).length;
+    );
+    const activeRunCount = activeRuns.length;
     // A stale terminal run (failed/cancelled/succeeded) sitting in a past episode
     // must not count toward active-duration. If the most recently created sampled
     // run is terminal, no live active episode exists, so wall-clock elapsed time on
     // the issue is an artifact of an abandoned run rather than a signal that the
     // assignee is unresponsive.
     const mostRecentlyCreatedRun = latestRuns[0] ?? null;
-    const hasLiveActiveRun = activeRunCount > 0 &&
+    // Classify active runs as suspected_stuck when they have been running for
+    // longer than the threshold with no liveness signal (livenessState is null
+    // or "unknown"). Such runs are hung adapter processes that never reached a
+    // terminal state and should not count toward active-duration.
+    const isSuspectedStuck = (run: HeartbeatRunRow) => {
+      const runStartedAt = coerceDate(run.startedAt ?? run.createdAt);
+      if (!runStartedAt) return false;
+      const runAgeMs = now.getTime() - runStartedAt.getTime();
+      return runAgeMs >= thresholds.suspectedStuckMs && !run.livenessState;
+    };
+    const suspectedStuckRuns = activeRuns.filter(isSuspectedStuck);
+    const suspectedStuckRunCount = suspectedStuckRuns.length;
+    const hasGenuinelyActiveRun =
+      activeRunCount > 0 &&
       Boolean(mostRecentlyCreatedRun) &&
-      ACTIVE_RUN_STATUSES.includes(mostRecentlyCreatedRun.status as (typeof ACTIVE_RUN_STATUSES)[number]);
+      ACTIVE_RUN_STATUSES.includes(mostRecentlyCreatedRun.status as (typeof ACTIVE_RUN_STATUSES)[number]) &&
+      !isSuspectedStuck(mostRecentlyCreatedRun);
     const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
-    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt && hasLiveActiveRun
+    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt && hasGenuinelyActiveRun
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
@@ -569,6 +591,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       totalRunCount: latestRuns.length,
       terminalRunCount: terminalRuns.length,
       activeRunCount,
+      suspectedStuckRunCount,
       runCountLastHour,
       runCountLastSixHours,
       commentCount: assigneeRunCommentCount,
@@ -652,6 +675,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
       `- Terminal sampled runs: ${evidence.terminalRunCount}`,
       `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
+      `- Suspected stuck active runs: ${evidence.suspectedStuckRunCount}`,
       `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
       `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,
       `- Runs in rolling windows: ${evidence.runCountLastHour}/1h, ${evidence.runCountLastSixHours}/6h`,

@@ -607,6 +607,78 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
   });
 
+  it("does not trigger a long-active review when the active run is suspected stuck (running >2h with no liveness)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    // A running run that started 5 hours ago with no liveness state.
+    // This should be classified as suspected_stuck and excluded from
+    // active-duration calculation, preventing the false positive from ETS-422.
+    const stuckRunningCreatedAt = new Date(now.getTime() - 5 * 60 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: stuckRunningCreatedAt,
+      finishedAt: null,
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: null,
+      nextAction: null,
+      createdAt: stuckRunningCreatedAt,
+      updatedAt: stuckRunningCreatedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("triggers a long-active review when the active run has a liveness state and is running >2h", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    // A running run that started 5 hours ago but HAS a liveness state.
+    // This should NOT be classified as stuck, so the review should trigger.
+    const runningCreatedAt = new Date(now.getTime() - 5 * 60 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: runningCreatedAt,
+      finishedAt: null,
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      livenessState: "advanced",
+      nextAction: "Continue processing the next batch.",
+      createdAt: runningCreatedAt,
+      updatedAt: runningCreatedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
