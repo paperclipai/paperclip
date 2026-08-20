@@ -10651,50 +10651,12 @@ export function issueRoutes(
       return;
     }
 
-    // Terminal inert checkout must not reopen a closed workspace. Decide that
-    // before any closed-workspace lookup so a no-op does not rebuild/republish
-    // (or turn a rebuild failure into 503).
-    const terminalInertCheckout =
-      (issue.status === "done" || issue.status === "cancelled") && resumeRequested !== true;
-    const closedExecutionWorkspace = terminalInertCheckout
-      ? null
-      : await getClosedIssueExecutionWorkspace(issue);
-
-    // Reopen the closed isolated workspace only after the run-id gate passes. A
-    // rejected checkout must not rebuild and republish the workspace as active.
-    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
-    let reopenedGeneration: number | null = null;
-    if (closedExecutionWorkspace) {
-      const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
-        req,
-        res,
-        issue,
-        closedExecutionWorkspace,
-      );
-      if (reopenOutcome === null) {
-        return;
-      }
-      // Install the guard only when this request set the reopen-pending flag. A
-      // concurrent request that found the workspace already open must not clear
-      // the flag that the actual reopener still owns.
-      if (reopenOutcome.outcome === "reopened") {
-        reopenedWorkspace = closedExecutionWorkspace;
-        reopenedGeneration = reopenOutcome.generation;
-      }
-    }
+    // Checkout before any closed-workspace reopen. Reopening from an unlocked
+    // pre-checkout snapshot races with concurrent terminalization: the route would
+    // rebuild/publish a workspace, then svc.checkout returns a terminal no-op.
+    // Deciding reopen from the post-checkout row closes that gap (and keeps true
+    // inert terminal calls from ever touching the workspace).
     let updated: Awaited<ReturnType<typeof svc.checkout>> | undefined;
-    // Clear the reopen-pending flag if the checkout leaves the issue terminal, so
-    // the rebuilt worktree does not leak. The guard reads `updated` when the
-    // response ends, so it covers a null return and a thrown error. It clears only
-    // the fence this request installed, keyed by its generation.
-    guardReopenedWorkspaceConsumption({
-      req,
-      res,
-      issue,
-      workspace: reopenedWorkspace,
-      generation: reopenedGeneration,
-      finalIssueStatus: () => updated?.status,
-    });
     try {
       updated = await svc.checkout(
         id,
@@ -10712,6 +10674,47 @@ export function issueRoutes(
       }
       throw error;
     }
+
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
+    const shouldReopenClosedWorkspace =
+      Boolean(updated)
+      && updated.status !== "done"
+      && updated.status !== "cancelled";
+    if (shouldReopenClosedWorkspace && updated) {
+      const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(updated);
+      if (closedExecutionWorkspace) {
+        const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
+          req,
+          res,
+          updated,
+          closedExecutionWorkspace,
+        );
+        if (reopenOutcome === null) {
+          return;
+        }
+        // Install the guard only when this request set the reopen-pending flag. A
+        // concurrent request that found the workspace already open must not clear
+        // the flag that the actual reopener still owns.
+        if (reopenOutcome.outcome === "reopened") {
+          reopenedWorkspace = closedExecutionWorkspace;
+          reopenedGeneration = reopenOutcome.generation;
+        }
+      }
+    }
+    // Clear the reopen-pending flag if the response ends with a terminal issue, so
+    // the rebuilt worktree does not leak. The guard reads `updated` when the
+    // response ends. It clears only the fence this request installed, keyed by
+    // its generation.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue,
+      workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
+      finalIssueStatus: () => updated?.status,
+    });
+
     const actor = getActorInfo(req);
     if (updated?.harnessKind === "skill_test") {
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
