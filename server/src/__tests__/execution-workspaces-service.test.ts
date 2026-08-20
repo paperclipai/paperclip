@@ -602,6 +602,125 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     }
   }, 20_000);
 
+  it("skips non-terminal reaper candidates without running Git inspection", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Non-terminal reaper skip",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Active non-terminal workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: repoRoot,
+      providerRef: repoRoot,
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName: "main",
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: "PAP-1",
+      title: "Still open",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-git-"));
+    tempDirs.add(fakeBin);
+    const gitMarkerPath = path.join(fakeBin, "git-called");
+    const fakeGitPath = path.join(fakeBin, "git");
+    await fs.writeFile(
+      fakeGitPath,
+      [
+        "#!/bin/sh",
+        "printf 'git invoked\\n' >> \"$PAPERCLIP_GIT_CALLED_MARKER\"",
+        "exit 99",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(fakeGitPath, 0o755);
+
+    const originalPath = process.env.PATH;
+    const originalMarker = process.env.PAPERCLIP_GIT_CALLED_MARKER;
+    const gitStatusSpy = vi.spyOn(workspaceGitOperationScheduler, "run");
+    process.env.PATH = originalPath ? `${fakeBin}:${originalPath}` : fakeBin;
+    process.env.PAPERCLIP_GIT_CALLED_MARKER = gitMarkerPath;
+
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({
+        checked: 1,
+        archived: 0,
+        skippedNonTerminalTree: 1,
+      });
+      expect(gitStatusSpy).not.toHaveBeenCalled();
+      await expect(fs.access(gitMarkerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      gitStatusSpy.mockRestore();
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalMarker === undefined) delete process.env.PAPERCLIP_GIT_CALLED_MARKER;
+      else process.env.PAPERCLIP_GIT_CALLED_MARKER = originalMarker;
+    }
+  }, 20_000);
+
+  it("backs off Git inspection for unchanged undelivered terminal reaper candidates", async () => {
+    await seedTerminalWorkspace();
+    const gitStatusSpy = vi.spyOn(workspaceGitOperationScheduler, "run");
+
+    try {
+      const firstSweep = await svc.sweepTerminalWorkspaces();
+
+      expect(firstSweep).toMatchObject({
+        checked: 1,
+        archived: 0,
+        skippedUndelivered: 1,
+      });
+      expect(gitStatusSpy).toHaveBeenCalledTimes(1);
+
+      gitStatusSpy.mockClear();
+      const secondSweep = await svc.sweepTerminalWorkspaces();
+
+      expect(secondSweep).toMatchObject({
+        checked: 1,
+        archived: 0,
+        skippedUndelivered: 1,
+      });
+      expect(gitStatusSpy).not.toHaveBeenCalled();
+    } finally {
+      gitStatusSpy.mockRestore();
+    }
+  }, 20_000);
+
   it("skips a sweep that starts while another sweep runs", async () => {
     // The scheduler can start a second sweep before the first one finishes. The
     // sweeps share the cursor and the boundary. A concurrent sweep must skip
@@ -3950,6 +4069,91 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       hasRuntimeConfig: false,
     });
   }, 30_000);
+
+  it("does not run close-readiness Git scans for workspace metadata reads", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Git-free workspace list",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Git backed workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: repoRoot,
+      providerRef: repoRoot,
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName: "main",
+    });
+
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-git-"));
+    tempDirs.add(fakeBin);
+    const gitMarkerPath = path.join(fakeBin, "git-called");
+    const fakeGitPath = path.join(fakeBin, "git");
+    await fs.writeFile(
+      fakeGitPath,
+      [
+        "#!/bin/sh",
+        "printf 'git invoked\\n' >> \"$PAPERCLIP_GIT_CALLED_MARKER\"",
+        "exit 99",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(fakeGitPath, 0o755);
+
+    const originalPath = process.env.PATH;
+    const originalMarker = process.env.PAPERCLIP_GIT_CALLED_MARKER;
+    const gitStatusSpy = vi.spyOn(workspaceGitOperationScheduler, "run");
+    process.env.PATH = originalPath ? `${fakeBin}:${originalPath}` : fakeBin;
+    process.env.PAPERCLIP_GIT_CALLED_MARKER = gitMarkerPath;
+
+    try {
+      const [workspace] = await svc.list(companyId);
+
+      expect(workspace).toMatchObject({
+        id: executionWorkspaceId,
+        deliveryState: "unknown",
+        cwd: repoRoot,
+        providerRef: repoRoot,
+      });
+
+      const byId = await svc.getById(executionWorkspaceId);
+      expect(byId).toMatchObject({
+        id: executionWorkspaceId,
+        deliveryState: "unknown",
+        cwd: repoRoot,
+        providerRef: repoRoot,
+      });
+      expect(gitStatusSpy).not.toHaveBeenCalled();
+      await expect(fs.access(gitMarkerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      gitStatusSpy.mockRestore();
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalMarker === undefined) delete process.env.PAPERCLIP_GIT_CALLED_MARKER;
+      else process.env.PAPERCLIP_GIT_CALLED_MARKER = originalMarker;
+    }
+  }, 20_000);
 
   it("inherits only runtime-service rows matching the current project workspace configuration and reuse scopes", async () => {
     const companyId = randomUUID();

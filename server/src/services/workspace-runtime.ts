@@ -5765,6 +5765,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const shell = resolveShell();
   const serviceLog = await openLocalServiceLogFile(serviceKey);
   let child: ChildProcess;
+  let spawnErrorPromise: Promise<never>;
   try {
     child = spawn(shell, ["-lc", command], {
       cwd: serviceCwd,
@@ -5775,17 +5776,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       // on an orphaned socketpair during startup reconciliation.
       stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
     });
+    spawnErrorPromise = new Promise<never>((_, reject) => {
+      child.once("error", (err) => {
+        reject(err);
+      });
+    });
+    // The handler above must be attached before the first await after spawn().
+    // Keep the promise marked handled until readiness races it below.
+    spawnErrorPromise.catch(() => undefined);
   } finally {
     await serviceLog.handle.close();
   }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
-  const spawnErrorPromise = new Promise<never>((_, reject) => {
-    child.once("error", (err) => {
-      reject(err);
-    });
-  });
   const earlyExitPromise = new Promise<never>((_, reject) => {
     // `close` follows `exit` after the child's inherited stdout/stderr file
     // descriptors are closed. Waiting for it makes the startup log excerpt
