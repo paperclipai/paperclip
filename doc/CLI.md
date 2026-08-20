@@ -338,7 +338,7 @@ Notes:
 ## Issue Commands
 
 ```sh
-npx paperclipai issue list --company-id <company-id> [--status todo,in_progress] [--assignee-agent-id <agent-id>] [--match text]
+npx paperclipai issue list --company-id <company-id> [--status todo,in_progress] [--assignee-agent-id <agent-id>] [--match text] [--stale-hours <hours>]
 npx paperclipai issue get <issue-id-or-identifier>
 npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
@@ -412,6 +412,23 @@ npx paperclipai issue label:delete <label-id>
 npx paperclipai issue feedback:votes <issue-id>
 npx paperclipai issue feedback:vote <issue-id> --payload-json '{"targetType":"issue_comment","targetId":"...","vote":"up"}'
 ```
+
+### Stale-issue visibility (saved query)
+
+Open issues can sit untouched with no signal on the board. `GET /companies/:companyId/issues` supports a `staleHours` filter built on `lastActivityAt` (comments, activity-log entries, and field updates all count as activity). Use it as a saved query — bookmark the command or script it into a periodic audit instead of scanning the board by hand:
+
+```sh
+# Open issues with no activity in the last 100 hours
+npx paperclipai issue list --company-id <company-id> --status todo,in_progress,in_review,blocked --stale-hours 100
+```
+
+Equivalent raw API call:
+
+```
+GET /companies/{id}/issues?staleHours=100&status=todo,in_progress,in_review,blocked
+```
+
+`staleHours` must be a positive number; the server returns `400` otherwise.
 
 ## Project Commands
 
