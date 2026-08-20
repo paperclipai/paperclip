@@ -868,6 +868,43 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(file.content).toContain("Scale the marketplace");
     });
 
+    it("hires the agent with the role the customer picked", async () => {
+      // The role was hardcoded to "ceo" before the role select existed. A
+      // dropdown that renders but does not reach the hire call would look
+      // entirely correct on screen and silently mis-file every agent.
+      await openOnAgentStep();
+
+      const role = document.getElementById("onboarding-agent-role") as HTMLSelectElement;
+      expect(role).toBeTruthy();
+      await act(async () => {
+        role.value = "engineer";
+        role.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await settle();
+
+      const next = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Next"),
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      const [, payload] = mockAgentsApi.hire.mock.calls.at(-1)!;
+      expect(payload.role).toBe("engineer");
+      // Picking a role also renamed the agent, since the field still held the
+      // name the wizard supplied.
+      expect(payload.name).toBe("Engineer");
+    });
+
     it("does not offer a way back behind the step it entered on", async () => {
       // Step 1 creates a company. A run that already holds one must not be
       // able to walk into it, by the Back button or the progress bar.

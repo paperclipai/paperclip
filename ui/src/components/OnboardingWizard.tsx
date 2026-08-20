@@ -1,11 +1,14 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
+  AgentRole,
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -72,6 +75,9 @@ import {
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
+import { Stepper, agentArcStepFor } from "./onboarding/Stepper";
+import { DEFAULT_AGENT_NAME, nextAgentNameForRole } from "../lib/onboarding-agent-role";
+import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -398,7 +404,8 @@ function OnboardingWizardInner({
   const [q4, setQ4] = useState((saved?.q4 as string) ?? ""); // What would success look like?
 
   // Step 2
-  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "Chief of staff");
+  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? DEFAULT_AGENT_NAME);
+  const [agentRole, setAgentRole] = useState<AgentRole>((saved?.agentRole as AgentRole) ?? "ceo");
   const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState((saved?.model as string) ?? "");
@@ -631,7 +638,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName, companyGoal, missionPath, missionConfirmed,
-      q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
+      q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -639,7 +646,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
-    q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
+    q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -1234,7 +1241,7 @@ function OnboardingWizardInner({
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
-        role: "ceo",
+        role: agentRole,
         adapterType,
         adapterConfig: buildAdapterConfig(),
         runtimeConfig: buildNewAgentRuntimeConfig()
@@ -1437,11 +1444,23 @@ function OnboardingWizardInner({
                 })}
               </div>
 
+              {/* The agent arc's progress strip. Numbered 1–3 over the wizard's
+                  steps 3–5, because company creation already happened in Cloud
+                  and the mission step is skipped when it did. */}
+              {agentArcStepFor(step) !== null && (
+                <Stepper step={agentArcStepFor(step)!} />
+              )}
+
               {/* Persistent evolving capsule (steps 3–5): a single AgentCapsule
                   held in the same tree slot so React reuses the DOM node and the
                   morph reads as one capsule coming to life — dashed slot →
                   solid (configured) → liquid fill + blue glow (online). */}
               {step >= 3 && step <= 5 && (
+                // reducedMotion="user" defers to the OS setting, so the hero
+                // arrives in place instead of springing for anyone who asked
+                // for less movement. The token layer already zeroes the CSS
+                // durations; this covers the JS-driven half.
+                <MotionConfig reducedMotion="user">
                 <div className="mb-6 space-y-4">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1477,7 +1496,15 @@ function OnboardingWizardInner({
                     </div>
                   </div>
 
-                  <div
+                  {/* The hero springs in once, when the arc is first entered.
+                      It stays mounted across steps 3–5 — same element, same
+                      tree slot — so moving between them never replays the
+                      entrance and the capsule reads as one object being built
+                      rather than three screens each showing their own. */}
+                  <motion.div
+                    initial={capsuleHeroMotion.initial}
+                    animate={capsuleHeroMotion.animate}
+                    transition={capsuleHeroMotion.transition}
                     className={cn(
                       "flex flex-col items-center py-1 text-center",
                       step === 5 ? "mt-8 gap-2.5" : "gap-1.5"
@@ -1488,6 +1515,9 @@ function OnboardingWizardInner({
                       gradient={5}
                       glow="blue"
                       size="md"
+                      // The arc is where the agent is born, so the slot→configured
+                      // morph traces the outline on rather than cross-fading it.
+                      strokeDraw
                     />
                     {step !== 3 && (
                       <p
@@ -1503,8 +1533,9 @@ function OnboardingWizardInner({
                         )}
                       </p>
                     )}
-                  </div>
+                  </motion.div>
                 </div>
+                </MotionConfig>
               )}
 
               {/* Step content */}
@@ -1834,16 +1865,50 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 3: Create your team lead — name only (capsule above) */}
+              {/* Step 3: Create your team lead — role, then name (capsule above) */}
               {step === 3 && (
                 <div className="space-y-5">
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <label
+                      className="text-xs text-muted-foreground mb-1 block"
+                      htmlFor="onboarding-agent-role"
+                    >
+                      Role
+                    </label>
+                    {/* Options come from the agent role enum rather than the
+                        prototype's mock list: four of that list's seven entries
+                        have no equivalent here, and picking one ("Coder") would
+                        fail validation at hire time. */}
+                    <select
+                      id="onboarding-agent-role"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                      value={agentRole}
+                      onChange={(e) => {
+                        const nextRole = e.target.value as AgentRole;
+                        setAgentRole(nextRole);
+                        setAgentName((current) =>
+                          nextAgentNameForRole({ currentName: current, nextRole }),
+                        );
+                      }}
+                    >
+                      {AGENT_ROLES.map((role) => (
+                        <option key={role} value={role}>
+                          {AGENT_ROLE_LABELS[role]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs text-muted-foreground mb-1 block"
+                      htmlFor="onboarding-agent-name"
+                    >
                       Name
                     </label>
                     <input
+                      id="onboarding-agent-name"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Chief of staff"
+                      placeholder={DEFAULT_AGENT_NAME}
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       onKeyDown={(e) => {
