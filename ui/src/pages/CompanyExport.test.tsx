@@ -238,10 +238,40 @@ describe("CompanyExport", () => {
     await flushReact();
   }
 
+  async function preparePreview() {
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.trim() === "Prepare export preview",
+    );
+    if (!button) throw new Error("Prepare export preview button not found");
+    await clickElement(button as HTMLButtonElement);
+    await flushReact();
+    await flushReact();
+  }
+
+  it("defers export data and task-related fidelity work until the user asks for a preview", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Prepare export preview");
+    expect(mockAuthApi.getSession).not.toHaveBeenCalled();
+    expect(mockAgentsApi.list).not.toHaveBeenCalled();
+    expect(mockProjectsApi.list).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.exportPreview).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.exportFidelity).not.toHaveBeenCalled();
+
+    await preparePreview();
+
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(1);
+    expect(mockCompaniesApi.exportPreview.mock.calls[0]?.[1]).toMatchObject({
+      include: { issues: false },
+    });
+    expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
+  });
+
   it("keeps task history opt-in, then requests all selected files on download", async () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await preparePreview();
 
     expect(mockCompaniesApi.exportPreview.mock.calls[0]?.[1]).toMatchObject({
       include: { issues: false },
@@ -252,6 +282,7 @@ describe("CompanyExport", () => {
     await clickElement(categoryInput("routines"));
     await clickElement(categoryInput("attachments"));
 
+    expect(mockCompaniesApi.exportPreview.mock.calls.some(([, request]) => request.include.issues === true)).toBe(true);
     expect(container.textContent).toContain("Exporting 6 of 6 files");
     // The tree is a pure browser now — no per-file checkboxes.
     expect(container.querySelector('[role="tree"] input[type="checkbox"]')).toBeNull();
@@ -274,6 +305,7 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await preparePreview();
     await clickElement(categoryInput("tasks"));
     await clickElement(categoryInput("routines"));
     await clickElement(categoryInput("attachments"));
@@ -302,6 +334,7 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await preparePreview();
 
     const attachments = categoryInput("attachments");
     expect(attachments.disabled).toBe(true);
@@ -314,6 +347,7 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await preparePreview();
     await clickElement(categoryInput("tasks"));
     await clickElement(categoryInput("attachments"));
 
@@ -347,6 +381,7 @@ describe("CompanyExport", () => {
     ]));
 
     await renderPage();
+    await preparePreview();
 
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
     expect(container.textContent).toContain("Not included in this export");
@@ -358,6 +393,7 @@ describe("CompanyExport", () => {
 
   it("renders no fidelity panel when the report has no warnings", async () => {
     await renderPage();
+    await preparePreview();
 
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
     expect(container.textContent).not.toContain("Not included in this export");
