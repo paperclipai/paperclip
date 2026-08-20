@@ -5156,7 +5156,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(sourceIssue).toMatchObject({
       status: "blocked",
-      assigneeAgentId: agentId,
+      assigneeAgentId: sourceAssigneeAgentId,
     });
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
