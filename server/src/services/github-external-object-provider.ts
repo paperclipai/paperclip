@@ -315,7 +315,13 @@ async function safeJson(response: Response) {
 
 type ChecksState = "success" | "failure" | "pending";
 
-const FAILING_CHECK_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+// Allow-list, not a block-list: GitHub's check-run `conclusion` values keep
+// growing (stale, skipped, neutral, ...), and a gate that only recognizes a
+// fixed set of *failing* conclusions silently treats any conclusion it
+// doesn't recognize as green. Only these conclusions count as confirmed-not-
+// blocking; anything else on a completed run (including an unrecognized
+// future value) is treated as failure.
+const PASSING_CHECK_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
 
 function checksStateFromCheckRuns(checkRuns: Array<Record<string, unknown>>): ChecksState | null {
   if (checkRuns.length === 0) return null;
@@ -328,7 +334,7 @@ function checksStateFromCheckRuns(checkRuns: Array<Record<string, unknown>>): Ch
       continue;
     }
     const conclusion = asString(run.conclusion);
-    if (conclusion && FAILING_CHECK_CONCLUSIONS.has(conclusion)) sawFailure = true;
+    if (!conclusion || !PASSING_CHECK_CONCLUSIONS.has(conclusion)) sawFailure = true;
   }
   if (sawFailure) return "failure";
   if (sawIncomplete) return "pending";
@@ -381,8 +387,15 @@ async function fetchChecksState(input: {
     const checkRunsResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/check-runs`, { headers });
     if (checkRunsResponse.ok) {
       const body = await safeJson(checkRunsResponse);
-      const checkRuns = Array.isArray(body?.check_runs) ? (body!.check_runs as Array<Record<string, unknown>>) : [];
-      checkRunsState = checksStateFromCheckRuns(checkRuns);
+      if (body === null) {
+        // 2xx but an unreadable/non-JSON body: we cannot tell whether there
+        // were check-runs or not. Do not treat this the same as a
+        // confirmed-empty check-runs list.
+        checkRunsFetchFailed = true;
+      } else {
+        const checkRuns = Array.isArray(body.check_runs) ? (body.check_runs as Array<Record<string, unknown>>) : [];
+        checkRunsState = checksStateFromCheckRuns(checkRuns);
+      }
     } else {
       checkRunsFetchFailed = true;
     }
@@ -396,7 +409,11 @@ async function fetchChecksState(input: {
     const statusResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/status`, { headers });
     if (statusResponse.ok) {
       const body = await safeJson(statusResponse);
-      statusState = checksStateFromCombinedStatus(body);
+      if (body === null) {
+        statusFetchFailed = true;
+      } else {
+        statusState = checksStateFromCombinedStatus(body);
+      }
     } else {
       statusFetchFailed = true;
     }
@@ -407,15 +424,18 @@ async function fetchChecksState(input: {
   // Combine both signals rather than trusting check-runs alone: a commit can
   // have all-green GitHub Checks and a failing/pending legacy commit status
   // (posted by a non-Checks-API CI integration) at the same time. The worse
-  // of the two known signals wins.
+  // of the two known signals wins, and an explicit "failure" from either
+  // source is trusted even if the other lookup could not be completed.
   const combined = worstChecksState([checkRunsState, statusState]);
-  if (combined) return combined;
+  if (combined === "failure") return "failure";
 
-  // Neither endpoint returned a usable signal. If either request actually
-  // failed (network error, non-2xx, unreadable body) we cannot say this
-  // commit has no CI configured — do not silently report "success" for an
-  // unknown state; let the caller treat it as "unable to determine".
+  // One of the two lookups did not actually complete (network error, non-2xx,
+  // unreadable body). We only have a partial picture of this commit's CI
+  // state, so we must not report "pending" or "success" as if we had
+  // confirmed both signals -- report unknown and let the caller fail closed.
   if (checkRunsFetchFailed || statusFetchFailed) return null;
+
+  if (combined) return combined;
 
   // Both endpoints were reached successfully and reported nothing: there is
   // genuinely no CI configured for this commit, so there is nothing to gate on.

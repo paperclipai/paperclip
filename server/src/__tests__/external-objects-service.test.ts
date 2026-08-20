@@ -507,6 +507,101 @@ describe("GitHub external object provider", () => {
     });
   });
 
+  it("does not report checksState success when the check-runs lookup fails but the legacy status succeeds", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) return new Response("", { status: 502 });
+      if (url.endsWith("/status")) {
+        return response({
+          state: "success",
+          statuses: [{ state: "success", context: "ci/legacy-jenkins" }],
+        });
+      }
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    // The legacy status endpoint reports green, but the check-runs lookup
+    // itself failed (502) -- we have no idea whether there is a failing
+    // required check-run we simply could not see. Reporting "success" here
+    // would let an unverified merged PR pass the done gate.
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("treats an unreadable 2xx check-runs body the same as a failed lookup, not an empty list", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) return new Response("not json", { status: 200, headers: { "content-type": "application/json" } });
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("treats an unrecognized completed check-run conclusion as failure, not success", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "stale" }]);
+      }
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
   it.each([
     [
       "auth-required",

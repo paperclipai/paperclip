@@ -315,7 +315,7 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
   }));
 }
 
-type DoneTransitionPrGateReason = "open" | "unmerged" | "checks red" | "checks pending";
+type DoneTransitionPrGateReason = "open" | "unmerged" | "checks red" | "checks pending" | "unverified";
 
 function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransitionPrGateReason | null {
   const state = typeof data.state === "string" ? data.state : "unknown";
@@ -333,7 +333,8 @@ function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransiti
 /**
  * Fail-closed guard for the `done` transition (AGE-569): an issue may not be
  * marked `done` while it references a GitHub pull request that is still
- * open/unmerged, or merged with red/pending CI. Board and agent actors are
+ * open/unmerged, merged with red/pending CI, or whose current state could
+ * not be verified (a forced live refresh failed). Board and agent actors are
  * both subject to this gate — there is no bypass flag, matching the
  * fail-closed shape of `scripts/require-issue-claim.sh` and the `.claude/hooks`
  * guards this ticket is modeled on.
@@ -360,24 +361,38 @@ async function assertNoBlockingLinkedPullRequest(
   const linkedPullRequestObjectIds = groups
     .filter((group) => group.object?.objectType === "pull_request")
     .map((group) => group.object!.id);
+  // Objects whose forced refresh did not confirm a fresh resolve (auth
+  // failure, unreachable host, or the refresh call itself throwing). A
+  // cached "merged and green" snapshot for one of these must not be trusted
+  // as current -- track them so the loop below fails closed instead of
+  // silently reusing stale data.
+  const unconfirmedObjectIds = new Set<string>();
   if (linkedPullRequestObjectIds.length > 0) {
     // A cached snapshot can be up to GITHUB_OBJECT_TTL_SECONDS stale. The
     // done gate must reflect the PR's *current* GitHub state, not whatever
     // was last polled -- force a live refresh before evaluating, then re-read
     // it. If the refresh itself fails, fall back to the last-known snapshot
-    // rather than failing the whole transition.
+    // rather than failing the whole transition, but mark every requested
+    // object as unconfirmed so a stale "pass" cannot slip through.
     try {
-      await externalObjectsSvc.refreshIssueObjects(issueId, {
+      const refreshResults = await externalObjectsSvc.refreshIssueObjects(issueId, {
         companyId,
         objectIds: linkedPullRequestObjectIds,
         force: true,
       });
+      const confirmedIds = new Set(
+        refreshResults.filter((result) => result.reason === "resolved").map((result) => result.object.id),
+      );
+      for (const objectId of linkedPullRequestObjectIds) {
+        if (!confirmedIds.has(objectId)) unconfirmedObjectIds.add(objectId);
+      }
       groups = await externalObjectsSvc.listForIssue(issueId);
     } catch (err) {
       logger.warn(
         { err, issueId },
-        "done-transition PR gate: failed to refresh linked pull request state; evaluating last-known snapshot",
+        "done-transition PR gate: failed to refresh linked pull request state; evaluating last-known snapshot as unconfirmed",
       );
+      for (const objectId of linkedPullRequestObjectIds) unconfirmedObjectIds.add(objectId);
     }
   }
   for (const group of groups) {
@@ -385,14 +400,18 @@ async function assertNoBlockingLinkedPullRequest(
     if (!object || object.objectType !== "pull_request") continue;
     const data = (object.data ?? {}) as Record<string, unknown>;
     if (data.provider !== "github") continue;
-    const reason = doneTransitionPrGateReason(data);
+    const reason = doneTransitionPrGateReason(data)
+      ?? (unconfirmedObjectIds.has(object.id) ? "unverified" : null);
     if (!reason) continue;
     const owner = typeof data.owner === "string" ? data.owner : "unknown";
     const repo = typeof data.repo === "string" ? data.repo : "unknown";
     const number = typeof data.number === "number" ? data.number : null;
     const label = number !== null ? `${owner}/${repo}#${number}` : `${owner}/${repo}`;
+    const message = reason === "unverified"
+      ? `Cannot mark issue done: linked pull request ${label}'s merge/CI state could not be verified (GitHub lookup failed)`
+      : `Cannot mark issue done: linked pull request ${label} is ${reason}`;
     throw unprocessable(
-      `Cannot mark issue done: linked pull request ${label} is ${reason}`,
+      message,
       {
         code: "done_transition_pr_gate",
         reason,

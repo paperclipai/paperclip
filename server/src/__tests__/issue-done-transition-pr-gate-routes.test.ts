@@ -284,6 +284,32 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
     });
   });
 
+  it("refuses done when the forced refresh of a cached merged+green PR cannot reach GitHub", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(106, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-unreachable-106",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Simulate GitHub becoming unreachable for the forced refresh triggered
+    // by the done PATCH. The cached snapshot still says merged+green, but
+    // that state can no longer be confirmed -- the gate must not trust it.
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("getaddrinfo ENOTFOUND api.github.com");
+    }));
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#106");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "unverified",
+    });
+  });
+
   it("does not gate issues with no linked pull request", async () => {
     stubGitHubFetch();
     const createRes = await request(app)
