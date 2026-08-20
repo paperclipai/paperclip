@@ -498,15 +498,40 @@ function generateReadmeFromSelection(
 
 // ── Preview pane ──────────────────────────────────────────────────────
 
+export function resolveExportPreviewImageSrc(input: {
+  src: string;
+  selectedFile: string;
+  allFiles: Record<string, CompanyPortabilityFileEntry>;
+  orgChartPreviewUrl?: string;
+}): string | null {
+  const { src, selectedFile, allFiles, orgChartPreviewUrl } = input;
+  if (/^(?:https?:|data:)/i.test(src)) return null;
+
+  // Preview generation deliberately avoids the comparatively expensive PNG
+  // renderer. Use the independently generated SVG endpoint so the README
+  // never shows a broken image; downloaded bundles still contain the PNG.
+  if (src.replace(/^\.\//, "") === "images/org-chart.png" && orgChartPreviewUrl) {
+    return orgChartPreviewUrl;
+  }
+
+  const dir = selectedFile.includes("/") ? selectedFile.slice(0, selectedFile.lastIndexOf("/") + 1) : "";
+  const resolved = dir + src;
+  const entry = allFiles[resolved] ?? allFiles[src];
+  if (!entry) return null;
+  return getPortableFileDataUrl(resolved in allFiles ? resolved : src, entry);
+}
+
 function ExportPreviewPane({
   selectedFile,
   content,
   allFiles,
+  orgChartPreviewUrl,
   onSkillClick,
 }: {
   selectedFile: string | null;
   content: CompanyPortabilityFileEntry | null;
   allFiles: Record<string, CompanyPortabilityFileEntry>;
+  orgChartPreviewUrl?: string;
   onSkillClick?: (skill: string) => void;
 }) {
   if (!selectedFile || content === null) {
@@ -522,16 +547,7 @@ function ExportPreviewPane({
 
   // Resolve relative image paths within the export package (e.g. images/org-chart.png)
   const resolveImageSrc = isMarkdown
-    ? (src: string) => {
-        // Skip absolute URLs and data URIs
-        if (/^(?:https?:|data:)/i.test(src)) return null;
-        // Resolve relative to the directory of the current markdown file
-        const dir = selectedFile.includes("/") ? selectedFile.slice(0, selectedFile.lastIndexOf("/") + 1) : "";
-        const resolved = dir + src;
-        const entry = allFiles[resolved] ?? allFiles[src];
-        if (!entry) return null;
-        return getPortableFileDataUrl(resolved in allFiles ? resolved : src, entry);
-      }
+    ? (src: string) => resolveExportPreviewImageSrc({ src, selectedFile, allFiles, orgChartPreviewUrl })
     : undefined;
 
   return (
@@ -596,16 +612,16 @@ export function CompanyExport() {
   const navigate = useNavigate();
   const location = useLocation();
   const initialFileFromUrl = useRef(filePathFromLocation(location.pathname));
-  const { data: session, isFetched: isSessionFetched } = useQuery({
+  const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  const { data: agents = [], isFetched: areAgentsFetched } = useQuery({
+  const { data: agents = [] } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: projects = [], isFetched: areProjectsFetched } = useQuery({
+  const { data: projects = [] } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -657,10 +673,6 @@ export function CompanyExport() {
       orderedProjects,
     }),
     [orderedAgents, orderedProjects, visibleAgents, visibleProjects],
-  );
-  const sidebarOrderKey = useMemo(
-    () => JSON.stringify(sidebarOrder ?? null),
-    [sidebarOrder],
   );
   const includeIssues = categories.tasks || categories.routines;
 
@@ -771,11 +783,10 @@ export function CompanyExport() {
 
   useEffect(() => {
     if (!selectedCompanyId || exportPreviewMutation.isPending) return;
-    if (!isSessionFetched || !areAgentsFetched || !areProjectsFetched) return;
     setExportData(null);
     exportPreviewMutation.mutate(includeIssues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey, includeIssues]);
+  }, [selectedCompanyId, includeIssues]);
 
   const tree = useMemo(
     () => (exportData ? buildFileTree(exportData.files) : []),
@@ -1117,7 +1128,13 @@ export function CompanyExport() {
           </div>
         </aside>
         <div className="min-w-0 overflow-y-auto xl:pl-6">
-          <ExportPreviewPane selectedFile={selectedFile} content={previewContent} allFiles={effectiveFiles} onSkillClick={handleSkillClick} />
+          <ExportPreviewPane
+            selectedFile={selectedFile}
+            content={previewContent}
+            allFiles={effectiveFiles}
+            orgChartPreviewUrl={`/api/companies/${encodeURIComponent(selectedCompanyId)}/org.svg`}
+            onSkillClick={handleSkillClick}
+          />
         </div>
       </div>
     </div>

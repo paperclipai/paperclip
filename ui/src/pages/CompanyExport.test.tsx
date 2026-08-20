@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyExport } from "./CompanyExport";
+import { CompanyExport, resolveExportPreviewImageSrc } from "./CompanyExport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   exportPreview: vi.fn(),
@@ -250,6 +250,35 @@ describe("CompanyExport", () => {
       include: { company: true, agents: true, projects: true, issues: false, skills: true },
     });
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
+  });
+
+  it("starts the preview without waiting for sidebar-order dependencies", async () => {
+    let resolveSession!: (value: { user: { id: string } }) => void;
+    let resolveAgents!: (value: never[]) => void;
+    let resolveProjects!: (value: never[]) => void;
+    mockAuthApi.getSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve; }));
+    mockAgentsApi.list.mockReturnValue(new Promise((resolve) => { resolveAgents = resolve; }));
+    mockProjectsApi.list.mockReturnValue(new Promise((resolve) => { resolveProjects = resolve; }));
+
+    await renderPage();
+
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Paperclip export");
+
+    await act(async () => {
+      resolveSession({ user: { id: "user-1" } });
+      resolveAgents([]);
+      resolveProjects([]);
+    });
+  });
+
+  it("renders the generated org chart through the independent SVG endpoint", () => {
+    expect(resolveExportPreviewImageSrc({
+      src: "images/org-chart.png",
+      selectedFile: "README.md",
+      allFiles: {},
+      orgChartPreviewUrl: "/api/companies/company-1/org.svg",
+    })).toBe("/api/companies/company-1/org.svg");
   });
 
   it("keeps task history opt-in, then requests all selected files on download", async () => {
