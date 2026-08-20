@@ -3300,7 +3300,7 @@ export function issueRoutes(
     resumeRequested?: boolean;
     reopened?: boolean;
     blockedToTodoRecovery?: boolean;
-  }) {
+  }, dbOrTx: Db = db, postCommitActivityPublications?: ActivityPublication[]) {
     const activeRecoveryAction =
       input.activeRecoveryAction === undefined
         ? await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id)
@@ -3310,18 +3310,21 @@ export function issueRoutes(
     const resolutionNote = await classifySourceRecoveryRevalidation(input);
     if (!resolutionNote) return activeRecoveryAction;
 
-    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-      companyId: input.issue.companyId,
-      sourceIssueId: input.issue.id,
-      actionId: activeRecoveryAction.id,
-      status: "cancelled",
-      outcome: "cancelled",
-      resolutionNote,
-    });
+    const resolved = await recoveryActionsSvc.resolveActiveForIssue(
+      {
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: activeRecoveryAction.id,
+        status: "cancelled",
+        outcome: "cancelled",
+        resolutionNote,
+      },
+      dbOrTx,
+    );
     if (!resolved) return activeRecoveryAction;
 
     const actor = input.actor;
-    await logActivity(db, {
+    await logActivity(dbOrTx, {
       companyId: input.issue.companyId,
       actorType: actor?.actorType ?? "system",
       actorId: actor?.actorId ?? "system",
@@ -3340,7 +3343,7 @@ export function issueRoutes(
         source: "source_revalidation",
         trigger: input.trigger,
       },
-    });
+    }, postCommitActivityPublications);
 
     return null;
   }
@@ -9108,6 +9111,7 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       typeof updateFields.status === "string" &&
       updateFields.status !== existing.status &&
+      updateFields.status !== "cancelled" &&
       (isBlocked || (isClosed && !isClosedIssueStatus(updateFields.status)));
     if (resumeRequested !== true && req.actor.type === "agent" && reopenRequested === true) {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
@@ -9126,8 +9130,12 @@ export function issueRoutes(
     const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested
       ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
       : null;
+    const terminalRecoveryRelinquishRequested =
+      activeRecoveryActionBeforeUpdate !== null &&
+      (updateFields.status === "done" || updateFields.status === "cancelled");
     if (
       recoveryRelevantSourceMutationRequested &&
+      !terminalRecoveryRelinquishRequested &&
       !(await assertRecoveryActionAuthority(
         req,
         res,
@@ -9594,7 +9602,8 @@ export function issueRoutes(
       Boolean(decision)
       || shouldRelayStop
       || persistReviewActivityTransactionally
-      || reviewPolicySensitiveMutationRequested;
+      || reviewPolicySensitiveMutationRequested
+      || terminalRecoveryRelinquishRequested;
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
@@ -9622,6 +9631,16 @@ export function issueRoutes(
 
           if (shouldRelayStop) {
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
+          }
+
+          if (terminalRecoveryRelinquishRequested) {
+            await revalidateActiveSourceRecovery({
+              issue: updated,
+              trigger: "issue_update",
+              actor,
+              activeRecoveryAction: activeRecoveryActionBeforeUpdate,
+              statusChanged: existing.status !== updated.status,
+            }, tx as unknown as Db, postCommitActivityPublications);
           }
 
           await persistReviewTransitionActivity(tx, updated);

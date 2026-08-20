@@ -1683,6 +1683,45 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("atomically relinquishes another owner's recovery action on an authorized terminal transition", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+      changes: { status: { from: "in_progress", to: "done" } },
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId,
+    });
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue reached done.",
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+      expect.anything(),
+    );
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: recoveryActionId,
+        sourceIssueId: issueId,
+        status: "cancelled",
+      }),
+      expect.anything(),
+    );
+  });
+
   it("rejects peer-agent recovery resolution on a board-owned source issue", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),

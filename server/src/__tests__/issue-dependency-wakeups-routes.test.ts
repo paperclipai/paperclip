@@ -57,6 +57,8 @@ vi.mock("../services/index.js", () => ({
     getDefaultCompanyGoal: vi.fn(),
   }),
   heartbeatService: () => ({
+    getActiveRunForAgent: vi.fn(async () => null),
+    getRun: vi.fn(async () => null),
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
   }),
@@ -178,6 +180,68 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+  });
+
+  it.each([
+    ["retaining an already-cancelled blocker", undefined],
+    ["while clearing an already-cancelled blocker", []],
+  ])("cancels a blocked issue %s", async (_description, blockedByIssueIds) => {
+    const blockedIssue = {
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-99",
+      title: "Blocked issue",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "issue-1",
+      blockerIssueIds: ["cancelled-blocker-1"],
+      unresolvedBlockerIssueIds: ["cancelled-blocker-1"],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+    mockIssueService.update.mockResolvedValue({
+      ...blockedIssue,
+      status: "cancelled",
+      blockerAttention: { state: "none" },
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/issue-1")
+      .send({
+        status: "cancelled",
+        ...(blockedByIssueIds === undefined ? {} : { blockedByIssueIds }),
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({ status: "cancelled" }),
+      expect.anything(),
+    );
+    if (blockedByIssueIds === undefined) {
+      expect(mockIssueService.update.mock.calls[0]?.[1]).not.toHaveProperty("blockedByIssueIds");
+    } else {
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ blockedByIssueIds: [] });
+    }
+    expect(mockIssueService.getDependencyReadiness).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({
+      status: "cancelled",
+      blockerAttention: { state: "none" },
+    });
   });
 
   it("wakes dependents when the final blocker transitions to done", async () => {
