@@ -419,7 +419,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       status: "in_review",
       priority: "medium",
     });
-    await db.update(routines).set({ parentIssueId: originalParent.id }).where(eq(routines.id, routine.id));
+    await svc.update(routine.id, {
+      parentIssueId: originalParent.id,
+      baseRevisionId: routine.latestRevisionId,
+    }, {});
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
     expect(run.status).toBe("issue_created");
