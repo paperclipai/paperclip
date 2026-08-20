@@ -1171,6 +1171,7 @@ function routineRevisionSnapshotRoutine(routine: typeof routines.$inferSelect): 
     title: routine.title,
     description: routine.description,
     assigneeAgentId: routine.assigneeAgentId,
+    assigneeAdapterOverrides: routine.assigneeAdapterOverrides ?? null,
     priority: routine.priority as RoutineRevisionSnapshotV1["routine"]["priority"],
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],

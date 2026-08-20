@@ -1853,7 +1853,9 @@ export function routineService(
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId,
-            assigneeAdapterOverrides: input.routine.assigneeAdapterOverrides ?? null,
+            assigneeAdapterOverrides: input.routine.assigneeAdapterOverrides
+              ? { ...input.routine.assigneeAdapterOverrides }
+              : null,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
             responsibleUserId,

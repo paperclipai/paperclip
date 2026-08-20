@@ -93,6 +93,12 @@ describe("routine validators", () => {
     }).assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
   });
 
+  it("rejects unsupported assignee model profiles on routine updates", () => {
+    expect(() => updateRoutineSchema.parse({
+      assigneeAdapterOverrides: { modelProfile: "fast" },
+    })).toThrow();
+  });
+
   it("validates routine activity gate values", () => {
     expect(updateRoutineSchema.parse({
       activityGatePolicy: "require_external_activity",
