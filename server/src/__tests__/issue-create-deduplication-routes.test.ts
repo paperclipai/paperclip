@@ -738,6 +738,56 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(2);
   });
 
+  it("does not deliver a persisted owner wake after the reporting line moves away", async () => {
+    const companyId = await seedCompany();
+    const owner = await seedAgent(companyId);
+    const creator = await seedAgent(companyId, owner.id);
+    // Service-layer create validates the owner against the current reporting
+    // line but does not deliver; the marker stays null until a route call
+    // re-drives delivery (create, PATCH, or replay).
+    const created = await issueService(db).create(companyId, {
+      title: "Blocked by a finding",
+      status: "blocked",
+      createdByAgentId: creator.id,
+      unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the finding" },
+    });
+    expect(created.blockedOwnerNotifiedAt).toBeNull();
+
+    // The reporting line changes before any delivery runs: the owner is no
+    // longer the creator's manager, so the persisted owner must not receive
+    // the wake.
+    await db.update(agents).set({ reportsTo: null }).where(eq(agents.id, creator.id));
+    let attempts = 0;
+    const retriedApp = createApp({
+      blockedOwnerEnqueueWakeup: async (...args) => {
+        attempts += 1;
+        return acceptedBlockedOwnerWakeup(companyId)(...args);
+      },
+    });
+
+    const stale = await request(retriedApp)
+      .patch(`/api/issues/${created.id}`)
+      .send({ description: "Retry the blocked owner wake" })
+      .expect(200);
+
+    expect(stale.body.blockedOwnerNotifiedAt).toBeNull();
+    expect(attempts).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+
+    // Once the hierarchy is repaired, the same replay delivers the wake.
+    await db.update(agents).set({ reportsTo: owner.id }).where(eq(agents.id, creator.id));
+    const repaired = await request(retriedApp)
+      .patch(`/api/issues/${created.id}`)
+      .send({ description: "Retry after hierarchy repair" })
+      .expect(200);
+
+    expect(repaired.body.blockedOwnerNotifiedAt).toEqual(expect.any(String));
+    expect(attempts).toBe(1);
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ reason: "issue_unblock_requested", agentId: owner.id });
+  });
+
   it("reconciles deferred owner wakes after heartbeat rewrites their reason", async () => {
     const companyId = await seedCompany();
     const owner = await seedAgent(companyId);

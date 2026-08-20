@@ -3014,6 +3014,46 @@ export function issueRoutes(
     }
   }
 
+  async function isPersistedBlockedOwnerStillAuthorized(
+    tx: Pick<Db, "select">,
+    issue: { companyId: string; createdByAgentId?: string | null; unblockDescriptor?: unknown },
+  ): Promise<boolean> {
+    const descriptor = issue.unblockDescriptor as { owner?: { agentId?: unknown } | "board" | null } | null | undefined;
+    const owner = descriptor?.owner;
+    if (!owner || owner === "board" || typeof owner.agentId !== "string" || !owner.agentId) {
+      return false;
+    }
+    const ownerAgentId = owner.agentId;
+    const companyAgents = await tx
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, issue.companyId))
+      .orderBy(asc(agents.id))
+      .for("update");
+    const ownerAgent = companyAgents.find((agent) => agent.id === ownerAgentId);
+    if (!ownerAgent) return false;
+    const ownerEligibility = getAgentWorkEligibility({ agent: ownerAgent, agents: companyAgents });
+    if (!ownerEligibility.invokable) return false;
+    const creatorAgentId = typeof issue.createdByAgentId === "string" ? issue.createdByAgentId : "";
+    if (!creatorAgentId || creatorAgentId === ownerAgentId) return true;
+    const creatorAgent = companyAgents.find((agent) => agent.id === creatorAgentId);
+    const creatorEligibility = creatorAgent
+      ? getAgentWorkEligibility({ agent: creatorAgent, agents: companyAgents })
+      : null;
+    return Boolean(
+      creatorEligibility?.invokable &&
+      creatorEligibility.orgChainHealth.fullChain.some(
+        (entry) => entry.relation === "ancestor" && entry.id === ownerAgent.id,
+      ),
+    );
+  }
+
   async function deliverBlockedOwnerNotification<
     T extends Parameters<typeof deliverAgentUnblockNotification>[0]["issue"] & { companyId: string },
   >(issue: T): Promise<T> {
@@ -3074,6 +3114,15 @@ export function issueRoutes(
 
       let acceptedWake = await findAcceptedWake();
       if (!acceptedWake) {
+        // The owner was authorized against the reporting line at create time,
+        // but that hierarchy can change before delivery. Reauthorize the
+        // persisted owner under the same lock as the wake enqueue: a former
+        // manager who is no longer the creator's ancestor must not receive
+        // the unblock wake. A failed reauthorization leaves the marker null
+        // so a later PATCH or replay can retry once the hierarchy is repaired.
+        if (!(await isPersistedBlockedOwnerStillAuthorized(tx, current))) {
+          return current as T;
+        }
         // Owner eligibility may legitimately change after the issue transaction commits.
         // Heartbeat admission is the authoritative delivery check: a rejected/suppressed
         // wake leaves the marker null so an idempotent replay or later PATCH can retry.
