@@ -6920,6 +6920,10 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
+    // The runtime service control path writes activity_log rows through
+    // logActivity. Those rows reference the company. Delete them before the
+    // company to respect the activity_log.company_id foreign key.
+    await db.delete(activityLog);
     await db.delete(agents);
     await db.delete(companies);
   });
