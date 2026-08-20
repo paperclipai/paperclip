@@ -3336,11 +3336,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    let blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const preservesSourceAssignee =
+      Boolean(recoveryAction.ownerAgentId) &&
+      Boolean(input.issue.assigneeAgentId) &&
+      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
+    const takeoverRecoveryIssue = preservesSourceAssignee
+      ? await ensureStrandedIssueRecoveryIssue({
+        issue: input.issue,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      })
+      : null;
+    if (takeoverRecoveryIssue) {
+      blockerIds = [...new Set([...blockerIds, takeoverRecoveryIssue.id])];
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      assigneeAgentId: preservesSourceAssignee
+        ? input.issue.assigneeAgentId
+        : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3473,14 +3491,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     });
 
-    await enqueueSourceScopedStrandedRecoveryWake({
-      action: recoveryAction,
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
-    });
+    if (!takeoverRecoveryIssue) {
+      await enqueueSourceScopedStrandedRecoveryWake({
+        action: recoveryAction,
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause,
+      });
+    }
 
-    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (!takeoverRecoveryIssue && recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
