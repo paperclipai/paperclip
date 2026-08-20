@@ -26,6 +26,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -1050,6 +1051,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
       )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasActiveRoutineLivenessPath(companyId: string, issueId: string) {
+    return db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(and(
+        eq(routines.companyId, companyId),
+        eq(routines.parentIssueId, issueId),
+        eq(routines.status, "active"),
+      ))
       .limit(1)
       .then((rows) => Boolean(rows[0]));
   }
@@ -3719,6 +3733,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (await hasActiveRoutineLivenessPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isOperatorCancelledRun(latestRun)) {
         result.operatorCancelExempted += 1;
@@ -4960,6 +4979,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.companyId !== input.finding.companyId) return { kind: "skipped" as const };
     if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+      return { kind: "skipped" as const };
+    }
+    if (await hasActiveRoutineLivenessPath(issue.companyId, issue.id)) {
       return { kind: "skipped" as const };
     }
 
