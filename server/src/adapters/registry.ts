@@ -106,6 +106,14 @@ import {
   modelProfiles as openCodeModelProfiles,
 } from "@paperclipai/adapter-opencode-local";
 import {
+  execute as firstmateGatewayExecute,
+  testEnvironment as firstmateGatewayTestEnvironment,
+} from "@paperclipai/adapter-firstmate-gateway/server";
+import {
+  agentConfigurationDoc as firstmateGatewayAgentConfigurationDoc,
+  models as firstmateGatewayModels,
+} from "@paperclipai/adapter-firstmate-gateway";
+import {
   execute as openclawGatewayExecute,
   testEnvironment as openclawGatewayTestEnvironment,
 } from "@paperclipai/adapter-openclaw-gateway/server";
@@ -416,6 +424,17 @@ const hermesGatewayAdapter = createHermesGatewayServerAdapter();
 
 const hermesLocalAdapter = createHermesLocalServerAdapter();
 
+const firstmateGatewayAdapter: ServerAdapterModule = {
+  type: "firstmate_gateway",
+  execute: firstmateGatewayExecute,
+  testEnvironment: firstmateGatewayTestEnvironment,
+  models: firstmateGatewayModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: firstmateGatewayAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -490,6 +509,7 @@ function registerBuiltInAdapters() {
     grokLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    firstmateGatewayAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
