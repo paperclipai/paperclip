@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "../node-version.js";
+import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@paperclipai/shared/node-version";
 import {
   addManagedPathBlock,
   assertManagedShimWritable,

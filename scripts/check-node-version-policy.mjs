@@ -57,6 +57,7 @@ walk(repoRoot, (filePath) => {
 
 const requiredSourceFragments = [
   [".nvmrc", "24"],
+  ["packages/shared/src/node-version.ts", 'MINIMUM_NODE_VERSION = "24.11.0"'],
   ["scripts/install.sh", "MIN_NODE_VERSION=\"${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}.${MIN_NODE_PATCH}\""],
   ["scripts/install.sh", "MIN_NODE_MAJOR=24"],
   ["scripts/install.sh", "MIN_NODE_MINOR=11"],

@@ -241,6 +241,12 @@ paperclipai service status
 presence and drift, running state, configured port ownership, and the running
 server version.
 
+The CLI and server also print a non-blocking startup warning when Node.js is
+below the supported minimum. Upgrade Node.js with a version manager or follow
+the downloaded `install.sh` workflow under **Recommended Install**. Do not use
+the piped form for this repair because it requires a supported Node.js runtime
+before it starts.
+
 ## Uninstall
 
 Remove the background service and managed CLI payloads:
