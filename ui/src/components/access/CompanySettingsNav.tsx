@@ -1,5 +1,6 @@
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
 
@@ -20,6 +21,17 @@ const items = [
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
+
+/** Tab values suppressed when their page is operator-hidden. */
+const hiddenSettingKeyByTab: Partial<Record<CompanySettingsTab, string>> = {
+  "instance-profile": "instance.profile",
+  "instance-environments": "instance.environments",
+  "instance-access": "instance.access",
+  "instance-heartbeats": "instance.heartbeats",
+  "instance-experimental": "instance.experimental",
+  "instance-plugins": "instance.plugins",
+  "instance-adapters": "instance.adapters",
+};
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`)) {
@@ -84,10 +96,15 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { hidden: hiddenSettings } = useHiddenSettings();
   const activeTab = getCompanySettingsTab(location.pathname);
+  const visibleItems = items.filter((item) => {
+    const hiddenKey = hiddenSettingKeyByTab[item.value];
+    return !hiddenKey || !hiddenSettings.has(hiddenKey);
+  });
 
   function handleTabChange(value: string) {
-    const nextTab = items.find((item) => item.value === value);
+    const nextTab = visibleItems.find((item) => item.value === value);
     if (!nextTab || nextTab.value === activeTab) return;
     navigate(nextTab.href);
   }
@@ -95,7 +112,7 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={items.map(({ value, label }) => ({ value, label }))}
+        items={visibleItems.map(({ value, label }) => ({ value, label }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

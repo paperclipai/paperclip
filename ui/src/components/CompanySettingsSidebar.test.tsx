@@ -3,6 +3,7 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
@@ -351,5 +352,66 @@ describe("CompanySettingsSidebar", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("CompanySettingsSidebar operator-hidden entries", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockSidebarBadgesApi.get.mockResolvedValue({
+      inbox: 0,
+      approvals: 0,
+      failedRuns: 0,
+      joinRequests: 0,
+    });
+    mockPluginsApi.list.mockResolvedValue([]);
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false, errorMessage: null });
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderSidebar(hiddenSettings?: string[]) {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      ...(hiddenSettings ? { hiddenSettings } : {}),
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  it("skips operator-hidden pages and their queries", async () => {
+    await renderSidebar(["instance.plugins", "instance.heartbeats"]);
+
+    expect(container.textContent).not.toContain("Plugins");
+    expect(container.textContent).not.toContain("Heartbeats");
+    expect(container.textContent).toContain("General");
+    expect(container.textContent).toContain("Adapters");
+    expect(container.textContent).toContain("Access");
+    expect(mockPluginsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("keeps every entry when nothing is hidden", async () => {
+    await renderSidebar();
+
+    expect(container.textContent).toContain("Access");
+    expect(container.textContent).toContain("Plugins");
+    expect(container.textContent).toContain("Heartbeats");
+    expect(container.textContent).toContain("Adapters");
+    expect(mockPluginsApi.list).toHaveBeenCalled();
   });
 });
