@@ -442,6 +442,58 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.activityGateScope).toBe("company");
   });
 
+  it("creates a routine when the actor's runId does not reference a known heartbeat run (KEWL-3766)", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const unknownRunId = randomUUID();
+
+    const created = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "unknown run provenance",
+        description: "created by a run id that heartbeat_runs has never heard of",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      { agentId, runId: unknownRunId },
+    );
+
+    expect(created.latestRevisionId).toBeTruthy();
+
+    const revision = await db
+      .select({ createdByRunId: routineRevisions.createdByRunId })
+      .from(routineRevisions)
+      .where(eq(routineRevisions.id, created.latestRevisionId!))
+      .then((rows) => rows[0]);
+    expect(revision?.createdByRunId).toBeNull();
+
+    const routineDocument = await db
+      .select({ documentId: routineDocuments.documentId })
+      .from(routineDocuments)
+      .where(eq(routineDocuments.routineId, created.id))
+      .then((rows) => rows[0]);
+    expect(routineDocument?.documentId).toBeTruthy();
+
+    const document = await db
+      .select({ latestRevisionId: documents.latestRevisionId })
+      .from(documents)
+      .where(eq(documents.id, routineDocument!.documentId))
+      .then((rows) => rows[0]);
+    expect(document?.latestRevisionId).toBeTruthy();
+
+    const documentRevision = await db
+      .select({ createdByRunId: documentRevisions.createdByRunId })
+      .from(documentRevisions)
+      .where(eq(documentRevisions.id, document!.latestRevisionId!))
+      .then((rows) => rows[0]);
+    expect(documentRevision?.createdByRunId).toBeNull();
+  });
+
   it("fires an activity gate for a routine that has never dispatched", async () => {
     const { routine, svc } = await seedFixture();
 

@@ -90,6 +90,21 @@ function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+async function resolveKnownRunId(db: Db, companyId: string, runId: string | null | undefined) {
+  const candidate = readNonEmptyString(runId);
+  if (!candidate || !isUuidLike(candidate)) return null;
+  const known = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, candidate)))
+    .then((rows) => rows.length > 0);
+  if (!known) {
+    logger.warn({ runId: candidate }, "activity log runId does not reference a known heartbeat run; recording without run attribution");
+    return null;
+  }
+  return candidate;
+}
+
 export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
   if (input.responsibleUserIdOverride !== undefined) {
     return readNonEmptyString(input.responsibleUserIdOverride);
@@ -160,6 +175,7 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const safeRunId = await resolveKnownRunId(db, input.companyId, input.runId);
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +184,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: safeRunId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });

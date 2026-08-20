@@ -49,6 +49,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isUuidLike,
   isValidRoutineDateString,
   normalizeAgentUrlKey,
   pluginOperationIssueOriginKind,
@@ -175,6 +176,21 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
+
+async function resolveKnownRunId(executor: Db, companyId: string, runId: string | null | undefined) {
+  const candidate = typeof runId === "string" && runId.trim().length > 0 ? runId.trim() : null;
+  if (!candidate || !isUuidLike(candidate)) return null;
+  const known = await executor
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, candidate)))
+    .then((rows: unknown[]) => rows.length > 0);
+  if (!known) {
+    logger.warn({ runId: candidate }, "routine revision runId does not reference a known heartbeat run; recording without run attribution");
+    return null;
+  }
+  return candidate;
+}
 
 const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
 
@@ -937,6 +953,8 @@ export function routineService(
     const snapshot = await buildRoutineRevisionSnapshot(executor, routine);
     const nextRevisionNumber = routine.latestRevisionId ? routine.latestRevisionNumber + 1 : 1;
     const now = new Date();
+    const safeRunId = await resolveKnownRunId(executor, routine.companyId, actor.runId);
+    const safeActor: Actor = safeRunId === actor.runId ? actor : { ...actor, runId: safeRunId };
     const [revision] = await executor
       .insert(routineRevisions)
       .values({
@@ -950,7 +968,7 @@ export function routineService(
         restoredFromRevisionId: options.restoredFromRevisionId ?? null,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
-        createdByRunId: actor.runId ?? null,
+        createdByRunId: safeRunId,
         responsibleUserId: snapshot.routine.responsibleUserId ?? null,
         createdAt: now,
       })
@@ -972,7 +990,7 @@ export function routineService(
       latestRevisionNumber: nextRevisionNumber,
       updatedAt: now,
     };
-    await upsertRoutineDescriptionDocument(executor, routineForDocument, actor, {
+    await upsertRoutineDescriptionDocument(executor, routineForDocument, safeActor, {
       changeSummary: options.changeSummary ?? null,
     });
 
