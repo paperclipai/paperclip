@@ -568,3 +568,100 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     20_000,
   );
 });
+
+describe("runDatabaseBackup abort handling", () => {
+  it("rejects immediately when handed an already-aborted signal", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-preaborted-");
+
+    await expect(
+      runDatabaseBackup({
+        // Never dialled: throwIfAborted() runs before the client is created.
+        connectionString: "postgres://unused:unused@127.0.0.1:1/unused",
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        signal: AbortSignal.abort(),
+      }),
+    ).rejects.toThrow();
+
+    expect(fs.readdirSync(backupDir)).toEqual([]);
+  });
+});
+
+describeEmbeddedPostgres("runDatabaseBackup with a signal", () => {
+  it(
+    "still completes normally when the signal is never aborted",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-signal-ok-");
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sql.unsafe(`
+          CREATE TABLE "public"."signal_ok" ("id" serial PRIMARY KEY, "payload" text NOT NULL);
+        `);
+        await sql.unsafe(`INSERT INTO "public"."signal_ok" ("payload") VALUES ('hello');`);
+      } finally {
+        await sql.end();
+      }
+
+      const controller = new AbortController();
+      const result = await runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        signal: controller.signal,
+      });
+
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8")).toContain("signal_ok");
+      // No stray uncompressed intermediate left behind.
+      expect(fs.readdirSync(backupDir).filter((f) => f.endsWith(".sql"))).toEqual([]);
+    },
+    30_000,
+  );
+
+  it(
+    "always settles when aborted mid-flight instead of hanging forever",
+    async () => {
+      // This is the 2026-07-25 wedge as a test: a stalled backup used to leave
+      // this promise unsettled, which pinned the caller's in-flight guard and
+      // silently disabled every future scheduled backup until a restart. The
+      // assertion that matters is simply that it SETTLES.
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-abort-");
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sql.unsafe(`
+          CREATE TABLE "public"."abort_rows" ("id" serial PRIMARY KEY, "payload" text NOT NULL);
+        `);
+        await sql.unsafe(`
+          INSERT INTO "public"."abort_rows" ("payload")
+          SELECT repeat('x', 2048) FROM generate_series(1, 4000);
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 25).unref?.();
+
+      const outcome = await Promise.race([
+        runDatabaseBackup({
+          connectionString,
+          backupDir,
+          retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+          signal: controller.signal,
+        }).then(() => "settled:resolved").catch(() => "settled:rejected"),
+        new Promise<string>((r) => {
+          setTimeout(() => r("HUNG"), 20_000).unref?.();
+        }),
+      ]);
+
+      expect(outcome).not.toBe("HUNG");
+      // Whichever way the race went, no half-written intermediate survives.
+      expect(fs.readdirSync(backupDir).filter((f) => f.endsWith(".sql"))).toEqual([]);
+    },
+    40_000,
+  );
+});
