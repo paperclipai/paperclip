@@ -6411,6 +6411,35 @@ type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | 
 
 export type TerminalCleanupFallbackStep = "wakeup" | "retry" | "issue_release" | "agent";
 
+/**
+ * Decide whether the terminal-cleanup fallback should schedule a bounded retry.
+ * Mirrors the normal finalization path's else-if chain: a max-turn continuation
+ * policy takes precedence and produces retry options only when it is enabled AND
+ * has a positive attempt budget; a present-but-ineligible policy suppresses retry
+ * entirely instead of falling through. Only when no max-turn policy applies does
+ * a failed run with a transient recovery contract fall back to the default
+ * bounded transient retry; anything else schedules nothing.
+ */
+export function resolveTerminalCleanupRetryOptions(input: {
+  maxTurnCleanupPolicy: MaxTurnContinuationPolicy | null;
+  outcome: RunSessionOutcome;
+  hasTransientRecoveryContract: boolean;
+}): { retryReason: string; wakeReason: string; maxAttempts: number; delayMs: number } | {} | null {
+  const policy = input.maxTurnCleanupPolicy;
+  if (policy) {
+    return policy.enabled && policy.maxAttempts > 0
+      ? {
+          retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+          wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+          maxAttempts: policy.maxAttempts,
+          delayMs: policy.delayMs,
+        }
+      : null;
+  }
+  if (input.outcome === "failed" && input.hasTransientRecoveryContract) return {};
+  return null;
+}
+
 export async function completeTerminalCleanupFallback(input: {
   finalizeWakeup?: () => Promise<void>;
   scheduleRetry?: () => Promise<void>;
@@ -16349,16 +16378,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? parseMaxTurnContinuationPolicy(agent)
           : null;
       const retryOptions: Parameters<typeof scheduleBoundedRetryForRun>[2] | null =
-        maxTurnCleanupPolicy?.enabled
-          ? {
-              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-              maxAttempts: maxTurnCleanupPolicy.maxAttempts,
-              delayMs: maxTurnCleanupPolicy.delayMs,
-            }
-          : outcome === "failed" && readTransientRecoveryContractFromRun(cleanupRun)
-            ? {}
-            : null;
+        resolveTerminalCleanupRetryOptions({
+          maxTurnCleanupPolicy,
+          outcome,
+          hasTransientRecoveryContract: readTransientRecoveryContractFromRun(cleanupRun) != null,
+        });
       const terminalCleanup = {
         run: cleanupRun,
         agent,

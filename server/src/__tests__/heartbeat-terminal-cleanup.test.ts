@@ -1,5 +1,84 @@
 import { describe, expect, it, vi } from "vitest";
-import { completeTerminalCleanupFallback } from "../services/heartbeat.js";
+import {
+  completeTerminalCleanupFallback,
+  MAX_TURN_CONTINUATION_RETRY_REASON,
+  MAX_TURN_CONTINUATION_WAKE_REASON,
+  resolveTerminalCleanupRetryOptions,
+} from "../services/heartbeat.js";
+
+describe("resolveTerminalCleanupRetryOptions", () => {
+  it("uses the max-turn continuation retry when the policy is enabled with a positive budget", () => {
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: { enabled: true, maxAttempts: 3, delayMs: 4_000 },
+        outcome: "failed",
+        hasTransientRecoveryContract: true,
+      }),
+    ).toEqual({
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 3,
+      delayMs: 4_000,
+    });
+  });
+
+  it("suppresses retry entirely when the policy is enabled but has a zero attempt budget", () => {
+    // Mirrors the normal finalization path, which only schedules a max-turn
+    // retry when `policy.enabled && policy.maxAttempts > 0`. The cleanup
+    // fallback must not fall through to the transient retry in that case.
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: { enabled: true, maxAttempts: 0, delayMs: 4_000 },
+        outcome: "failed",
+        hasTransientRecoveryContract: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("suppresses retry entirely when the policy is disabled, even with a budget", () => {
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: { enabled: false, maxAttempts: 3, delayMs: 4_000 },
+        outcome: "failed",
+        hasTransientRecoveryContract: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("falls back to the default bounded transient retry when no max-turn policy applies", () => {
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: null,
+        outcome: "failed",
+        hasTransientRecoveryContract: true,
+      }),
+    ).toEqual({});
+  });
+
+  it("schedules nothing without a max-turn policy or a failed run with a transient contract", () => {
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: null,
+        outcome: "failed",
+        hasTransientRecoveryContract: false,
+      }),
+    ).toBeNull();
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: null,
+        outcome: "succeeded",
+        hasTransientRecoveryContract: true,
+      }),
+    ).toBeNull();
+    expect(
+      resolveTerminalCleanupRetryOptions({
+        maxTurnCleanupPolicy: null,
+        outcome: "cancelled",
+        hasTransientRecoveryContract: true,
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("terminal heartbeat cleanup fallback", () => {
   it("continues required cleanup after earlier steps fail", async () => {
