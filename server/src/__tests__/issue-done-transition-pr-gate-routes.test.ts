@@ -252,6 +252,38 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
   });
 
+  it("refuses done when the cached PR snapshot is stale and CI has since gone red", async () => {
+    stubGitHubFetch();
+    // The issue's linked PR was resolved once (via the refresh call inside
+    // createIssueWithPr) while CI was green -- that snapshot is now cached.
+    // Flip the fixture to a failing check-run *after* that initial resolve,
+    // simulating CI going red between the cached poll and the done request.
+    // The gate must force a fresh lookup rather than trusting the cache.
+    const issueId = await createIssueWithPr(105, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-stale-105",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+    prFixtures.set("105", {
+      state: "closed",
+      merged: true,
+      headSha: "sha-stale-105",
+      checkRuns: [{ status: "completed", conclusion: "failure" }],
+    });
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#105");
+    expect(res.body.error).toContain("checks red");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "checks red",
+      pullRequest: expect.objectContaining({ checksState: "failure" }),
+    });
+  });
+
   it("does not gate issues with no linked pull request", async () => {
     stubGitHubFetch();
     const createRes = await request(app)

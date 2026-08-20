@@ -322,9 +322,12 @@ function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransiti
   const merged = data.merged === true;
   const checksState = typeof data.checksState === "string" ? data.checksState : null;
   if (!merged) return state === "open" ? "open" : "unmerged";
-  if (checksState === "failure") return "checks red";
-  if (checksState === "pending") return "checks pending";
-  return null;
+  if (checksState === "success") return null;
+  // Fail-closed: block on "failure", "pending", AND on a missing/unknown
+  // checksState (e.g. the GitHub check-runs/status lookup itself failed). A
+  // merged PR whose CI state we cannot positively confirm as green must not
+  // pass silently — that is exactly the false-"done" gap this gate closes.
+  return checksState === "failure" ? "checks red" : "checks pending";
 }
 
 /**
@@ -338,6 +341,7 @@ function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransiti
 async function assertNoBlockingLinkedPullRequest(
   externalObjectsSvc: ReturnType<typeof externalObjectService>,
   issueId: string,
+  companyId: string,
 ) {
   let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
   try {
@@ -352,6 +356,29 @@ async function assertNoBlockingLinkedPullRequest(
       "done-transition PR gate: failed to resolve linked external objects; allowing the transition",
     );
     return;
+  }
+  const linkedPullRequestObjectIds = groups
+    .filter((group) => group.object?.objectType === "pull_request")
+    .map((group) => group.object!.id);
+  if (linkedPullRequestObjectIds.length > 0) {
+    // A cached snapshot can be up to GITHUB_OBJECT_TTL_SECONDS stale. The
+    // done gate must reflect the PR's *current* GitHub state, not whatever
+    // was last polled -- force a live refresh before evaluating, then re-read
+    // it. If the refresh itself fails, fall back to the last-known snapshot
+    // rather than failing the whole transition.
+    try {
+      await externalObjectsSvc.refreshIssueObjects(issueId, {
+        companyId,
+        objectIds: linkedPullRequestObjectIds,
+        force: true,
+      });
+      groups = await externalObjectsSvc.listForIssue(issueId);
+    } catch (err) {
+      logger.warn(
+        { err, issueId },
+        "done-transition PR gate: failed to refresh linked pull request state; evaluating last-known snapshot",
+      );
+    }
   }
   for (const group of groups) {
     const object = group.object;
@@ -9400,7 +9427,7 @@ export function issueRoutes(
 
     const nextStatus = updateFields.status ?? existing.status;
     if (nextStatus === "done" && existing.status !== "done") {
-      await assertNoBlockingLinkedPullRequest(externalObjectsSvc, existing.id);
+      await assertNoBlockingLinkedPullRequest(externalObjectsSvc, existing.id, existing.companyId);
     }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");

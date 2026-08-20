@@ -375,7 +375,12 @@ describe("GitHub external object provider", () => {
   it("falls back to the combined commit status endpoint when there are no check-runs", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/check-runs")) return checkRunsResponse([]);
-      if (url.endsWith("/status")) return response({ state: "failure" });
+      if (url.endsWith("/status")) {
+        return response({
+          state: "failure",
+          statuses: [{ state: "failure", context: "ci/legacy-jenkins" }],
+        });
+      }
       return response({
         state: "open",
         draft: false,
@@ -428,6 +433,76 @@ describe("GitHub external object provider", () => {
       ok: true,
       snapshot: expect.objectContaining({
         data: expect.objectContaining({ checksState: "success" }),
+      }),
+    });
+  });
+
+  it("does not report checksState success when both the check-runs and status lookups fail", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) return new Response("", { status: 500 });
+      if (url.endsWith("/status")) return new Response("", { status: 502 });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    // Both CI lookups genuinely failed (non-2xx). This must NOT be coerced to
+    // "success" -- a failed lookup is not a confirmed-green signal, and the
+    // done-transition gate in routes/issues.ts treats a missing checksState on
+    // a merged PR as blocking ("checks pending"), never as a pass.
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("reports the worse of check-runs and a failing legacy combined status", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "success" }]);
+      }
+      if (url.endsWith("/status")) {
+        return response({
+          state: "failure",
+          statuses: [{ state: "failure", context: "ci/legacy-jenkins" }],
+        });
+      }
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    // All GitHub Checks are green, but a separate legacy commit-status
+    // integration reports failure on the same commit. The overall checksState
+    // must reflect the worse signal so this does not silently pass the gate.
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
       }),
     });
   });

@@ -337,9 +337,30 @@ function checksStateFromCheckRuns(checkRuns: Array<Record<string, unknown>>): Ch
 
 function checksStateFromCombinedStatus(body: Record<string, unknown> | null): ChecksState | null {
   if (!body) return null;
+  // GitHub's combined-status endpoint reports `state: "pending"` even when no
+  // legacy commit status has ever been posted for this commit (empty
+  // `statuses`). That is "no signal", not a real pending check — only trust
+  // `state` once at least one status exists.
+  const statuses = Array.isArray(body.statuses) ? body.statuses : [];
+  if (statuses.length === 0) return null;
   const state = asString(body.state);
   if (state === "success" || state === "failure" || state === "pending") return state;
+  // The combined-status endpoint also documents an "error" state distinct
+  // from "failure" (e.g. a status reporter itself errored). Treat it the same
+  // as "failure": it is not a confirmed-green signal.
+  if (state === "error") return "failure";
   return null;
+}
+
+const CHECKS_STATE_SEVERITY: Record<ChecksState, number> = { success: 0, pending: 1, failure: 2 };
+
+function worstChecksState(states: Array<ChecksState | null>): ChecksState | null {
+  let worst: ChecksState | null = null;
+  for (const state of states) {
+    if (!state) continue;
+    if (!worst || CHECKS_STATE_SEVERITY[state] > CHECKS_STATE_SEVERITY[worst]) worst = state;
+  }
+  return worst;
 }
 
 async function fetchChecksState(input: {
@@ -354,31 +375,50 @@ async function fetchChecksState(input: {
   if (!headSha) return null;
   const base = `${gitHubApiBase(host)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
+  let checkRunsState: ChecksState | null = null;
+  let checkRunsFetchFailed = false;
   try {
     const checkRunsResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/check-runs`, { headers });
     if (checkRunsResponse.ok) {
       const body = await safeJson(checkRunsResponse);
       const checkRuns = Array.isArray(body?.check_runs) ? (body!.check_runs as Array<Record<string, unknown>>) : [];
-      const fromCheckRuns = checksStateFromCheckRuns(checkRuns);
-      if (fromCheckRuns) return fromCheckRuns;
+      checkRunsState = checksStateFromCheckRuns(checkRuns);
+    } else {
+      checkRunsFetchFailed = true;
     }
   } catch {
-    // Fall through to the combined status endpoint below.
+    checkRunsFetchFailed = true;
   }
 
+  let statusState: ChecksState | null = null;
+  let statusFetchFailed = false;
   try {
     const statusResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/status`, { headers });
     if (statusResponse.ok) {
       const body = await safeJson(statusResponse);
-      const fromStatus = checksStateFromCombinedStatus(body);
-      if (fromStatus) return fromStatus;
+      statusState = checksStateFromCombinedStatus(body);
+    } else {
+      statusFetchFailed = true;
     }
   } catch {
-    // No combined status available either — treat as unknown (no CI signal).
+    statusFetchFailed = true;
   }
 
-  // Neither check-runs nor commit statuses reported anything: there is no CI
-  // configured for this commit, so there is nothing to gate on.
+  // Combine both signals rather than trusting check-runs alone: a commit can
+  // have all-green GitHub Checks and a failing/pending legacy commit status
+  // (posted by a non-Checks-API CI integration) at the same time. The worse
+  // of the two known signals wins.
+  const combined = worstChecksState([checkRunsState, statusState]);
+  if (combined) return combined;
+
+  // Neither endpoint returned a usable signal. If either request actually
+  // failed (network error, non-2xx, unreadable body) we cannot say this
+  // commit has no CI configured — do not silently report "success" for an
+  // unknown state; let the caller treat it as "unable to determine".
+  if (checkRunsFetchFailed || statusFetchFailed) return null;
+
+  // Both endpoints were reached successfully and reported nothing: there is
+  // genuinely no CI configured for this commit, so there is nothing to gate on.
   return "success";
 }
 
