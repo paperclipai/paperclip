@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, like, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -8532,36 +8532,24 @@ export function issueService(db: Db) {
 
       const conditions = [eq(issueComments.issueId, issueId)];
       if (afterCommentId) {
-        const anchor = await db
-          .select({
-            id: issueComments.id,
-            createdAt: issueComments.createdAt,
-          })
+        // Keyset cursor with exclusive `(createdAt, id)` tuple semantics.
+        // The anchor comparison must stay inside SQL: Postgres keeps
+        // timestamptz at microsecond precision while a JS Date only carries
+        // milliseconds, so re-binding the anchor createdAt through JS
+        // truncates it and makes `created_at > anchor` true for the anchor
+        // row itself (re-delivering the boundary comment on every poll) and
+        // drops same-millisecond neighbours in descending order. The scalar
+        // subquery is evaluated once and keeps full precision; a missing
+        // anchor compares to NULL, so no rows return, matching the old
+        // `return []` behaviour.
+        const anchorCreatedAt = db
+          .select({ createdAt: issueComments.createdAt })
           .from(issueComments)
-          .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
-          .then((rows) => rows[0] ?? null);
-
-        if (!anchor) return [];
-        const anchorCreatedAt =
-          anchor.createdAt instanceof Date
-            ? anchor.createdAt
-            : new Date(String(anchor.createdAt));
+          .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)));
         conditions.push(
           order === "asc"
-            ? or(
-                gt(issueComments.createdAt, anchorCreatedAt),
-                and(
-                  eq(issueComments.createdAt, anchorCreatedAt),
-                  gt(issueComments.id, anchor.id),
-                ),
-              )!
-            : or(
-                lt(issueComments.createdAt, anchorCreatedAt),
-                and(
-                  eq(issueComments.createdAt, anchorCreatedAt),
-                  lt(issueComments.id, anchor.id),
-                ),
-              )!,
+            ? sql`(${issueComments.createdAt}, ${issueComments.id}) > ((${anchorCreatedAt}), ${afterCommentId})`
+            : sql`(${issueComments.createdAt}, ${issueComments.id}) < ((${anchorCreatedAt}), ${afterCommentId})`,
         );
       }
 
