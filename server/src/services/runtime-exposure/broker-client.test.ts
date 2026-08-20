@@ -22,7 +22,7 @@ function startFakeBroker(
   const server = net.createServer((socket) => {
     const chunks: Buffer[] = [];
     let expected = -1;
-    socket.on("data", (chunk) => {
+    socket.on("data", (chunk: Buffer) => {
       chunks.push(chunk);
       const buf = Buffer.concat(chunks);
       if (expected < 0) {
