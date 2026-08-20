@@ -128,6 +128,7 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  suppressIfIssueTerminal?: boolean;
 };
 
 type RecoveryWakeup = (
@@ -1136,6 +1137,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      suppressIfIssueTerminal: true,
       payload: withRecoveryModelProfileHint({
         issueId: input.issueId,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
@@ -2871,6 +2873,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    recoveryActions?: ReturnType<typeof issueRecoveryActionService>;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
     const routing = await resolveStrandedRecoveryRouting({
@@ -2881,7 +2884,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     const ownerAgentId = routing.ownerAgentId;
     const now = new Date();
-    const action = await recoveryActionsSvc.upsertSourceScoped({
+    const action = await (input.recoveryActions ?? recoveryActionsSvc).upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
       kind: strandedRecoveryActionKind(recoveryCause),
@@ -2969,6 +2972,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "assignment",
       triggerDetail: "system",
       reason: "source_scoped_recovery_action",
+      suppressIfIssueTerminal: true,
       idempotencyKey: `source_scoped_recovery_action:${input.action.id}:${input.action.attemptCount}`,
       payload: withRecoveryModelProfileHint({
         issueId: input.issue.id,
@@ -3318,14 +3322,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
-    const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
-      issue: input.issue,
-      previousStatus: input.previousStatus,
-      latestRun: input.latestRun,
-      recoveryCause,
-      recoveryOwnerAgentId: input.recoveryOwnerAgentId,
-      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // Keep terminal disposition and recovery side effects in one source-row
+    // transaction. A final disposition that commits first makes this a no-op;
+    // one that races later observes the recovery transaction before the
+    // scheduler's terminal re-check.
+    const claimed = await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select id from issues
+        where id = ${input.issue.id} and company_id = ${input.issue.companyId}
+        for update
+      `);
+      const currentSource = await tx
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!currentSource || currentSource.status === "done" || currentSource.status === "cancelled") return null;
+
+      const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        recoveryCause,
+        recoveryOwnerAgentId: input.recoveryOwnerAgentId,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+        recoveryActions: issueRecoveryActionService(tx as unknown as Db),
+      });
+      const [updated] = await tx
+        .update(issues)
+        .set({
+          status: "blocked",
+          assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+        .returning();
+      return updated ? { recoveryAction, updated } : null;
     });
+    if (!claimed) return null;
+    const { recoveryAction, updated } = claimed;
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
       Boolean(recoveryAction.returnOwnerAgentId);
@@ -3337,13 +3374,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
-    });
-    if (!updated) return null;
     if (isProviderQuotaWait) return updated;
 
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;

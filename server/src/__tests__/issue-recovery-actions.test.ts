@@ -329,7 +329,50 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
     });
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ suppressIfIssueTerminal: true }),
+    );
   });
+
+  it.each(["done", "cancelled"] as const)(
+    "does not create a source recovery action or wake after the source reaches terminal status %s",
+    async (terminalStatus) => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const;
+
+      // Simulate reconciliation holding a pre-terminal snapshot while the
+      // source run persists its final disposition before recovery schedules.
+      await db.update(issues).set({ status: terminalStatus }).where(eq(issues.id, sourceIssue.id));
+
+      await expect(recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        comment: "Automatic continuation recovery failed.",
+      })).resolves.toBeNull();
+
+      const [currentSource, actions, wakeups] = await Promise.all([
+        db.select({ status: issues.status }).from(issues).where(eq(issues.id, sourceIssue.id)),
+        db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id)),
+        db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)),
+      ]);
+      expect(currentSource[0]?.status).toBe(terminalStatus);
+      expect(actions).toHaveLength(0);
+      expect(wakeups).toHaveLength(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["process_lost", undefined, "coder"],

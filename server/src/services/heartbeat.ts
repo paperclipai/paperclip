@@ -2553,6 +2553,10 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // Automatic recovery must not enqueue a new run after the source task has
+  // reached a final disposition. Keep this opt-in so an authorized explicit
+  // resume can still reopen a terminal issue through its route-level flow.
+  suppressIfIssueTerminal?: boolean;
 }
 
 type UsageTotals = {
@@ -17890,6 +17894,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
+          return { kind: "skipped" as const };
+        }
+
+        // Re-check under the same issue-row lock used to enqueue the run. This
+        // closes the gap between recovery reconciliation's source read and the
+        // scheduler write, without changing explicit resume behavior.
+        if (opts.suppressIfIssueTerminal && (issue.status === "done" || issue.status === "cancelled")) {
           return { kind: "skipped" as const };
         }
 
