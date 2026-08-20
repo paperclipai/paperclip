@@ -372,6 +372,8 @@ describe("exe.dev sandbox provider plugin", () => {
 
     const body = String(fetchMock.mock.calls[0]?.[1]?.body ?? "");
     expect(body).toContain("--setup-script=");
+    expect(body).toContain("process.versions.node");
+    expect(body).toContain("v[0]>24||(v[0]===24&&v[1]>=11)");
     expect(body).toContain("nodesource.com/setup_24.x");
     expect(body).toContain("sudo apt-get install -y nodejs");
   });

@@ -31,10 +31,7 @@ walk(repoRoot, (filePath) => {
     }
   }
   if (manifest.engines?.node !== expectedEngine) {
-    failures.push(`${relative(filePath)}: engines.node must be ${expectedEngine}`);
-  }
-  if (manifest.engines?.node && manifest.engines.node !== expectedEngine) {
-    failures.push(`${relative(filePath)}: engines.node must be ${expectedEngine}, found ${manifest.engines.node}`);
+    failures.push(`${relative(filePath)}: engines.node must be ${expectedEngine}, found ${manifest.engines?.node ?? "missing"}`);
   }
 });
 
