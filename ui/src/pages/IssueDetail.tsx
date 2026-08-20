@@ -967,6 +967,8 @@ type IssueDetailChatTabProps = {
   onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
   onQuarantineRestoreRecoveryAction?: () => void;
   quarantineRestoreRecoveryActionPending?: boolean;
+  onRestoreRecordedBranchRecoveryAction?: () => void;
+  restoreRecoveryActionPending?: boolean;
   canBreakGlassRecoveryAction?: boolean;
   reconcileRecoveryActionPending?: boolean;
   canFalsePositiveRecoveryAction?: boolean;
@@ -1073,6 +1075,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onBreakGlassOverrideRecoveryAction,
   onQuarantineRestoreRecoveryAction,
   quarantineRestoreRecoveryActionPending,
+  onRestoreRecordedBranchRecoveryAction,
+  restoreRecoveryActionPending,
   canBreakGlassRecoveryAction,
   reconcileRecoveryActionPending,
   canFalsePositiveRecoveryAction,
@@ -1348,6 +1352,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onBreakGlassOverrideRecoveryAction={onBreakGlassOverrideRecoveryAction}
         onQuarantineRestoreRecoveryAction={onQuarantineRestoreRecoveryAction}
         quarantineRestoreRecoveryActionPending={quarantineRestoreRecoveryActionPending}
+        onRestoreRecordedBranchRecoveryAction={onRestoreRecordedBranchRecoveryAction}
+        restoreRecoveryActionPending={restoreRecoveryActionPending}
         canBreakGlassRecoveryAction={canBreakGlassRecoveryAction}
         reconcileRecoveryActionPending={reconcileRecoveryActionPending}
         canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
@@ -4167,7 +4173,8 @@ export function IssueDetail() {
       input:
         | { workspaceId: string; mode: "forward" }
         | { workspaceId: string; mode: "override"; reason: string }
-        | { workspaceId: string; mode: "quarantine_restore" },
+        | { workspaceId: string; mode: "quarantine_restore" }
+        | { workspaceId: string; mode: "restore" },
     ) => {
       const { workspaceId, ...body } = input;
       return executionWorkspacesApi.reconcile(workspaceId, body);
@@ -4177,19 +4184,25 @@ export function IssueDetail() {
       // clears the active recovery action, so the card must re-fetch to stop showing stale actions.
       invalidateIssueDetail();
       invalidateIssueCollections();
-      pushToast(
-        variables.mode === "quarantine_restore"
-          ? {
-              title: "Workspace repaired",
-              body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
-              tone: "success",
-            }
-          : {
-              title: "Workspace branch reconciled",
-              body: "The recorded branch now matches the live branch; the task will resume.",
-              tone: "success",
-            },
-      );
+      if (variables.mode === "quarantine_restore") {
+        pushToast({
+          title: "Workspace repaired",
+          body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
+          tone: "success",
+        });
+      } else if (variables.mode === "restore") {
+        pushToast({
+          title: "Recorded branch restored",
+          body: "The workspace was checked back out onto its recorded branch (the parked branch keeps its commits); the task will resume.",
+          tone: "success",
+        });
+      } else {
+        pushToast({
+          title: "Workspace branch reconciled",
+          body: "The recorded branch now matches the live branch; the task will resume.",
+          tone: "success",
+        });
+      }
     },
     onError: (err) => {
       pushToast({
@@ -4253,6 +4266,22 @@ export function IssueDetail() {
     void reconcileRecoveryAction.mutateAsync({
       workspaceId: reconcileExecutionWorkspaceId,
       mode: "quarantine_restore",
+    });
+  }, [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast]);
+  // Restore action (workspace_validation, clean divergence — PAP-13568 Contract A): check out the
+  // recorded branch. Lossless — the parked branch keeps its commits on its own ref, no reason needed.
+  const handleRestoreRecordedBranchRecoveryAction = useCallback(() => {
+    if (!reconcileExecutionWorkspaceId) {
+      pushToast({
+        title: "Restore failed",
+        body: "This task has no execution workspace to restore.",
+        tone: "error",
+      });
+      return;
+    }
+    void reconcileRecoveryAction.mutateAsync({
+      workspaceId: reconcileExecutionWorkspaceId,
+      mode: "restore",
     });
   }, [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast]);
 
@@ -5291,6 +5320,8 @@ export function IssueDetail() {
               onBreakGlassOverrideRecoveryAction={handleBreakGlassOverrideRecoveryAction}
               onQuarantineRestoreRecoveryAction={handleQuarantineRestoreRecoveryAction}
               quarantineRestoreRecoveryActionPending={reconcileRecoveryAction.isPending}
+              onRestoreRecordedBranchRecoveryAction={handleRestoreRecordedBranchRecoveryAction}
+              restoreRecoveryActionPending={reconcileRecoveryAction.isPending}
               canBreakGlassRecoveryAction={canManageBoardRuntime}
               reconcileRecoveryActionPending={reconcileRecoveryAction.isPending}
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}

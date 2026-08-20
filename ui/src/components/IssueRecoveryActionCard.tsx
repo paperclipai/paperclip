@@ -15,6 +15,7 @@ import {
   Lock,
   OctagonAlert,
   RefreshCw,
+  RotateCcw,
   Sparkles,
   TriangleAlert,
   Wrench,
@@ -101,7 +102,16 @@ export interface IssueRecoveryActionCardProps {
   onQuarantineRestore?: () => void;
   /** Whether a quarantine-restore repair is currently in flight (shares the reconcile spinner). */
   quarantineRestorePending?: boolean;
-  /** Whether a reconcile (forward, override, or quarantine-restore) is currently in flight. */
+  /**
+   * Handler for the clean-divergence lossless repair — "Restore recorded branch" (PAP-13568
+   * Contract A). Rendered only for a *clean* divergence; the caller invokes the S4 reconcile op in
+   * `restore` mode, which checks out the recorded branch (the parked branch keeps its commits). If
+   * omitted, the restore action is not shown.
+   */
+  onRestoreRecordedBranch?: () => void;
+  /** Whether a restore-recorded-branch repair is currently in flight (shares the reconcile spinner). */
+  restorePending?: boolean;
+  /** Whether a reconcile (forward, override, quarantine-restore, or restore) is currently in flight. */
   reconcilePending?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
@@ -268,14 +278,14 @@ function formatShortSha(sha: string | null): string | null {
  * live ("actual"/checked-out) branch, both HEAD shas, and a server-computed ancestry verdict +
  * plain-language explanation of why the run was declined.
  */
-interface WorkspaceContention {
+export interface WorkspaceContention {
   claimedByIssueId: string | null;
   claimedByIssueIdentifier: string | null;
   /** True when the claiming workspace has a queued/running run (not just a stale claim). */
   hasActiveRun: boolean;
 }
 
-interface WorkspaceDivergence {
+export interface WorkspaceDivergence {
   expectedBranch: string | null;
   liveBranch: string | null;
   expectedHeadSha: string | null;
@@ -283,6 +293,22 @@ interface WorkspaceDivergence {
   ancestryVerdict: GitWorktreeBranchAncestryVerdict | null;
   plainLanguageReason: string | null;
   cleanliness: "clean" | "dirty" | "unknown" | null;
+  /**
+   * How many commits the live (checked-out) branch is ahead of / behind the recorded branch, when
+   * the server computed them. Optional — older evidence payloads and the pre-PAP-13568-Phase-2
+   * server omit these, so both stay null and the UI falls back to the ancestry verdict alone.
+   */
+  aheadCount: number | null;
+  behindCount: number | null;
+  /**
+   * Provenance of the parked branch: which issue/run left the worktree on the live branch. The
+   * source issue that owns the failing run always comes through as `sourceIdentifier`; a distinct
+   * "parked by" attribution (a *different* run than the one that failed) is optional and only
+   * present once the server records it.
+   */
+  sourceIdentifier: string | null;
+  parkedByIdentifier: string | null;
+  parkedByRunId: string | null;
   /** Number of dirty (uncommitted) status entries in the live worktree, when known. */
   dirtyFileCount: number | null;
   /** Sample of dirty paths (already truncated server-side) for the confirm step. */
@@ -337,9 +363,15 @@ function readContention(value: unknown): WorkspaceContention | null {
   };
 }
 
-function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergence | null {
-  if (action.kind !== "workspace_validation") return null;
-  const workspaceValidation = asRecord(action.evidence?.workspaceValidation);
+/**
+ * Reads a git-worktree branch-incoherence divergence from a raw `workspaceValidation` evidence
+ * payload. This is the same `GitWorktreeBranchIncoherenceEvidence` shape whether it is nested under
+ * a recovery action's `evidence.workspaceValidation` (issue thread / recovery card) or stamped
+ * directly on a failed run's `resultJson.workspaceValidation` (run-page fallback card, PAP-13568
+ * Phase 4b). Returns null when the payload is missing or is not a branch-incoherence failure.
+ */
+export function readWorkspaceDivergenceFromEvidence(evidence: unknown): WorkspaceDivergence | null {
+  const workspaceValidation = asRecord(evidence);
   if (!workspaceValidation) return null;
   if (workspaceValidation.reason !== "git_worktree_branch_incoherence") return null;
   const provenance = asRecord(workspaceValidation.provenance) ?? {};
@@ -361,12 +393,30 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
     ancestryVerdict: asAncestryVerdict(provenance.ancestryVerdict),
     plainLanguageReason: asNonEmptyString(provenance.plainLanguageReason),
     cleanliness,
+    // Optional ahead/behind — read from provenance first, then the evidence root, so we tolerate
+    // either placement once Phase 2 lands them (and stay null before then).
+    aheadCount:
+      asNonNegativeInt(provenance.aheadCount) ?? asNonNegativeInt(workspaceValidation.aheadCount),
+    behindCount:
+      asNonNegativeInt(provenance.behindCount) ?? asNonNegativeInt(workspaceValidation.behindCount),
+    sourceIdentifier,
+    parkedByIdentifier:
+      asNonEmptyString(workspaceValidation.parkedByIdentifier) ??
+      asNonEmptyString(provenance.parkedByIdentifier),
+    parkedByRunId:
+      asNonEmptyString(workspaceValidation.parkedByRunId) ??
+      asNonEmptyString(provenance.parkedByRunId),
     dirtyFileCount: asNonNegativeInt(workspaceValidation.statusEntryCount),
     dirtyPathSample: asStringArray(workspaceValidation.dirtyPathSample),
     contention: readContention(workspaceValidation.contention),
     rescueBranchPreview: buildRescueBranchPreview(sourceIdentifier),
     reissueBaseRef: liveBranch ?? liveHeadSha,
   };
+}
+
+function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergence | null {
+  if (action.kind !== "workspace_validation") return null;
+  return readWorkspaceDivergenceFromEvidence(action.evidence?.workspaceValidation);
 }
 
 const ANCESTRY_BADGE: Record<
@@ -417,7 +467,41 @@ function BranchFacet({
   );
 }
 
-function DivergenceDiagnosis({
+/**
+ * Renders the ahead/behind commit spread between the live and recorded branches when the server
+ * computed it. Falls back to nothing (the ancestry badge already summarises the relationship) when
+ * the counts are absent — e.g. pre-PAP-13568-Phase-2 evidence.
+ */
+function AheadBehindSummary({ divergence }: { divergence: WorkspaceDivergence }) {
+  const { aheadCount, behindCount } = divergence;
+  if (aheadCount === null && behindCount === null) return null;
+  return (
+    <div
+      data-testid="recovery-ahead-behind"
+      className="flex flex-wrap items-center gap-1.5 text-(length:--text-micro) text-muted-foreground"
+    >
+      <span className="uppercase tracking-(--tracking-label)">Live vs. recorded</span>
+      {aheadCount !== null ? (
+        <span
+          data-testid="recovery-ahead-count"
+          className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono text-foreground/80"
+        >
+          ↑ {aheadCount} ahead
+        </span>
+      ) : null}
+      {behindCount !== null ? (
+        <span
+          data-testid="recovery-behind-count"
+          className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono text-foreground/80"
+        >
+          ↓ {behindCount} behind
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export function DivergenceDiagnosis({
   divergence,
   dividerClass,
 }: {
@@ -425,6 +509,7 @@ function DivergenceDiagnosis({
   dividerClass: string;
 }) {
   const badge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
+  const parkedByLabel = divergence.parkedByIdentifier ?? divergence.sourceIdentifier;
   return (
     <div
       data-testid="recovery-divergence-diagnosis"
@@ -447,6 +532,9 @@ function DivergenceDiagnosis({
           {badge.label}
         </Badge>
       </div>
+      {divergence.plainLanguageReason ? (
+        <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
+      ) : null}
       <div className="grid gap-2 sm:grid-cols-2">
         <BranchFacet
           label="Expected · recorded"
@@ -459,8 +547,22 @@ function DivergenceDiagnosis({
           sha={divergence.liveHeadSha}
         />
       </div>
-      {divergence.plainLanguageReason ? (
-        <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
+      <AheadBehindSummary divergence={divergence} />
+      {parkedByLabel ? (
+        <p
+          data-testid="recovery-parked-by"
+          className="text-(length:--text-micro) leading-5 text-muted-foreground"
+        >
+          Parked on the live branch by{" "}
+          <code className="font-mono text-foreground/80">{parkedByLabel}</code>
+          {divergence.parkedByRunId ? (
+            <>
+              {" "}
+              (run <code className="font-mono text-foreground/80">{divergence.parkedByRunId.slice(0, 8)}</code>)
+            </>
+          ) : null}
+          .
+        </p>
       ) : null}
       {divergence.contention ? (
         <p
@@ -733,6 +835,97 @@ function RepairWorkspace({
   );
 }
 
+/**
+ * The clean-divergence lossless repair — "Restore recorded branch" (PAP-13568 Contract A). The
+ * worktree is clean and parked on a foreign branch that is itself a real local ref, so a plain
+ * `git checkout <recorded-branch>` restores it without discarding anything: the parked branch keeps
+ * its commits on its own ref. Like the quarantine repair this is non-destructive (no reason
+ * required); the confirm popover simply restates that the parked branch is left untouched and the
+ * recorded branch will be restored. Invokes the S4 reconcile op in `restore` mode.
+ */
+function RestoreRecordedBranch({
+  divergence,
+  onConfirm,
+  pending,
+}: {
+  divergence: WorkspaceDivergence;
+  onConfirm: () => void;
+  pending: boolean;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          size="sm"
+          variant="default"
+          disabled={pending}
+          data-testid="recovery-action-restore-trigger"
+        >
+          {pending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+          ) : (
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+          )}
+          Restore recorded branch
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        aria-labelledby="recovery-restore-title"
+        className="w-96 max-w-(--sz-calc-4) space-y-3 p-3"
+      >
+        <div className="space-y-1">
+          <div
+            id="recovery-restore-title"
+            className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-emerald-700 dark:text-emerald-300"
+          >
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+            Restore recorded branch
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">
+            This is lossless — no reason required. The worktree is clean, so Paperclip simply checks
+            out the recorded branch and the task resumes. The parked branch keeps all of its commits
+            on its own ref; nothing is discarded.
+          </p>
+        </div>
+        <dl
+          data-testid="recovery-restore-restated"
+          className="space-y-1.5 rounded-md border border-emerald-400/30 bg-emerald-500/5 px-2.5 py-2 text-(length:--text-micro)"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Parked branch</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.liveBranch ?? "detached"}
+              <span className="ml-1 font-sans text-muted-foreground">(kept)</span>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.expectedBranch ?? "recorded branch"}
+            </dd>
+          </div>
+        </dl>
+        <Button
+          type="button"
+          size="sm"
+          className="w-full"
+          disabled={pending}
+          data-testid="recovery-action-restore-confirm"
+          onClick={() => {
+            if (pending) return;
+            onConfirm();
+          }}
+        >
+          {pending ? "Restoring…" : "Restore recorded branch"}
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   const policy = action.wakePolicy;
   if (!policy) return null;
@@ -908,6 +1101,8 @@ export function IssueRecoveryActionCard({
   onBreakGlassOverride,
   onQuarantineRestore,
   quarantineRestorePending = false,
+  onRestoreRecordedBranch,
+  restorePending = false,
   canBreakGlass = false,
   reconcilePending = false,
   canFalsePositive = false,
@@ -988,6 +1183,16 @@ export function IssueRecoveryActionCard({
     cardState !== "resolved" &&
     divergence !== null &&
     divergence.cleanliness === "dirty";
+  // The clean-divergence lossless repair — "Restore recorded branch" (PAP-13568 Contract A). Offered
+  // only for a *clean* divergence (a dirty one quarantines instead). Disabled server-side when the
+  // recorded branch is contended by another active workspace claim, so we hide it in that case and
+  // steer to the isolated re-issue like the quarantine repair does.
+  const showRestoreAction =
+    onRestoreRecordedBranch !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    divergence.cleanliness === "clean" &&
+    repairContention === null;
   const repairDisabledReason = repairContention
     ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated workspace instead.`
     : null;
@@ -999,7 +1204,8 @@ export function IssueRecoveryActionCard({
     showReissueAction ||
     showReconcileForward ||
     showBreakGlass ||
-    showRepairAction;
+    showRepairAction ||
+    showRestoreAction;
 
   return (
     <section
@@ -1161,11 +1367,18 @@ export function IssueRecoveryActionCard({
               </PopoverContent>
             </Popover>
           ) : null}
+          {showRestoreAction && divergence ? (
+            <RestoreRecordedBranch
+              divergence={divergence}
+              pending={restorePending || reconcilePending}
+              onConfirm={() => onRestoreRecordedBranch?.()}
+            />
+          ) : null}
           {showReconcileForward ? (
             <Button
               type="button"
               size="sm"
-              variant="default"
+              variant={showRestoreAction ? "outline" : "default"}
               disabled={reconcilePending}
               data-testid="recovery-action-reconcile-forward"
               onClick={() => onReconcileForward?.()}

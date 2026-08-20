@@ -414,6 +414,157 @@ function InboxRowPanel() {
   );
 }
 
+// --- PAP-13568 Phase 4b: workspace-validation diagnosis card (restore + run-evidence fallback) ---
+
+function buildBranchIncoherenceAction(
+  workspaceValidation: Record<string, unknown>,
+): IssueRecoveryAction {
+  return buildAction({
+    kind: "workspace_validation",
+    cause: "workspace_validation_failed",
+    fingerprint: "fp-branch-incoherence",
+    nextAction: "Restore the recorded branch, then the task resumes.",
+    evidence: {
+      workspaceValidation: {
+        reason: "git_worktree_branch_incoherence",
+        persistedExecutionWorkspaceId: "00000000-0000-0000-0000-0000000000ws",
+        ...workspaceValidation,
+      },
+    },
+  });
+}
+
+const CLEAN_DIVERGED = buildBranchIncoherenceAction({
+  expectedBranch: "PAP-12915-github-release-action-verify-stable",
+  actualBranch: "fix/stable-dry-run-notes-gate",
+  cleanliness: "clean",
+  statusEntryCount: 0,
+  sourceIdentifier: "PAP-13359",
+  provenance: {
+    expectedHeadSha: "390627b4aaaa",
+    actualHeadSha: "9a1d4b79bbbb",
+    ancestryVerdict: "diverged",
+    aheadCount: 6,
+    behindCount: 59,
+    parkedByIdentifier: "PAP-13359",
+    parkedByRunId: "2ef32c67ffff",
+    plainLanguageReason:
+      "This agent couldn't start because its workspace was left on a different branch (fix/stable-dry-run-notes-gate) by PAP-13359's run on Jul 10. The recorded branch keeps its commits — restoring it is lossless.",
+  },
+});
+
+const CLEAN_ANCESTOR = buildBranchIncoherenceAction({
+  expectedBranch: "PAP-12915-recorded",
+  actualBranch: "PAP-12915-recorded-follow-up",
+  cleanliness: "clean",
+  statusEntryCount: 0,
+  sourceIdentifier: "PAP-12915",
+  provenance: {
+    expectedHeadSha: "390627b4aaaa",
+    actualHeadSha: "aa11bb22cc33",
+    ancestryVerdict: "ancestor",
+    aheadCount: 3,
+    behindCount: 0,
+    plainLanguageReason:
+      "The live branch is a fast-forward descendant of the recorded branch — Paperclip can reconcile forward or restore the recorded branch.",
+  },
+});
+
+const CONTENDED_CLEAN = buildBranchIncoherenceAction({
+  expectedBranch: "PAP-12915-recorded",
+  actualBranch: "fix/stable-dry-run-notes-gate",
+  cleanliness: "clean",
+  statusEntryCount: 0,
+  sourceIdentifier: "PAP-13359",
+  contention: {
+    claimedByWorkspaceId: "00000000-0000-0000-0000-0000000000w2",
+    claimedByIssueId: "00000000-0000-0000-0000-0000000000i2",
+    claimedByIssueIdentifier: "PAP-13360",
+    activeRun: {
+      id: "00000000-0000-0000-0000-0000000000r2",
+      status: "running",
+      issueId: "00000000-0000-0000-0000-0000000000i2",
+      issueIdentifier: "PAP-13360",
+    },
+  },
+  provenance: {
+    expectedHeadSha: "390627b4aaaa",
+    actualHeadSha: "9a1d4b79bbbb",
+    ancestryVerdict: "diverged",
+    plainLanguageReason:
+      "Another active workspace is holding the live branch, so the recorded branch can't be safely restored here — re-issue on an isolated workspace instead.",
+  },
+});
+
+const DIRTY_DIVERGED = buildBranchIncoherenceAction({
+  expectedBranch: "PAP-12915-recorded",
+  actualBranch: "PAP-12915-wip",
+  cleanliness: "dirty",
+  statusEntryCount: 4,
+  dirtyPathSample: ["server/src/app.ts", "ui/src/index.css"],
+  sourceIdentifier: "PAP-12915",
+  provenance: {
+    expectedHeadSha: "390627b4aaaa",
+    actualHeadSha: "cd77ee88ff00",
+    ancestryVerdict: "diverged",
+    plainLanguageReason:
+      "The worktree has uncommitted changes on a diverged branch — Paperclip quarantines them onto a rescue branch before restoring the recorded branch.",
+  },
+});
+
+function WorkspaceValidationCard({ caption, action, variant }: {
+  caption: string;
+  action: IssueRecoveryAction;
+  variant?: "full" | "compact";
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+        {caption}
+      </div>
+      <IssueRecoveryActionCard
+        action={action}
+        agentMap={storybookAgentMap}
+        variant={variant}
+        onReconcileForward={() => {}}
+        onBreakGlassOverride={() => {}}
+        onQuarantineRestore={() => {}}
+        onRestoreRecordedBranch={() => {}}
+        onReissueIsolated={() => {}}
+        canBreakGlass
+      />
+    </section>
+  );
+}
+
+function WorkspaceValidationPanel() {
+  return (
+    <div className="grid gap-5 lg:grid-cols-1">
+      <WorkspaceValidationCard
+        caption="Clean · diverged — the root-cause case (restore recorded branch, lossless)"
+        action={CLEAN_DIVERGED}
+      />
+      <WorkspaceValidationCard
+        caption="Clean · forward-only ancestor (restore or reconcile forward)"
+        action={CLEAN_ANCESTOR}
+      />
+      <WorkspaceValidationCard
+        caption="Clean · contended (restore hidden — re-issue recommended)"
+        action={CONTENDED_CLEAN}
+      />
+      <WorkspaceValidationCard
+        caption="Dirty · diverged (quarantine changes & restore branch)"
+        action={DIRTY_DIVERGED}
+      />
+      <WorkspaceValidationCard
+        caption="Run-page fallback (compact variant, rendered from run evidence)"
+        action={CLEAN_DIVERGED}
+        variant="compact"
+      />
+    </div>
+  );
+}
+
 const meta = {
   title: "Paperclip/Source Issue Recovery",
   component: AllStatesPanel,
@@ -431,6 +582,17 @@ export const RecoveryActionCardStates: Story = {
       description="Five states required by the source-issue recovery contract: needed, in progress, observe-only watchdog, escalated, resolved."
     >
       <AllStatesPanel />
+    </StoryFrame>
+  ),
+};
+
+export const WorkspaceValidationDiagnosisStates: Story = {
+  render: () => (
+    <StoryFrame
+      title="Workspace-validation diagnosis card (PAP-13568 Phase 4b)"
+      description="Diagnosis card rendered from workspace-validation evidence: plain-language reason first, expected-vs-found branches with ahead/behind, parked-by provenance, and a lossless 'Restore recorded branch' CTA (demoted break-glass override behind a reason prompt). The compact variant is the run-page fallback rendered from the run's own evidence."
+    >
+      <WorkspaceValidationPanel />
     </StoryFrame>
   ),
 };

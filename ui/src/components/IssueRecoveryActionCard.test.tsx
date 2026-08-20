@@ -740,3 +740,115 @@ describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => 
     expect(node.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
   });
 });
+
+describe("IssueRecoveryActionCard restore recorded branch (PAP-13568 Phase 4b)", () => {
+  it("offers the restore action only for a clean divergence, not a dirty one", () => {
+    const cleanNode = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+        onRestoreRecordedBranch={() => {}}
+      />,
+    );
+    expect(cleanNode.querySelector("[data-testid='recovery-action-restore-trigger']")).not.toBeNull();
+
+    const dirtyNode = render(
+      <IssueRecoveryActionCard action={buildDirtyDivergenceAction()} onRestoreRecordedBranch={() => {}} />,
+    );
+    expect(dirtyNode.querySelector("[data-testid='recovery-action-restore-trigger']")).toBeNull();
+  });
+
+  it("does not offer the restore action without a handler or for non-workspace kinds", () => {
+    const noHandler = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+      />,
+    );
+    expect(noHandler.querySelector("[data-testid='recovery-action-restore-trigger']")).toBeNull();
+
+    const nonWorkspace = render(
+      <IssueRecoveryActionCard action={buildAction()} onRestoreRecordedBranch={() => {}} />,
+    );
+    expect(nonWorkspace.querySelector("[data-testid='recovery-action-restore-trigger']")).toBeNull();
+  });
+
+  it("hides restore when the recorded branch is contended (steer to isolated re-issue instead)", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({
+          workspaceValidation: {
+            cleanliness: "clean",
+            contention: {
+              claimedByWorkspaceId: "ws-99",
+              claimedByIssueId: "issue-99",
+              claimedByIssueIdentifier: "PAP-9001",
+              activeRun: null,
+            },
+          },
+        })}
+        onRestoreRecordedBranch={() => {}}
+        onReissueIsolated={() => {}}
+      />,
+    );
+    expect(node.querySelector("[data-testid='recovery-action-restore-trigger']")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-action-reissue-trigger']")).not.toBeNull();
+  });
+
+  it("confirm popover restates the kept parked branch + recorded branch, then fires the handler (no reason field)", () => {
+    const onRestoreRecordedBranch = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+        onRestoreRecordedBranch={onRestoreRecordedBranch}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-restore-trigger']"));
+    const restated = document.body.querySelector("[data-testid='recovery-restore-restated']");
+    const text = restated?.textContent ?? "";
+    expect(text).toContain("nleach/PAP-1405-live");
+    expect(text).toContain("kept");
+    expect(text).toContain("PAP-522-recorded");
+    // Lossless — no reason textarea.
+    expect(document.body.querySelector("textarea")).toBeNull();
+    click(document.body.querySelector("[data-testid='recovery-action-restore-confirm']"));
+    expect(onRestoreRecordedBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the restore trigger while a restore is pending", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+        onRestoreRecordedBranch={() => {}}
+        restorePending
+      />,
+    );
+    expect(
+      node.querySelector<HTMLButtonElement>("[data-testid='recovery-action-restore-trigger']")?.disabled,
+    ).toBe(true);
+  });
+
+  it("renders ahead/behind counts and the parked-by provenance when present", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({
+          workspaceValidation: {
+            cleanliness: "clean",
+            aheadCount: 6,
+            behindCount: 59,
+            parkedByIdentifier: "PAP-13359",
+            parkedByRunId: "2ef32c67ffff",
+          },
+        })}
+      />,
+    );
+    expect(node.querySelector("[data-testid='recovery-ahead-count']")?.textContent).toContain("6 ahead");
+    expect(node.querySelector("[data-testid='recovery-behind-count']")?.textContent).toContain("59 behind");
+    const parkedBy = node.querySelector("[data-testid='recovery-parked-by']")?.textContent ?? "";
+    expect(parkedBy).toContain("PAP-13359");
+    expect(parkedBy).toContain("2ef32c67");
+  });
+
+  it("omits the ahead/behind row when counts are absent (pre-Phase-2 evidence)", () => {
+    const node = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} />);
+    expect(node.querySelector("[data-testid='recovery-ahead-behind']")).toBeNull();
+  });
+});
