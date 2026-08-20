@@ -181,8 +181,9 @@ export function InstanceGeneralSettings() {
             <h2 className="text-sm font-semibold">Backup retention</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure how long automatic database backups are retained. Backups run roughly
-              every hour and are compressed with gzip. Within the daily window all backups are
-              kept; beyond that, one backup per week and one per month are preserved.
+              every hour and are compressed with gzip. All backups from the last 24 hours are
+              kept; beyond that, one backup per day is preserved within the daily window, then
+              one backup per week and one per month.
             </p>
           </div>
 
