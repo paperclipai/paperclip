@@ -2234,7 +2234,7 @@ registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/stalled-review-decision",
   tags: ["issues"],
-  summary: "Resolve a stalled issue review",
+  summary: "Resolve a stalled or final covered issue review",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(stalledReviewDecisionSchema),
