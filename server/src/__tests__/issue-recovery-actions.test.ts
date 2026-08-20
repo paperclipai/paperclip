@@ -383,6 +383,60 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("keeps the current source assignee as the recovery return owner when the latest run came from another agent", async () => {
+    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+    const ceoId = randomUUID();
+    await db.insert(agents).values({
+      id: ceoId,
+      companyId,
+      name: "Claude CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: ceoId,
+        status: "failed",
+        error: "helper recovery run lost the process",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      ownerAgentId: coderId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "process_lost",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      coderId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({
+          issueId: sourceIssue.id,
+          recoveryCause: "process_lost",
+        }),
+      }),
+    );
+  });
+
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({

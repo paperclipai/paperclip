@@ -2584,7 +2584,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
     preferredOwnerAgentId?: string | null;
   }) {
-    const originalAgentId = input.latestRun?.agentId ?? input.issue.assigneeAgentId;
+    // The source issue assignee remains the source of truth for who owns the
+    // work. A recovery/helper run may execute under a different agent, but that
+    // must not silently steal the task on restore.
+    const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId;
     const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
