@@ -345,8 +345,19 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
-  "provider_quota",
   "timeout",
+]);
+
+// ZAL-355 (Opción B): cap automatic retries on `provider_quota` to 2 with
+// exponential backoff (60s, 120s) — provider quota errors often resolve only
+// after the upstream quota resets (which the recovery wake honours via
+// `providerQuotaRetryNotBefore`); the local retry ladder adds little while
+// it spends the budget. Keep `provider_quota` out of the generic transient
+// ladder so we don't widen impact beyond quota errors.
+const PROVIDER_QUOTA_CONTINUATION_MAX_ATTEMPTS = 2;
+const PROVIDER_QUOTA_CONTINUATION_BASE_BACKOFF_MS = 60_000;
+const PROVIDER_QUOTA_CONTINUATION_ERROR_CODES = new Set<string>([
+  "provider_quota",
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
@@ -486,7 +497,7 @@ export function classifyAdapterFailureForRecovery(
 }
 
 type ContinuationRetryClassification = {
-  kind: "transient_infra" | "non_retryable" | "default";
+  kind: "transient_infra" | "provider_quota" | "non_retryable" | "default";
   maxAttempts: number;
   baseBackoffMs: number;
   errorCode: string | null;
@@ -496,6 +507,14 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (errorCode && PROVIDER_QUOTA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "provider_quota",
+      maxAttempts: PROVIDER_QUOTA_CONTINUATION_MAX_ATTEMPTS,
+      baseBackoffMs: PROVIDER_QUOTA_CONTINUATION_BASE_BACKOFF_MS,
+      errorCode,
+    };
   }
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return {
