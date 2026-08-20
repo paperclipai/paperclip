@@ -1,5 +1,6 @@
 import type { UIAdapterModule } from "./types";
 import { claudeLocalUIAdapter } from "./claude-local";
+import { codeBuddyLocalUIAdapter } from "./codebuddy-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
@@ -53,6 +54,7 @@ setDynamicParserResultNotifier(notifyAdapterChange);
 function registerBuiltInUIAdapters() {
   for (const adapter of [
     claudeLocalUIAdapter,
+    codeBuddyLocalUIAdapter,
     codexLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,

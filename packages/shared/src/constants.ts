@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
   "claude_local",
+  "codebuddy_local",
   "codex_local",
   "cursor_cloud",
   "gemini_local",
