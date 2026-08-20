@@ -1541,14 +1541,11 @@ function OnboardingWizardInner({
                             ? "Connect a model"
                             : "Review"
                       }
+                      // The agent step carries no lede, as the prototype has it:
+                      // the capsule and the heading say what this is, and a
+                      // sentence restating it only pushes the fields down.
                       lede={
-                        step === 3 ? (
-                          <>
-                            They'll help drive{" "}
-                            <span className="font-medium text-foreground">{companyName}</span>{" "}
-                            toward its mission.
-                          </>
-                        ) : step === 4 ? (
+                        step === 3 ? undefined : step === 4 ? (
                           <>
                             What model would you like your first agent to use? You can
                             choose different models when creating additional agents.
