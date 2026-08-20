@@ -3493,15 +3493,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(eq(issues.id, input.issue.id))
         .limit(1);
-      if (
-        currentIssue &&
-        (currentIssue.status !== "blocked" ||
-          currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
-      ) {
+      if (currentIssue && currentIssue.status !== "blocked") {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
-          assigneeAgentId: input.issue.assigneeAgentId,
+          assigneeAgentId: currentIssue.assigneeAgentId,
         });
         if (reblocked) return reblocked;
       }
