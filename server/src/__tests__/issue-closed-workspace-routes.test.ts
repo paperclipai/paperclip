@@ -27,6 +27,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   checkout: vi.fn(),
   release: vi.fn(),
+  restoreCheckoutSnapshot: vi.fn(),
   addComment: vi.fn(),
 }));
 
@@ -205,6 +206,9 @@ function makeIssue() {
     projectId: null,
     executionRunId: null,
     checkoutRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    startedAt: null,
     executionWorkspaceId: closedWorkspaceId,
   };
 }
@@ -331,21 +335,30 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("returns 503 and releases ownership when rebuild fails after a mutating checkout", async () => {
-    const checkedOut = {
+  it("returns 503 and restores pre-checkout snapshot when rebuild fails after a mutating checkout", async () => {
+    const priorStartedAt = new Date("2026-08-20T09:00:00.000Z");
+    const blockedSource = {
       ...makeIssue(),
-      status: "in_progress" as const,
-      checkoutRunId: "run-after-checkout",
-      executionRunId: "run-after-checkout",
-    };
-    mockIssueService.checkout.mockResolvedValue(checkedOut);
-    mockIssueService.release.mockResolvedValue({
-      ...checkedOut,
-      status: "todo",
+      status: "blocked" as const,
+      assigneeAgentId: agentId,
+      assigneeUserId: "user-prior",
       checkoutRunId: null,
       executionRunId: null,
-      assigneeAgentId: null,
-    });
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      startedAt: priorStartedAt,
+    };
+    const checkedOut = {
+      ...blockedSource,
+      status: "in_progress" as const,
+      assigneeUserId: null,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+      startedAt: new Date("2026-08-20T12:00:00.000Z"),
+    };
+    mockIssueService.getById.mockResolvedValue(blockedSource);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+    mockIssueService.restoreCheckoutSnapshot.mockResolvedValue(blockedSource);
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
       code: "rebuild_failed",
@@ -360,25 +373,40 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(mockIssueService.checkout).toHaveBeenCalled();
-    expect(mockIssueService.release).toHaveBeenCalledWith(issueId, agentId, null);
+    expect(mockIssueService.release).not.toHaveBeenCalled();
+    expect(mockIssueService.restoreCheckoutSnapshot).toHaveBeenCalledWith(
+      issueId,
+      {
+        status: "blocked",
+        assigneeAgentId: agentId,
+        assigneeUserId: "user-prior",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        startedAt: priorStartedAt,
+      },
+      agentId,
+      null,
+    );
     expect(res.status).toBe(503);
   });
 
-  it("returns 409 and releases ownership when reopen is not possible after a mutating checkout", async () => {
-    const checkedOut = {
+  it("returns 409 and restores pre-checkout snapshot when reopen is not possible after a mutating checkout", async () => {
+    const blockedSource = {
       ...makeIssue(),
+      status: "blocked" as const,
+      assigneeAgentId: agentId,
+    };
+    const checkedOut = {
+      ...blockedSource,
       status: "in_progress" as const,
       checkoutRunId: "run-after-checkout",
       executionRunId: "run-after-checkout",
     };
+    mockIssueService.getById.mockResolvedValue(blockedSource);
     mockIssueService.checkout.mockResolvedValue(checkedOut);
-    mockIssueService.release.mockResolvedValue({
-      ...checkedOut,
-      status: "todo",
-      checkoutRunId: null,
-      executionRunId: null,
-      assigneeAgentId: null,
-    });
+    mockIssueService.restoreCheckoutSnapshot.mockResolvedValue(blockedSource);
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
       code: "not_reopenable",
@@ -392,11 +420,22 @@ describe.sequential("closed isolated workspace issue routes", () => {
         expectedStatuses: ["todo", "backlog", "blocked"],
       });
 
-    expect(mockIssueService.release).toHaveBeenCalledWith(issueId, agentId, null);
+    expect(mockIssueService.release).not.toHaveBeenCalled();
+    expect(mockIssueService.restoreCheckoutSnapshot).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        assigneeAgentId: agentId,
+        checkoutRunId: null,
+        executionRunId: null,
+      }),
+      agentId,
+      null,
+    );
     expect(res.status).toBe(409);
   });
 
-  it("does not release ownership when reopen fails but checkout did not mutate the row", async () => {
+  it("does not restore ownership when reopen fails but checkout did not mutate the row", async () => {
     const alreadyOwned = {
       ...makeIssue(),
       status: "in_progress" as const,
@@ -419,6 +458,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(mockIssueService.release).not.toHaveBeenCalled();
+    expect(mockIssueService.restoreCheckoutSnapshot).not.toHaveBeenCalled();
     expect(res.status).toBe(503);
   });
 

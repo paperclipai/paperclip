@@ -10693,8 +10693,9 @@ export function issueRoutes(
         if (reopenOutcome === null) {
           // Checkout already ran before reopen. A 409/503 reopen response must not
           // leave the caller holding ownership that retries cannot reclaim with the
-          // usual expectedStatuses set. Release only when this request mutated the
-          // row; a pre-existing lock holder keeps their checkout.
+          // usual expectedStatuses set. Restore the pre-checkout snapshot (not a
+          // generic release → todo) when this request mutated the row; a
+          // pre-existing lock holder keeps their checkout.
           const checkoutMutatedOnReopenFailure =
             updated.status !== issue.status
             || updated.checkoutRunId !== issue.checkoutRunId
@@ -10702,11 +10703,25 @@ export function issueRoutes(
             || updated.assigneeAgentId !== issue.assigneeAgentId;
           if (checkoutMutatedOnReopenFailure) {
             try {
-              await svc.release(id, req.body.agentId, checkoutRunId);
+              await svc.restoreCheckoutSnapshot(
+                id,
+                {
+                  status: issue.status,
+                  assigneeAgentId: issue.assigneeAgentId,
+                  assigneeUserId: issue.assigneeUserId,
+                  checkoutRunId: issue.checkoutRunId,
+                  executionRunId: issue.executionRunId,
+                  executionAgentNameKey: issue.executionAgentNameKey ?? null,
+                  executionLockedAt: issue.executionLockedAt ?? null,
+                  startedAt: issue.startedAt ?? null,
+                },
+                req.body.agentId,
+                checkoutRunId,
+              );
             } catch (err) {
               logger.warn(
                 { err, issueId: id },
-                "failed to release checkout after closed-workspace reopen failure",
+                "failed to restore checkout snapshot after closed-workspace reopen failure",
               );
             }
           }

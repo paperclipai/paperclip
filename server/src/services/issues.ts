@@ -776,6 +776,11 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+
+/** Vitest seam for mid-checkout races (stale-adoption terminal filter). */
+export const checkoutAfterClearsHook: {
+  current: ((ctx: { issueId: string }) => Promise<void>) | null;
+} = { current: null };
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -8117,6 +8122,12 @@ export function issueService(db: Db) {
       await clearExecutionRunIfTerminal(id, checkoutRunId);
       await clearCheckoutRunIfTerminal(id, checkoutRunId);
 
+      // Vitest-only seam: inject a concurrent terminalization after clears so the
+      // stale-adoption fallback can be exercised without a flaky wall-clock race.
+      if (checkoutAfterClearsHook.current) {
+        await checkoutAfterClearsHook.current({ issueId: id });
+      }
+
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const readiness = dependencyReadiness.get(id);
       const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
@@ -8247,8 +8258,9 @@ export function issueService(db: Db) {
       }
 
       // Adopt stale executionRunId — if the execution lock points to a terminal/missing run, clear it and proceed.
-      // Only adopts when the caller's expectedStatuses guard still holds; preserves any existing assigneeUserId
-      // and preserves the original startedAt when the issue is already in_progress.
+      // Only adopts when the caller's effectiveExpectedStatuses guard still holds (same terminal filter as the
+      // primary CAS — raw expectedStatuses would let a post-snapshot done/cancelled race promote without resume);
+      // preserves any existing assigneeUserId and preserves the original startedAt when already in_progress.
       if (
         checkoutRunId &&
         current.executionRunId &&
@@ -8276,7 +8288,7 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
+                inArray(issues.status, effectiveExpectedStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
               ),
@@ -8499,6 +8511,79 @@ export function issueService(db: Db) {
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      }),
+
+    /**
+     * Compensate a failed post-checkout step by restoring the pre-checkout row.
+     * Unlike `release` (generic re-queue → todo + wipe assignee), this is a snapshot
+     * restore so a rejected checkout does not resurrect closed work or clear ownership.
+     */
+    restoreCheckoutSnapshot: async (
+      id: string,
+      snapshot: {
+        status: string;
+        assigneeAgentId: string | null;
+        assigneeUserId: string | null;
+        checkoutRunId: string | null;
+        executionRunId: string | null;
+        executionAgentNameKey: string | null;
+        executionLockedAt: Date | null;
+        startedAt: Date | null;
+      },
+      actorAgentId?: string,
+      actorRunId?: string | null,
+    ) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) return null;
+        if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+          throw conflict("Only assignee can restore checkout snapshot");
+        }
+        if (
+          actorAgentId &&
+          existing.status === "in_progress" &&
+          existing.assigneeAgentId === actorAgentId &&
+          existing.checkoutRunId &&
+          !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
+        ) {
+          const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
+          if (!stale) {
+            throw conflict("Only checkout run can restore checkout snapshot", {
+              issueId: existing.id,
+              assigneeAgentId: existing.assigneeAgentId,
+              checkoutRunId: existing.checkoutRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set({
+            status: snapshot.status,
+            assigneeAgentId: snapshot.assigneeAgentId,
+            assigneeUserId: snapshot.assigneeUserId,
+            checkoutRunId: snapshot.checkoutRunId,
+            executionRunId: snapshot.executionRunId,
+            executionAgentNameKey: snapshot.executionAgentNameKey,
+            executionLockedAt: snapshot.executionLockedAt,
+            startedAt: snapshot.startedAt,
             updatedAt: new Date(),
           })
           .where(eq(issues.id, id))
