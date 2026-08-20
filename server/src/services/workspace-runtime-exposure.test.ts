@@ -841,6 +841,7 @@ describe("classifyExposureHostCollisions gates quarantine on verified host state
     named: false,
     listenerPresent: false,
     ownerPid: null,
+    ownerProcessGroupId: null,
     ...over,
   });
 
@@ -882,6 +883,45 @@ describe("classifyExposureHostCollisions gates quarantine on verified host state
       ports: [state({ port: 42_000, named: true, listenerPresent: true, ownerPid: 4242 })],
     });
     expect(result).toEqual({ hostCollisionPorts: [], hostCollision: false });
+  });
+
+  it("does not report a collision when a guest descendant owns the present listener", () => {
+    // The runtime launches the guest as a shell process group leader (pid 4242).
+    // The real dev server binds the port from a descendant (pid 9999) that shares
+    // the shell process group. The owner pid differs from the shell pid, but the
+    // owner process group id matches it, so this is the guest, not the host. A raw
+    // pid equality would quarantine this valid pair until the shared pool drains.
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [
+        state({
+          port: 42_000,
+          named: true,
+          listenerPresent: true,
+          ownerPid: 9999,
+          ownerProcessGroupId: 4242,
+        }),
+      ],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [], hostCollision: false });
+  });
+
+  it("reports a host collision when the owner and its process group are both external", () => {
+    // A different process group holds the port, so neither the shell pid nor the
+    // process group matches. This is a real external owner and quarantine is right.
+    const result = classifyExposureHostCollisions({
+      childPid: 4242,
+      ports: [
+        state({
+          port: 42_000,
+          named: true,
+          listenerPresent: true,
+          ownerPid: 9999,
+          ownerProcessGroupId: 8888,
+        }),
+      ],
+    });
+    expect(result).toEqual({ hostCollisionPorts: [42_000], hostCollision: true });
   });
 
   it("ignores a present listener on a port the failure text did not name", () => {

@@ -54,6 +54,7 @@ import {
   isLocalServiceProcessInWorkspace,
   openLocalServiceLogFile,
   readLocalServiceProcessCwd,
+  readLocalServiceProcessGroupId,
   readLocalServicePortOwner,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
@@ -4310,6 +4311,8 @@ export interface ExposurePortHostState {
   listenerPresent: boolean;
   /** The listener pid, or null when unknown. */
   ownerPid: number | null;
+  /** The process group id of the listener owner, or null when unknown. */
+  ownerProcessGroupId: number | null;
 }
 
 /**
@@ -4323,7 +4326,15 @@ export interface ExposurePortHostState {
  * counts as a host collision only when all of the following hold:
  * - the failure text names the port with EADDRINUSE, and
  * - a real listener is present on the port now, and
- * - the listener owner is not the guest process the runtime just launched.
+ * - the listener owner is not the guest process the runtime just launched, nor a
+ *   descendant of it.
+ *
+ * The runtime launches the guest as a shell process group leader, so the real dev
+ * server usually binds the port from a descendant, not the shell pid itself. The
+ * ownership test therefore matches the shell pid against both the owner pid and
+ * the owner process group id. This is the same process-group attribution that
+ * `isLocalServiceProcessOwnedBy` applies on the host platform. A raw pid equality
+ * would treat a guest descendant as an external owner and quarantine a valid pair.
  *
  * An unknown owner with a present listener counts as a host owner: the /proc read
  * proves a listener, and a guest that lost its assigned port does not hold it.
@@ -4335,7 +4346,8 @@ export function classifyExposureHostCollisions(input: {
   const hostCollisionPorts: number[] = [];
   for (const state of input.ports) {
     const guestOwnsPort =
-      state.ownerPid != null && input.childPid != null && state.ownerPid === input.childPid;
+      input.childPid != null &&
+      (state.ownerPid === input.childPid || state.ownerProcessGroupId === input.childPid);
     if (state.named && state.listenerPresent && !guestOwnsPort) {
       hostCollisionPorts.push(state.port);
     }
@@ -6088,11 +6100,18 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         // /proc for the same presence signal and the bound addresses.
         const ownerPid = await readLocalServicePortOwner(collisionPort).catch(() => null);
         const bind = await readListenerBindFacts(collisionPort).catch(() => null);
+        // Read the owner process group id too. The guest runs as a shell process
+        // group leader, so the real dev server usually binds the port from a
+        // descendant. The classify step matches the shell pid against the owner pgid
+        // to keep a guest descendant from looking like an external owner.
+        const ownerProcessGroupId =
+          ownerPid != null ? await readLocalServiceProcessGroupId(ownerPid).catch(() => null) : null;
         hostStates.push({
           port: collisionPort,
           named: exposureNamedPorts.includes(collisionPort),
           listenerPresent: Boolean(bind?.present) || ownerPid != null,
           ownerPid,
+          ownerProcessGroupId,
         });
         const boundTo = bind?.present ? bind.addresses.join(", ") : "no listener";
         facts.push(`port ${collisionPort} bound to ${boundTo}, owner pid ${ownerPid ?? "none"}`);
