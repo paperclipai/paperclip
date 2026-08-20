@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -328,5 +329,112 @@ describe("POST /api/companies/:companyId/logo", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("SVG could not be sanitized");
     expect(createAssetMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/assets/:assetId/content", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/assets.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    createAssetMock.mockReset();
+    getAssetByIdMock.mockReset();
+    logActivityMock.mockReset();
+  });
+
+  it("does not label a legacy-encoded (non-UTF-8) text asset as charset=utf-8", async () => {
+    // 0xE9 is "é" in Latin-1/Windows-1252, an invalid standalone byte in UTF-8.
+    const latin1Body = Buffer.from([0x63, 0x61, 0x66, 0xe9]);
+    const storage = createStorageService();
+    (storage.getObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      stream: Readable.from(latin1Body),
+      contentType: "text/plain",
+      contentLength: latin1Body.length,
+    });
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain" });
+
+    const app = await createApp(storage);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content").buffer(true).responseType("blob"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(Buffer.from(res.body as Buffer), latin1Body)).toBe(0);
+  });
+
+  it("still labels valid UTF-8 text assets as charset=utf-8", async () => {
+    const utf8Body = Buffer.from("café 日本語", "utf8");
+    const storage = createStorageService();
+    (storage.getObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      stream: Readable.from(utf8Body),
+      contentType: "text/plain",
+      contentLength: utf8Body.length,
+    });
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain" });
+
+    const app = await createApp(storage);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content").buffer(true).responseType("blob"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(Buffer.compare(Buffer.from(res.body as Buffer), utf8Body)).toBe(0);
+  });
+
+  it("does not label structurally-valid-but-ambiguous Windows-1252 bytes as charset=utf-8", async () => {
+    // 0xC2 0xA9 is well-formed UTF-8 for a single "(c)" character, but the
+    // same two bytes are also well-formed Windows-1252 for two separate
+    // characters. Structural UTF-8 validity alone can't tell those apart, so
+    // this asset must be served without a charset, not mislabeled utf-8.
+    const windows1252Body = Buffer.from([0xc2, 0xa9]);
+    const storage = createStorageService();
+    (storage.getObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      stream: Readable.from(windows1252Body),
+      contentType: "text/plain",
+      contentLength: windows1252Body.length,
+    });
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain" });
+
+    const app = await createApp(storage);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content").buffer(true).responseType("blob"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(Buffer.from(res.body as Buffer), windows1252Body)).toBe(0);
+  });
+
+  it("streams a text asset larger than the attachment max-bytes cap unlabeled instead of buffering it", async () => {
+    // Valid ASCII/UTF-8 content, so the only reason this should stay unlabeled
+    // is that the known size exceeds the buffering cap and full-body UTF-8
+    // validation is skipped in favor of streaming.
+    const oversizedBody = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, "a");
+    const storage = createStorageService();
+    (storage.getObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      stream: Readable.from(oversizedBody),
+      contentType: "text/plain",
+      contentLength: oversizedBody.length,
+    });
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "text/plain",
+      byteSize: oversizedBody.length,
+    });
+
+    const app = await createApp(storage);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content").buffer(true).responseType("blob"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(Buffer.from(res.body as Buffer), oversizedBody)).toBe(0);
   });
 });

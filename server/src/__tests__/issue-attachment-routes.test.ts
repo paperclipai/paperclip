@@ -4,6 +4,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageService } from "../storage/types.js";
+import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -513,6 +514,86 @@ describe("issue attachment routes", () => {
     expect(res.headers["content-type"]).toContain("application/x-msdownload");
     expect(res.headers["content-disposition"]).toBe('attachment; filename="payload.exe"');
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("serves markdown attachments with an explicit utf-8 charset", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/markdown", "notes.md"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/markdown; charset=utf-8");
+  });
+
+  it("does not add a charset to binary attachment content types", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("application/x-msdownload", "payload.exe"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/x-msdownload");
+  });
+
+  it("does not label a legacy-encoded (non-UTF-8) text attachment as charset=utf-8", async () => {
+    // 0xE9 is "é" in Latin-1/Windows-1252, an invalid standalone byte in UTF-8.
+    const latin1Body = Buffer.from([0x63, 0x61, 0x66, 0xe9]);
+    const storage = createStorageService(latin1Body);
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/plain", "legacy.txt"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(res.body as Buffer, latin1Body)).toBe(0);
+  });
+
+  it("still labels valid UTF-8 text attachments as charset=utf-8", async () => {
+    const utf8Body = Buffer.from("café 日本語", "utf8");
+    const storage = createStorageService(utf8Body);
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/plain", "notes.txt"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(Buffer.compare(res.body as Buffer, utf8Body)).toBe(0);
+  });
+
+  it("streams a text attachment larger than the attachment max-bytes cap unlabeled instead of buffering it", async () => {
+    // Valid ASCII/UTF-8 content, so the only reason this should stay unlabeled
+    // is that the known size exceeds the buffering cap and full-body UTF-8
+    // validation is skipped in favor of streaming.
+    const oversizedBody = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, "a");
+    const storage = createStorageService(oversizedBody);
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("text/plain", "huge.txt"),
+      byteSize: oversizedBody.length,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(res.body as Buffer, oversizedBody)).toBe(0);
   });
 
   it("keeps image attachments inline for previews", async () => {

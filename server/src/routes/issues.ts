@@ -163,12 +163,16 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  canBufferForUtf8Validation,
   GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
+  isTextualAttachmentContentType,
+  isValidUtf8Buffer,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
+  withUtf8CharsetIfTextual,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
@@ -12751,7 +12755,40 @@ export function issueRoutes(
       objectContentType: object.contentType,
       originalFilename: attachment.originalFilename,
     });
-    res.setHeader("Content-Type", responseContentType);
+
+    // Storage accepts arbitrary bytes for textual content types (upload never
+    // validates encoding), so only assert charset=utf-8 once the full body is
+    // confirmed to actually be valid UTF-8. A range request only sees a slice
+    // of the bytes, which can't be validated reliably, so it's always served
+    // unlabeled.
+    let bufferedBody: Buffer | null = null;
+    let responseHeaderContentType = responseContentType;
+    if (isTextualAttachmentContentType(responseContentType)) {
+      if (range.kind === "range" || !canBufferForUtf8Validation(contentLength ?? object.contentLength)) {
+        // A range request only sees a slice of the bytes, which can't be validated
+        // reliably. An attachment too large (or of unknown size) to safely buffer
+        // for UTF-8 validation is streamed unlabeled instead, same as binary content.
+        responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, { validatedUtf8: false });
+      } else {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of object.stream) {
+            chunks.push(chunk as Buffer);
+          }
+          bufferedBody = Buffer.concat(chunks);
+        } catch (err) {
+          next(err);
+          return;
+        }
+        responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, {
+          validatedUtf8: isValidUtf8Buffer(bufferedBody),
+        });
+      }
+    } else {
+      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType);
+    }
+
+    res.setHeader("Content-Type", responseHeaderContentType);
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (responseContentType === SVG_CONTENT_TYPE) {
@@ -12763,9 +12800,11 @@ export function issueRoutes(
       : isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
     res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
-    object.stream.on("error", (err) => {
-      next(err);
-    });
+    if (!bufferedBody) {
+      object.stream.on("error", (err) => {
+        next(err);
+      });
+    }
     if (range.kind === "range") {
       const rangeLength = range.end - range.start + 1;
       res.status(206);
@@ -12775,8 +12814,12 @@ export function issueRoutes(
       return;
     }
 
-    res.setHeader("Content-Length", String(contentLength || object.contentLength || 0));
-    object.stream.pipe(res);
+    res.setHeader("Content-Length", String(bufferedBody ? bufferedBody.length : contentLength || object.contentLength || 0));
+    if (bufferedBody) {
+      res.end(bufferedBody);
+    } else {
+      object.stream.pipe(res);
+    }
   });
 
   router.delete("/attachments/:attachmentId", async (req, res) => {
