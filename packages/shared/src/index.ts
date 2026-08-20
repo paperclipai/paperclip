@@ -85,6 +85,19 @@ export {
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
+  ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX,
+  MARKDOWN_ATTACHMENT_CONTENT_TYPES,
+  MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
+  artifactReviewDocumentKey,
+  getAttachmentArtifactWorkProductMetadata,
+  getMarkdownWorkProductAttachmentMetadata,
+  isArtifactReviewDocumentKey,
+  isMarkdownArtifactWorkProduct,
+  isMarkdownAttachmentContent,
+  workProductIdFromArtifactReviewDocumentKey,
+  type AttachmentArtifactWorkProductLike,
+} from "./markdown-work-products.js";
+export {
   ISSUE_WRITE_DENIAL_CODES,
   describeIssueWriteDenial,
   isIssueWriteDenialCode,
