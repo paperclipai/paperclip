@@ -167,7 +167,7 @@ describe("adapter routes", () => {
       agentId: "codex",
       skillsMode: "ephemeral",
       prerequisites: {
-        nodeRange: ">=22.13.0",
+        nodeRange: ">=24.11.0",
         packages: ["@agentclientprotocol/codex-acp"],
       },
     });
@@ -203,7 +203,7 @@ describe("adapter routes", () => {
       agentId: "gemini",
       skillsMode: "ephemeral",
       prerequisites: {
-        nodeRange: ">=20.0.0",
+        nodeRange: ">=24.11.0",
         packages: ["@google/gemini-cli"],
       },
     });

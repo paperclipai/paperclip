@@ -23,7 +23,7 @@ bash install.sh
 The bootstrap script:
 
 1. verifies that the platform is supported;
-2. ensures Node.js 20 or newer is available;
+2. ensures Node.js 24.11 or newer is available;
 3. delegates installation to `paperclipai install`;
 4. starts interactive onboarding when stdin and stdout are terminals.
 

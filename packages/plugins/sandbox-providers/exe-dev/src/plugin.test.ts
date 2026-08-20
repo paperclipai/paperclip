@@ -372,7 +372,7 @@ describe("exe.dev sandbox provider plugin", () => {
 
     const body = String(fetchMock.mock.calls[0]?.[1]?.body ?? "");
     expect(body).toContain("--setup-script=");
-    expect(body).toContain("nodesource.com/setup_20.x");
+    expect(body).toContain("nodesource.com/setup_24.x");
     expect(body).toContain("sudo apt-get install -y nodejs");
   });
 
@@ -425,7 +425,7 @@ describe("exe.dev sandbox provider plugin", () => {
     await acquirePromise?.catch((error: Error) => {
       // Operator did not supply a setupScript, so the visible default install
       // is not a secret and stays in the error for debuggability.
-      expect(error.message).toContain("nodesource.com/setup_20.x");
+      expect(error.message).toContain("nodesource.com/setup_24.x");
       expect(error.message).not.toContain("[REDACTED]");
     });
   });

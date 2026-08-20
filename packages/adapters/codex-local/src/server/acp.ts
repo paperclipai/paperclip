@@ -48,7 +48,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "22.13.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type CodexExecutionEngine = "cli" | "acp";
 

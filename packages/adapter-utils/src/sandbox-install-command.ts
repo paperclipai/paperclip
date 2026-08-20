@@ -19,7 +19,7 @@ const ENSURE_NPM_PREAMBLE =
   "x86_64) NODE_ARCH=x64 ;; " +
   "aarch64|arm64) NODE_ARCH=arm64 ;; " +
   "esac; " +
-  'NODE_VERSION="v22.11.0"; ' +
+  'NODE_VERSION="v24.11.0"; ' +
   'NODE_TARBALL="node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; ' +
   'mkdir -p "$HOME/.local"; ' +
   'curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}" && ' +
