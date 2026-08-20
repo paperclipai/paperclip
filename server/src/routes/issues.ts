@@ -7958,7 +7958,9 @@ export function issueRoutes(
       actor,
       workProductChanged: true,
     });
-    if (patch.metadata !== undefined) {
+    const reviewDocumentInputChanged = ["type", "provider", "metadata", "title", "createdByRunId"]
+      .some((key) => Object.prototype.hasOwnProperty.call(patch, key));
+    if (reviewDocumentInputChanged || sourceTrust) {
       await materializeArtifactReviewDocumentBestEffort({ issue, workProduct: product, actor });
     }
     res.json(product);

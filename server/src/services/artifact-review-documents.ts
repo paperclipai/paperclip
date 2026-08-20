@@ -1,6 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assets, documents, issueAttachments, issueDocuments } from "@paperclipai/db";
+import { assets, documentRevisions, documents, issueAttachments, issueDocuments } from "@paperclipai/db";
 import {
   MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
   artifactReviewDocumentKey,
@@ -47,19 +48,37 @@ export interface EnsureArtifactReviewDocumentResult {
  * attachment-backed work product under the deterministic
  * `artifact-review-<workProductId>` key. The operation is idempotent: repeated
  * calls return the existing document and only write a new revision when the
- * attachment content changed.
+ * review content or its work-product provenance changed.
  */
 export function artifactReviewDocumentService(db: Db, storage: StorageService) {
   const documentsSvc = documentService(db);
   const annotationsSvc = documentAnnotationService(db);
 
-  const getExistingByKey = async (issueId: string, key: string) =>
-    db
+  const getExistingByKey = async (issueId: string, key: string) => {
+    const document = await db
       .select(issueDocumentSelect)
       .from(issueDocuments)
       .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
       .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
       .then((rows) => (rows[0] ? mapIssueDocumentRow(rows[0], true) : null));
+    if (!document) return null;
+    const latestRevision = document.latestRevisionId
+      ? await db
+        .select({
+          createdByAgentId: documentRevisions.createdByAgentId,
+          createdByUserId: documentRevisions.createdByUserId,
+          createdByRunId: documentRevisions.createdByRunId,
+        })
+        .from(documentRevisions)
+        .where(and(
+          eq(documentRevisions.id, document.latestRevisionId),
+          eq(documentRevisions.documentId, document.id),
+          eq(documentRevisions.companyId, document.companyId),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    return { document, latestRevision };
+  };
 
   const readMarkdownAttachmentBody = async (
     issue: { id: string; companyId: string },
@@ -169,8 +188,18 @@ export function artifactReviewDocumentService(db: Db, storage: StorageService) {
       };
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const existing = await getExistingByKey(issue.id, key);
-        if (existing && existing.body === body) {
+        const existingState = await getExistingByKey(issue.id, key);
+        const existing = existingState?.document ?? null;
+        const latestRevision = existingState?.latestRevision ?? null;
+        const reviewStateMatches = existing &&
+          existing.body === body &&
+          existing.title === (workProduct.title ?? null) &&
+          existing.format === "markdown" &&
+          latestRevision?.createdByAgentId === attribution.createdByAgentId &&
+          latestRevision.createdByUserId === attribution.createdByUserId &&
+          latestRevision.createdByRunId === attribution.createdByRunId &&
+          isDeepStrictEqual(existing.sourceTrust ?? null, attribution.sourceTrust);
+        if (reviewStateMatches) {
           return { document: existing, created: false, revisionChanged: false, remappedAnnotations: [] };
         }
         try {

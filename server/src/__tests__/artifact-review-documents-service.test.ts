@@ -8,6 +8,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRuns,
   issueAttachments,
   issueDocuments,
   issues,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("artifactReviewDocumentService", () => {
     await db.delete(issueAttachments);
     await db.delete(assets);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -224,7 +226,7 @@ describeEmbeddedPostgres("artifactReviewDocumentService", () => {
     expect(revisions).toHaveLength(1);
   });
 
-  it("writes a new revision only when the attachment content changed", async () => {
+  it("writes a new revision when the attachment content changes", async () => {
     const fixture = await seedFixture();
     const first = await fixture.svc.ensureForWorkProduct({
       issue: { id: fixture.issueId, companyId: fixture.companyId },
@@ -243,6 +245,59 @@ describeEmbeddedPostgres("artifactReviewDocumentService", () => {
     expect(second.document.latestRevisionNumber).toBe(2);
     expect(second.document.body).toBe("# Report v2\n");
     expect(Array.isArray(second.remappedAnnotations)).toBe(true);
+  });
+
+  it("synchronizes title and run provenance when the attachment body is unchanged", async () => {
+    const fixture = await seedFixture();
+    const first = await fixture.svc.ensureForWorkProduct({
+      issue: { id: fixture.issueId, companyId: fixture.companyId },
+      workProduct: fixture.workProduct,
+    });
+
+    const renamed = await fixture.svc.ensureForWorkProduct({
+      issue: { id: fixture.issueId, companyId: fixture.companyId },
+      workProduct: { ...fixture.workProduct, title: "Renamed verification report" },
+    });
+    expect(renamed.created).toBe(false);
+    expect(renamed.revisionChanged).toBe(true);
+    expect(renamed.document.id).toBe(first.document.id);
+    expect(renamed.document.title).toBe("Renamed verification report");
+    expect(renamed.document.latestRevisionNumber).toBe(2);
+
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      status: "succeeded",
+    });
+    const reattributed = await fixture.svc.ensureForWorkProduct({
+      issue: { id: fixture.issueId, companyId: fixture.companyId },
+      workProduct: {
+        ...fixture.workProduct,
+        title: "Renamed verification report",
+        createdByRunId: runId,
+      },
+    });
+    expect(reattributed.revisionChanged).toBe(true);
+    expect(reattributed.document.latestRevisionNumber).toBe(3);
+
+    const latestRevision = await db
+      .select()
+      .from(documentRevisions)
+      .then((rows) => rows.find((row) => row.id === reattributed.document.latestRevisionId));
+    expect(latestRevision?.createdByRunId).toBe(runId);
+
+    const unchanged = await fixture.svc.ensureForWorkProduct({
+      issue: { id: fixture.issueId, companyId: fixture.companyId },
+      workProduct: {
+        ...fixture.workProduct,
+        title: "Renamed verification report",
+        createdByRunId: runId,
+      },
+    });
+    expect(unchanged.revisionChanged).toBe(false);
+    expect(unchanged.document.latestRevisionNumber).toBe(3);
   });
 
   it("rejects work products that are not attachment-backed Paperclip artifacts", async () => {

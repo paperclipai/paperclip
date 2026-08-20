@@ -170,6 +170,8 @@ function makeIssue() {
 }
 
 function makeWorkProduct(overrides: Record<string, unknown> = {}) {
+  const attachmentId = "55555555-5555-4555-8555-555555555555";
+  const contentPath = `/api/attachments/${attachmentId}/content`;
   return {
     id: WORK_PRODUCT_ID,
     companyId: "company-1",
@@ -177,7 +179,15 @@ function makeWorkProduct(overrides: Record<string, unknown> = {}) {
     type: "artifact",
     provider: "paperclip",
     title: "Verification report",
-    metadata: {},
+    metadata: {
+      attachmentId,
+      contentType: "text/markdown",
+      byteSize: 128,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: "verification-report.md",
+    },
     createdByRunId: null,
     sourceTrust: null,
     ...overrides,
@@ -298,5 +308,27 @@ describe("work product review-document route", () => {
 
     expect(res.status).toBe(415);
     expect(res.body.error).toBe("Work product attachment is not Markdown");
+  });
+
+  it("resynchronizes an eligible review document after a title-only work product update", async () => {
+    const renamed = makeWorkProduct({ title: "Renamed verification report" });
+    mockWorkProductService.update.mockResolvedValue(renamed);
+    mockEnsureForWorkProduct.mockResolvedValue({
+      document: makeDocument({ title: "Renamed verification report", latestRevisionNumber: 2 }),
+      created: false,
+      revisionChanged: true,
+      remappedAnnotations: [],
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .patch(`/api/work-products/${WORK_PRODUCT_ID}`)
+      .send({ title: "Renamed verification report" });
+
+    expect(res.status).toBe(200);
+    expect(mockEnsureForWorkProduct).toHaveBeenCalledWith({
+      issue: { id: ISSUE_ID, companyId: "company-1" },
+      workProduct: renamed,
+    });
   });
 });

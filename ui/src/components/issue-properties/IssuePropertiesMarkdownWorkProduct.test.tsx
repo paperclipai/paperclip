@@ -291,8 +291,8 @@ describe("markdown work product review row", () => {
     await waitForAssertion(() => {
       expect(container.querySelector('button[aria-expanded="true"]')).not.toBeNull();
       expect(mockIssuesApi.ensureWorkProductReviewDocument).toHaveBeenCalledTimes(1);
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
     });
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
   });
 
   it("hides the promoted markdown attachment from Files but keeps loose attachments", async () => {

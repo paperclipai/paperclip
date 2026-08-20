@@ -211,6 +211,11 @@ describe("openapi routes", () => {
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
     expect(
+      Object.keys(
+        res.body.paths["/api/issues/{id}/work-products/{workProductId}/review-document"].post.responses,
+      ).sort(),
+    ).toEqual(["200", "201", "401", "403", "404", "409", "413", "415", "422"]);
+    expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
     const createInteraction = res.body.paths["/api/issues/{id}/interactions"].post;
