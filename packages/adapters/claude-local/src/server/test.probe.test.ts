@@ -13,23 +13,30 @@ const {
   resolveAdapterExecutionTargetCwd,
   probeResult,
 } = vi.hoisted(() => {
-  const probeResult: { value: { exitCode: number; stdout: string; stderr: string } } = {
+  const probeResult: {
+    value: { exitCode: number; stdout: string; stderr: string };
+    throwError: Error | null;
+  } = {
     value: { exitCode: 1, stdout: "", stderr: "" },
+    throwError: null,
   };
   return {
     probeResult,
     ensureAdapterExecutionTargetDirectory: vi.fn(async () => {}),
     ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => {}),
     maybeRunSandboxInstallCommand: vi.fn(async () => null),
-    runAdapterExecutionTargetProcess: vi.fn(async () => ({
-      exitCode: probeResult.value.exitCode,
-      signal: null,
-      timedOut: false,
-      stdout: probeResult.value.stdout,
-      stderr: probeResult.value.stderr,
-      pid: 123,
-      startedAt: new Date().toISOString(),
-    })),
+    runAdapterExecutionTargetProcess: vi.fn(async () => {
+      if (probeResult.throwError) throw probeResult.throwError;
+      return {
+        exitCode: probeResult.value.exitCode,
+        signal: null,
+        timedOut: false,
+        stdout: probeResult.value.stdout,
+        stderr: probeResult.value.stderr,
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    }),
     describeAdapterExecutionTarget: vi.fn(() => "Daytona"),
     resolveAdapterExecutionTargetCwd: vi.fn(() => "/home/daytona/paperclip-workspace"),
   };
@@ -75,6 +82,7 @@ const initLine =
 
 afterEach(() => {
   vi.clearAllMocks();
+  probeResult.throwError = null;
 });
 
 describe("claude sandbox hello probe diagnostics", () => {
@@ -371,6 +379,39 @@ describe("claude sandbox hello probe diagnostics", () => {
       classification: "nonzero_exit",
       exitCode: 7,
     });
+    warnSpy.mockRestore();
+  });
+
+  it("never copies a thrown CLI probe error into a check or the log", async () => {
+    // A spawn or transport failure can throw an error whose text carries a
+    // credential. Inject an opaque credential marker and a proxy marker through
+    // the thrown error. The CLI lane has no catch around the hello probe call,
+    // so the thrown error propagates to the caller, which owns it. No check and
+    // no console.warn call inside this lane repeats either marker.
+    const opaqueCredMarker = "OPAQUECREDMARKERnoshape";
+    const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
+    probeResult.throwError = new Error(
+      `probe spawn failed with ${opaqueCredMarker} via ${proxyMarker}`,
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // The current contract propagates the thrown error. The lane builds no
+    // Test-result check from the error, so the raw text cannot reach a check.
+    await expect(
+      testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: { engine: "cli", command: "claude" },
+        executionTarget: sandboxTarget,
+        environmentName: "Daytona",
+      }),
+    ).rejects.toThrow(opaqueCredMarker);
+
+    // The lane never routes the raw error text to the server log. No
+    // console.warn call repeats either marker.
+    const loggedText = JSON.stringify(warnSpy.mock.calls);
+    expect(loggedText).not.toContain(opaqueCredMarker);
+    expect(loggedText).not.toContain("proxy.corp.internal");
     warnSpy.mockRestore();
   });
 
