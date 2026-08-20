@@ -580,7 +580,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
-  it("DIG-2087 race: assertCheckoutOwner keeps ownership when actor run flips terminal after checkout", async () => {
+  it("assertCheckoutOwner keeps ownership when actor run flips terminal after checkout", async () => {
     const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
     const svc = issueService(db);
@@ -608,8 +608,8 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionRunId: currentRunId,
     });
 
-    // Simulate DIG-2092: ownership committed, then actor heartbeat run flips terminal.
-    // clear* inside assertCheckoutOwner must not reap protectRunId.
+    // Ownership committed, then actor heartbeat run flips terminal.
+    // clear* inside assertCheckoutOwner must not reap the protected run.
     await db.update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, currentRunId));

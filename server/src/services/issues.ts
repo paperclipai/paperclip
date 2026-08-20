@@ -5262,7 +5262,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue?.executionRunId) return false;
-      // A run must never reap its own freshly-acquired ownership (DIG-2092).
+      // A run must never reap its own freshly-acquired ownership.
       if (protectRunId && issue.executionRunId === protectRunId) return false;
 
       await tx.execute(
@@ -5317,7 +5317,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue?.checkoutRunId) return false;
-      // A run must never reap its own freshly-acquired ownership (DIG-2092).
+      // A run must never reap its own freshly-acquired ownership.
       // Clearing checkout also nulls execution*; protect either field.
       if (
         protectRunId
@@ -8079,11 +8079,22 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existingRow) throw notFound("Issue not found");
 
-      // Ordinary terminal wake/checkout is a non-mutating no-op without structured resume.
+      // Ordinary terminal wake/checkout is a non-mutating no-op without structured
+      // resume — but only when the caller listed the terminal status. Callers that
+      // did not include it still get the compare-and-set conflict (409).
       if (
         (existingRow.status === "done" || existingRow.status === "cancelled")
         && !resume
       ) {
+        if (!expectedStatuses.includes(existingRow.status)) {
+          throw conflict("Issue checkout conflict", {
+            issueId: existingRow.id,
+            status: existingRow.status,
+            assigneeAgentId: existingRow.assigneeAgentId,
+            checkoutRunId: existingRow.checkoutRunId,
+            executionRunId: existingRow.executionRunId,
+          });
+        }
         const [enriched] = await withIssueLabels(db, [existingRow]);
         return enriched;
       }

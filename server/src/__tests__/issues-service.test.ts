@@ -6865,7 +6865,7 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
   });
 });
 
-describeEmbeddedPostgres("issueService.checkout terminal wake invariant (DIG-2108)", () => {
+describeEmbeddedPostgres("issueService.checkout terminal wake invariant", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -6973,6 +6973,28 @@ describeEmbeddedPostgres("issueService.checkout terminal wake invariant (DIG-210
       expect(after.checkoutRunId).toBeNull();
       expect(after.executionRunId).toBeNull();
       expect(after.updatedAt.toISOString()).toBe(before.updatedAt.toISOString());
+    },
+  );
+
+  it.each(["done", "cancelled"] as const)(
+    "ordinary checkout on %s rejects when that status is absent from expectedStatuses",
+    async (status) => {
+      const seeded = await seedTerminalIssue(status);
+
+      await expect(
+        svc.checkout(
+          seeded.issueId,
+          seeded.agentId,
+          ["todo", "backlog", "blocked", "in_review"],
+          seeded.runId,
+          false,
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+
+      const after = await db.select().from(issues).where(eq(issues.id, seeded.issueId)).then((rows) => rows[0]!);
+      expect(after.status).toBe(status);
+      expect(after.checkoutRunId).toBeNull();
+      expect(after.executionRunId).toBeNull();
     },
   );
 

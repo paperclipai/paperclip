@@ -2185,7 +2185,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
   it("late merge-acknowledgement checkout wake on a done issue leaves it terminal and unowned", async () => {
     // Harness scoped wakes call checkout with expectedStatuses that include `done`.
-    // Without the DIG-2108 invariant that is a mutating reopen; with it, no-op.
+    // Without the terminal inert invariant that is a mutating reopen; with it, no-op.
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();

@@ -1,11 +1,26 @@
+import { createServer } from "node:http";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const closedWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const nextWorkspaceId = "44444444-4444-4444-8444-444444444444";
 const agentId = "22222222-2222-4222-8222-222222222222";
+
+const openServers: ReturnType<typeof createServer>[] = [];
+
+afterEach(async () => {
+  const servers = openServers.splice(0);
+  await Promise.all(
+    servers.map(
+      (server) =>
+        new Promise<void>((resolve, reject) => {
+          server.close((err) => (err ? reject(err) : resolve()));
+        }),
+    ),
+  );
+});
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -161,7 +176,18 @@ async function createApp(actor?: Record<string, unknown>) {
   });
   app.use("/api", issueRoutes({} as any, {} as any));
   app.use(errorHandler);
-  return app;
+
+  // Bind IPv4 explicitly — some hosts have no reachable ::1 (ENETUNREACH).
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  openServers.push(server);
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Expected TCP listen address");
+  }
+  return request(`http://127.0.0.1:${address.port}`);
 }
 
 function makeIssue() {
@@ -222,7 +248,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
   });
 
   it("reopens the closed isolated workspace and accepts a new comment", async () => {
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "hello" });
 
@@ -236,7 +262,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
   });
 
   it("reopens the closed isolated workspace and accepts a comment update", async () => {
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
 
@@ -245,7 +271,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
   });
 
   it("reopens the closed isolated workspace and accepts a checkout", async () => {
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -256,6 +282,37 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(res.status).not.toBe(409);
   });
 
+  it("skips closed-workspace reopen for terminal inert checkout and returns the unchanged row", async () => {
+    const terminalIssue = { ...makeIssue(), status: "done" as const };
+    mockIssueService.getById.mockResolvedValue(terminalIssue);
+    mockIssueService.checkout.mockResolvedValue(terminalIssue);
+
+    const res = await (await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "done"],
+      });
+
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).not.toHaveBeenCalled();
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      agentId,
+      ["todo", "backlog", "blocked", "done"],
+      null,
+      false,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "done",
+      executionWorkspaceId: closedWorkspaceId,
+    });
+  });
+
   it("returns 409 and blocks the comment when the workspace cannot be reopened", async () => {
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
@@ -263,7 +320,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       message: "Execution workspace is not reopenable",
     });
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "hello" });
 
@@ -278,7 +335,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       message: "Failed to rebuild the execution workspace",
     });
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -301,7 +358,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       source: "agent_key",
     };
 
-    const res = await request(await createApp(agentActorWithoutRunId))
+    const res = await (await createApp(agentActorWithoutRunId))
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -322,7 +379,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
     mockIssueService.update.mockResolvedValue(null);
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
 
@@ -341,10 +398,10 @@ describe.sequential("closed isolated workspace issue routes", () => {
   });
 
   it("clears the reopen-pending flag when the checkout throws after a reopen", async () => {
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "todo" });
     mockIssueService.checkout.mockRejectedValue(new Error("checkout failed"));
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -371,14 +428,18 @@ describe.sequential("closed isolated workspace issue routes", () => {
     mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
     mockIssueService.checkout.mockResolvedValue({ ...makeIssue(), status: "in_progress" });
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
-        expectedStatuses: ["todo", "backlog", "blocked"],
+        expectedStatuses: ["todo", "backlog", "blocked", "done"],
+        resume: true,
       });
 
     expect(res.status).toBe(200);
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).toHaveBeenCalledTimes(1);
     await new Promise((resolve) => setImmediate(resolve));
     expect(
       mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen,
@@ -391,7 +452,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     // issue terminal, this request must not clear the flag that the other request
     // owns. Otherwise the reaper or the archive route can destroy the rebuilt
     // worktree while the other request still uses it.
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "todo" });
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: true,
       reopened: false,
@@ -400,7 +461,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     });
     mockIssueService.checkout.mockResolvedValue(null);
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId,
@@ -424,7 +485,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       .mockRejectedValueOnce(new Error("transient database error"))
       .mockResolvedValue({ cleared: true });
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
 
@@ -442,7 +503,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       executionWorkspaceId: nextWorkspaceId,
     });
 
-    const res = await request(await createApp())
+    const res = await (await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ executionWorkspaceId: nextWorkspaceId });
 

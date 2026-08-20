@@ -10640,8 +10640,6 @@ export function issueRoutes(
       });
     }
 
-    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
-
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
 
@@ -10652,6 +10650,15 @@ export function issueRoutes(
     ) {
       return;
     }
+
+    // Terminal inert checkout must not reopen a closed workspace. Decide that
+    // before any closed-workspace lookup so a no-op does not rebuild/republish
+    // (or turn a rebuild failure into 503).
+    const terminalInertCheckout =
+      (issue.status === "done" || issue.status === "cancelled") && resumeRequested !== true;
+    const closedExecutionWorkspace = terminalInertCheckout
+      ? null
+      : await getClosedIssueExecutionWorkspace(issue);
 
     // Reopen the closed isolated workspace only after the run-id gate passes. A
     // rejected checkout must not rebuild and republish the workspace as active.
