@@ -6638,9 +6638,22 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
       runtimeServicesByReuseKey.delete(current.reuseKey);
     }
     void (async () => {
-      await cleanupRecordExposure(current);
-      await removeLocalServiceRegistryRecord(current.serviceKey);
-      await persistRuntimeServiceRecord(db, current);
+      // The child exited on its own. Record the terminal status as best effort.
+      // The persist can fail when a parent row is already gone: a caller can
+      // delete the project or the company while this service still runs, and the
+      // `project_id` foreign key then rejects the write. Catch every error here,
+      // or the detached persist becomes an unhandled rejection and crashes the
+      // host. This path runs off the child `exit` event, so no caller awaits it.
+      try {
+        await cleanupRecordExposure(current);
+        await removeLocalServiceRegistryRecord(current.serviceKey);
+        await persistRuntimeServiceRecord(db, current);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[workspace-runtime] runtime service exit cleanup failed for ${current.id}: ${detail}`,
+        );
+      }
     })();
   });
 }

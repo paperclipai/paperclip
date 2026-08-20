@@ -5884,7 +5884,12 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
   });
 
   afterEach(async () => {
-    await resetRuntimeServicesForTests();
+    // Terminate the real child processes this block starts and persist their
+    // stopped rows before the row deletes below. A left-over child exits later
+    // and its detached exit handler then writes a workspace_runtime_services row
+    // that references the deleted project, which raises an unhandled foreign-key
+    // error in the next test.
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
     // Service control writes activity_log rows. Delete them before the company
     // delete so a lingering foreign-key row cannot block the company delete and
     // leak rows into the next test.
@@ -6923,6 +6928,12 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // Startup reconciliation starts real child processes and registers them.
+    // Terminate them and persist their stopped rows before the row deletes
+    // below. A left-over child exits later and its detached exit handler then
+    // writes a workspace_runtime_services row that references the deleted
+    // project, which raises an unhandled foreign-key error in the next test.
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
     // Startup reconciliation writes activity_log rows (for example, exposure
     // reservation drift). Delete those rows before the company delete. A stale
     // activity_log row holds a foreign key to the company and makes the company
