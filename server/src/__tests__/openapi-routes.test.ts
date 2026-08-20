@@ -252,6 +252,19 @@ describe("openapi routes", () => {
     });
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
+
+    // AGE-594: `PATCH /api/issues/{id}` must expose the accepted
+    // `executionPolicy.monitor.kind` enum (the only value is `external_service`)
+    // and a typed `comment` schema, so an agent can discover both at the
+    // sanctioned discovery path (the OpenAPI spec) instead of guessing and
+    // losing the `comment` carried in the same rejected write.
+    const updateIssueBody =
+      res.body.paths["/api/issues/{id}"].patch.requestBody.content["application/json"].schema;
+    expect(updateIssueBody.properties.comment).toMatchObject({ type: "string", minLength: 1 });
+    expect(updateIssueBody.properties.executionPolicy.properties.monitor.properties.kind).toMatchObject({
+      type: "string",
+      enum: ["external_service"],
+    });
   });
 
   it("covers the mounted server routes exactly", () => {
