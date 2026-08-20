@@ -231,6 +231,48 @@ describe("resolveManagedSandboxEnvironmentId", () => {
     expect(resolveManagedSandboxEnvironmentId([])).toBeNull();
     expect(resolveManagedSandboxEnvironmentId(null)).toBeNull();
   });
+
+  it("skips an archived managed sandbox", () => {
+    // The server run-time resolver requires an active managed sandbox, so the
+    // Test resolution must not select an archived one. An archived sandbox row
+    // still carries the managed stamp, so the status guard is the only filter
+    // that excludes it. A real run rejects an archived sandbox, so the Test must
+    // reject it too.
+    const environments = [
+      makeEnvironment({
+        id: "sandbox-archived",
+        driver: "sandbox",
+        status: "archived",
+        metadata: { managedByPaperclip: true },
+      }),
+      makeEnvironment({
+        id: "local-1",
+        driver: "local",
+        metadata: { managedByPaperclip: true, defaultForInstance: true },
+      }),
+    ];
+    expect(resolveManagedSandboxEnvironmentId(environments)).toBeNull();
+  });
+
+  it("selects the active managed sandbox and skips an archived one", () => {
+    // When both an archived and an active managed sandbox exist, the resolver
+    // returns the active row, matching the server run-time resolver.
+    const environments = [
+      makeEnvironment({
+        id: "sandbox-archived",
+        driver: "sandbox",
+        status: "archived",
+        metadata: { managedByPaperclip: true },
+      }),
+      makeEnvironment({
+        id: "sandbox-active",
+        driver: "sandbox",
+        status: "active",
+        metadata: { managedByPaperclip: true },
+      }),
+    ];
+    expect(resolveManagedSandboxEnvironmentId(environments)).toBe("sandbox-active");
+  });
 });
 
 describe("resolveLocalDefaultEnvironmentId", () => {

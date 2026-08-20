@@ -503,13 +503,13 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
   });
 
-  it("skips the host login probe on a local target when the host provides ANTHROPIC_API_KEY", async () => {
+  it("runs the host login probe with the host ANTHROPIC_API_KEY on a local target", async () => {
     // A local ACP run inherits the host environment, so a host ANTHROPIC_API_KEY
-    // authenticates the real run. The Test lane must not run the subscription
-    // login probe for that config, because the probe would report a false
-    // auth-required when no stored login exists. The lane reports the API-key
-    // check instead.
+    // authenticates the real run. The Test lane runs the login probe with the
+    // same host key, so the probe env matches the credential the real run
+    // receives. The probe then reports a real result, not a false auth-required.
     process.env.ANTHROPIC_API_KEY = "sk-ant-host-key";
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
 
     const result = await testClaudeAcpEnvironment({
       companyId: "company-1",
@@ -519,9 +519,12 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
       environmentName: null,
     });
 
-    // The login probe never runs, so no false auth-required and no
-    // probe-unavailable check reaches the result.
-    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    // The probe runs once with the host key, so it authenticates and reports no
+    // false auth-required and no probe-unavailable check.
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
+    expect(spawnedEnv.ANTHROPIC_API_KEY).toBe("sk-ant-host-key");
     expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
     expect(result.checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
     // The lane still reports that API-key auth is in use.

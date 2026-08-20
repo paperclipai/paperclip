@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
+import type { CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AdapterEnvironmentTestResult,
@@ -1028,6 +1029,11 @@ function OnboardingWizardInner({
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
         managedSandboxOnly,
         managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+        // The policy hides the local environment, so an instance default that
+        // still points at the hidden local row names no visible environment.
+        // Pass the visible ids so the resolver redirects that stale local
+        // default to the managed sandbox instead of sending the hidden local id.
+        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const result = await agentsApi.testEnvironment(
         createdCompanyId,
@@ -2095,10 +2101,14 @@ function OnboardingWizardInner({
                       {adapterEnvResult &&
                       adapterEnvResult.status === "pass" ? (
                         <div className="space-y-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
-                          {/* Match the tokenized status box below: the shared
-                              text-size token, the same padding, and the success
-                              green shades the result box uses for a pass. */}
-                          <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-2.5 py-2 text-(length:--text-micro) text-green-700 dark:text-green-300">
+                          {/* Use the shared status-chip helper with the done
+                              status hue, so the pass banner derives its fill,
+                              text, and border from the design tokens in both
+                              modes instead of raw color values. */}
+                          <div
+                            className="status-chip flex items-center gap-2 rounded-md border px-2.5 py-2 text-(length:--text-micro)"
+                            style={{ "--sc": "var(--status-task-done)" } as CSSProperties}
+                          >
                             <Check className="size-3.5 shrink-0" />
                             <span className="font-medium">Passed</span>
                           </div>

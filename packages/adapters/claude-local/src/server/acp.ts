@@ -797,25 +797,30 @@ export async function testClaudeAcpEnvironment(
     });
   }
 
-  // Run a real hello probe for every target when subscription auth is the only
-  // credential source left after the branches above rule out Bedrock and an
-  // API key. A local target inherits the host environment, so a host
-  // ANTHROPIC_API_KEY counts the same as a config API key here: the real ACP
-  // run authenticates with the host key, so the login probe must not report a
-  // false auth-required. The API-key branch above already emits a warn, so the
-  // skip never turns a missing credential into a pass. The CLI lane already
-  // probes every target; the ACP lane now matches it, so a local or SSH target
-  // no longer reports a pass without a credential check. Prepare the sandbox the
-  // same way the CLI lane does — install the Claude CLI when it is absent and
-  // materialize the managed CLAUDE_CONFIG_DIR. The preparation is a no-op for a
-  // local or SSH target. The probe returns the canonical adapter_auth_missing
-  // signal only for a sandbox target, and a distinct warn check when the probe
-  // cannot run. The user interface reads the canonical signal to offer login on
-  // the sandbox ACP path.
-  if (!hasBedrock && !isNonEmpty(configApiKey) && !isNonEmpty(hostApiKey)) {
+  // Run a real hello probe for every target when Bedrock and a config API key
+  // are both absent. A local target inherits the host environment, so the real
+  // ACP run authenticates with a host ANTHROPIC_API_KEY. The probe seeds the
+  // same host key below when the config sets none, so the probe uses the
+  // credential the real run receives and does not report a false auth-required.
+  // A remote target does not inherit the host env, so considerHostEnv is false
+  // and the probe never reads the host key. The CLI lane already probes every
+  // target; the ACP lane now matches it, so a local or SSH target no longer
+  // reports a pass without a credential check. Prepare the sandbox the same way
+  // the CLI lane does — install the Claude CLI when it is absent and materialize
+  // the managed CLAUDE_CONFIG_DIR. The preparation is a no-op for a local or SSH
+  // target. The probe returns the canonical adapter_auth_missing signal only for
+  // a sandbox target, and a distinct warn check when the probe cannot run. The
+  // user interface reads the canonical signal to offer login on the sandbox ACP
+  // path.
+  if (!hasBedrock && !isNonEmpty(configApiKey)) {
     const probeEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(envConfig)) {
       if (typeof value === "string") probeEnv[key] = value;
+    }
+    // Seed the host ANTHROPIC_API_KEY when the config sets no key, so the probe
+    // env matches the credential the real local run inherits from the host.
+    if (isNonEmpty(hostApiKey) && !isNonEmpty(probeEnv.ANTHROPIC_API_KEY)) {
+      probeEnv.ANTHROPIC_API_KEY = hostApiKey.trim();
     }
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     checks.push(
