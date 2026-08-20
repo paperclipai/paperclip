@@ -330,6 +330,12 @@ function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransiti
   return checksState === "failure" ? "checks red" : "checks pending";
 }
 
+const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/i;
+
+function textMightReferenceGitHubPullRequest(...texts: Array<string | null | undefined>): boolean {
+  return texts.some((text) => typeof text === "string" && GITHUB_PULL_REQUEST_URL_PATTERN.test(text));
+}
+
 /**
  * Fail-closed guard for the `done` transition (AGE-569): an issue may not be
  * marked `done` while it references a GitHub pull request that is still
@@ -343,20 +349,34 @@ async function assertNoBlockingLinkedPullRequest(
   externalObjectsSvc: ReturnType<typeof externalObjectService>,
   issueId: string,
   companyId: string,
+  mightReferencePullRequest: boolean,
 ) {
   let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
   try {
     groups = await externalObjectsSvc.listForIssue(issueId);
   } catch (err) {
-    // The gate itself must not turn an unrelated external-objects
-    // misconfiguration/outage into a hard failure of every `done`
-    // transition. Only a resolved bad PR state (open/unmerged/red/pending)
-    // blocks below; a failure to even determine that state does not.
+    if (!mightReferencePullRequest) {
+      // The gate itself must not turn an unrelated external-objects
+      // misconfiguration/outage into a hard failure of every `done`
+      // transition. This issue's own text does not look like it references a
+      // GitHub pull request at all, so there is nothing plausible to gate on.
+      logger.warn(
+        { err, issueId },
+        "done-transition PR gate: failed to resolve linked external objects; issue has no PR-like reference, allowing the transition",
+      );
+      return;
+    }
+    // This issue's title/description looks like it references a GitHub pull
+    // request, and we failed to resolve its current state at all. Fail
+    // closed rather than silently letting an unverifiable PR reference pass.
     logger.warn(
       { err, issueId },
-      "done-transition PR gate: failed to resolve linked external objects; allowing the transition",
+      "done-transition PR gate: failed to resolve linked external objects for an issue with a PR-like reference; blocking the transition",
     );
-    return;
+    throw unprocessable(
+      "Cannot mark issue done: this issue references what looks like a GitHub pull request, but its state could not be resolved right now",
+      { code: "done_transition_pr_gate", reason: "unverified", pullRequest: null },
+    );
   }
   const linkedPullRequestObjectIds = groups
     .filter((group) => group.object?.objectType === "pull_request")
@@ -9446,7 +9466,13 @@ export function issueRoutes(
 
     const nextStatus = updateFields.status ?? existing.status;
     if (nextStatus === "done" && existing.status !== "done") {
-      await assertNoBlockingLinkedPullRequest(externalObjectsSvc, existing.id, existing.companyId);
+      const mightReferencePullRequest = textMightReferenceGitHubPullRequest(
+        existing.title,
+        existing.description,
+        typeof updateFields.title === "string" ? updateFields.title : null,
+        typeof updateFields.description === "string" ? updateFields.description : null,
+      );
+      await assertNoBlockingLinkedPullRequest(externalObjectsSvc, existing.id, existing.companyId, mightReferencePullRequest);
     }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");

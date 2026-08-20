@@ -384,7 +384,14 @@ async function fetchChecksState(input: {
   let checkRunsState: ChecksState | null = null;
   let checkRunsFetchFailed = false;
   try {
-    const checkRunsResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/check-runs`, { headers });
+    // GitHub paginates check-runs (default page size 30). Request the
+    // maximum page size so a repo with a realistic number of checks is
+    // covered by one request, and detect when `total_count` says there is
+    // more data than this single page returned.
+    const checkRunsResponse = await fetchImpl(
+      `${base}/commits/${encodeURIComponent(headSha)}/check-runs?per_page=100`,
+      { headers },
+    );
     if (checkRunsResponse.ok) {
       const body = await safeJson(checkRunsResponse);
       if (body === null) {
@@ -394,7 +401,17 @@ async function fetchChecksState(input: {
         checkRunsFetchFailed = true;
       } else {
         const checkRuns = Array.isArray(body.check_runs) ? (body.check_runs as Array<Record<string, unknown>>) : [];
-        checkRunsState = checksStateFromCheckRuns(checkRuns);
+        const totalCount = typeof body.total_count === "number" ? body.total_count : checkRuns.length;
+        const fromVisiblePage = checksStateFromCheckRuns(checkRuns);
+        if (fromVisiblePage === "success" && totalCount > checkRuns.length) {
+          // The visible page looks all-green, but `total_count` says there
+          // are more check-runs we did not fetch. A failing/pending run on
+          // a later page would otherwise be invisible to this gate -- treat
+          // an incomplete "success" read as unknown rather than confirmed.
+          checkRunsFetchFailed = true;
+        } else {
+          checkRunsState = fromVisiblePage;
+        }
       }
     } else {
       checkRunsFetchFailed = true;

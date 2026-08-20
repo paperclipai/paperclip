@@ -342,7 +342,7 @@ describe("GitHub external object provider", () => {
     ],
   ])("resolves an open pull request with %s checksState from check-runs", async (_name, checkRuns, expectedChecksState) => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) return checkRunsResponse(checkRuns);
+      if (url.includes("/check-runs")) return checkRunsResponse(checkRuns);
       if (url.endsWith("/status")) return response({ state: "success" });
       return response({
         state: "open",
@@ -361,7 +361,7 @@ describe("GitHub external object provider", () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs",
+      "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs?per_page=100",
       expect.any(Object),
     );
     expect(result).toEqual({
@@ -374,7 +374,7 @@ describe("GitHub external object provider", () => {
 
   it("falls back to the combined commit status endpoint when there are no check-runs", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) return checkRunsResponse([]);
+      if (url.includes("/check-runs")) return checkRunsResponse([]);
       if (url.endsWith("/status")) {
         return response({
           state: "failure",
@@ -411,7 +411,7 @@ describe("GitHub external object provider", () => {
 
   it("defaults checksState to success when neither check-runs nor commit status report anything", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) return checkRunsResponse([]);
+      if (url.includes("/check-runs")) return checkRunsResponse([]);
       if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
       return response({
         state: "open",
@@ -439,7 +439,7 @@ describe("GitHub external object provider", () => {
 
   it("does not report checksState success when both the check-runs and status lookups fail", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) return new Response("", { status: 500 });
+      if (url.includes("/check-runs")) return new Response("", { status: 500 });
       if (url.endsWith("/status")) return new Response("", { status: 502 });
       return response({
         state: "closed",
@@ -471,7 +471,7 @@ describe("GitHub external object provider", () => {
 
   it("reports the worse of check-runs and a failing legacy combined status", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) {
+      if (url.includes("/check-runs")) {
         return checkRunsResponse([{ status: "completed", conclusion: "success" }]);
       }
       if (url.endsWith("/status")) {
@@ -509,7 +509,7 @@ describe("GitHub external object provider", () => {
 
   it("does not report checksState success when the check-runs lookup fails but the legacy status succeeds", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) return new Response("", { status: 502 });
+      if (url.includes("/check-runs")) return new Response("", { status: 502 });
       if (url.endsWith("/status")) {
         return response({
           state: "success",
@@ -546,7 +546,7 @@ describe("GitHub external object provider", () => {
 
   it("treats an unreadable 2xx check-runs body the same as a failed lookup, not an empty list", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) return new Response("not json", { status: 200, headers: { "content-type": "application/json" } });
+      if (url.includes("/check-runs")) return new Response("not json", { status: 200, headers: { "content-type": "application/json" } });
       if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
       return response({
         state: "closed",
@@ -574,8 +574,82 @@ describe("GitHub external object provider", () => {
 
   it("treats an unrecognized completed check-run conclusion as failure, not success", async () => {
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/check-runs")) {
+      if (url.includes("/check-runs")) {
         return checkRunsResponse([{ status: "completed", conclusion: "stale" }]);
+      }
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("does not report success from a paginated check-runs list when later pages are not fetched", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        // GitHub reports total_count for the full set of check-runs on this
+        // commit, but this response only contains the first page (30 by
+        // default; here trimmed to one for the test). A failing run could
+        // be sitting on a page we never fetched.
+        return response({
+          total_count: 45,
+          check_runs: [{ status: "completed", conclusion: "success" }],
+        });
+      }
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("per_page=100"),
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("still reports failure from a paginated check-runs list when the visible page already has a failing run", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        return response({
+          total_count: 45,
+          check_runs: [{ status: "completed", conclusion: "failure" }],
+        });
       }
       if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
       return response({

@@ -122,7 +122,7 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
-      const checkRunsMatch = /\/repos\/acme\/app\/commits\/([^/]+)\/check-runs$/.exec(url);
+      const checkRunsMatch = /\/repos\/acme\/app\/commits\/([^/]+)\/check-runs(?:\?.*)?$/.exec(url);
       if (checkRunsMatch) {
         const sha = checkRunsMatch[1]!;
         const fixture = [...prFixtures.values()].find((f) => f.headSha === sha);
