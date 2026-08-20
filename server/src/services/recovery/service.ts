@@ -270,6 +270,9 @@ function resolveStrandedRecoveryCause(
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
   if (latestRun?.errorCode === "process_lost") return "process_lost";
+  if (latestRun?.errorCode === "adapter_failed" && /process lost/i.test(latestRun.error ?? "")) {
+    return "process_lost";
+  }
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
   }
