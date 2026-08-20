@@ -1,0 +1,26 @@
+{
+  "$schema": "https://paperclipai.com/schemas/plugin-manifest.json",
+  "type": "adapter",
+  "id": "openrouter",
+  "name": "OpenRouter Adapter",
+  "description": "Use any OpenRouter model (300+ models) with Paperclip",
+  "version": "0.3.1",
+  "entry": {
+    "adapter": "./src/index.ts"
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "model": {
+        "type": "string",
+        "description": "OpenRouter model ID (e.g., z-ai/glm-4-32b)",
+        "default": "anthropic/claude-3.5-sonnet"
+      },
+      "maxTokens": {
+        "type": "number",
+        "description": "Maximum tokens to generate",
+        "default": 4096
+      }
+    }
+  }
+}
