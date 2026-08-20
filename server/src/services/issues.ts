@@ -8529,6 +8529,8 @@ export function issueService(db: Db) {
      * When `expectedOwnership` is provided, restore is a no-op unless the locked row
      * still carries that post-checkout ownership — so a concurrent release / force-release
      * / reassignment while reopen was in flight is not overwritten by a stale snapshot.
+     * `status` is included so a cancel/done that retains the same run ids cannot be
+     * resurrected back to the pre-checkout non-terminal state.
      */
     restoreCheckoutSnapshot: async (
       id: string,
@@ -8547,6 +8549,7 @@ export function issueService(db: Db) {
       expectedOwnership?: {
         checkoutRunId: string | null;
         executionRunId: string | null;
+        status: string;
       },
     ) =>
       db.transaction(async (tx) => {
@@ -8565,6 +8568,7 @@ export function issueService(db: Db) {
           && (
             existing.checkoutRunId !== expectedOwnership.checkoutRunId
             || existing.executionRunId !== expectedOwnership.executionRunId
+            || existing.status !== expectedOwnership.status
           )
         ) {
           const [enriched] = await withIssueLabels(tx, [existing]);

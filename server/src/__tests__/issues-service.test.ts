@@ -7261,6 +7261,7 @@ describeEmbeddedPostgres("issueService.checkout terminal wake invariant", () => 
       {
         checkoutRunId: runId,
         executionRunId: runId,
+        status: "in_progress",
       },
     );
 
@@ -7365,6 +7366,7 @@ describeEmbeddedPostgres("issueService.checkout terminal wake invariant", () => 
       {
         checkoutRunId: runId,
         executionRunId: runId,
+        status: "in_progress",
       },
     );
 
@@ -7380,6 +7382,104 @@ describeEmbeddedPostgres("issueService.checkout terminal wake invariant", () => 
     expect(row.assigneeAgentId).toBeNull();
     expect(row.checkoutRunId).toBeNull();
     expect(row.executionRunId).toBeNull();
+  });
+
+  it("restoreCheckoutSnapshot is a no-op when status changed to cancelled but run ids were retained", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const startedAt = new Date("2026-08-20T09:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked source",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: "user-prior",
+      startedAt,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const checkedOut = await svc.checkout(
+      issueId,
+      agentId,
+      ["todo", "backlog", "blocked"],
+      runId,
+      false,
+    );
+    expect(checkedOut).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
+
+    // Pipeline cancel that retains the same ownership pointers.
+    await db
+      .update(issues)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
+    const restored = await svc.restoreCheckoutSnapshot(
+      issueId,
+      {
+        status: "blocked",
+        assigneeAgentId: agentId,
+        assigneeUserId: "user-prior",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        startedAt,
+      },
+      agentId,
+      runId,
+      {
+        checkoutRunId: runId,
+        executionRunId: runId,
+        status: "in_progress",
+      },
+    );
+
+    expect(restored).toMatchObject({
+      status: "cancelled",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
+
+    const row = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(row.status).toBe("cancelled");
+    expect(row.checkoutRunId).toBe(runId);
+    expect(row.executionRunId).toBe(runId);
   });
 
   it("stale executionRunId adoption does not promote a terminal issue without resume even when done is listed", async () => {

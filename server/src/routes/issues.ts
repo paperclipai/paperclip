@@ -10720,6 +10720,7 @@ export function issueRoutes(
                 {
                   checkoutRunId: updated.checkoutRunId,
                   executionRunId: updated.executionRunId,
+                  status: updated.status,
                 },
               );
             } catch (err) {

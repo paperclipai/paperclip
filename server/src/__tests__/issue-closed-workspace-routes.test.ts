@@ -391,6 +391,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       {
         checkoutRunId: "run-after-checkout",
         executionRunId: "run-after-checkout",
+        status: "in_progress",
       },
     );
     expect(res.status).toBe(503);
@@ -438,6 +439,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       {
         checkoutRunId: "run-after-checkout",
         executionRunId: "run-after-checkout",
+        status: "in_progress",
       },
     );
     expect(res.status).toBe(409);
