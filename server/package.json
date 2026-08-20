@@ -64,7 +64,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.6.28",
-    "chokidar": "^4.0.3",
+    "chokidar": "^5.0.0",
     "detect-port": "^2.1.0",
     "dompurify": "^3.4.13",
     "dotenv": "^17.4.2",
