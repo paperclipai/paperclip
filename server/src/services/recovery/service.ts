@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -26,6 +26,9 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineRuns,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -368,6 +371,8 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const ASSIGNMENT_RECOVERY_MAX_ATTEMPTS = 3;
+const ASSIGNMENT_RECOVERY_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -842,10 +847,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function summarizeRecentContinuationRetries(
+  async function summarizeRecentAutomaticRecoveryRetries(
     companyId: string,
     issueId: string,
     agentId: string,
+    expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
     errorCodeToMatch: string | null,
     since: Date | null = null,
   ) {
@@ -874,7 +880,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const row of rows) {
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
-      if (retryReason !== "issue_continuation_needed") break;
+      if (retryReason !== expectedRetryReason) break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
@@ -3130,7 +3136,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      expectedStatuses: [input.previousStatus],
+      requireExecutionUnbound: true,
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3248,7 +3258,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const blockedByIssueIds = [...new Set([...existingBlockers.map((row) => row.id), ...openChildren.map((row) => row.id)])];
     if (blockedByIssueIds.length === 0) return null;
 
-    const updated = await issuesSvc.update(issue.id, { status: "blocked", blockedByIssueIds });
+    const updated = await issuesSvc.update(issue.id, {
+      status: "blocked",
+      blockedByIssueIds,
+      expectedStatuses: [issue.status],
+      requireExecutionUnbound: true,
+    });
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([...openChildren, ...existingBlockers]);
@@ -3309,6 +3324,131 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    const preflight = await db.transaction(async (tx) => {
+      let currentIssue = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (currentIssue?.executionRunId) {
+        const terminalBindingRunId =
+          input.latestRun?.id === currentIssue.executionRunId && isTerminalIssueRun(input.latestRun)
+            ? input.latestRun.id
+            : null;
+        if (!terminalBindingRunId) return { handled: true, issue: null } as const;
+        currentIssue = await tx
+          .update(issues)
+          .set({
+            checkoutRunId: currentIssue.checkoutRunId === terminalBindingRunId
+              ? null
+              : currentIssue.checkoutRunId,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(issues.id, currentIssue.id),
+              eq(issues.executionRunId, terminalBindingRunId),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      }
+      if (
+        !currentIssue ||
+        (currentIssue.status !== "todo" &&
+          currentIssue.status !== "in_progress" &&
+          currentIssue.status !== "in_review")
+      ) {
+        return { handled: true, issue: null } as const;
+      }
+      if (currentIssue.originKind !== "routine_execution" || !currentIssue.originId) {
+        return { handled: false, issue: currentIssue } as const;
+      }
+
+      const armedRoutine = await tx
+        .select({ id: routines.id })
+        .from(routines)
+        .innerJoin(
+          routineTriggers,
+          and(
+            eq(routineTriggers.companyId, routines.companyId),
+            eq(routineTriggers.routineId, routines.id),
+            eq(routineTriggers.enabled, true),
+            or(
+              eq(routineTriggers.kind, "api"),
+              and(eq(routineTriggers.kind, "schedule"), isNotNull(routineTriggers.nextRunAt)),
+            ),
+          ),
+        )
+        .where(
+          and(
+            eq(routines.id, currentIssue.originId),
+            eq(routines.companyId, currentIssue.companyId),
+            eq(routines.status, "active"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!armedRoutine) return { handled: false, issue: currentIssue } as const;
+
+      const updated = await issuesSvc.update(
+        currentIssue.id,
+        {
+          status: "done",
+          expectedStatuses: [currentIssue.status],
+          requireExecutionUnbound: true,
+        },
+        tx,
+      );
+      if (!updated) return { handled: true, issue: null } as const;
+
+      if (currentIssue.originRunId) {
+        const completedAt = new Date();
+        await tx
+          .update(routineRuns)
+          .set({ status: "completed", completedAt, updatedAt: completedAt })
+          .where(
+            and(
+              eq(routineRuns.id, currentIssue.originRunId),
+              eq(routineRuns.companyId, currentIssue.companyId),
+              eq(routineRuns.routineId, armedRoutine.id),
+            ),
+          );
+      }
+
+      await logActivity(tx as unknown as Db, {
+        companyId: currentIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          identifier: currentIssue.identifier,
+          status: "done",
+          previousStatus: currentIssue.status,
+          source: "recovery.complete_armed_routine_execution",
+          routineId: armedRoutine.id,
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        },
+      });
+      return { handled: true, issue: updated } as const;
+    });
+    if (preflight.handled) return preflight.issue;
+    input = {
+      ...input,
+      issue: preflight.issue,
+      previousStatus: preflight.issue.status as StrandedPreviousStatus,
+    };
+
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
@@ -3338,12 +3478,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const targetStatus = blockerIds.length > 0 ? "blocked" : "todo";
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: targetStatus,
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      assigneeAgentId: targetStatus === "blocked"
+        ? recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId
+        : input.issue.assigneeAgentId,
+      expectedStatuses: [input.previousStatus],
+      requireExecutionUnbound: true,
     });
-    if (!updated) return null;
+    if (!updated) {
+      await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: recoveryAction.id,
+        status: "cancelled",
+        outcome: "false_positive",
+        resolutionNote:
+          "Recovery escalation was cancelled because the source issue changed status or acquired an execution binding before the transition.",
+      });
+      return null;
+    }
     if (isProviderQuotaWait) return updated;
 
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
@@ -3451,7 +3607,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: targetStatus,
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
@@ -3481,7 +3637,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
     });
 
-    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (
+      targetStatus === "blocked" &&
+      recoveryAction.ownerAgentId &&
+      recoveryAction.ownerAgentId === input.issue.assigneeAgentId
+    ) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
@@ -3492,6 +3652,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (
         currentIssue &&
+        currentIssue.status !== "done" &&
+        currentIssue.status !== "cancelled" &&
         (currentIssue.status !== "blocked" ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
@@ -3499,6 +3661,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: "blocked",
           blockedByIssueIds: blockerIds,
           assigneeAgentId: recoveryAction.ownerAgentId,
+          expectedStatuses: [currentIssue.status],
+          requireExecutionUnbound: true,
         });
         if (reblocked) return reblocked;
       }
@@ -3691,6 +3855,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (
+        issue.status === "todo" &&
+        await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agent = await getAgent(agentId);
       const agentInvokable = agent && agent.companyId === issue.companyId
         ? await isAgentInvokable(agent)
@@ -3786,7 +3958,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             recoveryCause: "configuration_incomplete",
             comment:
               "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
-              "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
+              "Recording an explicit recovery action with the configuration fix instead of creating a recovery takeover.",
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
@@ -3834,10 +4006,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             agentId,
             acceptedInteractionResolvedAt,
           );
-          const { consecutive } = await summarizeRecentContinuationRetries(
+          const { consecutive } = await summarizeRecentAutomaticRecoveryRetries(
             issue.companyId,
             issue.id,
             agentId,
+            "issue_continuation_needed",
             CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
             acceptedInteractionResolvedAt,
           );
@@ -3856,7 +4029,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               comment:
                 `Paperclip stopped requeueing accepted interaction \`${acceptedContinuationInteraction.id}\` after ` +
                 `${consecutive} consecutive continuation wakes were cancelled while waiting on review. ` +
-                "Moving the issue to `blocked` so the missing execution path is visible for intervention.",
+                "Recording an explicit recovery action so the missing execution path is visible for intervention.",
             });
             if (updated) {
               result.escalated += 1;
@@ -3952,7 +4125,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             recoveryOwnerAgentId: participantAgentId,
             comment:
               "Paperclip classified the active review participant's latest adapter failure as " +
-              "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
+              "`configuration_incomplete`. Recording an explicit recovery action with the configuration fix " +
               "recorded instead of repeatedly requeueing the reviewer.",
           });
           if (updated) {
@@ -4068,26 +4241,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "todo",
-            latestRun,
-            notice: {
-              body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
-              title: "No live execution path",
-              tone: "danger",
-            },
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
+          const { consecutive, latestFinishedAt } = await summarizeRecentAutomaticRecoveryRetries(
+            issue.companyId,
+            issue.id,
+            agentId,
+            "assignment_recovery",
+            readNonEmptyString(latestRun.errorCode),
+          );
+          if (consecutive >= ASSIGNMENT_RECOVERY_MAX_ATTEMPTS) {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "todo",
+              latestRun,
+              recoveryOwnerAgentId: agentId,
+              notice: {
+                body:
+                  "Paperclip exhausted bounded dispatch retries for this assigned `todo` issue after a lost wake/run. " +
+                  "Keeping it in `todo` with an explicit recovery action owned by the original assignee.",
+                title: "No live execution path",
+                tone: "danger",
+              },
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
           }
-          continue;
+
+          if (latestFinishedAt) {
+            const elapsed = Date.now() - latestFinishedAt.getTime();
+            const requiredDelay = ASSIGNMENT_RECOVERY_BASE_BACKOFF_MS *
+              Math.pow(2, Math.max(0, consecutive - 1));
+            if (elapsed < requiredDelay) {
+              result.skipped += 1;
+              continue;
+            }
+          }
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
@@ -4169,7 +4361,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               latestRun: successfulRun,
               comment:
                 "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+                "made progress, but it still has no live execution path. Recording an explicit recovery action for intervention.",
             });
             if (updated) {
               result.escalated += 1;
@@ -4223,8 +4415,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             notice: {
               body:
                 "Paperclip detected a non-retryable failure on this issue's continuation run " +
-                `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
-                "so it is visible for intervention.",
+                `(\`${classification.errorCode}\`). Skipping automatic retries and recording an explicit recovery action ` +
+                "so it remains visible for intervention.",
               title: "Continuation failed",
               tone: "danger",
             },
@@ -4239,10 +4431,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
-          const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
+          const { consecutive, latestFinishedAt } = await summarizeRecentAutomaticRecoveryRetries(
             issue.companyId,
             issue.id,
             agentId,
+            "issue_continuation_needed",
             classification.errorCode,
           );
           if (consecutive >= classification.maxAttempts) {
@@ -4255,7 +4448,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 body:
                   "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
                   `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
+                  "Recording an explicit recovery action so it remains visible for intervention.",
                 title: "No live execution path",
                 tone: "danger",
               },

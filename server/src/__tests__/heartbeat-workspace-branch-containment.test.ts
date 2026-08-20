@@ -636,7 +636,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
   });
   const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
   expect(issueById.get(input.sourceIssueId)).toMatchObject({
-    status: "blocked",
+    status: "todo",
     executionRunId: null,
     checkoutRunId: null,
   });

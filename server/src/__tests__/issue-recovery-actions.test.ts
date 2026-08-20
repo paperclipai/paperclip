@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -17,6 +17,9 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  routines,
+  routineRuns,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -143,6 +146,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
     await db.delete(issueInboxArchives);
+    await db.delete(routineRuns);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -316,7 +322,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     expect(updatedIssue).toMatchObject({
-      status: "blocked",
+      status: "todo",
+      assigneeAgentId: coderId,
+      executionRunId: null,
     });
     const recoveryIssues = await db
       .select()
@@ -329,6 +337,195 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
     });
+  });
+
+  it.each([
+    {
+      kind: "schedule",
+      trigger: {
+        cronExpression: "0 * * * *",
+        timezone: "UTC",
+        nextRunAt: new Date("2026-05-14T19:00:00.000Z"),
+      },
+    },
+    { kind: "api", trigger: {} },
+  ] as const)("completes an execution shell when its active routine has an enabled $kind trigger", async ({ kind, trigger }) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const routineId = randomUUID();
+    const triggerId = randomUUID();
+    const routineRunId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Recurring recovery check",
+      assigneeAgentId: coderId,
+      status: "active",
+    });
+    await db.insert(routineTriggers).values({
+      id: triggerId,
+      companyId,
+      routineId,
+      kind,
+      enabled: true,
+      ...trigger,
+    });
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      triggerId,
+      source: kind,
+      status: "issue_created",
+      linkedIssueId: sourceIssueId,
+    });
+    await db
+      .update(issues)
+      .set({ originKind: "routine_execution", originId: routineId, originRunId: routineRunId })
+      .where(eq(issues.id, sourceIssueId));
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0]!);
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "process lost",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    expect(result).toMatchObject({ status: "done", executionRunId: null });
+    const [routineRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId));
+    expect(routineRun).toMatchObject({ status: "completed", linkedIssueId: sourceIssueId });
+    expect(routineRun?.completedAt).toBeInstanceOf(Date);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [activity] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    expect(activity?.details).toMatchObject({
+      source: "recovery.complete_armed_routine_execution",
+      routineId,
+    });
+  });
+
+  it.each(["done", "cancelled"] as const)(
+    "preserves a %s issue when recovery receives a stale non-terminal preimage",
+    async (terminalStatus) => {
+      const { sourceIssue, sourceIssueId, coderId } = await seedCompany();
+      await db.update(issues).set({ status: terminalStatus }).where(eq(issues.id, sourceIssueId));
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "process lost",
+          errorCode: "process_lost",
+          contextSnapshot: {},
+          livenessState: "needs_followup",
+        },
+      });
+
+      expect(result).toBeNull();
+      const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(currentIssue?.status).toBe(terminalStatus);
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never writes blocked when a run binds between recovery preflight and the status transition", async () => {
+    const { companyId, coderId, sourceIssue, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date("2026-05-13T18:00:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, recoveryRaceBind: true },
+    });
+    await db.execute(sql`
+      create or replace function test_bind_issue_on_recovery_action()
+      returns trigger as $$
+      declare bound_run_id uuid;
+      begin
+        select id into bound_run_id
+        from heartbeat_runs
+        where company_id = new.company_id
+          and context_snapshot ->> 'recoveryRaceBind' = 'true'
+        order by created_at desc
+        limit 1;
+        if bound_run_id is not null then
+          update issues
+          set checkout_run_id = bound_run_id,
+              execution_run_id = bound_run_id,
+              execution_locked_at = now()
+          where id = new.source_issue_id;
+        end if;
+        return new;
+      end;
+      $$ language plpgsql
+    `);
+    await db.execute(sql`
+      create trigger test_bind_issue_on_recovery_action_trigger
+      after insert on issue_recovery_actions
+      for each row execute function test_bind_issue_on_recovery_action()
+    `);
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    try {
+      const result = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "adapter failed",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        },
+      });
+
+      expect(result).toBeNull();
+      const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(currentIssue).toMatchObject({
+        status: "in_progress",
+        checkoutRunId: runId,
+        executionRunId: runId,
+      });
+      const [recoveryAction] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+      expect(recoveryAction).toMatchObject({ status: "cancelled", outcome: "false_positive" });
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    } finally {
+      await db.execute(sql`
+        drop trigger if exists test_bind_issue_on_recovery_action_trigger on issue_recovery_actions
+      `);
+      await db.execute(sql`drop function if exists test_bind_issue_on_recovery_action()`);
+    }
   });
 
   it.each([
@@ -382,6 +579,84 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       );
     },
   );
+
+  it("backs off before retrying a failed assignment recovery", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      startedAt: new Date(now.getTime() - 2_000),
+      finishedAt: new Date(now.getTime() - 1_000),
+      createdAt: new Date(now.getTime() - 3_000),
+      contextSnapshot: { issueId: sourceIssueId, retryReason: "assignment_recovery" },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ dispatchRequeued: 0, escalated: 0, skipped: 1 });
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps exhausted assignment recovery in todo and wakes the original assignee from an action", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));
+    const base = Date.now() - 10 * 60_000;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const createdAt = new Date(base + attempt * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 1_000),
+        createdAt,
+        contextSnapshot: { issueId: sourceIssueId, retryReason: "assignment_recovery" },
+      });
+    }
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ dispatchRequeued: 0, escalated: 1 });
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({
+      status: "todo",
+      assigneeAgentId: coderId,
+      executionRunId: null,
+    });
+    expect(
+      await db.select().from(issueRelations).where(eq(issueRelations.issueId, sourceIssueId)),
+    ).toHaveLength(0);
+    const [action] = await db.select().from(issueRecoveryActions);
+    expect(action).toMatchObject({
+      sourceIssueId,
+      status: "active",
+      ownerAgentId: coderId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+    });
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      coderId,
+      expect.objectContaining({ reason: "source_scoped_recovery_action" }),
+    );
+  });
 
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
@@ -832,7 +1107,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }));
   });
 
-  it("blocks a cross-agent review participant with incomplete configuration", async () => {
+  it("returns a cross-agent review failure to todo with an explicit configuration action", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
@@ -881,8 +1156,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(result).toMatchObject({ escalated: 1, reviewParticipantRequeued: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
-      status: "blocked",
-      assigneeAgentId: managerId,
+      status: "todo",
+      assigneeAgentId: coderId,
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
@@ -947,7 +1222,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(result).toMatchObject({ escalated: 1, skipped: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
-    expect(updatedIssue?.status).toBe("blocked");
+    expect(updatedIssue?.status).toBe("todo");
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
     const [action] = await db.select().from(issueRecoveryActions);
@@ -1163,7 +1438,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
-  it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
+  it("does not overwrite source progress when a recovery wake is claimed synchronously", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
     const enqueueWakeup = vi.fn(async () => {
@@ -1192,7 +1467,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterFirst?.status).toBe("blocked");
+    expect(afterFirst?.status).toBe("in_progress");
     expect(afterFirst?.assigneeAgentId).toBe(coderId);
 
     const secondLatestRun = {
@@ -1221,7 +1496,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     const [afterSecond] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterSecond?.status).toBe("blocked");
+    expect(afterSecond?.status).toBe("in_progress");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);

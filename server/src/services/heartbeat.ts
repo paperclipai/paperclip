@@ -16907,6 +16907,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
+      const runContext = parseObject(run.contextSnapshot);
+      const runRecoveryActionId = readNonEmptyString(runContext.recoveryActionId);
+      if (
+        readNonEmptyString(runContext.wakeReason) === "source_scoped_recovery_action" &&
+        runRecoveryActionId
+      ) {
+        const activeRecoveryAction = await tx
+          .select({ id: issueRecoveryActions.id })
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.id, runRecoveryActionId),
+              eq(issueRecoveryActions.companyId, issue.companyId),
+              eq(issueRecoveryActions.sourceIssueId, issue.id),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (activeRecoveryAction) return { kind: "released" as const };
+      }
+
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
       // Sibling lock cleanup is already done above; only the primary issue carries

@@ -7538,6 +7538,8 @@ export function issueService(db: Db) {
       data: Partial<typeof issues.$inferInsert> & {
         labelIds?: string[];
         blockedByIssueIds?: string[];
+        expectedStatuses?: Array<(typeof issues.$inferSelect)["status"]>;
+        requireExecutionUnbound?: boolean;
         actorAgentId?: string | null;
         actorUserId?: string | null;
       },
@@ -7556,10 +7558,13 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        expectedStatuses,
+        requireExecutionUnbound,
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
+      if (expectedStatuses !== undefined && !expectedStatuses.includes(existing.status)) return null;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7713,6 +7718,8 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (expectedStatuses !== undefined && !expectedStatuses.includes(receiptExisting.status)) return null;
+        if (requireExecutionUnbound && receiptExisting.executionRunId) return null;
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
@@ -7743,7 +7750,13 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(
+            and(
+              eq(issues.id, id),
+              expectedStatuses === undefined ? undefined : inArray(issues.status, expectedStatuses),
+              requireExecutionUnbound ? isNull(issues.executionRunId) : undefined,
+            ),
+          )
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
