@@ -2713,6 +2713,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
+    recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
@@ -2720,7 +2721,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
-    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(
+      input.issue,
+      input.recoveryOwnerAgentId,
+    );
     if (!ownerAgentId) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3225,6 +3229,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
   }
 
+  async function ensureBlockingEdge(companyId: string, blockerIssueId: string, blockedIssueId: string) {
+    await db
+      .insert(issueRelations)
+      .values({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      })
+      .onConflictDoNothing({
+        target: [
+          issueRelations.companyId,
+          issueRelations.issueId,
+          issueRelations.relatedIssueId,
+          issueRelations.type,
+        ],
+      });
+  }
+
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
     const existingBlockers = await existingUnresolvedBlockerIssues(issue.companyId, issue.id);
     const openChildren = await db
@@ -3299,6 +3322,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     comment?: string;
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
+    recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
@@ -3329,11 +3353,40 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const wakePolicyType = typeof recoveryAction.wakePolicy === "object" &&
+        recoveryAction.wakePolicy &&
+        "type" in recoveryAction.wakePolicy &&
+        typeof recoveryAction.wakePolicy.type === "string"
+      ? recoveryAction.wakePolicy.type
+      : null;
+    const preservesSourceAssignee =
+      Boolean(recoveryAction.ownerAgentId) &&
+      Boolean(input.issue.assigneeAgentId) &&
+      recoveryAction.ownerAgentId !== input.issue.assigneeAgentId;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      assigneeAgentId: preservesSourceAssignee
+        ? input.issue.assigneeAgentId
+        : recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
+    const takeoverRecoveryIssue = preservesSourceAssignee && wakePolicyType === "wake_owner"
+      ? await ensureStrandedIssueRecoveryIssue({
+        issue: input.issue,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        recoveryOwnerAgentId: recoveryAction.ownerAgentId,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      })
+      : null;
+    const blockerIdsWithTakeover = takeoverRecoveryIssue
+      ? [...new Set([...blockerIds, takeoverRecoveryIssue.id])]
+      : blockerIds;
+    if (takeoverRecoveryIssue) {
+      await ensureBlockingEdge(input.issue.companyId, takeoverRecoveryIssue.id, input.issue.id);
+    }
     if (isProviderQuotaWait) return updated;
 
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
@@ -3460,18 +3513,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryOwnerAgentId: recoveryAction.ownerAgentId,
         previousOwnerAgentId: recoveryAction.previousOwnerAgentId,
         returnOwnerAgentId: recoveryAction.returnOwnerAgentId,
-        blockerIssueIds: blockerIds,
+        blockerIssueIds: blockerIdsWithTakeover,
       },
     });
 
-    await enqueueSourceScopedStrandedRecoveryWake({
-      action: recoveryAction,
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
-    });
+    if (!takeoverRecoveryIssue) {
+      await enqueueSourceScopedStrandedRecoveryWake({
+        action: recoveryAction,
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause,
+      });
+    }
 
-    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (!takeoverRecoveryIssue && recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db
         .select({
           status: issues.status,

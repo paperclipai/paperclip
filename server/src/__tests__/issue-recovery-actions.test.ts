@@ -1536,13 +1536,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ownerAgentId: managerId,
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
-      cause: "process_lost",
+      cause: "stranded_assigned_issue",
     });
     expect(enqueueWakeup).toHaveBeenCalledWith(
       managerId,
       expect.objectContaining({
-        reason: "source_scoped_recovery_action",
-        payload: expect.objectContaining({ recoveryCause: "process_lost" }),
+        reason: "issue_assigned",
+        payload: expect.objectContaining({ recoveryCause: "stranded_assigned_issue" }),
       }),
     );
   });
