@@ -115,6 +115,26 @@ for (const q of [p, p + 10000]) {
 setInterval(() => {}, 1000);
 `;
 
+/**
+ * A guest that fails to bind the base dedicated-range app port and binds any
+ * other assigned port normally. It reproduces the deployed failure shape: the
+ * guest exits during startup with `EADDRINUSE` on its assigned port. The managed
+ * start must quarantine that pair and re-allocate the next free pair.
+ */
+const EADDRINUSE_ON_BASE_PORT_GUEST = `
+import http from "node:http";
+const p = Number(process.env.PORT);
+if (p === 42000) {
+  process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address already in use 127.0.0.1:" + p + "\\n");
+  process.exit(1);
+}
+const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
+for (const q of [p, p + 10000]) {
+  http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "127.0.0.1");
+}
+setInterval(() => {}, 1000);
+`;
+
 beforeAll(async () => {
   guestDir = await fs.mkdtemp(path.join(os.tmpdir(), "pap-17256-guest-"));
   await fs.writeFile(path.join(guestDir, "dev-runner.mjs"), PRE_MANAGED_EXPOSURE_GUEST);
@@ -123,6 +143,15 @@ beforeAll(async () => {
   await fs.writeFile(
     path.join(guestDir, "dev-runner-bind-conflict.mjs"),
     'process.stderr.write("local_trusted requires server.bind=loopback\\n"); process.exit(1);\n',
+  );
+  // A guest that loses the race for the FIRST dedicated-range app port (42000)
+  // and binds any other port normally. It models a real host where an external
+  // process grabs the assigned port in the window between allocation and the
+  // guest's own listen(): the guest exits with EADDRINUSE on 42000, and the
+  // managed start must quarantine that pair and take the next free one.
+  await fs.writeFile(
+    path.join(guestDir, "dev-runner-eaddrinuse-once.mjs"),
+    EADDRINUSE_ON_BASE_PORT_GUEST,
   );
 });
 
@@ -637,4 +666,51 @@ describe("the deployed failure shape: loopback app port, wildcard HMR (PAP-17256
     expect(error!.message).not.toMatch(/port 4\d{4} is bound to/);
     expect(calls).toEqual(["reserve", "remove"]);
   }, 20_000);
+});
+
+describe("recovers when a guest loses its assigned exposure port during startup (PAP-17256)", () => {
+  it("quarantines the collided pair, re-allocates the next free pair, and completes the exposure", async () => {
+    const { broker, calls } = createBroker();
+    const reservedAppPorts: number[] = [];
+    const recordingBroker: BrokerClient = {
+      ...broker,
+      async reserve(runtimeId, requested) {
+        reservedAppPorts.push(requested[0]!.port);
+        return broker.reserve(runtimeId, requested);
+      },
+    };
+    installDeps({ broker: recordingBroker });
+
+    const logs: string[] = [];
+    const [runtime] = await startRuntimeServicesForWorkspaceControl({
+      ...startInput({
+        serviceName: "paperclip-dev",
+        command: `${guestCommand("dev-runner-eaddrinuse-once.mjs")} --bind lan`,
+        expose: LEGACY_HTTP_EXPOSE,
+        port: { type: "auto", envKey: "PORT" },
+      }),
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    });
+
+    // The base pair collided, so the runtime landed on a later pair inside the
+    // dedicated range — never the quarantined 42000.
+    expect(runtime.exposure?.state).toBe("ready");
+    expect(runtime.port).toBeGreaterThan(42_000);
+    expect(runtime.port).toBeLessThanOrEqual(42_999);
+    expect(runtime.url).toBe(`https://runner.tail123.ts.net:${runtime.port}`);
+
+    // Allocation was attempted twice: the collided base pair, then the survivor.
+    expect(reservedAppPorts[0]).toBe(42_000);
+    expect(reservedAppPorts.length).toBeGreaterThanOrEqual(2);
+    expect(reservedAppPorts.at(-1)).toBe(runtime.port);
+    expect(calls).toContain("expose");
+
+    // The failure self-identifies: the log names the collided port and the
+    // quarantine action, so a future occurrence needs no diagnostic cycle.
+    const diagnosis = logs.join("");
+    expect(diagnosis).toContain("exposure port 42000 collided during startup (EADDRINUSE)");
+    expect(diagnosis).toContain("Quarantined pair 42000/52000");
+  }, 25_000);
 });

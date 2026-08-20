@@ -79,7 +79,7 @@ import {
   reserveExposure,
   type ExposureManagerDeps,
 } from "./runtime-exposure/exposure-manager.js";
-import { diagnoseRuntimeListenerBinds } from "./runtime-exposure/loopback-listener.js";
+import { diagnoseRuntimeListenerBinds, readListenerBindFacts } from "./runtime-exposure/loopback-listener.js";
 import { allocateExposurePortPair } from "./runtime-exposure/port-pair.js";
 import {
   buildExposureReservationLedger,
@@ -266,11 +266,28 @@ const DEFAULT_TAILSCALE_BROKER_SOCKET = "/run/paperclip-tailscale-broker/broker.
 
 class RuntimeServicePortBindCollision extends Error {
   readonly port: number;
+  /**
+   * Who held the port when the collision was seen, captured at failure time.
+   * Null when no owner remained (a transient racer that already released it).
+   */
+  readonly diagnosis: string | null;
 
-  constructor(port: number) {
-    super(`Runtime service could not bind allocated port ${port}`);
+  /**
+   * True when the port is only a preference and the caller may re-allocate a
+   * different one. Exposed runtimes always draw from the dedicated broker range,
+   * so a collision on the assigned port is recoverable by taking the next pair.
+   */
+  readonly exposureReallocatable: boolean;
+
+  constructor(port: number, diagnosis: string | null = null, exposureReallocatable = false) {
+    super(
+      `Runtime service could not bind allocated port ${port}` +
+        (diagnosis ? ` (${diagnosis})` : ""),
+    );
     this.name = "RuntimeServicePortBindCollision";
     this.port = port;
+    this.diagnosis = diagnosis;
+    this.exposureReallocatable = exposureReallocatable;
   }
 }
 
@@ -4241,6 +4258,24 @@ async function canBindRuntimePort(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * True when a loopback listener is present on the port, read WITHOUT binding it.
+ *
+ * The readiness wait must never bind the exact port the guest is about to bind.
+ * A probe `listen()` holds the port for the length of one bind/close, and if the
+ * guest's own `listen()` lands in that window the guest fails with EADDRINUSE on
+ * its assigned port. That self-inflicted race is the runtime exposure port flake
+ * (a slow guest under load loses the race to the parent probe). A `/proc` read
+ * carries the same "a listener appeared" signal with no bind. Where `/proc` is
+ * absent (non-Linux dev hosts), fall back to the bind probe; those hosts do not
+ * run the concurrent managed lanes that expose the race.
+ */
+async function hasLoopbackPortListener(port: number): Promise<boolean> {
+  const facts = await readListenerBindFacts(port).catch(() => null);
+  if (facts) return facts.present;
+  return !(await canBindRuntimePort(port));
+}
+
 async function readReservedRuntimePorts(input: {
   db?: Db;
   ports: number[];
@@ -4717,9 +4752,10 @@ async function waitForAllocatedPortBind(input: {
       return;
     }
 
-    // A failed bind probe proves only that some listener appeared. If listener ownership cannot
+    // A present listener proves only that some listener appeared. If listener ownership cannot
     // be attributed to this child after a stability delay, retry instead of accepting a sibling.
-    if (!(await canBindRuntimePort(input.port))) {
+    // The presence read never binds the port, so it cannot steal the port from the child.
+    if (await hasLoopbackPortListener(input.port)) {
       await delay(250);
       if (input.child.exitCode !== null || input.child.signalCode !== null) {
         throw new Error("service process exited after losing its allocated port");
@@ -5950,6 +5986,29 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${serviceOutputExcerpt}`),
       )
     );
+    // An exposed guest that exits with EADDRINUSE on its assigned port lost the
+    // port after allocation. Capture who holds it now, so the failure self-explains
+    // rather than leaving an unidentified owner (the runtime exposure port flake).
+    const exposureEaddrinuse = Boolean(
+      exposureConfig
+      && port
+      && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${serviceOutputExcerpt}`),
+    );
+    const exposureCollisionPorts: number[] =
+      exposureEaddrinuse && port
+        ? [port, ...(exposureConfig?.includePaperclipViteHmr ? [deriveViteHmrPort(port)] : [])]
+        : [];
+    let exposureCollisionDiagnosis: string | null = null;
+    if (exposureEaddrinuse) {
+      const facts: string[] = [];
+      for (const collisionPort of exposureCollisionPorts) {
+        const ownerPid = await readLocalServicePortOwner(collisionPort).catch(() => null);
+        const bind = await readListenerBindFacts(collisionPort).catch(() => null);
+        const boundTo = bind?.present ? bind.addresses.join(", ") : "no listener";
+        facts.push(`port ${collisionPort} bound to ${boundTo}, owner pid ${ownerPid ?? "none"}`);
+      }
+      exposureCollisionDiagnosis = facts.join("; ");
+    }
     if (child.pid) {
       await terminateLocalService({
         pid: child.pid,
@@ -5967,6 +6026,25 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
     }
     if (bindCollision && port) throw new RuntimeServicePortBindCollision(port);
+    if (exposureEaddrinuse && port) {
+      // The guest could not bind its assigned exposure port. Quarantine the pair
+      // so the bounded re-allocation never re-offers it, then throw a retryable
+      // collision. `startLocalRuntimeService` re-runs allocation, which skips the
+      // quarantined pair and takes the next free pair inside the dedicated range.
+      // This hardens a real host that races an external process for a range port.
+      for (const collisionPort of exposureCollisionPorts) {
+        quarantinedRuntimeExposurePorts.add(collisionPort);
+      }
+      if (input.onLog) {
+        await input.onLog(
+          "stderr",
+          `[service:${serviceName}] exposure port ${port} collided during startup (EADDRINUSE); `
+            + `${exposureCollisionDiagnosis ?? "owner unavailable"}. `
+            + `Quarantined pair ${exposureCollisionPorts.join("/")} and reallocating.\n`,
+        ).catch(() => undefined);
+      }
+      throw new RuntimeServicePortBindCollision(port, exposureCollisionDiagnosis, true);
+    }
     const deploymentBindConflict = /local_trusted requires server\.bind=loopback/i.test(
       `${failureMessage}\n${serviceOutputExcerpt}`,
     );
@@ -6075,7 +6153,12 @@ async function startLocalRuntimeService(
         }
         return started;
       } catch (error) {
-        if (!(error instanceof RuntimeServicePortBindCollision) || !retryBindCollisions) throw error;
+        if (
+          !(error instanceof RuntimeServicePortBindCollision)
+          || !(retryBindCollisions || error.exposureReallocatable)
+        ) {
+          throw error;
+        }
         excludedPorts.add(error.port);
         started = null;
       }
