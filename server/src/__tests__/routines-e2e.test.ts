@@ -358,6 +358,149 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     );
   }, 15_000);
 
+  it("creates schedule triggers supplied in the routine create body", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Quarterly cost review",
+        assigneeAgentId: agentId,
+        triggers: [
+          { kind: "schedule", label: "quarterly", cronExpression: "0 6 1 */3 *", timezone: "UTC" },
+        ],
+      });
+
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+    expect(createRes.body.triggers).toHaveLength(1);
+    expect(createRes.body.triggers[0].kind).toBe("schedule");
+    expect(createRes.body.triggers[0].label).toBe("quarterly");
+    expect(createRes.body.triggers[0].enabled).toBe(true);
+    expect(createRes.body.triggers[0].nextRunAt).toBeTruthy();
+
+    const routineId = createRes.body.id as string;
+
+    const persistedTriggers = await db
+      .select({ id: routineTriggers.id, cronExpression: routineTriggers.cronExpression, nextRunAt: routineTriggers.nextRunAt })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.routineId, routineId));
+    expect(persistedTriggers).toHaveLength(1);
+    expect(persistedTriggers[0]?.cronExpression).toBe("0 6 1 */3 *");
+    expect(persistedTriggers[0]?.nextRunAt).toBeInstanceOf(Date);
+
+    const detailRes = await request(app).get(`/api/routines/${routineId}`);
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.triggers).toHaveLength(1);
+
+    // The trigger must be part of the first revision snapshot, not a later one.
+    const revisionsRes = await request(app).get(`/api/routines/${routineId}/revisions`);
+    expect(revisionsRes.status).toBe(200);
+    expect(revisionsRes.body).toHaveLength(1);
+    expect(revisionsRes.body[0].revisionNumber).toBe(1);
+    expect(revisionsRes.body[0].snapshot.triggers).toHaveLength(1);
+
+    const actions = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+    expect(actions.map((entry) => entry.action)).toEqual(
+      expect.arrayContaining(["routine.created", "routine.trigger_created"]),
+    );
+  }, 15_000);
+
+  it("rejects an invalid inline cron before the routine row is created", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Broken cron routine",
+        assigneeAgentId: agentId,
+        triggers: [
+          { kind: "schedule", cronExpression: "0 6 1 */3 *", timezone: "UTC" },
+          { kind: "schedule", cronExpression: "not-a-cron", timezone: "UTC" },
+        ],
+      });
+
+    expect(createRes.status).toBe(422);
+
+    const orphans = await db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(eq(routines.companyId, companyId));
+    expect(orphans).toHaveLength(0);
+  }, 15_000);
+
+  it("rejects inline webhook triggers and points at the trigger endpoint", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Inline webhook routine",
+        assigneeAgentId: agentId,
+        triggers: [{ kind: "webhook" }],
+      });
+
+    expect(createRes.status).toBe(400);
+    expect(JSON.stringify(createRes.body)).toContain("/api/routines/{routineId}/triggers");
+  }, 15_000);
+
+  it("rejects triggers on routine PATCH instead of silently dropping them", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({ projectId, title: "Patch guard routine", assigneeAgentId: agentId });
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const patchRes = await request(app)
+      .patch(`/api/routines/${createRes.body.id}`)
+      .send({
+        triggers: [{ kind: "schedule", cronExpression: "0 6 1 */3 *", timezone: "UTC" }],
+      });
+
+    expect(patchRes.status).toBe(400);
+    expect(JSON.stringify(patchRes.body)).toContain("/api/routines/{routineId}/triggers");
+
+    const persistedTriggers = await db
+      .select({ id: routineTriggers.id })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.routineId, createRes.body.id));
+    expect(persistedTriggers).toHaveLength(0);
+  }, 15_000);
+
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
     const app = await createApp({

@@ -176,6 +176,20 @@ export function routineRoutes(
       entityId: created.id,
       details: { title: created.title, assigneeAgentId: created.assigneeAgentId },
     });
+    for (const trigger of created.triggers) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "routine.trigger_created",
+        entityType: "routine_trigger",
+        entityId: trigger.id,
+        details: { routineId: created.id, kind: trigger.kind },
+      });
+    }
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
       trackRoutineCreated(telemetryClient);
@@ -186,7 +200,7 @@ export function routineRoutes(
       revisionId: created.latestRevisionId,
       revisionNumber: created.latestRevisionNumber,
       changeSummary: "Created routine",
-      triggerCount: 0,
+      triggerCount: created.triggers.length,
     });
     res.status(201).json(created);
   });

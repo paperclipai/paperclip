@@ -61,6 +61,53 @@ export const routineVariableSchema = z.object({
   }
 });
 
+const baseTriggerSchema = z.object({
+  label: z.string().trim().max(120).optional().nullable(),
+  enabled: z.boolean().optional().default(true),
+});
+
+export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
+  baseTriggerSchema.extend({
+    kind: z.literal("schedule"),
+    cronExpression: z.string().trim().min(1),
+    timezone: z.string().trim().min(1).default("UTC"),
+  }),
+  baseTriggerSchema.extend({
+    kind: z.literal("webhook"),
+    signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().default("bearer"),
+    replayWindowSec: z.number().int().min(30).max(86_400).optional().default(300),
+  }),
+  baseTriggerSchema.extend({
+    kind: z.literal("api"),
+  }),
+]);
+
+export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;
+
+export const MAX_INLINE_ROUTINE_TRIGGERS = 10;
+
+const INLINE_WEBHOOK_TRIGGER_MESSAGE =
+  "Webhook triggers cannot be created inline. Use POST /api/routines/{routineId}/triggers so the one-time signing secret is returned.";
+
+/**
+ * Triggers accepted in the body of a routine create. Webhook triggers are excluded because
+ * their signing secret is only ever returned once, by the dedicated trigger endpoint.
+ */
+export const createRoutineInlineTriggersSchema = z
+  .array(createRoutineTriggerSchema)
+  .max(MAX_INLINE_ROUTINE_TRIGGERS)
+  .superRefine((triggers, ctx) => {
+    triggers.forEach((trigger, index) => {
+      if (trigger.kind === "webhook") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "kind"],
+          message: INLINE_WEBHOOK_TRIGGER_MESSAGE,
+        });
+      }
+    });
+  });
+
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   folderId: z.string().uuid().optional().nullable(),
@@ -77,13 +124,26 @@ export const createRoutineSchema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
+  triggers: createRoutineInlineTriggersSchema.optional(),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
-export const updateRoutineSchema = createRoutineSchema.partial().extend({
-  baseRevisionId: z.string().uuid().optional().nullable(),
-});
+export const updateRoutineSchema = createRoutineSchema
+  .omit({ triggers: true })
+  .partial()
+  .extend({
+    baseRevisionId: z.string().uuid().optional().nullable(),
+    // Triggers are not patchable as part of the routine body: a whole-array replace would
+    // silently delete webhook triggers together with their secrets. Reject the field loudly
+    // instead of stripping it, so callers are told where the trigger write routes are.
+    triggers: z
+      .never({
+        invalid_type_error:
+          "Triggers cannot be updated here. Use POST /api/routines/{routineId}/triggers, PATCH /api/routine-triggers/{triggerId}, or DELETE /api/routine-triggers/{triggerId}.",
+      })
+      .optional(),
+  });
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
 export const routineRevisionSnapshotRoutineV1Schema = z.object({
@@ -128,29 +188,6 @@ export const routineRevisionSnapshotV1Schema = z.object({
 export const routineRevisionSnapshotSchema = routineRevisionSnapshotV1Schema;
 export type RoutineRevisionSnapshotV1 = z.infer<typeof routineRevisionSnapshotV1Schema>;
 export type RoutineRevisionSnapshot = z.infer<typeof routineRevisionSnapshotSchema>;
-
-const baseTriggerSchema = z.object({
-  label: z.string().trim().max(120).optional().nullable(),
-  enabled: z.boolean().optional().default(true),
-});
-
-export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
-  baseTriggerSchema.extend({
-    kind: z.literal("schedule"),
-    cronExpression: z.string().trim().min(1),
-    timezone: z.string().trim().min(1).default("UTC"),
-  }),
-  baseTriggerSchema.extend({
-    kind: z.literal("webhook"),
-    signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().default("bearer"),
-    replayWindowSec: z.number().int().min(30).max(86_400).optional().default(300),
-  }),
-  baseTriggerSchema.extend({
-    kind: z.literal("api"),
-  }),
-]);
-
-export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;
 
 export const updateRoutineTriggerSchema = z.object({
   label: z.string().trim().max(120).optional().nullable(),

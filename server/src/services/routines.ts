@@ -1640,6 +1640,55 @@ export function routineService(
     return { secret, secretValue };
   }
 
+  /**
+   * Validates a schedule trigger against the routine it will belong to and returns its first
+   * fire time. Non-schedule kinds have no schedule state, so they resolve to null.
+   */
+  function resolveTriggerNextRunAt(
+    routineVariables: RoutineVariable[] | null | undefined,
+    input: CreateRoutineTrigger,
+  ): Date | null {
+    if (input.kind !== "schedule") return null;
+    assertScheduleCompatibleVariables(routineVariables ?? []);
+    const timeZone = input.timezone || "UTC";
+    assertTimeZone(timeZone);
+    const error = validateCron(input.cronExpression);
+    if (error) throw unprocessable(error);
+    return nextCronTickInTimeZone(input.cronExpression, timeZone, new Date());
+  }
+
+  async function insertRoutineTriggerRow(
+    executor: Db,
+    routine: RoutineRow,
+    input: CreateRoutineTrigger,
+    actor: Actor,
+    prepared: { nextRunAt: Date | null; publicId: string | null; secretId: string | null },
+  ) {
+    const [createdTrigger] = await executor
+      .insert(routineTriggers)
+      .values({
+        companyId: routine.companyId,
+        routineId: routine.id,
+        kind: input.kind,
+        label: input.label ?? null,
+        enabled: input.enabled ?? true,
+        cronExpression: input.kind === "schedule" ? input.cronExpression : null,
+        timezone: input.kind === "schedule" ? (input.timezone || "UTC") : null,
+        nextRunAt: prepared.nextRunAt,
+        publicId: prepared.publicId,
+        secretId: prepared.secretId,
+        signingMode: input.kind === "webhook" ? input.signingMode : null,
+        replayWindowSec: input.kind === "webhook" ? input.replayWindowSec : null,
+        lastRotatedAt: input.kind === "webhook" ? new Date() : null,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.userId ?? null,
+        updatedByAgentId: actor.agentId ?? null,
+        updatedByUserId: actor.userId ?? null,
+      })
+      .returning();
+    return createdTrigger;
+  }
+
   async function resolveTriggerSecret(trigger: typeof routineTriggers.$inferSelect, companyId: string) {
     if (!trigger.secretId) throw notFound("Routine trigger secret not found");
     const secret = await db
@@ -2164,7 +2213,11 @@ export function routineService(
 
     getDescriptionDocument: async (routineId: string) => getRoutineDescriptionDocument(routineId),
 
-    create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
+    create: async (
+      companyId: string,
+      input: CreateRoutine,
+      actor: Actor,
+    ): Promise<Routine & { triggers: RoutineTrigger[] }> => {
       await assertProject(companyId, input.projectId ?? null);
       await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
@@ -2186,6 +2239,10 @@ export function routineService(
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
       }
+      // Reject every bad trigger before the routine row exists, so an invalid cron in the
+      // second trigger cannot leave a half-configured routine behind.
+      const triggerInputs = input.triggers ?? [];
+      const triggerNextRunAt = triggerInputs.map((trigger) => resolveTriggerNextRunAt(variables, trigger));
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const [created] = await txDb
@@ -2214,6 +2271,17 @@ export function routineService(
             updatedByUserId: actor.userId ?? null,
           })
           .returning();
+        // Triggers are inserted before the first revision so the "Created routine" snapshot
+        // already carries them, exactly as it would for a routine created in the UI.
+        const createdTriggers: RoutineTrigger[] = [];
+        for (const [index, triggerInput] of triggerInputs.entries()) {
+          const trigger = await insertRoutineTriggerRow(txDb, created, triggerInput, actor, {
+            nextRunAt: triggerNextRunAt[index],
+            publicId: null,
+            secretId: null,
+          });
+          createdTriggers.push(trigger as RoutineTrigger);
+        }
         const { routine } = await appendRoutineRevision(txDb, created, actor, {
           changeSummary: "Created routine",
         });
@@ -2225,7 +2293,7 @@ export function routineService(
             { db: tx },
           );
         }
-        return routine;
+        return { ...routine, triggers: createdTriggers };
       });
       return createdRoutine;
     },
@@ -2422,16 +2490,7 @@ export function routineService(
       let secretMaterial: RoutineTriggerSecretMaterial | null = null;
       let secretId: string | null = null;
       let publicId: string | null = null;
-      let nextRunAt: Date | null = null;
-
-      if (input.kind === "schedule") {
-        assertScheduleCompatibleVariables(routine.variables ?? []);
-        const timeZone = input.timezone || "UTC";
-        assertTimeZone(timeZone);
-        const error = validateCron(input.cronExpression);
-        if (error) throw unprocessable(error);
-        nextRunAt = nextCronTickInTimeZone(input.cronExpression, timeZone, new Date());
-      }
+      const nextRunAt = resolveTriggerNextRunAt(routine.variables, input);
 
       if (input.kind === "webhook") {
         publicId = crypto.randomBytes(12).toString("hex");
@@ -2446,28 +2505,11 @@ export function routineService(
       const { trigger, revision } = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
-        const [createdTrigger] = await txDb
-          .insert(routineTriggers)
-          .values({
-            companyId: routine.companyId,
-            routineId: routine.id,
-            kind: input.kind,
-            label: input.label ?? null,
-            enabled: input.enabled ?? true,
-            cronExpression: input.kind === "schedule" ? input.cronExpression : null,
-            timezone: input.kind === "schedule" ? (input.timezone || "UTC") : null,
-            nextRunAt,
-            publicId,
-            secretId,
-            signingMode: input.kind === "webhook" ? input.signingMode : null,
-            replayWindowSec: input.kind === "webhook" ? input.replayWindowSec : null,
-            lastRotatedAt: input.kind === "webhook" ? new Date() : null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            updatedByAgentId: actor.agentId ?? null,
-            updatedByUserId: actor.userId ?? null,
-          })
-          .returning();
+        const createdTrigger = await insertRoutineTriggerRow(txDb, routine, input, actor, {
+          nextRunAt,
+          publicId,
+          secretId,
+        });
         const latestRoutine = await txDb.select().from(routines).where(eq(routines.id, routine.id)).then((rows) => rows[0] ?? routine);
         const appended = await appendRoutineRevision(txDb, latestRoutine, actor, {
           changeSummary: `Created ${input.kind} trigger`,
