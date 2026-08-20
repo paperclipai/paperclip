@@ -105,7 +105,9 @@ function currentStep(): "mission" | "agent" | "closed" | "other" {
   if (!body.querySelector("[role='dialog'], .fixed.inset-0")) return "closed";
   const headings = [...body.querySelectorAll("h3")].map((h) => h.textContent);
   if (headings.includes("Define your mission")) return "mission";
-  if (body.querySelector("input[placeholder='Chief of staff']")) return "agent";
+  // Keyed on the role control rather than the name field: the name is optional
+  // and starts empty, so its placeholder is the generic "Name".
+  if (body.querySelector("#onboarding-agent-role")) return "agent";
   return "other";
 }
 
@@ -753,12 +755,37 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(currentStep()).toBe("agent");
     }
 
+    /**
+     * Choose a role, which the step now requires before it will advance — it
+     * asks rather than assuming one. Driven by keyboard because the control is
+     * a Radix listbox: its pointer path needs `hasPointerCapture`, which jsdom
+     * does not implement, while its keyboard path does not.
+     */
+    async function pickRole(label = "CEO") {
+      const trigger = document.getElementById("onboarding-agent-role")!;
+      await act(async () => {
+        trigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        );
+      });
+      await settle();
+      const option = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === label,
+      ) as HTMLElement | undefined;
+      expect(option).toBeDefined();
+      await act(async () => {
+        option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
+      await settle();
+    }
+
     it("seeds the lead agent's instructions with the mission it was never asked for", async () => {
       // The regression this exists for. The agent step feeds
       // `composeCeoInstructions` from the mission field, and a company entered
       // here never types one — so the agent was hired knowing nothing of the
       // mission the customer gave at signup, and nothing reported it.
       await openOnAgentStep();
+      await pickRole();
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
@@ -790,6 +817,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       // nothing — the same "retained data is not an answer" rule the draft
       // ownership gate follows.
       await openOnAgentStep();
+      await pickRole();
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
@@ -847,6 +875,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       await rerender();
       await settle();
       expect(currentStep()).toBe("agent");
+      await pickRole();
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
@@ -873,14 +902,10 @@ describe("OnboardingWizard — which step it lands on", () => {
       // dropdown that renders but does not reach the hire call would look
       // entirely correct on screen and silently mis-file every agent.
       await openOnAgentStep();
-
-      const role = document.getElementById("onboarding-agent-role") as HTMLSelectElement;
-      expect(role).toBeTruthy();
-      await act(async () => {
-        role.value = "engineer";
-        role.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-      await settle();
+      // Deliberately not the first option: "ceo" is what the hardcoded value
+      // was, so a test that picked it could not tell a wired dropdown from an
+      // ignored one.
+      await pickRole("Engineer");
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
