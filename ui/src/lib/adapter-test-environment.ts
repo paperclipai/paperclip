@@ -42,6 +42,13 @@ export class ManagedSandboxUnavailableForTestError extends Error {
  * non-local environment (an agent or instance default that names an ssh or a
  * user sandbox) is untouched, because the policy hides local, it does not
  * forbid other environments.
+ *
+ * The policy hides the local environment from the client, so the resolved id
+ * can name a local row the client cannot see (an agent default that still
+ * points at the hidden local row). The `visibleEnvironmentIds` list closes that
+ * gap: under the policy a resolved id that names no visible environment is the
+ * hidden local row, or a stale reference, so the function redirects it to the
+ * managed sandbox too. Omit the list to skip this visibility check.
  */
 export function resolveAdapterTestEnvironmentId(input: {
   agentDefaultEnvironmentId: string | null | undefined;
@@ -49,6 +56,7 @@ export function resolveAdapterTestEnvironmentId(input: {
   localDefaultEnvironmentId: string | null | undefined;
   managedSandboxOnly?: boolean;
   managedSandboxEnvironmentId?: string | null | undefined;
+  visibleEnvironmentIds?: readonly string[] | null | undefined;
 }): string | null {
   const resolved =
     input.agentDefaultEnvironmentId ||
@@ -59,7 +67,12 @@ export function resolveAdapterTestEnvironmentId(input: {
     return resolved;
   }
   const localDefaultId = input.localDefaultEnvironmentId || null;
-  const landsOnLocal = resolved === null || resolved === localDefaultId;
+  const resolvedNamesVisibleEnvironment =
+    input.visibleEnvironmentIds == null ||
+    resolved === null ||
+    input.visibleEnvironmentIds.includes(resolved);
+  const landsOnLocal =
+    resolved === null || resolved === localDefaultId || !resolvedNamesVisibleEnvironment;
   if (!landsOnLocal) {
     return resolved;
   }

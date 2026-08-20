@@ -909,6 +909,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
         managedSandboxOnly,
         managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+        // The policy hides the local environment, so an agent default that still
+        // points at the hidden local row names no visible environment. Pass the
+        // visible ids so the resolver redirects that stale local default to the
+        // managed sandbox instead of sending the hidden local id to the server.
+        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {

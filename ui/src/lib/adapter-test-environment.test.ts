@@ -154,6 +154,49 @@ describe("resolveAdapterTestEnvironmentId", () => {
       }),
     ).toBe("local-env");
   });
+
+  it("redirects an agent default that names the hidden local row to the managed sandbox", () => {
+    // The policy hides the local environment, so the client list holds no local
+    // row and the local-default lookup is null. An agent default that still
+    // names the hidden local row names no visible environment, so the resolver
+    // treats it as a local resolution and redirects to the managed sandbox.
+    expect(
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: "hidden-local-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: null,
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+        visibleEnvironmentIds: ["managed-env", "ssh-env"],
+      }),
+    ).toBe("managed-env");
+  });
+
+  it("fails closed when an agent default names the hidden local row and no managed sandbox exists", () => {
+    expect(() =>
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: "hidden-local-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: null,
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: null,
+        visibleEnvironmentIds: ["ssh-env"],
+      }),
+    ).toThrow(ManagedSandboxUnavailableForTestError);
+  });
+
+  it("leaves a visible non-local default untouched when a visibility list is supplied", () => {
+    expect(
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: "ssh-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: null,
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+        visibleEnvironmentIds: ["ssh-env", "managed-env"],
+      }),
+    ).toBe("ssh-env");
+  });
 });
 
 describe("resolveManagedSandboxEnvironmentId", () => {
