@@ -30,6 +30,7 @@ const mockSecretService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   releaseLease: vi.fn(),
+  listBoundCompanyIds: vi.fn(async () => [] as string[]),
 }));
 
 const mockReleaseRunLease = vi.hoisted(() => vi.fn(async () => undefined));
@@ -220,7 +221,10 @@ describe("agent test-environment route", () => {
   });
 
   it("returns a diagnostic result instead of probing the host when the requested environment is missing", async () => {
-    mockEnvironmentService.getById.mockResolvedValueOnce(null);
+    // The route reads the environment more than once: the tenant-binding guard
+    // loads it, then the execution-context resolver loads it. Return null for
+    // every read so the missing-environment path is stable.
+    mockEnvironmentService.getById.mockResolvedValue(null);
     const app = await createApp();
 
     const res = await request(app)

@@ -748,6 +748,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Re-check the company binding atomically at lease time. The route
+        // guard already rejected a foreign environment, but the binding could
+        // change between the guard check and the lease acquire. This closes
+        // that check-to-lease race so a foreign sandbox never gets a lease.
+        assertCompanyBinding: true,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -2346,6 +2351,39 @@ export function agentRoutes(
     res.json(detected);
   });
 
+  // The environment drivers the adapter Test route accepts. A local, SSH, or
+  // sandbox environment can host a probe; a plugin environment cannot.
+  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
+
+  // The fail-closed tenant-binding guard for the adapter Test route. A caller
+  // may name any instance environment by id, so the route must reject an
+  // environment that binds to another company before it resolves secrets,
+  // merges env, resolves the target, leases a sandbox, or runs the adapter
+  // test. The guard checks the company binding BEFORE it validates the status
+  // or the driver, so it never reveals the status or the driver of a foreign
+  // environment. A same-company or an instance-global environment then gets the
+  // shared driver and status validation.
+  async function assertAdapterTestEnvironmentForCompany(
+    companyId: string,
+    environmentId: string,
+  ): Promise<void> {
+    const environment = await environmentsSvc.getById(environmentId);
+    if (!environment) {
+      // A missing environment leaks no tenant state. The execution-context
+      // resolver surfaces the existing environment_not_found check.
+      return;
+    }
+    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
+      throw forbidden("The selected environment belongs to another company.", {
+        code: "environment_company_mismatch",
+      });
+    }
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -2362,6 +2400,11 @@ export function agentRoutes(
         typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
           ? (req.body.environmentId as string)
           : null;
+      // Fail closed on a foreign environment before any secret resolution, env
+      // merge, target resolution, sandbox lease, or adapter test runs.
+      if (requestedEnvironmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
