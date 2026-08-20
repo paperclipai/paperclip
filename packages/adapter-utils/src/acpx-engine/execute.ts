@@ -1616,6 +1616,18 @@ async function buildRuntime(input: {
     url,
     connectionId,
   }));
+  // ACP supplies MCP definitions at session creation time. Paperclip gateway
+  // bearer tokens are run-scoped and revoked after each heartbeat, so reusing a
+  // persisted ACP session after token rotation would retain an unusable dynamic
+  // MCP definition. Hash the credential into the private fingerprint identity
+  // to force a fresh session while keeping both the token and its digest out of
+  // persisted session params.
+  const mcpFingerprintIdentity = runtimeMcpServers.map(({ name, url, connectionId, token }) => ({
+    name,
+    url,
+    connectionId,
+    credentialFingerprint: shortHash(token),
+  }));
   const mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]> = runtimeMcpServers.map((server) => ({
     type: "http",
     name: server.name,
@@ -1874,7 +1886,7 @@ async function buildRuntime(input: {
           defaultMode: paperclipClaudeSettings.defaultMode,
         }
       : null,
-    mcpServers: mcpIdentity,
+    mcpServers: mcpFingerprintIdentity,
     secretManifestHash: shortHash(secretManifest),
     // Fold the resolved adapter env (all applied user-configured values —
     // plain, secret_ref, and stable PAPERCLIP_* config such as an explicit

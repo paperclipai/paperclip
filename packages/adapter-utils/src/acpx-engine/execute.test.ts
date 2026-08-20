@@ -1712,7 +1712,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(first.result.sessionParams?.configFingerprint).not.toBe(second.result.sessionParams?.configFingerprint);
   });
 
-  it("injects runtime MCP servers and fingerprints their identity without persisting bearer tokens", async () => {
+  it("starts a fresh authenticated ACP session after reset rotates the runtime MCP token", async () => {
     const root = await makeTempRoot();
     const baseConfig = {
       agent: "custom",
@@ -1742,13 +1742,22 @@ describe("shared ACPX engine runtime behavior", () => {
       url: server.url,
       headers: [{ name: "Authorization", value: "Bearer token-one" }],
     }]);
+    expect(rotatedToken.runtimeOptions[0]?.mcpServers).toEqual([{
+      type: "http",
+      name: "github",
+      url: server.url,
+      headers: [{ name: "Authorization", value: "Bearer token-two" }],
+    }]);
     expect(first.result.sessionParams?.mcpServers).toEqual([{
       name: "github",
       url: server.url,
       connectionId: "connection-1",
     }]);
     expect(JSON.stringify(first.result.sessionParams)).not.toContain("token-one");
-    expect(first.result.sessionParams?.configFingerprint).toBe(rotatedToken.result.sessionParams?.configFingerprint);
+    expect(JSON.stringify(rotatedToken.result.sessionParams)).not.toContain("token-two");
+    expect(rotatedToken.result.sessionParams?.mcpServers).not.toHaveProperty("0.credentialFingerprint");
+    expect(first.result.sessionParams?.configFingerprint).not.toBe(rotatedToken.result.sessionParams?.configFingerprint);
+    expect(first.result.sessionParams?.sessionKey).not.toBe(rotatedToken.result.sessionParams?.sessionKey);
     expect(first.result.sessionParams?.configFingerprint).not.toBe(changedSet.result.sessionParams?.configFingerprint);
   });
 });
