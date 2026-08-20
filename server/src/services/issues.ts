@@ -3245,6 +3245,53 @@ export function issueService(db: Db) {
           }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+
+        // When a stranded-issue recovery issue is cancelled, clear the blocker edge it created on
+        // the source issue. If the source has no remaining unresolved blockers AND is still blocked,
+        // move it to `todo` so it can resume — a cancelled recovery issue must not silently park
+        // the source forever.
+        if (patch.status === "cancelled" && existing.originKind === "stranded_issue_recovery" && existing.originId) {
+          const deletedRelations: Array<{ relatedIssueId: string }> = await tx
+            .delete(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, existing.companyId),
+                eq(issueRelations.issueId, id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            )
+            .returning({ relatedIssueId: issueRelations.relatedIssueId });
+
+          for (const { relatedIssueId } of deletedRelations) {
+            const [sourceIssue] = await tx
+              .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId })
+              .from(issues)
+              .where(and(eq(issues.id, relatedIssueId), eq(issues.companyId, existing.companyId)));
+            if (!sourceIssue || sourceIssue.status !== "blocked") continue;
+
+            const remainingBlockers = await tx
+              .select({ count: sql<number>`count(*)::int` })
+              .from(issueRelations)
+              .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, existing.companyId)))
+              .where(
+                and(
+                  eq(issueRelations.companyId, existing.companyId),
+                  eq(issueRelations.relatedIssueId, relatedIssueId),
+                  eq(issueRelations.type, "blocks"),
+                  notInArray(issues.status, ["done", "cancelled"]),
+                ),
+              )
+              .then((rows: Array<{ count: number }>) => rows[0]?.count ?? 0);
+
+            if (remainingBlockers === 0) {
+              await tx
+                .update(issues)
+                .set({ status: "todo", updatedAt: new Date() })
+                .where(and(eq(issues.id, relatedIssueId), eq(issues.status, "blocked")));
+            }
+          }
+        }
+
         return enriched;
       };
 

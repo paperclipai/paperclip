@@ -74,6 +74,7 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -1270,10 +1271,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("failed");
 
+    // Recovery issues must not be set to blocked (no nested recovery exists to serve as blocker),
+    // so they are moved to in_review so the assignee still receives heartbeats.
     const recoveryIssue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
-        return issue?.status === "blocked" ? issue : null;
+        return issue?.status === "in_review" ? issue : null;
       })
     );
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
@@ -2627,8 +2630,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.escalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
+    // Recovery issues must not be set to blocked (no nested recovery exists to serve as blocker),
+    // so they are moved to in_review so the assignee still receives heartbeats.
     const recoveryIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(recoveryIssue?.status).toBe("blocked");
+    expect(recoveryIssue?.status).toBe("in_review");
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
     expect(recoveryIssue?.originKind).toBe("stranded_issue_recovery");
     expect(recoveryIssue?.originId).toBe(sourceIssueId);
@@ -2964,5 +2969,103 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("does not write blocked without a blocker edge when escalating a stranded recovery issue in place", async () => {
+    // A stranded recovery issue (originKind=stranded_issue_recovery) escalated in place via
+    // escalateStrandedRecoveryIssueInPlace must not be set to blocked without a blocker edge,
+    // because that creates a permanently silent parked state with no wake generator.
+    const sourceIssueId = randomUUID();
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db
+      .update(issues)
+      .set({ title: "Recover stalled issue PAP-1", originKind: "stranded_issue_recovery", originId: sourceIssueId })
+      .where(eq(issues.id, issueId));
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original stranded source",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const recoveryIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    // Must NOT be blocked without a first-class blocker — that state has no wake generator.
+    if (recoveryIssue?.status === "blocked") {
+      const blockerIds = await sourceBlockerIssueIds(companyId, issueId);
+      expect(blockerIds.length).toBeGreaterThan(0);
+    }
+    // Must not be permanently silenced: the assignee must still receive heartbeats.
+    expect(recoveryIssue?.status).not.toBe("blocked");
+  });
+
+  it("cancelling a recovery issue does not leave the source permanently blocked with no blockers", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Trigger recovery: source gets blocked, recovery issue is created blocking it.
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const blockersBefore = await sourceBlockerIssueIds(companyId, issueId);
+    expect(blockersBefore.length).toBeGreaterThan(0);
+    const recoveryIssueId = blockersBefore[0];
+    if (!recoveryIssueId) throw new Error("Expected a recovery issue to block the source");
+
+    const recoveryIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, recoveryIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryIssue?.originKind).toBe("stranded_issue_recovery");
+
+    // Cancel the recovery issue via the service so the cancel hook fires.
+    await issueService(db).update(recoveryIssueId, { status: "cancelled" });
+
+    // After cancellation the source must not be permanently parked:
+    // either its blockers list is cleared (it can proceed), or it has at least one active non-cancelled blocker.
+    const blockersAfter = await sourceBlockerIssueIds(companyId, issueId);
+    const nonCancelledBlockers = await db
+      .select({ id: issues.id })
+      .from(issueRelations)
+      .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, companyId)))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+        ),
+      );
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    if (sourceIssue?.status === "blocked") {
+      // If still blocked, there must be at least one non-cancelled blocker to wake it.
+      expect(nonCancelledBlockers.length).toBeGreaterThan(0);
+    }
+    // If the recovery issue was the only blocker, the source should not still be in a state where
+    // a human must manually clear blockers for it to ever resume.
+    if (blockersAfter.every((id) => id === recoveryIssueId)) {
+      expect(sourceIssue?.status).not.toBe("blocked");
+    }
   });
 });

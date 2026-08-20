@@ -1539,7 +1539,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    // Use in_review rather than blocked: recovery issues cannot create a child recovery to serve
+    // as the blocker edge, so writing blocked here would leave the issue with an empty blocker set
+    // and no wake generator — a permanently silent parked state.
+    const updated = await issuesSvc.update(input.issue.id, { status: "in_review" });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -1642,6 +1645,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]
       : blockerIds;
+
+    // Invariant: never write blocked with an empty blocker set. An issue blocked by nothing has no
+    // wake generator and becomes permanently silent. Fall back to in_review so the assignee still
+    // receives heartbeats and a human operator can act.
+    if (nextBlockerIds.length === 0) {
+      const fallbackStatus = input.issue.status === "in_progress" ? "in_progress" : "in_review";
+      const updated = await issuesSvc.update(input.issue.id, { status: fallbackStatus });
+      if (!updated) return null;
+      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+      const recoveryLine = [
+        "",
+        "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
+        "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
+      ].join("\n");
+      await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {});
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: fallbackStatus,
+          previousStatus: input.previousStatus,
+          source: "recovery.escalate_stranded_no_owner_fallback",
+          recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+        },
+      });
+      return updated;
+    }
+
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: nextBlockerIds,
