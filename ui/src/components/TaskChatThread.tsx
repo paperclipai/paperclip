@@ -696,7 +696,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       emptyMessage={
                         tailStatus === "queued"
                           ? "Waiting to start..."
-                          : "Waiting for transcript..."
+                          : // Before the first transcript token, surface the run's
+                            // live runtime status (sandbox preparation phases like
+                            // "Syncing workspace to sandbox" emitted via
+                            // onRuntimeProgress) instead of an opaque wait message.
+                            (liveRun && liveRun.id === tailRunId
+                              ? liveRun.currentStatusMessage
+                              : null) || "Waiting for transcript..."
                       }
                     />
                   </div>
