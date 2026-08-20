@@ -605,6 +605,45 @@ describe.sequential("closed isolated workspace issue routes", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("clears the reopen-pending flag when status becomes terminal after reopen but before response settle", async () => {
+    const source = makeIssue();
+    const checkedOut = {
+      ...source,
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    };
+    const terminalized = { ...checkedOut, status: "cancelled" as const };
+    mockIssueService.getById
+      .mockResolvedValueOnce(source)
+      .mockResolvedValueOnce(checkedOut)
+      .mockResolvedValueOnce(checkedOut)
+      .mockResolvedValue(terminalized);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+
+    const res = await (await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(res.status).toBe(200);
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(
+        mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: closedWorkspaceId,
+          expectedGeneration: 4,
+        }),
+      );
+    });
+  });
+
   it("does not clear the reopen-pending flag when a concurrent request already reopened the workspace", async () => {
     // A concurrent request reopened the workspace first, so this request receives
     // reopened: false and never set the flag. This request must not clear the flag

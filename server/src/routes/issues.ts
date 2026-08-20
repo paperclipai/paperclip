@@ -5383,7 +5383,12 @@ export function issueRoutes(
     issue: { id: string; companyId: string };
     workspace: Pick<ExecutionWorkspace, "id"> | null;
     generation: number | null;
-    finalIssueStatus: () => string | null | undefined;
+    /**
+     * Final issue status when the response settles. May be sync or async so
+     * callers can re-read the row at settle time (avoids a stale snapshot when
+     * another request terminalizes between reopen and response end).
+     */
+    finalIssueStatus: () => string | null | undefined | Promise<string | null | undefined>;
   }): void {
     const { req, res, issue, workspace, generation, finalIssueStatus } = input;
     if (!workspace || generation === null) return;
@@ -5425,15 +5430,31 @@ export function issueRoutes(
       if (settled) return;
       settled = true;
       clearInterval(keepAlive);
-      const status = finalIssueStatus();
-      if (typeof status === "string" && !isClosedIssueStatus(status)) return;
-      const actor = getActorInfo(req);
-      void clearReopenPendingConsumptionWithRetry({
-        workspaceId: workspace.id,
-        issue: { id: issue.id, companyId: issue.companyId },
-        actor: { agentId: actor.agentId, actorType: actor.actorType },
-        expectedGeneration: generation,
-      });
+      void Promise.resolve()
+        .then(() => finalIssueStatus())
+        .then((status) => {
+          if (typeof status === "string" && !isClosedIssueStatus(status)) return;
+          const actor = getActorInfo(req);
+          void clearReopenPendingConsumptionWithRetry({
+            workspaceId: workspace.id,
+            issue: { id: issue.id, companyId: issue.companyId },
+            actor: { agentId: actor.agentId, actorType: actor.actorType },
+            expectedGeneration: generation,
+          });
+        })
+        .catch((err) => {
+          logger.warn(
+            { err, issueId: issue.id, executionWorkspaceId: workspace.id },
+            "failed to resolve final issue status for reopen-pending fence clear",
+          );
+          const actor = getActorInfo(req);
+          void clearReopenPendingConsumptionWithRetry({
+            workspaceId: workspace.id,
+            issue: { id: issue.id, companyId: issue.companyId },
+            actor: { agentId: actor.agentId, actorType: actor.actorType },
+            expectedGeneration: generation,
+          });
+        });
     };
     res.once("finish", settle);
     res.once("close", settle);
@@ -10761,15 +10782,22 @@ export function issueRoutes(
       }
     }
     // Clear the reopen-pending flag if the response ends with a terminal issue, so
-    // the rebuilt worktree does not leak. Prefer the revalidated status over the
-    // checkout snapshot so a mid-flight done/cancelled clears this request's fence.
+    // the rebuilt worktree does not leak. Re-read status at settle time — a
+    // captured post-reopen snapshot can still go stale before the response ends.
     guardReopenedWorkspaceConsumption({
       req,
       res,
       issue,
       workspace: reopenedWorkspace,
       generation: reopenedGeneration,
-      finalIssueStatus: () => finalStatusForReopenGuard,
+      finalIssueStatus: async () => {
+        try {
+          const live = await svc.getById(id);
+          return live?.status ?? finalStatusForReopenGuard;
+        } catch {
+          return finalStatusForReopenGuard;
+        }
+      },
     });
 
     const actor = getActorInfo(req);
