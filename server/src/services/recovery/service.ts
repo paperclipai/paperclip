@@ -2588,7 +2588,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
     preferredOwnerAgentId?: string | null;
   }) {
-    const originalAgentId = input.latestRun?.agentId ?? input.issue.assigneeAgentId;
+    const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId;
     const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
@@ -3329,6 +3329,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    const pendingExecutionState = input.issue.status === "in_review"
+      ? parseIssueExecutionState(input.issue.executionState)
+      : null;
+    const currentParticipant = pendingExecutionState?.status === "pending"
+      ? pendingExecutionState.currentParticipant
+      : null;
+    const returnAssignee = pendingExecutionState?.status === "pending"
+      ? pendingExecutionState.returnAssignee
+      : null;
+    const shouldAssignRecoveryOwner =
+      input.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
+      currentParticipant?.type === "agent" &&
+      currentParticipant.agentId === recoveryAction.ownerAgentId &&
+      (returnAssignee?.type !== "agent" || returnAssignee.agentId === recoveryAction.ownerAgentId);
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
       Boolean(recoveryAction.returnOwnerAgentId);
@@ -3344,6 +3358,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      assigneeAgentId: shouldAssignRecoveryOwner
+        ? recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId
+        : input.issue.assigneeAgentId,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3483,7 +3500,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
     });
 
-    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    if (recoveryAction.ownerAgentId &&
+      (recoveryAction.ownerAgentId === input.issue.assigneeAgentId || shouldAssignRecoveryOwner)) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
@@ -3494,11 +3512,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (
         currentIssue &&
-        currentIssue.status !== "blocked"
+        (currentIssue.status !== "blocked" ||
+          currentIssue.assigneeAgentId !== (
+            shouldAssignRecoveryOwner
+              ? recoveryAction.ownerAgentId
+              : input.issue.assigneeAgentId
+          ))
       ) {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
+          assigneeAgentId: shouldAssignRecoveryOwner
+            ? recoveryAction.ownerAgentId
+            : input.issue.assigneeAgentId,
         });
         if (reblocked) return reblocked;
       }
