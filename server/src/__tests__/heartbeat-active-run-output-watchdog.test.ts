@@ -288,14 +288,14 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
-  it("treats queued pid-less runs as not applicable while preserving stalled-process alerts", async () => {
+  it("does not escalate stale pid-less runs with no output while preserving stalled-process alerts", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const stale = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
     await db.update(heartbeatRuns).set({
-      processStartedAt: null,
+      processStartedAt: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
       processPid: null,
       processGroupId: null,
       lastOutputAt: null,
@@ -322,10 +322,15 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId: stale.companyId });
 
     expect(result).toMatchObject({ scanned: 1, created: 1, escalated: 0 });
-    const [queuedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale.runId));
-    expect(queuedRun).toMatchObject({ status: "running", processStartedAt: null, lastOutputAt: null });
+    const [pidlessRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale.runId));
+    expect(pidlessRun).toMatchObject({
+      status: "running",
+      processPid: null,
+      processGroupId: null,
+      lastOutputAt: null,
+    });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
-    await expect(recovery.buildRunOutputSilence(queuedRun!, now)).resolves.toMatchObject({
+    await expect(recovery.buildRunOutputSilence(pidlessRun!, now)).resolves.toMatchObject({
       level: "not_applicable",
       silenceStartedAt: null,
       silenceAgeMs: null,

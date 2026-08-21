@@ -2433,6 +2433,8 @@ const heartbeatRunIssueSummaryColumns = {
   createdAt: heartbeatRuns.createdAt,
   agentId: heartbeatRuns.agentId,
   logBytes: heartbeatRuns.logBytes,
+  processPid: heartbeatRuns.processPid,
+  processGroupId: heartbeatRunProcessGroupIdColumn,
   processStartedAt: heartbeatRuns.processStartedAt,
   livenessState: heartbeatRuns.livenessState,
   livenessReason: heartbeatRuns.livenessReason,
@@ -13812,7 +13814,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
-      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
+      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processPid" | "processGroupId" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
   ) {
