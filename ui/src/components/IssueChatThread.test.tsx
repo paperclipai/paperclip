@@ -3828,7 +3828,7 @@ describe("IssueChatThread", () => {
               agentId: "agent-1",
               agentName: "Agent 1",
               adapterType: "codex_local",
-              currentStatusMessage: "Syncing git worktree to sandbox",
+              currentStatusMessage: "Syncing git worktree to environment",
               currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
               currentToolName: "bash",
               lastEventAt: new Date(Date.now() - 2000).toISOString(),

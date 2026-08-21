@@ -544,7 +544,7 @@ function buildAcpLoginProbeUnavailableCheck(
     level: "warn",
     message,
     hint: targetIsSandbox
-      ? "Verify that the sandbox can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane."
+      ? "Verify that the environment can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane."
       : "Verify that `claude` can run in this environment and retry the Test. Set engine=cli to use the Claude CLI lane.",
   };
 }

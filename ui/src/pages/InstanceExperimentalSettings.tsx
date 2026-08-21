@@ -705,14 +705,14 @@ export function InstanceExperimentalSettings() {
       />
 
       <ExperimentalToggleCard
-        title="Managed Sandbox Only"
-        description="Hide the local environment and run all agents in the platform-managed sandbox environment."
+        title="Managed Environment Only"
+        description="Hide the local environment and run all agents in the platform-managed environment."
         checked={enableManagedSandboxOnly}
         onCheckedChange={(checked) => toggleMutation.mutate({ enableManagedSandboxOnly: checked })}
         disabled={toggleMutation.isPending}
         settingKey="enableManagedSandboxOnly"
         managed={managedKeys.enableManagedSandboxOnly}
-        ariaLabel="Toggle managed sandbox only experimental setting"
+        ariaLabel="Toggle managed environment only experimental setting"
       />
 
       {inWorktree ? (
