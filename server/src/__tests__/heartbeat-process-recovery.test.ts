@@ -3045,6 +3045,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("setup_failed");
     expect(failedRun?.error).toContain("worker is not running");
+
+    // Regression for the Greptile-flagged gap on PR #11842 (AGE-361): a run
+    // that fails in the outer setup catch (before adapter.execute) used to
+    // leave no cost_events row, so a run_count budget policy would silently
+    // undercount it. ensureRunAccountedForCounting is now called from that
+    // same catch block, at the same terminal transition that owns this
+    // outcome, alongside the pre-existing lease-release and interruption call
+    // sites.
+    const setupFailureCostEvents = await db
+      .select()
+      .from(costEvents)
+      .where(eq(costEvents.heartbeatRunId, runId));
+    expect(setupFailureCostEvents).toHaveLength(1);
+    expect(setupFailureCostEvents[0]).toMatchObject({
+      companyId,
+      agentId,
+      costCents: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    });
+
     expect(retryRun).toMatchObject({
       status: "scheduled_retry",
       retryOfRunId: runId,

@@ -52,7 +52,14 @@ async function getMonthlySpendTotal(
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
-    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
+    // createEvent always records who incurred the cost; only pre-existing
+    // historical rows can carry a null agentId (set by ON DELETE SET NULL
+    // after the agent that emitted them was removed), so require a real
+    // agentId here even though the column itself is now nullable.
+    createEvent: async (
+      companyId: string,
+      data: Omit<typeof costEvents.$inferInsert, "companyId" | "agentId"> & { agentId: string },
+    ) => {
       const agent = await db
         .select()
         .from(agents)
@@ -77,7 +84,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0]);
 
       const [agentMonthSpend, companyMonthSpend] = await Promise.all([
-        getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
+        getMonthlySpendTotal(db, { companyId, agentId: data.agentId }),
         getMonthlySpendTotal(db, { companyId }),
       ]);
 
@@ -87,7 +94,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           spentMonthlyCents: agentMonthSpend,
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, event.agentId));
+        .where(eq(agents.id, data.agentId));
 
       await db
         .update(companies)

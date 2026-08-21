@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   approvals,
@@ -837,5 +838,45 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
 
     const [agentStatus] = await db.select({ status: agents.status }).from(agents);
     expect(agentStatus?.status).toBe("active");
+  });
+
+  it("keeps historical cost_events counted toward a company budget after the agent that emitted them is deleted", async () => {
+    // Regression for the schema-level fix that changed cost_events.agent_id
+    // from ON DELETE CASCADE to ON DELETE SET NULL: a hard cascade there would
+    // silently erase real usage from company/project budget aggregates the
+    // moment an agent row is deleted, letting a company slip back under a cap
+    // it had already tripped. This drives the real FK against Postgres rather
+    // than asserting on the schema definition.
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    const event = await insertCostEvent({ companyId, agentId, costCents: 300 });
+
+    const beforeOverview = await service.overview(companyId);
+    const beforeCompanyPolicy = beforeOverview.policies.find((p) => p.scopeType === "company");
+    expect(beforeCompanyPolicy).toMatchObject({ observedAmount: 300, status: "ok" });
+
+    await db.delete(agents).where(eq(agents.id, agentId));
+
+    const [survivingEvent] = await db.select().from(costEvents).where(eq(costEvents.id, event.id));
+    expect(survivingEvent).toBeTruthy();
+    expect(survivingEvent?.agentId).toBeNull();
+    expect(survivingEvent?.costCents).toBe(300);
+
+    const afterOverview = await service.overview(companyId);
+    const afterCompanyPolicy = afterOverview.policies.find((p) => p.scopeType === "company");
+    expect(afterCompanyPolicy).toMatchObject({ observedAmount: 300, status: "ok" });
   });
 });

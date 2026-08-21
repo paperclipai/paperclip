@@ -16786,6 +16786,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               message,
             }).catch(() => undefined);
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
+            // Setup failures (thrown before adapter.execute, e.g. ensureRuntimeState or
+            // resolveWorkspaceForRun) are finalized as terminal right here, before the
+            // `finally` block's terminalizeRunOnLeaseRelease runs. That helper's
+            // early-return guard (`if (isHeartbeatRunTerminalStatus(run.status)) return run`)
+            // means it will never see this run as non-terminal and therefore never
+            // calls ensureRunAccountedForCounting for it — so a run_count budget policy
+            // would silently undercount setup failures. Emit the accounting row here,
+            // at the same terminal transition that owns this outcome.
+            await ensureRunAccountedForCounting(db, budgetHooks, livenessRun.companyId, livenessRun.agentId, livenessRun);
             const setupFailureIssueId = readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId);
             if (setupFailureIssueId) {
               await completeSkillTestRunForHeartbeatOutcome({

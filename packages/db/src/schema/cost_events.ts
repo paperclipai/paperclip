@@ -11,7 +11,14 @@ export const costEvents = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    // Agent deletion must not delete historical cost_events rows: company- and
+    // project-scoped budget policies aggregate across all agents, so a hard
+    // cascade here would silently erase real usage from those aggregates the
+    // moment an agent is deleted, letting a company slip back under a cap it
+    // had already tripped. Set-null preserves the row (and the company/project
+    // totals) while dropping only the now-dangling agent attribution, mirroring
+    // the issue_id/project_id/heartbeat_run_id precedent below.
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
