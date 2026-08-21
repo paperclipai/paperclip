@@ -5,7 +5,7 @@ import { nextWorkMode, titleForPendingWorkMode, workModeMetaList } from "./work-
 describe("work mode metadata", () => {
   it("orders issue work modes as auto, planning, then ask", () => {
     expect(workModeMetaList().map((mode) => mode.value)).toEqual(["standard", "planning", "ask"]);
-    expect(workModeMetaList().map((mode) => mode.shortLabel)).toEqual(["Auto", "Plan", "Ask"]);
+    expect(workModeMetaList().map((mode) => mode.label)).toEqual(["Auto mode", "Plan mode", "Ask mode"]);
   });
 
   it("cycles issue work modes as auto, planning, ask, then auto", () => {

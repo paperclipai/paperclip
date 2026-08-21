@@ -959,6 +959,7 @@ describe("NewIssueDialog", () => {
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.textContent).toContain("Auto mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -969,6 +970,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.textContent).toContain("Plan mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -979,6 +981,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+    expect(modeChip()?.textContent).toContain("Ask mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
