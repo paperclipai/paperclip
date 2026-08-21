@@ -1417,13 +1417,13 @@ describe("NewIssueDialog", () => {
       return button?.querySelector("svg")?.getAttribute("class") ?? "";
     }
 
-    it("uses agent-mode labels and brand status hues by default", async () => {
+    it("uses auto-mode labels and brand status hues by default", async () => {
       const { root } = renderDialog(container);
       await waitForAssertion(() => {
-        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+        expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       });
 
-      expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 

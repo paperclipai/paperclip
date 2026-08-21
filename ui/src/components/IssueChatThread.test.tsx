@@ -649,13 +649,13 @@ describe("IssueChatThread", () => {
       );
     });
 
-    // The mode chip is always present (mockup rev 5) — neutral "Agent mode" here.
+    // The mode chip is always present (mockup rev 5) — neutral "Auto mode" here.
     const chip = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',
     ) as HTMLButtonElement | null;
     expect(chip).not.toBeNull();
     expect(chip?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Agent mode");
+    expect(chip?.textContent).toContain("Auto mode");
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
@@ -743,7 +743,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Agent mode");
+    expect(chip?.textContent).toContain("Auto mode");
 
     act(() => {
       root.unmount();

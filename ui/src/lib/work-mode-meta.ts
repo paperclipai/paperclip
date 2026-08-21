@@ -46,8 +46,8 @@ export function workModeMetaList(): WorkModeMeta[] {
   return [
     {
       value: "standard",
-      label: "Agent mode",
-      shortLabel: "Agent",
+      label: "Auto mode",
+      shortLabel: "Auto",
       icon: Hammer,
       tone: "neutral",
       classes: STANDARD_CLASSES,
@@ -89,5 +89,5 @@ export function titleForPendingWorkMode(mode: IssueWorkMode): string {
   if (mode === "planning") {
     return "Plan mode is on for this submission. Click to change.";
   }
-  return "Agent mode for this submission. Click to change.";
+  return "Auto mode for this submission. Click to change.";
 }
