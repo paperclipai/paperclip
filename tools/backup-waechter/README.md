@@ -30,6 +30,24 @@ Geprüft wird die **mtime**, nicht das Datum im Dateinamen: gefragt ist, wann
 zuletzt tatsächlich geschrieben wurde. Ein Name lässt sich vergeben, ohne dass
 Daten fließen.
 
+## Speicherplatz
+
+Zusätzlich wird die Belegung des Nextcloud-Kontos geprüft (`rclone about`) und
+ab **80 %** gewarnt. Das ist ein Sicherheitsnetz, keine Löschstrategie — die
+steckt in den `forget`-Regeln der Sicherungsskripte, die die Snapshot-Zahl je
+Datensatz auf höchstens 34 deckeln.
+
+**`KONTINGENT_GB` in `waechter.py` ist von Hand eingetragen** (Stand 21.08.2026:
+3000). Weder OCS-API noch WebDAV verraten die Tarifgröße — Nextcloud meldet für
+das Konto nur `-3`, also „unbegrenzt", was sich auf das Konto bezieht und nicht
+auf die Platte dahinter. Der Wert gehört bei Gelegenheit in der
+Hetzner-Verwaltung nachgesehen und hier berichtigt. `None` schaltet die Prüfung ab.
+
+Zwei Fälle sind hier mit Absicht **kein** Alarm, anders als bei den
+Sicherungsständen: fehlendes Kontingent (eine Konfigurationslücke, kein Defekt)
+und nicht ermittelbare Belegung (dann haben die restic-Prüfungen ohnehin schon
+alarmiert — zwei Meldungen für dieselbe Ursache machen sie nur unleserlich).
+
 ## Die wichtigste Regel: unbekannt ≠ gesund
 
 Kann der Wächter einen Stand nicht ermitteln — NAS weg, restic stumm, Ordner
@@ -72,7 +90,7 @@ launchd startet **`/opt/homebrew/bin/node run-waechter.js`**, das
 python3 waechter.py --kein-versand            # prüfen, ohne zu mailen
 python3 waechter.py --heartbeat-erzwingen     # Lebendmeldung sofort schicken
 python3 waechter.py --nas /Volumes/GIBTSNICHT # Alarmfall proben
-python3 -m pytest -q                          # 19 Tests
+python3 -m pytest -q                          # 25 Tests
 ```
 
 Log: `~/.paperclip/logs/backup-waechter.log`,

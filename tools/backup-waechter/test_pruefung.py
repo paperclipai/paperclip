@@ -148,3 +148,49 @@ def test_heartbeat_nur_montags():
     """Wöchentliche Lebendmeldung: bleibt sie aus, ist der Wächter tot."""
     assert pruefung.heartbeat_faellig(MONTAG)
     assert not pruefung.heartbeat_faellig(JETZT)
+
+
+# --- Platzwarnung ----------------------------------------------------------
+GB = 1024 ** 3
+
+
+def test_reichlich_platz_ist_kein_problem():
+    p, zeile = pruefung.bewerte_platz(12 * GB, 3000 * GB)
+    assert p is None
+    assert "12" in zeile and "%" in zeile
+
+
+def test_ueber_der_schwelle_wird_gewarnt():
+    p, _ = pruefung.bewerte_platz(2500 * GB, 3000 * GB)
+    assert p is not None
+    assert "83" in p or "84" in p, p
+
+
+def test_schwelle_exakt_erreicht_warnt_schon():
+    """Bei 80 % soll gewarnt werden, nicht erst darueber — sonst faellt die
+    Warnung genau dann aus, wenn man sie zum ersten Mal braucht."""
+    p, _ = pruefung.bewerte_platz(2400 * GB, 3000 * GB, schwelle=0.8)
+    assert p is not None
+
+
+def test_knapp_darunter_warnt_nicht():
+    p, _ = pruefung.bewerte_platz(2399 * GB, 3000 * GB, schwelle=0.8)
+    assert p is None
+
+
+def test_ohne_hinterlegtes_kontingent_keine_warnung_aber_ein_hinweis():
+    """Die Tarifgroesse verraet der Server nicht, sie ist von Hand
+    eingetragen. Fehlt sie, ist das kein Alarm — sonst kaeme taeglich eine
+    Mail, weil eine Konfigurationsangabe fehlt, nicht weil etwas kaputt ist."""
+    p, zeile = pruefung.bewerte_platz(12 * GB, None)
+    assert p is None
+    assert "nicht hinterlegt" in zeile.lower()
+
+
+def test_unbekannte_belegung_alarmiert_nicht_doppelt():
+    """Kommt rclone nicht durch, sind die restic-Pruefungen ohnehin schon
+    fehlgeschlagen und haben alarmiert. Ein zweiter Alarm fuer dieselbe
+    Ursache macht die Meldung nur unleserlich."""
+    p, zeile = pruefung.bewerte_platz(None, 3000 * GB)
+    assert p is None
+    assert "nicht ermittelbar" in zeile.lower()

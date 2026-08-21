@@ -43,6 +43,17 @@ TAG = timedelta(days=1)
 GRENZE_TAEGLICH = 30 * STD
 GRENZE_VAULT = 9 * TAG
 
+# Gebuchter Speicher des Hetzner-Tarifs, VON HAND eingetragen: weder OCS-API
+# noch WebDAV verraten ihn — Nextcloud meldet fuer das Konto nur „unbegrenzt"
+# (`-3`), was sich auf das Konto bezieht und nicht auf die Platte dahinter.
+# Stand 21.08.2026 laut Walter „ich meine 3 TB"; bei Gelegenheit in der
+# Hetzner-Verwaltung nachsehen und hier berichtigen.
+# Auf None setzen, um die Platzpruefung abzuschalten.
+KONTINGENT_GB = 3000
+PLATZ_SCHWELLE = 0.8   # ab hier wird gewarnt
+RCLONE = "/opt/homebrew/bin/rclone"
+RCLONE_REMOTE = "hetzner-nc:"
+
 LOG = os.path.expanduser("~/.paperclip/logs/backup-waechter.log")
 STATUS = os.path.expanduser("~/.paperclip/logs/backup-waechter-last.json")
 
@@ -109,6 +120,29 @@ def snapshots():
         return json.loads(r.stdout)
     except ValueError as exc:
         log(f"restic-Ausgabe unlesbar: {exc}")
+        return None
+
+
+def belegung():
+    """Belegte Bytes des Nextcloud-Kontos, oder None.
+
+    `rclone about` liefert genau die Zahl, die gegen den Tarif zaehlt — die
+    Belegung des ganzen Kontos, nicht nur des restic-Repos. Nebenablagen wie
+    Documents/ und Photos/ wuerden sonst fehlen.
+    """
+    try:
+        r = subprocess.run([RCLONE, "about", RCLONE_REMOTE, "--json"],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"rclone nicht abfragbar: {exc}")
+        return None
+    if r.returncode != 0:
+        log(f"rclone rc={r.returncode}: {r.stderr.strip()[:200]}")
+        return None
+    try:
+        return json.loads(r.stdout).get("used")
+    except ValueError as exc:
+        log(f"rclone-Ausgabe unlesbar: {exc}")
         return None
 
 
@@ -185,6 +219,16 @@ def main():
                            GRENZE_VAULT, "restic"),
     ]
     befund = pruefung.bewerte(jetzt, prueflinge)
+
+    # Platzwarnung als zusaetzliche Zeile und ggf. zusaetzliches Problem.
+    kontingent = KONTINGENT_GB * 1024 ** 3 if KONTINGENT_GB else None
+    platz_problem, platz_zeile = pruefung.bewerte_platz(
+        belegung(), kontingent, PLATZ_SCHWELLE)
+    befund = pruefung.Befund(
+        ok=befund.ok and platz_problem is None,
+        probleme=befund.probleme + ([platz_problem] if platz_problem else []),
+        zeilen=befund.zeilen + [platz_zeile],
+    )
 
     for zeile in befund.zeilen:
         log(zeile)

@@ -69,6 +69,40 @@ def bewerte(jetzt: datetime, prueflinge) -> Befund:
     return Befund(ok=not probleme, probleme=probleme, zeilen=zeilen)
 
 
+def bewerte_platz(belegt: Optional[int], kontingent: Optional[int],
+                  schwelle: float = 0.8):
+    """(warnung_oder_None, berichtszeile) zur Belegung des Speicherplatzes.
+
+    Zwei Faelle sind mit Absicht KEIN Alarm:
+
+    - **Kontingent nicht hinterlegt.** Die Tarifgroesse verraet weder die
+      OCS-API noch WebDAV — Nextcloud meldet fuer das Konto nur „unbegrenzt"
+      (`-3`). Sie steht deshalb von Hand in der Konfiguration. Fehlt sie, ist
+      das eine Konfigurationsluecke und kein Defekt; taegliche Alarmmails
+      dafuer wuerden nur abstumpfen.
+    - **Belegung nicht ermittelbar.** Kommt rclone nicht durch, sind die
+      restic-Pruefungen ohnehin schon fehlgeschlagen und haben alarmiert. Ein
+      zweiter Alarm fuer dieselbe Ursache macht die Meldung unleserlich.
+
+    Der Unterschied zu den Sicherungsstaenden ist wesentlich: dort bedeutet
+    „unbekannt", dass die Sicherung selbst fraglich ist — hier nicht.
+    """
+    GB = 1024 ** 3
+    if belegt is None:
+        return None, "Speicherplatz: nicht ermittelbar (rclone nicht erreichbar)"
+    if kontingent is None:
+        return None, (f"Speicherplatz: {belegt / GB:.1f} GiB belegt "
+                      f"(Kontingent nicht hinterlegt)")
+    anteil = belegt / kontingent
+    zeile = (f"Speicherplatz: {belegt / GB:.1f} von {kontingent / GB:.0f} GiB "
+             f"belegt ({anteil * 100:.1f} %)")
+    if anteil >= schwelle:
+        return (f"Speicherplatz: {anteil * 100:.1f} % belegt "
+                f"({belegt / GB:.1f} von {kontingent / GB:.0f} GiB) — "
+                f"Warnschwelle {schwelle * 100:.0f} % erreicht."), zeile
+    return None, zeile
+
+
 def neuester_snapshot(snapshots, tag: str) -> Optional[datetime]:
     """Zeitpunkt des jüngsten Snapshots mit diesem Schlagwort, oder None.
 
