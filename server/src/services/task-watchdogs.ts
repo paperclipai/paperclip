@@ -1256,6 +1256,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
    * completed-review suppression. The UPDATE re-checks reopen status and
    * in_review disposition so a concurrent terminal or review-path stamp is
    * not wiped.
+   *
+   * todo/in_progress is status-only in the UPDATE: isWatchdogReviewDisposition
+   * is false unless status is done/blocked/in_review, so assignee, execution,
+   * monitor, or a pending path on todo/in_progress is the explicit reopen
+   * (assigned in_progress) and must still clear.
    */
   async function clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(
     watchdog: IssueWatchdogRow,

@@ -736,6 +736,50 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     void childId;
   });
 
+  it("clears lastReviewedFingerprint when in_progress reopen has assignee and monitor", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REOPEN-ASSIGNED-CLEAR", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        monitorNextCheckAt: new Date(Date.now() + 60_000),
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+
+    const [cleared] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(cleared?.lastReviewedFingerprint).toBeNull();
+    expect(cleared?.lastReviewedStopSnapshot).toBeNull();
+
+    const afterReopen = await service.reconcileTaskWatchdogs({ companyId });
+    expect(afterReopen).toMatchObject({ checked: 1, triggered: 0 });
+    expect(wakes).toHaveLength(1);
+  });
+
   it("keeps completed-review suppression for an unchanged fingerprint while the watchdog issue stays terminal", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-KEEP-REVIEWED", status: "done" });
