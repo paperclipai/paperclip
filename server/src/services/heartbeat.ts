@@ -12589,6 +12589,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    let exactUnblockOwnerClaim = false;
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -12639,6 +12640,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         unblockRequestIssue,
         run.agentId,
       );
+      exactUnblockOwnerClaim = exactUnblockRequestWake;
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
@@ -12671,18 +12673,107 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+    // For exact unblock-owner wakes the owner was authorized against the
+    // reporting line at delivery time, but the hierarchy can move before the
+    // run claims. Make the re-authorization atomic with the claim: take the
+    // same per-issue advisory lock the delivery path uses, lock the company's
+    // agent rows, re-check eligibility, and only then flip the run to running.
+    // If the owner lost authorization, cancel the wake; the issue marker stays
+    // null so a later PATCH or replay redrives delivery once the hierarchy is
+    // repaired.
+    const claimPatch = {
+      status: "running" as const,
+      responsibleUserId,
+      startedAt: run.startedAt ?? claimedAt,
+      updatedAt: claimedAt,
+    };
+    let claimed: typeof heartbeatRuns.$inferSelect | null;
+    if (exactUnblockOwnerClaim) {
+      const outcome = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issueId}`}))`);
+        const claimIssue = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            unblockDescriptor: issues.unblockDescriptor,
+            blockedTransitionAt: issues.blockedTransitionAt,
+            createdByAgentId: issues.createdByAgentId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+        const companyAgents = await tx
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            status: agents.status,
+            reportsTo: agents.reportsTo,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, run.companyId))
+          .orderBy(asc(agents.id))
+          .for("update");
+        // Revalidate the intent fingerprint inside the same lock: a descriptor
+        // change that commits between the unlocked pre-check and the claim
+        // must supersede this queued wake instead of letting it execute.
+        const claimIntent = claimIssue ? buildAgentUnblockWakeIntent(claimIssue) : null;
+        const intentStillExact =
+          claimIssue?.status === "blocked" &&
+          claimIntent?.ownerAgentId === run.agentId &&
+          readNonEmptyString(context.intentFingerprint) === claimIntent?.intentFingerprint;
+        if (!intentStillExact) return { refused: "intent_changed" as const };
+        const stillAuthorized = isBlockedOwnerStillAuthorized({
+          owner: claimIssue?.unblockDescriptor?.owner,
+          createdByAgentId: claimIssue?.createdByAgentId,
+          companyAgents,
+        });
+        if (!stillAuthorized) return { refused: "owner_unauthorized" as const };
+        const claimedRow = await tx
+          .update(heartbeatRuns)
+          .set(claimPatch)
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return claimedRow
+          ? ({ claimed: claimedRow } as const)
+          : ({ refused: "race_lost" as const });
+      });
+      if ("refused" in outcome) {
+        if (outcome.refused !== "race_lost") {
+          const staleness: Extract<QueuedRunStaleness, { stale: true }> =
+            outcome.refused === "intent_changed"
+              ? {
+                  stale: true,
+                  errorCode: "issue_unblock_intent_changed",
+                  reason: "Cancelled because the unblock owner intent changed before the queued run could start",
+                  details: { issueId, wakeAgentId: run.agentId },
+                }
+              : {
+                  stale: true,
+                  errorCode: "issue_unblock_owner_unauthorized",
+                  reason: "Cancelled because the unblock owner is no longer authorized for this issue",
+                  details: { issueId, wakeAgentId: run.agentId },
+                };
+          await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+          logger.info(
+            { runId: run.id, issueId, errorCode: staleness.errorCode },
+            "claimQueuedRun: refused unblock wake claim",
+          );
+        }
+        return null;
+      }
+      claimed = outcome.claimed;
+    } else {
+      claimed = await db
+        .update(heartbeatRuns)
+        .set(claimPatch)
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimed) return null;
+    }
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -12857,42 +12948,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           wakeAgentId: run.agentId,
         },
       };
-    }
-
-    // The wake was admitted against the reporting line at delivery time, but
-    // the hierarchy can move between enqueue and claim. Re-authorize the
-    // persisted owner here so a former manager can no longer execute a wake
-    // queued before the reporting line changed. The marker stays null, so a
-    // later PATCH or replay redrives delivery once the hierarchy is repaired.
-    if (wakeReason === "issue_unblock_requested" && exactUnblockRequestWake) {
-      const companyAgents = await db
-        .select({
-          id: agents.id,
-          companyId: agents.companyId,
-          name: agents.name,
-          status: agents.status,
-          reportsTo: agents.reportsTo,
-        })
-        .from(agents)
-        .where(eq(agents.companyId, run.companyId))
-        .orderBy(asc(agents.id));
-      if (
-        !isBlockedOwnerStillAuthorized({
-          owner: issue.unblockDescriptor?.owner,
-          createdByAgentId: issue.createdByAgentId,
-          companyAgents,
-        })
-      ) {
-        return {
-          stale: true,
-          errorCode: "issue_unblock_owner_unauthorized",
-          reason: "Cancelled because the unblock owner is no longer authorized for this issue",
-          details: {
-            issueId,
-            wakeAgentId: run.agentId,
-          },
-        };
-      }
     }
 
     if (
