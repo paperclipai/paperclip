@@ -759,6 +759,7 @@ export async function testClaudeAcpEnvironment(
     (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
   const configApiKey = envConfig.ANTHROPIC_API_KEY;
   const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
+  const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
   if (hasBedrock) {
     checks.push({
       code: "claude_acp_bedrock_auth",
@@ -821,6 +822,13 @@ export async function testClaudeAcpEnvironment(
     // env matches the credential the real local run inherits from the host.
     if (isNonEmpty(hostApiKey) && !isNonEmpty(probeEnv.ANTHROPIC_API_KEY)) {
       probeEnv.ANTHROPIC_API_KEY = hostApiKey.trim();
+    }
+    // Seed the host CLAUDE_CODE_OAUTH_TOKEN the same way. A local ACP run
+    // inherits a host subscription OAuth token, so the probe must receive the
+    // same token. Without this seed a valid host OAuth-token setup reports a
+    // false claude_hello_probe_auth_required and fails the Test lane.
+    if (isNonEmpty(hostOauthToken) && !isNonEmpty(probeEnv.CLAUDE_CODE_OAUTH_TOKEN)) {
+      probeEnv.CLAUDE_CODE_OAUTH_TOKEN = hostOauthToken.trim();
     }
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     checks.push(

@@ -532,4 +532,35 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     // The host key value never enters a check.
     expect(JSON.stringify(result.checks)).not.toContain("sk-ant-host-key");
   });
+
+  it("runs the host login probe with the host CLAUDE_CODE_OAUTH_TOKEN on a local target", async () => {
+    // A local ACP run inherits the host environment, so a host subscription
+    // OAuth token authenticates the real run. The Test lane runs the login probe
+    // with the same host token, so the probe env matches the credential the real
+    // run receives. The probe then reports a real result, not a false
+    // auth-required.
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-host-token";
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "acp" },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    // The probe runs once with the host token, so it authenticates and reports
+    // no false auth-required and no probe-unavailable check.
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
+    expect(spawnedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-host-token");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
+    // The lane reports that the configured OAuth token is in use.
+    expect(result.checks.some((check) => check.code === "claude_oauth_token_configured")).toBe(true);
+    // The host token value never enters a check.
+    expect(JSON.stringify(result.checks)).not.toContain("oauth-host-token");
+  });
 });
