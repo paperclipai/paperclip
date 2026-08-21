@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
+import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
@@ -1119,7 +1119,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                               <option value="">No environment</option>
                               {runSelectableEnvironments.map((environment) => (
                                 <option key={environment.id} value={environment.id}>
-                                  {environment.name} · {environment.driver}
+                                  {environmentDisplayLabel(environment)}
                                 </option>
                               ))}
                             </select>

@@ -787,6 +787,27 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
   });
 
+  it("labels the platform-managed instance default by name, without the driver key", async () => {
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
+    const result = await renderForm([
+      makeEnvironment({
+        id: "managed-1",
+        name: "Paperclip Computer",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+        metadata: { managedByPaperclip: true },
+      }),
+    ]);
+    roots.push(result.root);
+
+    const selector = result.container.querySelector("select");
+
+    expect(selector?.textContent).toContain("Default: Paperclip Computer");
+    expect(selector?.textContent).toContain("Paperclip Computer");
+    expect(selector?.textContent).not.toContain("(sandbox)");
+    expect(selector?.textContent).not.toContain("· sandbox");
+  });
+
   it("renders non-local adapter config fields in the Adapter card", async () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
