@@ -15077,6 +15077,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !existing.adapterType.includes("shell")
       ) {
         try {
+          let continuationOffered = false;
+          // PRODUCTIVE-RUN CONTINUATION (2026-08-21, operator root-cause order):
+          // measured duty cycle across busy lanes was 15-25% — ~50s runs with
+          // 130-350s gaps, because every re-offer waited for the external sweep
+          // while the 10-min recentWakeTargets exclusion below blocked the very
+          // card that just ran. The bench harness, which self-chains, showed
+          // 333s runs with 0s gap on the same machine. A run that left
+          // issue-visible progress on a still-open card gets the SAME card
+          // re-offered immediately: the rewake throttle admits it by design
+          // (progress resets the no-progress streak), and unproductive runs
+          // still fall through to the spaced paths, so churn protection stands.
+          const lastRun = await db
+            .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "succeeded")))
+            .orderBy(desc(heartbeatRuns.finishedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const lastIssueId = readNonEmptyString(parseObject(lastRun?.contextSnapshot ?? null).issueId);
+          if (lastRun && lastIssueId) {
+            const stillOpen = await db
+              .select({ id: issues.id, status: issues.status })
+              .from(issues)
+              .where(and(eq(issues.id, lastIssueId), inArray(issues.status, ["todo", "in_progress"])))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (stillOpen) {
+              const progressed = await db
+                .select({ id: activityLog.id })
+                .from(activityLog)
+                .where(and(
+                  eq(activityLog.runId, lastRun.id),
+                  inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+                ))
+                .limit(1)
+                .then((rows) => rows.length > 0);
+              if (progressed) {
+                void trackWakeup(agentId, {
+                  source: "automation",
+                  triggerDetail: "completion_continuation",
+                  reason: "issue_continuation_needed",
+                  payload: { issueId: lastIssueId },
+                  contextSnapshot: { issueId: lastIssueId, wakeReason: "completion_continuation", continuedFromRunId: lastRun.id },
+                });
+                continuationOffered = true;
+              }
+            }
+          }
+          if (!continuationOffered) {
           const recentWakeTargets = db
             .select({ issueId: sql<string>`(${agentWakeupRequests.payload} ->> 'issueId')` })
             .from(agentWakeupRequests)
@@ -15111,6 +15160,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               payload: { issueId: nextCard.id },
               contextSnapshot: { issueId: nextCard.id, wakeReason: "completion_chain" },
             });
+          }
           }
         } catch (err) {
           logger.warn({ err, agentId }, "completion-chain next-card offer failed");
