@@ -17441,12 +17441,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
           .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)))
           .returning();
-        if (executionLockResult.length === 0) {
-          // The issue was reassigned (or deleted) between deferral and
-          // promotion, so the assignee-scoped execution lock matched no row.
-          // The queued run would proceed without owning the issue lock; cancel
-          // both the run and the wake request so a later wake re-defers or
-          // re-delivers against the current assignee.
+        // Unblock-owner wakes are exempt: the owner is not necessarily the
+        // assignee, and owner wakes acquire the execution lock lazily at claim
+        // time (guarded by executionRunId IS NULL OR self), so a zero-row
+        // assignee-scoped lock here must not cancel a valid owner wake. For
+        // every other deferred wake kind the assignee-scoped lock IS the
+        // execution lock, so a zero-row result means the issue was reassigned
+        // (or deleted) between deferral and promotion: cancel both the run
+        // and the wake request instead of letting the run proceed without
+        // owning the issue lock.
+        if (
+          readNonEmptyString(deferredContextSeed.wakeReason) !== "issue_unblock_requested" &&
+          executionLockResult.length === 0
+        ) {
           await tx
             .update(heartbeatRuns)
             .set({
