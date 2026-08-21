@@ -64,6 +64,7 @@ import {
   type DuplexBrokerState,
 } from "./duplex-bridge-broker.js";
 import {
+  createDuplexTelemetry,
   DUPLEX_COUNTER_CHANNEL_OPEN_TOTAL,
   DUPLEX_COUNTER_FALLBACK_TOTAL,
   DUPLEX_COUNTER_LOSS_TOTAL,
@@ -3577,6 +3578,7 @@ describe("sandbox adapter execution targets", () => {
       "outcome",
       "fallback_reason",
       "loss_class",
+      "loss_reason",
     ]);
   });
 
@@ -5599,6 +5601,101 @@ describe("createDuplexBridgeBroker", () => {
     expect(fake.writtenTypes).not.toContain("request");
 
     await broker.close();
+  });
+
+  it("latches a failure when a loss orders before an orderly completion and names the typed reason", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+    });
+    broker.start();
+
+    // The channel dies mid-turn, before any orderly completion.
+    fake.emitExit({ exitCode: 1 });
+    await flushMacrotasks();
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
+
+    // A later orderly completion cannot clear the latch. A delayed activity
+    // callback cannot clear the latch either, because the broker dispatches
+    // nothing after loss.
+    broker.markOrderlyCompletion();
+    fake.emitData(requestFrameLine({ id: "after-loss" }));
+    await flushMacrotasks();
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
+  });
+
+  it("keeps a success when a loss orders after a host-observed orderly completion, and emits no loss event", async () => {
+    const events: DuplexTelemetryEventRecord[] = [];
+    const counters: DuplexTelemetryCounterRecord[] = [];
+    const recorder: DuplexTelemetryRecorder = {
+      recordSpan() {},
+      incrementCounter(record) {
+        counters.push(record);
+      },
+      emitEvent(record) {
+        events.push(record);
+      },
+    };
+    const fake = createFakeDuplexChannel();
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+      telemetry: createDuplexTelemetry({ recorder, providerKey: "daytona" }),
+    });
+    broker.start();
+
+    // The agent completes its turn, then the channel ends during the teardown.
+    broker.markOrderlyCompletion();
+    fake.emitExit({ exitCode: 0 });
+    await flushMacrotasks();
+
+    expect(broker.runDisposition).toEqual({ failed: false, lossReason: null });
+    // A normal teardown is not a loss: no loss event and no loss counter.
+    expect(events.some((e) => e.dimensions.loss_reason !== undefined)).toBe(false);
+    expect(counters.some((c) => c.metric === DUPLEX_COUNTER_LOSS_TOTAL)).toBe(false);
+  });
+
+  it("carries the typed loss_reason on the transport loss event and keeps a sentinel message off every sink", async () => {
+    const spans: DuplexTelemetrySpanRecord[] = [];
+    const counters: DuplexTelemetryCounterRecord[] = [];
+    const events: DuplexTelemetryEventRecord[] = [];
+    const recorder: DuplexTelemetryRecorder = {
+      recordSpan(record) {
+        spans.push(record);
+      },
+      incrementCounter(record) {
+        counters.push(record);
+      },
+      emitEvent(record) {
+        events.push(record);
+      },
+    };
+    const logLines: string[] = [];
+    const fake = createFakeDuplexChannel();
+    const sentinel = "SENTINEL-PROVIDER-TEXT-1a2b3c";
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+      telemetry: createDuplexTelemetry({ recorder, providerKey: "daytona" }),
+      logger: (message) => logLines.push(message),
+    });
+    broker.start();
+
+    // A stream write failure carries a raw provider message. It maps to the typed
+    // `write_error`; the raw message must reach no sink.
+    fake.setWriteError(new Error(sentinel));
+    fake.emitData(requestFrameLine({ id: "req-sentinel" }));
+    await flushMacrotasks();
+
+    const lossEvent = events.find((e) => e.dimensions.loss_reason !== undefined);
+    expect(lossEvent?.dimensions.loss_reason).toBe("write_error");
+    expect(lossEvent?.dimensions).toMatchObject({ transport: "duplex", outcome: "error" });
+
+    // The sentinel provider text reaches no telemetry sink and no log line.
+    const serializedSinks = JSON.stringify({ spans, counters, events });
+    expect(serializedSinks).not.toContain(sentinel);
+    expect(logLines.join("\n")).not.toContain(sentinel);
   });
 
   it("rejects a configuration where an inner budget is not smaller than its outer budget", () => {

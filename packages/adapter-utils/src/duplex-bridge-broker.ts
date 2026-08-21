@@ -52,7 +52,11 @@ import {
   type DuplexResponseFrame,
   type DuplexResponseOutcome,
 } from "./duplex-frame-codec.js";
-import type { DuplexOutcomeValue, DuplexTelemetry } from "./duplex-telemetry.js";
+import type {
+  DuplexLossReason,
+  DuplexOutcomeValue,
+  DuplexTelemetry,
+} from "./duplex-telemetry.js";
 
 /** The lifecycle states of the broker. The broker moves through them in order. */
 export type DuplexBrokerState = "opening" | "open" | "lost" | "closing" | "closed";
@@ -64,6 +68,46 @@ export type DuplexBrokerLossReason =
   | "protocol_failure"
   | "heartbeat_write_failure"
   | "close_timeout";
+
+/**
+ * Map one broker loss reason to the closed, typed telemetry loss reason. The
+ * broker records the internal reason for its own metrics; the telemetry boundary
+ * carries only the closed enum value. The map is total over the internal reasons,
+ * so no raw text ever reaches the typed reason.
+ *   - `channel_exit` -> `provider_exit`: the provider channel process exited.
+ *   - `stream_failure` -> `write_error`: a write to the channel failed.
+ *   - `protocol_failure` -> `rpc_failure`: a malformed or mismatched frame.
+ *   - `heartbeat_write_failure` -> `heartbeat_timeout`: the liveness write failed.
+ *   - `close_timeout` -> `other`: an orderly close did not complete in the budget.
+ */
+const BROKER_LOSS_REASON_TO_TYPED: Readonly<Record<DuplexBrokerLossReason, DuplexLossReason>> = {
+  channel_exit: "provider_exit",
+  stream_failure: "write_error",
+  protocol_failure: "rpc_failure",
+  heartbeat_write_failure: "heartbeat_timeout",
+  close_timeout: "other",
+};
+
+/**
+ * Map one broker loss reason to the closed, typed telemetry loss reason. The host
+ * uses it to name the typed reason on a log line without the raw provider text.
+ */
+export function typedDuplexLossReason(reason: DuplexBrokerLossReason): DuplexLossReason {
+  return BROKER_LOSS_REASON_TO_TYPED[reason] ?? "other";
+}
+
+/**
+ * The terminal run disposition the broker computes from its ordered lifecycle. A
+ * `failed` disposition means a terminal loss ordered before an orderly completion,
+ * so the run must not report success. The typed loss reason names the cause; it is
+ * `null` for a success.
+ */
+export interface DuplexBrokerRunDisposition {
+  /** True when a terminal loss ordered before an orderly completion. */
+  failed: boolean;
+  /** The typed, closed loss reason on a failure; `null` on a success. */
+  lossReason: DuplexLossReason | null;
+}
 
 /** The nested timeout budgets. Each inner budget is smaller than its outer budget. */
 export interface DuplexBrokerBudgets {
@@ -201,6 +245,20 @@ export interface DuplexBridgeBroker {
   readonly state: DuplexBrokerState;
   /** The loss record, or `null` when the broker never lost the channel. */
   readonly lossRecord: DuplexBrokerLossRecord | null;
+  /**
+   * The terminal run disposition from the ordered lifecycle. It reports a failure
+   * when a terminal loss ordered before an orderly completion, and names the typed
+   * loss reason. It reports a success for a healthy channel or a normal-teardown
+   * loss. The host reads it at the run-disposition seam.
+   */
+  readonly runDisposition: DuplexBrokerRunDisposition;
+  /**
+   * Mark the host-observed orderly completion of the agent turn on the ordered
+   * lifecycle. A loss ordered before this mark latches a failure; a loss ordered
+   * after it stays a success. The broker also marks it on a gateway close frame
+   * and on a host-initiated orderly close. Safe to call more than one time.
+   */
+  markOrderlyCompletion(): void;
   /** Start the broker. It wires the channel listeners and moves to `open`. */
   start(): void;
   /** Close the channel cleanly. It moves through `closing` to `closed`. */
@@ -312,6 +370,32 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   let closePromise: Promise<void> | null = null;
   let lossRecord: DuplexBrokerLossRecord | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  // The host-owned lifecycle sequence. The broker assigns each terminal lifecycle
+  // event a strictly increasing sequence number at ingress, before any
+  // asynchronous logging. The order of these numbers, not a wall-clock or a
+  // provider timestamp, decides the run disposition.
+  let lifecycleSeq = 0;
+  // The sequence number of the terminal loss, or `null` when no loss ordered. The
+  // broker sets it one time. A later event never clears it, so the loss latches.
+  let lossSeq: number | null = null;
+  // The typed, closed loss reason for the latched loss, or `null` on a success.
+  let typedLossReason: DuplexLossReason | null = null;
+  // The sequence number of the host-observed orderly completion, or `null` when
+  // none ordered. The broker sets it one time, only while the channel is healthy.
+  let orderlyCompletionSeq: number | null = null;
+  const nextLifecycleSeq = (): number => {
+    lifecycleSeq += 1;
+    return lifecycleSeq;
+  };
+
+  // Mark the host-observed orderly completion of the agent turn. The broker sets
+  // the sequence one time, and only while no loss has ordered. A loss that already
+  // latched keeps the failure, so a late completion never clears the latch.
+  const markOrderlyCompletion = (): void => {
+    if (orderlyCompletionSeq !== null || lossSeq !== null) return;
+    orderlyCompletionSeq = nextLifecycleSeq();
+  };
   // The ids the broker already dispatched. The broker forwards one id one time,
   // so a repeated frame never reaches the API twice.
   const seenRequestIds = new Set<string>();
@@ -342,19 +426,45 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   const recordLoss = (reason: DuplexBrokerLossReason, message: string): void => {
     // Loss is terminal. Record it one time and stop every activity.
     if (stopped) return;
+    const afterOrderlyCompletion = orderlyCompletionSeq !== null;
+    // A clean channel end that orders after a host-observed orderly completion is
+    // a normal teardown, not a loss. Stop cleanly, emit no loss event, and leave
+    // the run a success. This keeps the closed telemetry contract: an orderly
+    // close is not a loss and emits no loss event.
+    if (afterOrderlyCompletion && reason === "channel_exit") {
+      stopped = true;
+      clearHeartbeat();
+      clearPending();
+      if (state !== "closing") setState("closed");
+      return;
+    }
     stopped = true;
     // Classify the loss relative to the first dispatch. A loss after the broker
     // dispatched a request is `post_dispatch`; a loss before any dispatch is
     // `pre_dispatch`. The class rides the fixed loss counter, never the raw
     // message.
     const lossClass = seenRequestIds.size > 0 ? "post_dispatch" : "pre_dispatch";
+    // Assign the loss its lifecycle sequence at ingress, before any logging. The
+    // loss latches the run as a failure only when no orderly completion ordered
+    // before it. A loss ordered after an orderly completion (for example a failed
+    // close) is a real channel loss for the telemetry and the leak metric, but it
+    // does not fail the run, because the run already completed. Once set, `lossSeq`
+    // never clears, so a later completion, exit, or activity callback cannot flip
+    // the latch.
+    const seq = nextLifecycleSeq();
+    if (!afterOrderlyCompletion) {
+      lossSeq = seq;
+      typedLossReason = BROKER_LOSS_REASON_TO_TYPED[reason] ?? "other";
+    }
     clearHeartbeat();
     clearPending();
     lossRecord = { reason, message, atMs: now() };
     setState("lost");
-    options.logger?.(`Duplex broker lost the channel (${reason}): ${message}`);
+    // Log the internal reason only. The broker never writes the raw provider
+    // message to a log line, so no raw provider text rides a sink here.
+    options.logger?.(`Duplex broker lost the channel (${reason}).`);
     options.onLoss?.(lossRecord);
-    options.telemetry?.recordLoss(lossClass);
+    options.telemetry?.recordLoss(lossClass, BROKER_LOSS_REASON_TO_TYPED[reason] ?? "other");
   };
 
   const writeFrame = (frame: DuplexFrame): boolean => {
@@ -599,7 +709,10 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
         dispatch(frame);
         return;
       case "close":
-        // The gateway asked for an orderly close. Close the channel.
+        // The gateway asked for an orderly close. The gateway sends this frame on
+        // the agent's orderly completion, so mark the completion on the ordered
+        // lifecycle before the close, then close the channel.
+        markOrderlyCompletion();
         void close();
         return;
       case "ready":
@@ -644,6 +757,11 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     if (stopped) return Promise.resolve();
+    // A host-initiated orderly close is a host-observed orderly completion. The
+    // host tears the channel down on its own terms, so a channel end during the
+    // close is a normal teardown, not a mid-run loss. `markOrderlyCompletion`
+    // no-ops when a loss already latched, so a lost channel stays a failure.
+    markOrderlyCompletion();
     closePromise = (async () => {
       setState("closing");
       clearHeartbeat();
@@ -700,6 +818,13 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     get lossRecord() {
       return lossRecord;
     },
+    get runDisposition(): DuplexBrokerRunDisposition {
+      // A latched loss ordered before any orderly completion is a failure. Every
+      // other state — a healthy channel, or a loss ordered after an orderly
+      // completion — is a success.
+      return { failed: lossSeq !== null, lossReason: typedLossReason };
+    },
+    markOrderlyCompletion,
     start,
     close,
     stop,

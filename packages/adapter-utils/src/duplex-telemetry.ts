@@ -46,6 +46,7 @@ export const DUPLEX_DIMENSION_KEYS = [
   "outcome",
   "fallback_reason",
   "loss_class",
+  "loss_reason",
 ] as const;
 
 /** One dimension key from the closed set. */
@@ -69,6 +70,41 @@ export type DuplexFallbackReason =
 
 /** The class of a terminal loss, relative to the first request dispatch. */
 export type DuplexLossClass = "pre_dispatch" | "post_dispatch";
+
+/**
+ * The closed, typed reason for a terminal channel loss. The host maps every loss
+ * cause to one of these values before any sink reads it. The set covers the
+ * loss-detection modes the transport names: a gateway stdin end of file, a
+ * provider process exit, a heartbeat timeout, and an RPC failure. It adds
+ * `write_error` for a rejected host-to-sandbox write and `other` for an unknown
+ * cause. The host maps an unknown cause or any caught provider text to `other`,
+ * so no raw provider text reaches a sink.
+ */
+export const DUPLEX_LOSS_REASONS = [
+  "stdin_eof",
+  "provider_exit",
+  "heartbeat_timeout",
+  "rpc_failure",
+  "write_error",
+  "other",
+] as const;
+
+/** One typed loss reason from the closed set. */
+export type DuplexLossReason = (typeof DUPLEX_LOSS_REASONS)[number];
+
+/** The host-owned closed loss-reason set. It backs {@link normalizeDuplexLossReason}. */
+const LOSS_REASONS: ReadonlySet<string> = new Set<string>(DUPLEX_LOSS_REASONS);
+
+/**
+ * Map a raw loss-cause value to the closed {@link DuplexLossReason} set. Return
+ * the value when the closed set holds it. Return `other` for any other value or a
+ * missing value, so a raw provider string never reaches a sink.
+ */
+export function normalizeDuplexLossReason(value: string | null | undefined): DuplexLossReason {
+  return typeof value === "string" && LOSS_REASONS.has(value)
+    ? (value as DuplexLossReason)
+    : "other";
+}
 
 /** The one approved public provider value. */
 export const DUPLEX_APPROVED_PROVIDER = "daytona";
@@ -103,6 +139,7 @@ export interface DuplexTelemetryDimensions {
   outcome?: DuplexOutcomeValue;
   fallback_reason?: DuplexFallbackReason;
   loss_class?: DuplexLossClass;
+  loss_reason?: DuplexLossReason;
 }
 
 /** One span record the host records. The request span carries a latency. */
@@ -176,8 +213,12 @@ export interface DuplexTelemetry {
   recordFallback(reason: DuplexFallbackReason): void;
   /** Record one duplex request span with its latency and outcome. */
   recordRequest(record: { latencyMs: number; outcome: DuplexOutcomeValue }): void;
-  /** Record one terminal channel loss. */
-  recordLoss(lossClass: DuplexLossClass): void;
+  /**
+   * Record one terminal channel loss. The caller passes the loss class and the
+   * typed, closed loss reason. The loss counter and the transport loss event carry
+   * both dimensions. No raw provider text rides either sink.
+   */
+  recordLoss(lossClass: DuplexLossClass, lossReason: DuplexLossReason): void;
   /** Record one leaked provider session on teardown. */
   recordSessionLeak(): void;
 }
@@ -273,12 +314,13 @@ export function createDuplexTelemetry(options: DuplexTelemetryOptions = {}): Dup
         latencyMs: record.latencyMs,
       });
     },
-    recordLoss(lossClass: DuplexLossClass): void {
+    recordLoss(lossClass: DuplexLossClass, lossReason: DuplexLossReason): void {
       const dimensions: DuplexTelemetryDimensions = {
         provider,
         transport: "duplex",
         outcome: "error",
         loss_class: lossClass,
+        loss_reason: lossReason,
       };
       safeCounter({ metric: DUPLEX_COUNTER_LOSS_TOTAL, dimensions });
       safeEvent({ name: DUPLEX_TRANSPORT_EVENT, dimensions });

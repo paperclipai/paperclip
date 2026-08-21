@@ -248,7 +248,9 @@ describe("Daytona sandbox provider plugin", () => {
 
       // Process output reaches the host as a data notification bound to the
       // worker session id.
-      ptyOnData?.(new TextEncoder().encode('{"version":1,"type":"ready","address":"127.0.0.1:1"}\n'));
+      (ptyOnData as ((data: Uint8Array) => void) | null)?.(
+        new TextEncoder().encode('{"version":1,"type":"ready","address":"127.0.0.1:1"}\n'),
+      );
       expect(dataChunks).toEqual([
         {
           workerSessionId,
@@ -2758,7 +2760,7 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.delete).not.toHaveBeenCalled();
 
       resolveFirstExecute();
-      await cancelPromise.then(() => {
+      await cancelPromise!.then(() => {
         cancelResolved = true;
       });
       await expect(queuedExecutePromise).rejects.toThrow(/no longer active/);
@@ -4496,13 +4498,13 @@ describe("daytona native file-sync hooks", () => {
     // Both commands ran, VERBATIM (first arg is the exact authored string — the
     // provider never rewrote/concatenated a shell fragment onto it: C1/C3).
     const findCall = (cmd: string) =>
-      sandbox.process.executeCommand.mock.calls.find(([c]: [string]) => c === cmd);
+      sandbox.process.executeCommand.mock.calls.find(([c]) => c === cmd);
     expect(findCall("codex-auth-merge --first")).toBeDefined();
     expect(findCall("chmod 600 config.txt")).toBeDefined();
 
     // Ordered: the first command's exec precedes the second's (C4 array order).
     const orderOf = (cmd: string) => {
-      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]: [string]) => c === cmd);
+      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]) => c === cmd);
       return sandbox.process.executeCommand.mock.invocationCallOrder[idx];
     };
     expect(orderOf("codex-auth-merge --first")).toBeLessThan(orderOf("chmod 600 config.txt"));
@@ -4551,7 +4553,7 @@ describe("daytona native file-sync hooks", () => {
 
     // Fail-fast: the command after the failing one never executed.
     expect(
-      sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === "should-not-run"),
+      sandbox.process.executeCommand.mock.calls.some(([c]) => c === "should-not-run"),
     ).toBe(false);
   });
 
@@ -4598,7 +4600,7 @@ describe("daytona native file-sync hooks", () => {
     expect(sandbox.fs.uploadFiles).toHaveBeenCalledTimes(1);
     const [uploads] = sandbox.fs.uploadFiles.mock.calls[0] as [Array<{ source: string; destination: string }>];
     expect(uploads).toHaveLength(2);
-    const mvCalls = sandbox.process.executeCommand.mock.calls.filter(([cmd]: [string]) =>
+    const mvCalls = sandbox.process.executeCommand.mock.calls.filter(([cmd]) =>
       String(cmd).includes("mv -f"),
     );
     expect(mvCalls).toHaveLength(1);
@@ -4606,7 +4608,7 @@ describe("daytona native file-sync hooks", () => {
 
     // Both extract commands ran, in array order, AFTER the upload (git first).
     const orderOf = (cmd: string) => {
-      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]: [string]) => c === cmd);
+      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]) => c === cmd);
       return sandbox.process.executeCommand.mock.invocationCallOrder[idx];
     };
     expect(orderOf(gitExtract)).toBeLessThan(orderOf(overlayExtract));
@@ -4702,7 +4704,7 @@ describe("daytona native file-sync hooks", () => {
 
     // Fail-fast: the overlay extract and the remove-deleted command never ran.
     const ran = (cmd: string) =>
-      sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === cmd);
+      sandbox.process.executeCommand.mock.calls.some(([c]) => c === cmd);
     expect(ran("git-history-extract")).toBe(true);
     expect(ran("workspace-overlay-extract")).toBe(false);
     expect(ran("remove-deleted-paths")).toBe(false);
@@ -4733,7 +4735,7 @@ describe("daytona native file-sync hooks", () => {
         }),
       ).rejects.toThrow(/not a confined absolute path|escapes the workspace remote dir/);
       // The command never ran — lexical confinement rejected it before exec.
-      expect(sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === "run-me")).toBe(
+      expect(sandbox.process.executeCommand.mock.calls.some(([c]) => c === "run-me")).toBe(
         false,
       );
     }
@@ -4772,7 +4774,7 @@ describe("daytona native file-sync hooks", () => {
         ],
       }),
     ).rejects.toThrow(/symlink-escape guard|command failed/i);
-    expect(sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === "run-me")).toBe(
+    expect(sandbox.process.executeCommand.mock.calls.some(([c]) => c === "run-me")).toBe(
       false,
     );
   });

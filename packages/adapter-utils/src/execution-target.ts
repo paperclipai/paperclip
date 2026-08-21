@@ -46,9 +46,11 @@ import {
   createDuplexBridgeBroker,
   DEFAULT_DUPLEX_BROKER_BUDGETS,
   isSafeBridgeMethod,
+  typedDuplexLossReason,
   type DuplexBridgeBroker,
   type DuplexBrokerBudgets,
   type DuplexBrokerForwardResult,
+  type DuplexBrokerRunDisposition,
 } from "./duplex-bridge-broker.js";
 import {
   decodeDuplexLine,
@@ -252,6 +254,15 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * `runAdapterExecutionTargetProcess` via `options.runLogTail`.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  /**
+   * Read the terminal run disposition of the duplex control channel. It reports a
+   * failure when the channel was lost before an orderly completion, and names the
+   * typed loss reason. It reports a success for a healthy channel or a
+   * normal-teardown loss. The file bridge path never sets it, so the method is
+   * absent there. The caller reads it at the run-disposition seam to fail a run
+   * whose control channel died mid-turn.
+   */
+  readRunDisposition?(): DuplexBrokerRunDisposition;
   stop(): Promise<void>;
 }
 
@@ -3031,6 +3042,17 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             // The duplex path emits only the fixed transport telemetry. It passes no
             // free-form logger, so no raw provider error rides a log line here.
             telemetry: duplexTelemetry,
+            // Surface a terminal channel loss on the run log. The broker latches
+            // the failure on its ordered lifecycle; the host names only the typed,
+            // closed loss reason here, never the raw provider message. The caller
+            // reads the latched disposition through `readRunDisposition` at the
+            // run-disposition seam.
+            onLoss: (record) => {
+              void onLog(
+                "stderr",
+                `[paperclip] Sandbox duplex channel lost (${typedDuplexLossReason(record.reason)}). The run fails.\n`,
+              );
+            },
           });
         } catch {
           // The broker construction failed, so no broker owns the channel. Close
@@ -3080,6 +3102,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
               PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE,
             },
             runLogTail: duplexRunLogTail,
+            // Read the broker's ordered lifecycle latch at the run-disposition
+            // seam. A loss ordered before an orderly completion reports a failure
+            // with the typed loss reason; every other state reports a success.
+            readRunDisposition: (): DuplexBrokerRunDisposition => activeBroker.runDisposition,
             stop: async () => {
               // Close the channel before lease release. The broker sends an orderly
               // close and releases the route, then stops the child, so no live
