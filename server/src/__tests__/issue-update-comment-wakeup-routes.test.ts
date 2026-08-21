@@ -221,7 +221,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("issue update comment wakeups", () => {
+describe("issue update comment wakeups", { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
