@@ -556,6 +556,208 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([assignedIssueId]);
   });
 
+  it("returns only issues created by the requested agent", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const otherCreatorAgentId = randomUUID();
+    const createdIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherCreatorAgentId,
+        companyId,
+        name: "Other creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: createdIssueId,
+        companyId,
+        title: "Created issue",
+        status: "todo",
+        priority: "medium",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Other created issue",
+        status: "todo",
+        priority: "medium",
+        createdByAgentId: otherCreatorAgentId,
+      },
+    ]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", createdByAgentId: creatorAgentId, limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([createdIssueId]);
+  });
+
+  it("returns an empty page when no issues were created by the requested agent", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const emptyCreatorAgentId = randomUUID();
+    const createdIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: emptyCreatorAgentId,
+        companyId,
+        name: "Empty creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: createdIssueId,
+      companyId,
+      title: "Created issue",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creatorAgentId,
+    });
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", createdByAgentId: emptyCreatorAgentId, limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("applies createdByAgentId to blocked issue counts", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const otherCreatorAgentId = randomUUID();
+    const emptyCreatorAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherCreatorAgentId,
+        companyId,
+        name: "Other creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: emptyCreatorAgentId,
+        companyId,
+        name: "Empty creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Blocked created issue",
+        status: "blocked",
+        priority: "medium",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Other blocked created issue",
+        status: "blocked",
+        priority: "medium",
+        createdByAgentId: otherCreatorAgentId,
+      },
+    ]);
+
+    const app = createApp(companyId);
+    const positive = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", createdByAgentId: creatorAgentId });
+    const negative = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", createdByAgentId: emptyCreatorAgentId });
+
+    expect(positive.status, JSON.stringify(positive.body)).toBe(200);
+    expect(positive.body).toEqual({ count: 1 });
+    expect(negative.status, JSON.stringify(negative.body)).toBe(200);
+    expect(negative.body).toEqual({ count: 0 });
+  });
+
   it("returns 422 for malformed assigneeAgentId filters", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

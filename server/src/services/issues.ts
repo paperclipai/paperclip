@@ -458,6 +458,7 @@ export interface IssueFilters {
    *   also normalises it for direct callers.
    */
   assigneeAgentId?: string | null;
+  createdByAgentId?: string | string[];
   participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
@@ -3387,6 +3388,19 @@ function assertValidAssigneeAgentFilter(assigneeAgentFilter: string | null | und
   }
 }
 
+function parseIssueCreatedByAgentFilter(
+  createdByAgentId: IssueFilters["createdByAgentId"],
+): string | undefined {
+  if (Array.isArray(createdByAgentId)) {
+    throw unprocessable("createdByAgentId must be a UUID");
+  }
+  const normalized = createdByAgentId?.trim() || undefined;
+  if (normalized && !isUuidLike(normalized)) {
+    throw unprocessable("createdByAgentId must be a UUID");
+  }
+  return normalized;
+}
+
 async function blockedInboxIssueConditions(
   dbOrTx: any,
   companyId: string,
@@ -3433,6 +3447,8 @@ async function blockedInboxIssueConditions(
   } else if (assigneeAgentFilter) {
     conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
   }
+  const createdByAgentFilter = parseIssueCreatedByAgentFilter(filters?.createdByAgentId);
+  if (createdByAgentFilter) conditions.push(eq(issues.createdByAgentId, createdByAgentFilter));
   if (filters?.participantAgentId) conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
   if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
   if (touchedByUserId) conditions.push(touchedByUserCondition(companyId, touchedByUserId));
@@ -4673,6 +4689,10 @@ export function issueService(db: Db) {
       } else if (assigneeAgentFilter) {
         conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
       }
+      const createdByAgentFilter = parseIssueCreatedByAgentFilter(filters?.createdByAgentId);
+      if (createdByAgentFilter) {
+        conditions.push(eq(issues.createdByAgentId, createdByAgentFilter));
+      }
       if (filters?.participantAgentId) {
         conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
       }
@@ -4862,6 +4882,8 @@ export function issueService(db: Db) {
       } else if (assigneeAgentFilter) {
         conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
       }
+      const createdByAgentFilter = parseIssueCreatedByAgentFilter(filters?.createdByAgentId);
+      if (createdByAgentFilter) conditions.push(eq(issues.createdByAgentId, createdByAgentFilter));
       if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.workspaceId) {
