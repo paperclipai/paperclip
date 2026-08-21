@@ -14,6 +14,7 @@ import {
   agents,
   companies,
   companySkills,
+  costEvents,
   createDb,
   documentRevisions,
   documents,
@@ -121,6 +122,7 @@ async function deleteHeartbeatRowsAfterActivityLogDrains(db: Db) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
     try {
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
