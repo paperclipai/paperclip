@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -763,6 +763,39 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     }
   });
 
+  it("serializes a queue claim with a concurrent ordinary assignment to an idle target", async () => {
+    const input = await seedConditionalQueueClaim();
+    const competingIssue = await svc.create(input.companyId, {
+      title: "Ordinary competing assignment",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    const results = await Promise.allSettled([
+      svc.conditionalQueueClaim({
+        issueId: input.issue.id,
+        companyId: input.companyId,
+        expectedUpdatedAt: input.issue.updatedAt.toISOString(),
+        approvalId: input.approvalId,
+        approvalMarker: input.marker,
+        scopeDigest: input.scopeDigest,
+        targetAgentId: input.targetAgentId,
+      }),
+      svc.update(competingIssue.id, { assigneeAgentId: input.targetAgentId }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const active = await db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, input.companyId),
+      eq(issues.assigneeAgentId, input.targetAgentId),
+      inArray(issues.status, ["todo", "in_progress"]),
+    ));
+    expect(active).toHaveLength(1);
+  });
+
   it("conditionally writes a linked approval marker without clobbering a concurrent issue edit", async () => {
     const companyId = await seedAssignableAgentCompany();
     const targetAgentId = randomUUID();
@@ -791,7 +824,15 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(second.id).toBe(first.id);
     const persisted = await db.select({ id: agentWakeupRequests.id, requestedByActorId: agentWakeupRequests.requestedByActorId }).from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.id)).then((rows) => rows[0]);
     expect(persisted).toMatchObject({ id: first.id, requestedByActorId: input.authority.actorId });
-    await svc.create(input.companyId, { title: "Concurrent second card", description: null, status: "todo", priority: "medium", assigneeAgentId: input.targetAgentId });
+    // Seed a legacy/out-of-band second card directly so the reservation
+    // predicate remains covered without bypassing the new service invariant.
+    await db.insert(issues).values({
+      companyId: input.companyId,
+      title: "Concurrent second card",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: input.targetAgentId,
+    });
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.id));
     await expect(svc.conditionalQueueWakeReservation(reservationInput)).rejects.toMatchObject({ status: 409, details: { code: "target_not_sole_card" } });
   });

@@ -66,7 +66,6 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, preconditionFailed, unprocessable } from "../errors.js";
-import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -4379,6 +4378,36 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  // Queue claims are deliberately restricted to an idle target.  Lock that
+  // agent row for every write which could give an idle agent executable work;
+  // the row is a durable serialization key even when the active-issue query is
+  // empty (where FOR UPDATE on issues alone would not lock a predicate).
+  async function lockIdleAgentExecutionSlot(
+    tx: any,
+    companyId: string,
+    agentId: string,
+    excludeIssueId?: string,
+  ) {
+    const target = await tx.select({ id: agents.id, status: agents.status }).from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+      .for("update").then((rows: Array<{ id: string; status: string }>) => rows[0] ?? null);
+    if (!target || target.status !== "idle") return target;
+
+    const activeConditions = [
+      eq(issues.companyId, companyId),
+      eq(issues.assigneeAgentId, agentId),
+      inArray(issues.status, ["todo", "in_progress"]),
+    ];
+    if (excludeIssueId) activeConditions.push(ne(issues.id, excludeIssueId));
+    const activeIssue = await tx.select({ id: issues.id }).from(issues)
+      .where(and(...activeConditions))
+      .for("update").then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (activeIssue) {
+      throw conflict("Idle target agent already has execution load", { code: "target_has_execution_load" });
+    }
+    return target;
+  }
+
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
@@ -4440,14 +4469,8 @@ export function issueService(db: Db) {
         throw forbidden("Queue-claim authority does not match the approved principal", { code: "queue_authority_mismatch" });
       }
 
-      const target = await tx.select({ id: agents.id, status: agents.status }).from(agents)
-        .where(and(eq(agents.id, input.targetAgentId), eq(agents.companyId, input.companyId)))
-        .for("update").then((rows) => rows[0] ?? null);
+      const target = await lockIdleAgentExecutionSlot(tx, input.companyId, input.targetAgentId);
       if (!target || target.status !== "idle") throw conflict("Target agent is not idle", { code: "target_not_idle" });
-      const targetLoad = await tx.select({ id: issues.id }).from(issues)
-        .where(and(eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, input.targetAgentId), inArray(issues.status, ["todo", "in_progress"])))
-        .for("update").then((rows) => rows[0] ?? null);
-      if (targetLoad) throw conflict("Target agent already has execution load", { code: "target_has_execution_load" });
 
       const now = new Date();
       const claimed = await tx.update(issues).set({
@@ -7368,6 +7391,9 @@ export function issueService(db: Db) {
             assigneeUserId: values.assigneeUserId ?? null,
           }),
         );
+        if (values.assigneeAgentId && ["todo", "in_progress"].includes(values.status ?? "backlog")) {
+          await lockIdleAgentExecutionSlot(tx, companyId, values.assigneeAgentId);
+        }
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
@@ -7818,6 +7844,10 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        const nextStatus = patch.status ?? existing.status;
+        if (nextAssigneeAgentId && ["todo", "in_progress"].includes(nextStatus)) {
+          await lockIdleAgentExecutionSlot(tx, existing.companyId, nextAssigneeAgentId, id);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -8191,27 +8221,30 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        await lockIdleAgentExecutionSlot(tx, issueCompany.companyId, agentId, id);
+        return tx
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
