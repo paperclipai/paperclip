@@ -140,6 +140,18 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
     expect(res.body.status).toBe("done");
   });
 
+  it("does not accept two dates within the same month as two non-adjacent samples", async () => {
+    const issueId = await createIssue(
+      `GitHub Copilot burn is running at $700/day (${randomUUID()})`,
+      "Observation window: trailing 30 days. Aug 1, 2026 was one data point and Aug 15, 2026 was another data point within the same month.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
+  });
+
   it("does not gate an issue whose title has no rate-claim pattern", async () => {
     const issueId = await createIssue("Document the billing reconciliation architecture");
 
@@ -164,6 +176,34 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
       code: "done_transition_billing_source_gate",
       reason: "internal_costs_ledger_cited_for_monetary_claim",
     });
+  });
+
+  it("refuses done when the internal-ledger citation lives only in a comment (not the description)", async () => {
+    const issueId = await createIssue(
+      `Reconcile agent cost overrun (${randomUUID()})`,
+      "Investigating the cost overrun reported this week.",
+    );
+    const commentRes = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Per Paperclip's internal /costs ledger, spend this month is $4,200." });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_billing_source_gate" });
+  });
+
+  it("refuses done when a bare 'billing API' phrase is cited with no command or pasted output", async () => {
+    const issueId = await createIssue(
+      `Reconcile agent cost overrun (${randomUUID()})`,
+      "Per Paperclip's internal /costs ledger, spend this month is $4,200. Confirmed via the billing API.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_billing_source_gate" });
   });
 
   it("allows done on the same billing fixture once the vendor billing API command+output is also cited", async () => {

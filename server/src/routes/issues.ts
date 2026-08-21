@@ -335,11 +335,13 @@ const RATE_CLAIM_PATTERN =
 const RATE_CLAIM_WINDOW_PATTERN = /\bwindow\b|\bobservation window\b|\btrailing\b|\bover\s+\d+\s*(day|hour|week|month)s?\b/i;
 const RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN =
   /\bonly one sample\b|\bsingle sample\b.{0,80}\bbecause\b|\bno other sample(?:s)? (?:exist|available)\b/i;
-// Two non-adjacent samples: look for two distinct calendar month/date tokens
-// (e.g. "July 2026" and "August 2026", or two ISO-ish dates), which is the
-// literal signal that separated windows were actually compared.
-const CALENDAR_MONTH_TOKEN_PATTERN =
-  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{2,4}\b/gi;
+// Two non-adjacent samples: look for two distinct calendar month+year
+// tokens (e.g. "July 2026" and "August 2026"). Dedupe on month+year, not
+// the raw matched substring, so two different *days* within the same month
+// (e.g. "Aug 1, 2026" and "Aug 15, 2026") do not falsely count as two
+// separated windows -- Greptile flagged this exact bypass.
+const CALENDAR_MONTH_YEAR_TOKEN_PATTERN =
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?,?\s+)?(\d{2,4})\b/gi;
 
 function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolean {
   if (typeof title !== "string") return false;
@@ -348,13 +350,22 @@ function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolea
   return RATE_CLAIM_PATTERN.test(trimmed);
 }
 
+function distinctCalendarMonthYearCount(text: string): number {
+  const distinct = new Set<string>();
+  for (const match of text.matchAll(CALENDAR_MONTH_YEAR_TOKEN_PATTERN)) {
+    const month = match[1]?.toLowerCase();
+    const year = match[2];
+    if (!month || !year) continue;
+    distinct.add(`${month}-${year}`);
+  }
+  return distinct.size;
+}
+
 function rateClaimHasAdequateEvidence(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
   if (!RATE_CLAIM_WINDOW_PATTERN.test(text)) return false;
   if (RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN.test(text)) return true;
-  const monthTokens = text.match(CALENDAR_MONTH_TOKEN_PATTERN) ?? [];
-  const distinctMonthTokens = new Set(monthTokens.map((token) => token.toLowerCase()));
-  return distinctMonthTokens.size >= 2;
+  return distinctCalendarMonthYearCount(text) >= 2;
 }
 
 /**
@@ -388,8 +399,15 @@ async function assertRateClaimHasAdequateEvidence(
 const MONETARY_CLAIM_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b|\bspend\b|\bcost(?:s)?\b|\bburn\b/i;
 const INTERNAL_COSTS_LEDGER_CITATION_PATTERN =
   /\/costs\b|\bpaperclip(?:'s)? (?:internal )?(?:cost|costs) (?:ledger|endpoint|api)\b|\binternal (?:cost|costs) ledger\b/i;
-const VENDOR_BILLING_API_CITATION_PATTERN =
-  /\bgh api\b.{0,60}\bbilling\b|\bbilling api\b|\bvendor(?:'s)? (?:own )?billing api\b|orgs\/[\w.-]+\/settings\/billing/i;
+// A real vendor-billing citation needs the literal command shape (`gh api`
+// against a billing endpoint, or the REST path itself) -- a bare phrase like
+// "confirmed via the billing API" with no command is not a citation, it is a
+// claim about a citation. Greptile flagged the looser phrase-only match as a
+// bypass, so this requires the command AND a pasted dollar figure (the
+// stand-in for "pasted output" in this literal, regex-scoped heuristic).
+const VENDOR_BILLING_COMMAND_PATTERN =
+  /\bgh api\b[^\n]{0,80}\bbilling\b|orgs\/[\w.-]+\/settings\/billing(?:\/usage)?/i;
+const DOLLAR_FIGURE_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b/i;
 
 function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
@@ -400,33 +418,34 @@ function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | unde
 
 function textCitesVendorBillingApi(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
-  return VENDOR_BILLING_API_CITATION_PATTERN.test(text);
+  if (!VENDOR_BILLING_COMMAND_PATTERN.test(text)) return false;
+  return DOLLAR_FIGURE_PATTERN.test(text);
 }
 
 /**
  * Gate B (AGE-628): reject a monetary/spend claim sourced from Paperclip's
  * own internal `/costs` ledger -- independently proven to undercount actual
- * spend ~10x per AGE-335 -- unless the same text (or another comment) also
- * cites the vendor's own billing API (command + pasted output), which is
- * the authoritative source. Blocks recurrence of the AGE-333 failure where
- * each retelling of a Paperclip-`/costs`-sourced number went unverified
- * against GitHub's own billing API.
+ * spend ~10x per AGE-335 -- unless the description or ANY comment also
+ * cites the vendor's own billing API (command + pasted dollar figure),
+ * which is the authoritative source. Both the internal-ledger citation and
+ * the vendor-billing citation are searched across the description AND every
+ * comment -- an internal-ledger claim made only in a comment still trips
+ * this gate (Greptile flagged the earlier description-only trigger as a
+ * bypass), and a vendor citation anywhere in the thread satisfies it.
  */
 async function assertMonetaryClaimCitesVendorBillingApi(
   db: Db,
   issueId: string,
   effectiveDescription: string | null,
 ) {
-  const citesInternalLedger = textCitesInternalCostsLedgerForMonetaryClaim(effectiveDescription);
-  if (!citesInternalLedger) return;
-  if (textCitesVendorBillingApi(effectiveDescription)) return;
   const rows = await db
     .select({ body: issueComments.body })
     .from(issueComments)
     .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
-  for (const row of rows) {
-    if (textCitesVendorBillingApi(row.body)) return;
-  }
+  const allTexts = [effectiveDescription, ...rows.map((row) => row.body)];
+  const citesInternalLedger = allTexts.some((text) => textCitesInternalCostsLedgerForMonetaryClaim(text));
+  if (!citesInternalLedger) return;
+  if (allTexts.some((text) => textCitesVendorBillingApi(text))) return;
   throw unprocessable(
     "Cannot mark issue done: this issue cites Paperclip's internal /costs ledger for a monetary/spend claim, which is known to undercount actual spend (AGE-335). Cite the vendor's own billing API (e.g. `gh api /orgs/{org}/settings/billing/usage`) with the command and its pasted output before closing.",
     { code: "done_transition_billing_source_gate", reason: "internal_costs_ledger_cited_for_monetary_claim" },
