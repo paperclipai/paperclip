@@ -181,6 +181,32 @@ export function CodexLocalConfigFields({
               />
             )}
           </Field>
+          <Field
+            label="Quota rotation wait seconds"
+            hint="Disabled at 0. After a subscription quota failure, wait for an external credential watcher to switch accounts, then retry once. A 75-second wait covers the watcher API fallback cycle."
+          >
+            {isCreate ? (
+              <input
+                type="number"
+                min={0}
+                max={300}
+                className={inputClass}
+                value={values!.codexAcpQuotaRotationWaitSec ?? 0}
+                onChange={(e) => set!({ codexAcpQuotaRotationWaitSec: Number(e.target.value) })}
+              />
+            ) : (
+              <DraftNumberInput
+                value={eff(
+                  "adapterConfig",
+                  "quotaRotationWaitSec",
+                  Number(config.quotaRotationWaitSec ?? 0),
+                )}
+                onCommit={(v) => mark("adapterConfig", "quotaRotationWaitSec", Math.max(0, v || 0))}
+                immediate
+                className={inputClass}
+              />
+            )}
+          </Field>
         </>
       )}
       {!hideInstructionsFile && (

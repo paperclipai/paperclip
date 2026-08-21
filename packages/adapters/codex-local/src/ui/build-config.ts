@@ -33,6 +33,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
     ac.nonInteractivePermissions = v.codexAcpNonInteractivePermissions ?? "deny";
     if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
     ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
+    ac.quotaRotationWaitSec = v.codexAcpQuotaRotationWaitSec ?? 0;
   }
   ac.timeoutSec = 0;
   ac.graceSec = 15;

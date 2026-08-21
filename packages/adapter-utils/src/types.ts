@@ -572,6 +572,7 @@ export interface CreateConfigValues {
   codexAcpNonInteractivePermissions?: "deny" | "fail";
   codexAcpStateDir?: string;
   codexAcpWarmHandleIdleMs?: number;
+  codexAcpQuotaRotationWaitSec?: number;
   geminiEngine?: "auto" | "cli" | "acp";
   geminiAcpAgentCommand?: string;
   geminiAcpMode?: "persistent" | "oneshot";

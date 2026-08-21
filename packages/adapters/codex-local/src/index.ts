@@ -118,6 +118,7 @@ Operational fields:
 - nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
 - stateDir (string, optional): ACP state directory override when engine="acp"
 - warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
+- quotaRotationWaitSec (number, optional): disabled at 0. When ACP fails on ChatGPT subscription quota, wait up to this many seconds for an external credential watcher to switch the effective account, then retry once. Values above 300 are clamped.
 
 Notes:
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Codex approval/sandbox flags. Both require Bubblewrap on the host and select the CLI engine in auto mode; engine="acp" is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
