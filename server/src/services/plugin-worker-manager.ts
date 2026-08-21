@@ -176,22 +176,22 @@ const MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS = 8 * 1024 * 1024;
  */
 const MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES = 10_000;
 /**
- * The maximum number of data or exit frames the host holds for one duplex
- * channel route before the route binds. A worker can batch frames with the open
- * reply, so the host reads them before it knows the bound worker session id and
- * before it can apply the per-frame bounds. The host holds these frames and
- * replays them after the bind. This ceiling bounds the hold, so a worker that
- * floods frames before it replies to the open cannot make the host hold an
- * unbounded number of frames.
+ * The margin the pre-open hold ceiling keeps above the pre-bind buffered-frame
+ * bound (`maxDuplexChannelPreBindFrames`, see below). A worker can batch frames
+ * with the open reply, so the host reads them before it knows the bound worker
+ * session id and before it can apply the per-frame bounds. The host holds these
+ * frames and replays them after the bind. The hold ceiling bounds that hold, so
+ * a worker that floods frames before it replies to the open cannot make the
+ * host hold an unbounded number of frames.
  *
- * This ceiling is separate from the pre-bind buffered-frame bound. The buffered
- * bound governs how many valid frames the host keeps for a listener that has not
- * attached yet, and a caller can lower it. The replay after the bind applies
- * that buffered bound to each held frame. So this hold ceiling must stay above
- * the buffered bound, or it would drop a frame before the buffered bound can end
- * the route.
+ * The hold ceiling is derived from the buffered bound, not a fixed constant: a
+ * fixed ceiling equal to or below a caller-configured (or even the default)
+ * buffered bound would let the hold drop the frame that should instead trip the
+ * buffered bound during replay, so the route would never end. One frame of
+ * margin is enough — it lets the frame that exceeds the buffered bound reach
+ * the hold, so the replay's buffered-bound check, not the hold, ends the route.
  */
-const MAX_DUPLEX_CHANNEL_PRE_OPEN_HOLD_FRAMES = 10_000;
+const DUPLEX_CHANNEL_PRE_OPEN_HOLD_MARGIN_FRAMES = 1;
 /**
  * The default maximum number of in-flight host→worker requests for one duplex
  * channel route. A worker that never replies cannot make the host hold an
@@ -828,6 +828,11 @@ export function createPluginWorkerHandle(
   const maxDuplexChannelPreBindFrames =
     options.duplexChannelLimits?.maxPreBindBufferedFrames ??
     MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES;
+  // Always strictly above maxDuplexChannelPreBindFrames, including when a
+  // caller configures that bound at or above the module default. See
+  // DUPLEX_CHANNEL_PRE_OPEN_HOLD_MARGIN_FRAMES for why the margin must hold.
+  const maxDuplexChannelPreOpenHoldFrames =
+    maxDuplexChannelPreBindFrames + DUPLEX_CHANNEL_PRE_OPEN_HOLD_MARGIN_FRAMES;
   const maxDuplexChannelPendingRequests =
     options.duplexChannelLimits?.maxPendingRequests ??
     MAX_DUPLEX_CHANNEL_PENDING_REQUESTS;
@@ -1589,20 +1594,22 @@ export function createPluginWorkerHandle(
 
   // Hold one data or exit notification that arrives before the route binds. The
   // host replays the held frames in order after it binds the route. Bound the
-  // hold by a separate pre-open ceiling, so a worker that floods frames before it
-  // replies to the open cannot make the host hold an unbounded number of frames.
-  // Count one protocol error for each frame past the ceiling.
+  // hold by a pre-open ceiling derived from the pre-bind buffered-frame bound, so
+  // a worker that floods frames before it replies to the open cannot make the
+  // host hold an unbounded number of frames. Count one protocol error for each
+  // frame past the ceiling.
   //
-  // This ceiling is separate from the pre-bind buffered-frame bound. The replay
-  // after the bind applies the buffered bound to each held frame, so the buffered
-  // bound ends the route when a caller lowers it. The hold ceiling must stay
-  // above the buffered bound, or it would drop a frame before the buffered bound
-  // can end the route.
+  // This ceiling is separate from the pre-bind buffered-frame bound, but it
+  // tracks it: the replay after the bind applies the buffered bound to each held
+  // frame, so the buffered bound ends the route when a caller lowers (or raises)
+  // it. The hold ceiling stays above the buffered bound by construction
+  // (maxDuplexChannelPreOpenHoldFrames = maxDuplexChannelPreBindFrames + margin),
+  // or it would drop a frame before the buffered bound can end the route.
   function bufferPreOpenDuplexChannelNotification(
     route: DuplexChannelRoute,
     notification: JsonRpcNotification,
   ): void {
-    if (route.preOpen.length >= MAX_DUPLEX_CHANNEL_PRE_OPEN_HOLD_FRAMES) {
+    if (route.preOpen.length >= maxDuplexChannelPreOpenHoldFrames) {
       recordDuplexChannelProtocolError(route);
       return;
     }

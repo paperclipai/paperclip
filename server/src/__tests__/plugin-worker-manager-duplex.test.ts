@@ -535,6 +535,28 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("ends the route on the frame count bound even when a caller raises that bound well past the module default", async () => {
+    // Regression test: the pre-open hold ceiling must track
+    // maxDuplexChannelPreBindFrames, not a fixed value. A fixed ceiling at or
+    // below this bound would drop the 13th frame in the hold before the replay
+    // ever applies the buffered bound to it, and the route would never end.
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 12 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          batchWithOpenReply: true,
+          data: Array.from({ length: 13 }, (_, i) => ({ chunk: String(i) })),
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("delivers a batched pre-bind chunk that a later listener drains before the byte cap ends the route", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxTotalDataBytes: 4 },
