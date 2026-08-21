@@ -34,8 +34,36 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
 
 export const supportedLocales = Object.keys(localeMessages);
 
+function expandPluralFallbacks(locale: string, messages: unknown): unknown {
+  const pluralCategories = new Intl.PluralRules(locale).resolvedOptions().pluralCategories;
+
+  function visit(value: unknown): unknown {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+
+    const expanded = Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, visit(child)]),
+    ) as Record<string, unknown>;
+
+    for (const [key, translation] of Object.entries(expanded)) {
+      if (!key.endsWith("_other") || typeof translation !== "string") continue;
+      const baseKey = key.slice(0, -"_other".length);
+      for (const category of pluralCategories) {
+        const pluralKey = `${baseKey}_${category}`;
+        if (!(pluralKey in expanded)) expanded[pluralKey] = translation;
+      }
+    }
+
+    return expanded;
+  }
+
+  return visit(messages);
+}
+
 export const i18nextResources: Resource = Object.fromEntries(
-  Object.entries(localeMessages).map(([locale, messages]) => [locale, { translation: messages }]),
+  Object.entries(localeMessages).map(([locale, messages]) => [
+    locale,
+    { translation: expandPluralFallbacks(locale, messages) },
+  ]),
 ) as Resource;
 
 export type SupportedLocale = keyof typeof localeMessages;

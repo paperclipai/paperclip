@@ -26,6 +26,12 @@ function resolveInitialLocale(): string {
 
 const initialLocale = resolveInitialLocale();
 
+function syncDocumentLocale(locale: string) {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = locale;
+  document.documentElement.dir = i18n.dir(locale);
+}
+
 const i18nextOptions: InitOptions = {
   resources: i18nextResources,
   lng: initialLocale,
@@ -37,6 +43,7 @@ const i18nextOptions: InitOptions = {
   initAsync: false,
 };
 
+i18n.on("languageChanged", syncDocumentLocale);
 void i18n.use(initReactI18next).init(i18nextOptions).catch((error: unknown) => {
   console.error("Failed to initialize i18next", error);
 });
