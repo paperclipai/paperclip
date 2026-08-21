@@ -32,7 +32,10 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
+  LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS,
   MODEL_PROFILE_KEYS,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
@@ -429,6 +432,57 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
   }, schema);
 }
 
+// Every internal origin kind the server (or a plugin operation) mints itself.
+// External create callers must use namespaced values instead; add new internal
+// kinds here when they are introduced so they cannot be spoofed via the API.
+export const SYSTEM_RESERVED_ORIGIN_KINDS = [
+  "routine_execution",
+  "harness_liveness_escalation",
+  "stale_active_run_evaluation",
+  "issue_productivity_review",
+  "stranded_issue_recovery",
+  "blocker_attention_open_recovery",
+  // Forged task_bridge origins would grant the named bridge key write access to
+  // the issue (authorization matches originKind + originId === keyId); the
+  // server mints the real value after route validation, so callers never send it.
+  "task_bridge",
+  "task_watchdog",
+  TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ...LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS,
+] as const;
+
+export type SystemReservedOriginKind = typeof SYSTEM_RESERVED_ORIGIN_KINDS[number];
+
+const SYSTEM_RESERVED_ORIGIN_KIND_SET: ReadonlySet<string> = new Set(SYSTEM_RESERVED_ORIGIN_KINDS);
+
+export function isSystemReservedOriginKind(value: string): boolean {
+  if (SYSTEM_RESERVED_ORIGIN_KIND_SET.has(value)) return true;
+  // Plugin operation origins are reserved for internal plugin orchestration.
+  // External callers may use namespaced values like "plugin:foo" but not the
+  // operation-level forms reserved for the orchestrator.
+  if (/^plugin:[^:]+:operation(?::.+)?$/.test(value)) return true;
+  return false;
+}
+
+// Returns a ZodEffects wrapper, which no longer supports `.shape`/`.merge`/
+// `.extend`. Consumers that need the object shape (e.g. the MCP tool
+// registration) must keep the plain ZodObject and apply this guard at the
+// point where the schema is terminally parsed.
+export function applyOriginKindReservationGuard<Schema extends z.ZodTypeAny>(
+  schema: Schema,
+): z.ZodEffects<Schema, z.output<Schema>, z.input<Schema>> {
+  return schema.superRefine((value: { originKind?: string | null }, ctx) => {
+    if (typeof value.originKind === "string" && isSystemReservedOriginKind(value.originKind)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `originKind "${value.originKind}" is reserved for internal use; external callers must use a namespaced value (e.g. "linear", "sentry", "plugin:<id>")`,
+        path: ["originKind"],
+      });
+    }
+  });
+}
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -471,6 +525,9 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().uuid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
+  originKind: z.string().trim().min(1).max(120).optional(),
+  originId: z.string().trim().min(1).max(500).optional().nullable(),
+  originFingerprint: z.string().trim().min(1).max(120).optional(),
 });
 
 function requireBlockedStatusForUnblockDescriptor(
@@ -501,18 +558,24 @@ const onboardingFirstTaskMarkerSchema = {
   onboardingFirstTask: z.boolean().optional(),
 };
 
+// Deliberately NOT wrapped in applyOriginKindReservationGuard: the MCP server
+// merges this schema and registers its `.shape`, both of which require a plain
+// ZodObject. The guard is applied there at parse time (and the server route's
+// createIssueSchema enforces it regardless).
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
   ...onboardingFirstTaskMarkerSchema,
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(
-  createIssueBaseSchema.extend({
-    ...createIssueDuplicateGuardSchema,
-    ...onboardingFirstTaskMarkerSchema,
-  }),
-).superRefine(requireBlockedStatusForUnblockDescriptor);
+export const createIssueSchema = applyOriginKindReservationGuard(
+  withCreateIssueStatusDefault(
+    createIssueBaseSchema.extend({
+      ...createIssueDuplicateGuardSchema,
+      ...onboardingFirstTaskMarkerSchema,
+    }),
+  ).superRefine(requireBlockedStatusForUnblockDescriptor),
+);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -523,16 +586,18 @@ export const upsertIssueWatchdogSchema = z.object({
 
 export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;
 
-export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
-  .omit({
-    parentId: true,
-    inheritExecutionWorkspaceFromIssueId: true,
-    watchdogDiscovery: true,
-  })
-  .extend({
-    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
-    blockParentUntilDone: z.boolean().optional().default(false),
-  })).superRefine(requireBlockedStatusForUnblockDescriptor);
+export const createChildIssueSchema = applyOriginKindReservationGuard(
+  withCreateIssueStatusDefault(createIssueBaseSchema
+    .omit({
+      parentId: true,
+      inheritExecutionWorkspaceFromIssueId: true,
+      watchdogDiscovery: true,
+    })
+    .extend({
+      acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      blockParentUntilDone: z.boolean().optional().default(false),
+    })).superRefine(requireBlockedStatusForUnblockDescriptor),
+);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -554,6 +619,9 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   createdByUserId: true,
   responsibleUserId: true,
   watchdog: true,
+  originKind: true,
+  originId: true,
+  originFingerprint: true,
 }).partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),

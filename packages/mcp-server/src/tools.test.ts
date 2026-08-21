@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PaperclipApiClient } from "./client.js";
+import { createPaperclipMcpServer } from "./index.js";
 import { createToolDefinitions } from "./tools.js";
 
 function makeClient() {
@@ -110,6 +111,7 @@ describe("paperclip MCP tools", () => {
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
+      allowDuplicate: false,
     });
   });
 
@@ -396,5 +398,68 @@ describe("paperclip MCP tools", () => {
     });
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
+  });
+
+  it("constructs the MCP server and registers every tool at startup", () => {
+    // Regression: server.tool(...) registration reads tool.schema.shape for
+    // every tool, so this crashed at startup when a tool schema became a
+    // ZodEffects wrapper.
+    const { tools } = createPaperclipMcpServer({
+      apiUrl: "http://localhost:3100/api",
+      apiKey: "token-123",
+      companyId: "11111111-1111-1111-1111-111111111111",
+      agentId: "22222222-2222-2222-2222-222222222222",
+      runId: "33333333-3333-3333-3333-333333333333",
+    });
+    expect(tools.length).toBeGreaterThan(0);
+  });
+
+  it("exposes a plain object shape on every tool schema", () => {
+    // Regression: wrapping a shared schema in a refinement (ZodEffects) broke
+    // `.merge()` at module load and `.shape` at registration, killing the MCP
+    // server at startup. Registration in index.ts reads `tool.schema.shape`
+    // for every tool, so exercise the same access here.
+    for (const tool of createToolDefinitions(makeClient())) {
+      expect(tool.schema.shape, `tool ${tool.name}`).toBeTypeOf("object");
+    }
+  });
+
+  it("creates issues with namespaced origin fields", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "issue-1" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    await tool.execute({
+      title: "Linear import",
+      originKind: "linear",
+      originId: "LIN-1",
+      originFingerprint: "webhook",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+    );
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body.originKind).toBe("linear");
+    expect(body.originId).toBe("LIN-1");
+    expect(body.originFingerprint).toBe("webhook");
+  });
+
+  it("rejects system-reserved origin kinds before issuing the request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    const response = await tool.execute({
+      title: "Spoofed routine",
+      originKind: "routine_execution",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("reserved for internal use");
   });
 });

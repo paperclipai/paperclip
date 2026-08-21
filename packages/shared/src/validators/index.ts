@@ -400,6 +400,7 @@ export {
 } from "./document-annotation.js";
 
 export {
+  applyOriginKindReservationGuard,
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,

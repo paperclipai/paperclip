@@ -63,6 +63,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isUuidLike,
+  LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -1645,12 +1646,6 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
     )
   `;
 }
-
-const LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS = [
-  "plugin:paperclipai.content-machine:case",
-  "plugin:paperclipai.content-machine:evaluation",
-  "plugin:paperclipai.content-machine:source-sync",
-] as const;
 
 function nonPluginOperationIssueCondition() {
   return sql<boolean>`NOT (

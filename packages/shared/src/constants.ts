@@ -371,6 +371,15 @@ export const ISSUE_ORIGIN_KINDS = [
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+
+// Origin kinds minted by plugin operations before the `plugin:<id>:operation`
+// naming convention existed. Issues with these kinds are hidden from default
+// issue lists, so they stay reserved for internal plugin orchestration.
+export const LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS = [
+  "plugin:paperclipai.content-machine:case",
+  "plugin:paperclipai.content-machine:evaluation",
+  "plugin:paperclipai.content-machine:source-sync",
+] as const;
 export const ISSUE_WATCHDOG_DISCOVERY_KINDS = ["product_bug", "platform_bug"] as const;
 export type IssueWatchdogDiscoveryKind = (typeof ISSUE_WATCHDOG_DISCOVERY_KINDS)[number];
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
