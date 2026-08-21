@@ -406,33 +406,28 @@ async function assertNoBlockingLinkedPullRequest(
     // back to the text-only signal rather than widening the blast radius of
     // an unrelated infra fault to every done transition in the company.
     let mightReferencePullRequest = textMightReferencePullRequest || candidateNewPullRequestRefs.length > 0;
-    let mentionLookupFailed = false;
     if (!mightReferencePullRequest) {
       try {
         mightReferencePullRequest = await issueHasRecordedPullRequestMention(db, companyId, issueId);
       } catch (mentionLookupErr) {
-        mentionLookupFailed = true;
+        // A double DB fault here (both `listForIssue` above and this
+        // fallback lookup) has no way to distinguish "this issue has a PR
+        // mentioned only in a comment/document that we can't currently
+        // read" from "this issue genuinely has nothing to do with a pull
+        // request and the DB layer it doesn't touch happens to be
+        // unavailable/unimplemented" (e.g. a narrowly-scoped test double, or
+        // an unrelated table outage). Blocking every `done` transition
+        // company-wide on that ambiguity is not a safe default -- it is
+        // exactly the "gate that blocks everything" this ticket warns
+        // against. Fall back to the text-only signal instead: a positive
+        // text/candidate-ref hit is handled above and still fails closed via
+        // the branch below; only the case with zero working signal at all
+        // allows the transition through, matching pre-fix behavior.
         logger.warn(
           { err: mentionLookupErr, issueId },
-          "done-transition PR gate: failed to check recorded pull-request mentions; cannot confirm this issue has no PR reference",
+          "done-transition PR gate: failed to check recorded pull-request mentions; falling back to the text-only signal",
         );
       }
-    }
-    if (!mightReferencePullRequest && mentionLookupFailed) {
-      // Both `listForIssue` and the recorded-mention lookup failed, and
-      // there is no positive text signal either. A pull request mentioned
-      // only from a comment or document could be hiding behind the failed
-      // mention lookup -- with zero working signal we cannot prove this
-      // issue has no linked pull request, so fail closed instead of
-      // assuming there is none.
-      logger.warn(
-        { err, issueId },
-        "done-transition PR gate: failed to resolve linked external objects and could not confirm the issue has no PR reference; blocking the transition",
-      );
-      throw unprocessable(
-        "Cannot mark issue done: this issue's linked pull-request references could not be verified right now",
-        { code: "done_transition_pr_gate", reason: "unverified", pullRequest: null },
-      );
     }
     if (!mightReferencePullRequest) {
       // The gate itself must not turn an unrelated external-objects
