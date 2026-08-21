@@ -577,8 +577,14 @@ function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   if (!existsSync(postmasterPidFile)) return null;
   try {
     const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    return probeProcessLiveness(pid) === "dead" ? null : pid;
+    // A malformed, empty or zero pid line is not proof the directory is free.
+    // Returning null would let the caller delete the lock and start a second
+    // postmaster over data that may still be live, so report it as owned by
+    // someone we cannot name.
+    if (!Number.isInteger(pid) || pid === 0) return -1;
+    // PostgreSQL negates the pid for a standalone backend, which still owns the
+    // directory; probe the magnitude but report the directory as occupied.
+    return probeProcessLiveness(Math.abs(pid)) === "dead" ? null : pid;
   } catch {
     // The file exists but could not be read or parsed. That is still evidence
     // something claimed the directory, so do not report it as free. Callers test

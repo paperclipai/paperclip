@@ -22,6 +22,7 @@ export {
   postmasterLockFilePath,
   readPostmasterLockFile,
   probeProcessLiveness,
+  canonicalizeDataDirectory,
   inspectPostmasterLock,
   removeStalePostmasterLock,
   type PostmasterLockFile,

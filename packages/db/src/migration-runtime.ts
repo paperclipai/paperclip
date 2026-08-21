@@ -9,6 +9,7 @@ import {
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import {
   POSTMASTER_LOCK_FILE_NAME,
+  canonicalizeDataDirectory,
   inspectPostmasterLock,
   removeStalePostmasterLock,
 } from "./embedded-postgres-lock.js";
@@ -90,7 +91,10 @@ const IDENTIFY_TIMEOUT_MS = 3_000;
 async function isServingDataDirectory(port: number, dataDir: string): Promise<boolean> {
   await waitForPostgresReady(adminConnectionString(port), { timeoutMs: IDENTIFY_TIMEOUT_MS });
   const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
-  return typeof actualDataDir === "string" && path.resolve(actualDataDir) === path.resolve(dataDir);
+  return (
+    typeof actualDataDir === "string" &&
+    canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir)
+  );
 }
 
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
@@ -116,7 +120,10 @@ async function adoptCluster(port: number, expectedDataDir: string): Promise<Migr
   // occupies it, adopting blindly would create our database and run migrations
   // against someone else's cluster while the intended directory stays unresolved.
   const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
-  if (typeof actualDataDir !== "string" || path.resolve(actualDataDir) !== path.resolve(expectedDataDir)) {
+  if (
+    typeof actualDataDir !== "string" ||
+    canonicalizeDataDirectory(actualDataDir) !== canonicalizeDataDirectory(expectedDataDir)
+  ) {
     throw new Error(
       `PostgreSQL on port ${port} serves ${actualDataDir ?? "an unreported data directory"}, ` +
         `not ${path.resolve(expectedDataDir)}; refusing to adopt an unrelated cluster.`,

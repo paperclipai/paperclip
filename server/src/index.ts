@@ -14,6 +14,7 @@ import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
+  canonicalizeDataDirectory,
   createDb,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
@@ -612,7 +613,10 @@ export async function startServer(): Promise<StartedServer> {
     // process started needs no check — we chose its data directory.
     if (adoptedFromLock) {
       const adoptedDataDir = await getPostgresDataDirectory(embeddedAdminConnectionString);
-      if (typeof adoptedDataDir !== "string" || resolve(adoptedDataDir) !== resolve(dataDir)) {
+      if (
+        typeof adoptedDataDir !== "string" ||
+        canonicalizeDataDirectory(adoptedDataDir) !== canonicalizeDataDirectory(dataDir)
+      ) {
         throw new Error(
           `PostgreSQL on port ${port} serves ${adoptedDataDir ?? "an unreported data directory"}, not ${resolve(dataDir)}. ` +
             `Refusing to adopt an unrelated cluster. Stop whatever is using port ${port}, or remove the stale ` +

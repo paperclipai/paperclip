@@ -10,7 +10,7 @@ import path from "node:path";
  * Comparing with path.resolve alone reports a healthy cluster as foreign, which
  * is never recoverable. Falls back to path.resolve when the path is gone.
  */
-function canonicalize(target: string): string {
+export function canonicalizeDataDirectory(target: string): string {
   try {
     return realpathSync.native(target);
   } catch {
@@ -155,7 +155,7 @@ export function inspectPostmasterLock(
     return { status: "absent" };
   }
 
-  if (lock.dataDir && canonicalize(lock.dataDir) !== canonicalize(dataDir)) {
+  if (lock.dataDir && canonicalizeDataDirectory(lock.dataDir) !== canonicalizeDataDirectory(dataDir)) {
     return {
       status: "indeterminate",
       lock,
