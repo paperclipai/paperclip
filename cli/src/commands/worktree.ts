@@ -563,6 +563,13 @@ function readPidFilePort(postmasterPidFile: string): number | null {
 }
 
 /**
+ * Returned when postmaster.pid exists but yields no usable pid. Truthy, so the
+ * directory still reads as owned, but distinguishable from a real pid so callers
+ * can refuse instead of guessing which server to adopt.
+ */
+const UNIDENTIFIED_POSTMASTER = -1;
+
+/**
  * The pid of a postmaster that may still own this data directory, or null when
  * it is provably gone.
  *
@@ -581,7 +588,7 @@ function readRunningPostmasterPid(postmasterPidFile: string): number | null {
     // Returning null would let the caller delete the lock and start a second
     // postmaster over data that may still be live, so report it as owned by
     // someone we cannot name.
-    if (!Number.isInteger(pid) || pid === 0) return -1;
+    if (!Number.isInteger(pid) || pid === 0) return UNIDENTIFIED_POSTMASTER;
     // PostgreSQL negates the pid for a standalone backend, which still owns the
     // directory; probe the magnitude but report the directory as occupied.
     return probeProcessLiveness(Math.abs(pid)) === "dead" ? null : pid;
@@ -590,7 +597,7 @@ function readRunningPostmasterPid(postmasterPidFile: string): number | null {
     // something claimed the directory, so do not report it as free. Callers test
     // this with a truthy check, so the sentinel has to be truthy; -1 says "owned
     // by someone we cannot name" rather than "owned by pid -1".
-    return -1;
+    return UNIDENTIFIED_POSTMASTER;
   }
 }
 
@@ -1179,6 +1186,18 @@ export async function ensureEmbeddedPostgres(
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
+  if (runningPid === UNIDENTIFIED_POSTMASTER) {
+    // The lock file exists but yielded no pid, so there is no recorded port to
+    // trust. Falling back to the preferred port would adopt whatever happens to
+    // be listening there — potentially an unrelated cluster, which seed and
+    // backup would then write to. Starting is equally unsafe: a postmaster of
+    // ours may own this directory on a port we never probed.
+    throw new Error(
+      `Embedded PostgreSQL at ${dataDir} has an unusable postmaster.pid, so its owner cannot be identified. `
+      + `Refusing to adopt or start a cluster for it. If no PostgreSQL is running for this directory, delete `
+      + `${postmasterPidFile} and retry; otherwise stop that server first.`,
+    );
+  }
   if (runningPid) {
     if (options.allowExisting === false) {
       throw new Error(

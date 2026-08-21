@@ -444,16 +444,19 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       if (lockStatus.status === "indeterminate") {
-        // The file exists but yielded no pid at all — a zero-length or truncated
-        // postmaster.pid, typically from power loss between creation and write.
-        // There is no recorded server to adopt, so treating it as adopted would
-        // skip the start path below and strand the server permanently. Continue
-        // into the start path and leave the file in place: PostgreSQL arbitrates
-        // from there, refusing with its own actionable "bogus data in lock file"
-        // if the directory is genuinely held.
-        logger.warn(
-          { reason: lockStatus.reason, port: configuredPort },
-          "Embedded PostgreSQL lock file is unreadable and names no process; leaving it in place and letting PostgreSQL arbitrate",
+        // Reaching here means the lock file exists but yielded no pid at all, so
+        // there is nothing to adopt and no way to tell whether the directory is
+        // owned. Starting anyway cannot succeed: PostgreSQL cannot parse the file
+        // either, and CreateLockFile fatals with "bogus data in lock file". It
+        // can, however, do damage first if a live postmaster owns this directory
+        // on a port we never probed. Note that an idle configured port proves
+        // nothing — the failure this change set exists to fix is precisely a
+        // cluster of ours living on a different port.
+        throw new Error(
+          `Embedded PostgreSQL data directory ${dataDir} has an unusable ${POSTMASTER_LOCK_FILE_NAME} ` +
+            `(${lockStatus.reason}). Ownership of the directory cannot be determined, so Paperclip will not ` +
+            `start a postmaster over it. If no PostgreSQL is running for this directory, delete ` +
+            `${resolve(dataDir, POSTMASTER_LOCK_FILE_NAME)} and retry; otherwise stop that server first.`,
         );
       }
       if (lockStatus.status === "stale") {
@@ -500,22 +503,9 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
       } catch (err) {
-        // An unreadable lock file plus an unidentifiable server is the one
-        // combination we must never resolve by starting. The lock says something
-        // claimed this directory, and a postmaster replaying WAL can miss the
-        // probe deadline, so "did not answer in time" is not evidence of a free
-        // directory. Refuse while the port is held; only an idle port proves the
-        // lock file is leftover garbage rather than a live cluster.
-        if (lockStatus.status === "indeterminate" && (await detectPort(configuredPort)) !== configuredPort) {
-          throw new Error(
-            `Embedded PostgreSQL data directory ${dataDir} holds an unusable ${"postmaster.pid"} ` +
-              `(${lockStatus.reason}), and something on port ${configuredPort} did not identify itself within ` +
-              `${EMBEDDED_POSTGRES_PROBE_TIMEOUT_MS}ms. Refusing to start a second postmaster over possibly-live ` +
-              `data. Stop whatever is using port ${configuredPort}; if no PostgreSQL is running for this ` +
-              `directory, delete its postmaster.pid and retry.`,
-            { cause: err },
-          );
-        }
+        // Only "absent" and "stale" reach here, and both mean the lock file
+        // records no live owner. Nothing answering the probe therefore means the
+        // directory really is free to start over.
         logger.info(
           { err },
           `No PostgreSQL server reachable on port ${configuredPort}; starting the embedded cluster`,
