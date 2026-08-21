@@ -1203,6 +1203,17 @@ export async function ensureEmbeddedPostgres(
   // hand it to callers that create databases and take backups on it.
   const decision = await decideEmbeddedCluster(dataDir, preferredPort);
   if (decision.action === "adopt") {
+    // The lock-file check above cannot see an owner whose postmaster.pid is
+    // absent or stale, and the adjudicator can — it probes the port. Both
+    // guards are needed: the first catches an owner too wedged to answer, this
+    // one catches an owner the lock file never recorded. Without it the seed
+    // flow proceeds to resetPostgresDatabase and drops a live database.
+    if (options.allowExisting === false) {
+      throw new Error(
+        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running `
+        + `(port=${decision.port}). Stop the worktree service that owns this database, then retry the seed.`,
+      );
+    }
     return { port: decision.port, startedByThisProcess: false, stop: async () => {} };
   }
 
