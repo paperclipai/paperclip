@@ -1233,6 +1233,59 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return true;
   }
 
+  /**
+   * Premature `done`/`blocked` on a reusable watchdog issue stamps
+   * lastReviewedFingerprint. Reopening to a non-review disposition must clear
+   * that stamp so the same stop fingerprint is no longer treated as
+   * already_reviewed (which 409s source restore mutations).
+   */
+  async function clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(
+    watchdog: IssueWatchdogRow,
+    opts: { runId?: string | null } = {},
+  ) {
+    if (!watchdog.watchdogIssueId || !watchdog.lastReviewedFingerprint) return watchdog;
+    const watchdogIssue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!watchdogIssue) return watchdog;
+    if (watchdogIssue.originFingerprint !== watchdog.lastReviewedFingerprint) return watchdog;
+    const hasPendingReviewPath = watchdogIssue.status === "in_review"
+      ? await watchdogIssueHasPendingReviewPath(watchdog.companyId, watchdogIssue.id)
+      : false;
+    if (isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath)) return watchdog;
+
+    const clearedFingerprint = watchdog.lastReviewedFingerprint;
+    const [updated] = await db
+      .update(issueWatchdogs)
+      .set({
+        lastReviewedFingerprint: null,
+        lastReviewedStopSnapshot: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issueWatchdogs.id, watchdog.id))
+      .returning();
+    await logActivity(db, {
+      companyId: watchdog.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: watchdog.watchdogAgentId,
+      runId: opts.runId ?? null,
+      action: "issue.task_watchdog_fingerprint_review_cleared",
+      entityType: "issue",
+      entityId: watchdog.issueId,
+      details: {
+        source: "task_watchdogs.watchdog_issue_reopened",
+        watchdogId: watchdog.id,
+        watchdogIssueId: watchdogIssue.id,
+        clearedFingerprint,
+        watchdogIssueStatus: watchdogIssue.status,
+      },
+    });
+    return updated ?? { ...watchdog, lastReviewedFingerprint: null, lastReviewedStopSnapshot: null };
+  }
+
   async function watchdogIssueNeedsFreshWake(watchdogIssue: IssueRow) {
     if (watchdogIssue.status !== "in_review") return false;
     const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
@@ -1436,7 +1489,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+    const stamped = await markTerminalWatchdogIssueReviewed(row, opts);
+    const watchdog = await clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(stamped, opts);
     const sourceIssue = await db
       .select()
       .from(issues)
@@ -1625,7 +1679,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
     }
 
-    const watchdog = await db
+    const existingWatchdog = await db
       .select()
       .from(issueWatchdogs)
       .where(and(
@@ -1635,17 +1689,43 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         eq(issueWatchdogs.status, "active"),
       ))
       .then((rows) => rows[0] ?? null);
-    if (!watchdog) {
+    if (!existingWatchdog) {
       return {
         allowed: false as const,
         reason: "Task-watchdog run context is not backed by an active persisted watchdog.",
       };
     }
 
+    // Reopened reusable watchdog issues must not keep a premature reviewed stamp
+    // that turns the same stop fingerprint into already_reviewed (409 on source PATCH).
+    const watchdog = await clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(existingWatchdog);
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
       return { allowed: true as const, classification };
+    }
+
+    if (
+      classification.state === "already_reviewed" &&
+      classification.stopFingerprint === scope.stopFingerprint
+    ) {
+      const watchdogIssue = watchdog.watchdogIssueId
+        ? await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      if (await sameFingerprintWatchdogReviewIsStillOpen(watchdogIssue, classification.stopFingerprint)) {
+        return {
+          allowed: true as const,
+          classification: {
+            ...classification,
+            state: "stopped" as const,
+            reason: "Reusable watchdog issue is open again for this stop fingerprint; source mutations remain in scope.",
+          },
+        };
+      }
     }
 
     return {
