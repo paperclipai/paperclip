@@ -1230,6 +1230,186 @@ describe("codex_local ACP lane", () => {
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
   });
+
+  it("keeps the Codex ACP session when the same subscription account refreshes tokens", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-same-credential-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-same", OLDER_REFRESH, "before-refresh"),
+      { mode: 0o600 },
+    );
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root));
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "after-refresh"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+
+  it("starts a fresh Codex ACP session when the subscription account changes", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-changed-credential-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root));
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+      context: {
+        issueId: "issue-1",
+        paperclipTaskMarkdown: "Credential-aware continuation context",
+        paperclipWorkspace: {
+          cwd: root,
+          source: "project_workspace",
+          workspaceId: "workspace-1",
+        },
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBeUndefined();
+    expect(runtimes[1]?.startInputs[0]?.text).toContain("Credential-aware continuation context");
+    expect(JSON.stringify(first.sessionParams)).not.toContain("acct-before");
+    expect(JSON.stringify(second.sessionParams)).not.toContain("acct-after");
+    expect(JSON.stringify(first.sessionParams)).not.toContain("before-account");
+    expect(JSON.stringify(second.sessionParams)).not.toContain("after-account");
+  });
+
+  it("ignores subscription identity when a local run authenticates with an API key", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-api-key-credential-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    process.env.OPENAI_API_KEY = "sk-api-key-auth";
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root));
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+
+  it("uses subscription identity when an empty adapter API key suppresses the host key", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-empty-api-key-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    process.env.OPENAI_API_KEY = "sk-suppressed-host-key";
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const buildSubscriptionContext = (
+      overrides: Partial<AdapterExecutionContext> = {},
+    ): AdapterExecutionContext => {
+      const context = buildContext(root, overrides);
+      return {
+        ...context,
+        config: {
+          ...context.config,
+          env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "" },
+        },
+      };
+    };
+
+    const first = await execute(buildSubscriptionContext());
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildSubscriptionContext({
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBeUndefined();
+  });
 });
 
 describe("resolveCodexAcpBillingIdentity", () => {
