@@ -250,9 +250,9 @@ async function spawnText(
 
     const append = (
       streamName: "stdout" | "stderr",
-      chunk: unknown,
+      chunk: string | Buffer,
     ) => {
-      const text = String(chunk);
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (streamName === "stdout") {
         stdout += text;
       } else {
@@ -680,7 +680,7 @@ async function streamLocalFileToSsh(input: {
     };
 
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     });
     source.on("error", fail);
     ssh.on("error", fail);
@@ -741,7 +741,7 @@ async function streamSshToLocalFile(input: {
       ssh.stdout?.pipe(sink);
     }
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     });
     ssh.on("error", fail);
     sink.on("error", fail);
@@ -1410,10 +1410,10 @@ export async function syncDirectoryToSsh(input: {
       tar.stdout?.pipe(ssh.stdin ?? null);
     }
     tar.stderr?.on("data", (chunk) => {
-      tarStderr += String(chunk);
+      tarStderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     });
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     });
 
     tar.on("error", fail);
@@ -1521,10 +1521,10 @@ export async function syncDirectoryFromSsh(input: {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
       ssh.stderr?.on("data", (chunk) => {
-        sshStderr += String(chunk);
+        sshStderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
       });
       tar.stderr?.on("data", (chunk) => {
-        tarStderr += String(chunk);
+        tarStderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
       });
 
       ssh.on("error", fail);
