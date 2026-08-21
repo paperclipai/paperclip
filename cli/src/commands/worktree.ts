@@ -1216,9 +1216,9 @@ export async function ensureEmbeddedPostgres(
       });
     }
   }
-  if (existsSync(postmasterPidFile)) {
-    rmSync(postmasterPidFile, { force: true });
-  }
+  // The lock file is deliberately left in place. PostgreSQL clears a stale
+  // postmaster.pid itself, atomically, as it takes ownership; deleting it here
+  // races a cluster that starts in between and destroys its live lock.
   try {
     await instance.start();
   } catch (error) {

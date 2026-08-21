@@ -22,8 +22,8 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  POSTMASTER_LOCK_FILE_NAME,
   inspectPostmasterLock,
-  removeStalePostmasterLock,
   waitForPostgresReady,
   prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
@@ -457,15 +457,12 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
       if (lockStatus.status === "stale") {
-        const removal = removeStalePostmasterLock(dataDir);
-        if (removal.removed) {
-          logger.warn(
-            { pid: removal.lock.pid },
-            "Removing embedded PostgreSQL lock file left behind by a dead postmaster",
-          );
-        } else {
-          logger.warn({ reason: removal.reason }, "Left the embedded PostgreSQL lock file in place");
-        }
+        // Provably dead owner: nothing holds the directory. Leave the file for
+        // PostgreSQL, which clears a stale lock atomically as it takes ownership.
+        logger.warn(
+          { pid: lockStatus.lock.pid },
+          "Embedded PostgreSQL lock file records a dead postmaster; letting PostgreSQL clear it on start",
+        );
       }
 
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
@@ -572,9 +569,14 @@ export async function startServer(): Promise<StartedServer> {
           initialInstance: embeddedPostgres,
           createInstance: createEmbeddedPostgres,
           beforeRestart: () => {
-            const removal = removeStalePostmasterLock(dataDir);
-            if (!removal.removed && inspectPostmasterLock(dataDir).status !== "absent") {
-              throw new Error(`Refusing embedded PostgreSQL recovery: ${removal.reason}`);
+            // Recovery may only proceed when nothing owns the directory. The lock
+            // file is never deleted here; PostgreSQL clears a stale one itself.
+            const status = inspectPostmasterLock(dataDir).status;
+            if (status === "running" || status === "indeterminate") {
+              throw new Error(
+                `Refusing embedded PostgreSQL recovery: ${POSTMASTER_LOCK_FILE_NAME} reports the data ` +
+                  `directory is ${status === "running" ? "in use" : "possibly in use"}`,
+              );
             }
           },
           onUnexpectedExit: (code, signal) => logger.error(

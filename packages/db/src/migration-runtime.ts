@@ -11,7 +11,6 @@ import {
   POSTMASTER_LOCK_FILE_NAME,
   canonicalizeDataDirectory,
   inspectPostmasterLock,
-  removeStalePostmasterLock,
 } from "./embedded-postgres-lock.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
@@ -186,22 +185,15 @@ async function resolveRunningCluster(
   }
 
   if (inspected.status === "stale") {
-    const removal = removeStalePostmasterLock(dataDir);
-    if (removal.removed) {
-      process.emitWarning(
-        `Removed ${POSTMASTER_LOCK_FILE_NAME} for ${dataDir} left behind by dead pid ${removal.lock.pid}.`,
-      );
-      return null;
-    }
-    // removeStalePostmasterLock re-inspects before deleting, so a refusal here
-    // means the directory was claimed between our check and the removal. Falling
-    // through would hand the caller a "nothing owns this" verdict that is no
-    // longer true, and it would start a second postmaster over live data.
-    throw new Error(
-      `Embedded PostgreSQL data directory ${dataDir} appeared unowned, but ${POSTMASTER_LOCK_FILE_NAME} could ` +
-        `not be removed (${removal.reason}). Refusing to start a second postmaster. Stop any PostgreSQL still ` +
-        `using this directory, then retry.`,
+    // The recorded postmaster is provably gone, so nothing owns the directory.
+    // The lock file is left exactly where it is: PostgreSQL removes a stale one
+    // itself, atomically, inside the process taking ownership. Deleting it here
+    // would race a cluster starting in between and destroy its live lock.
+    process.emitWarning(
+      `${POSTMASTER_LOCK_FILE_NAME} for ${dataDir} records dead pid ${inspected.lock.pid}; ` +
+        `starting a cluster and letting PostgreSQL clear the stale lock.`,
     );
+    return null;
   }
 
   // No lock file, but a server can still be serving this directory — one

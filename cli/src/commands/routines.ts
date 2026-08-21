@@ -153,9 +153,9 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
     }
   }
 
-  if (fs.existsSync(postmasterPidFile)) {
-    fs.rmSync(postmasterPidFile, { force: true });
-  }
+  // The lock file is deliberately left in place. PostgreSQL clears a stale
+  // postmaster.pid itself, atomically, as it takes ownership; deleting it here
+  // races a cluster that starts in between and destroys its live lock.
 
   try {
     await instance.start();

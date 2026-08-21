@@ -187,37 +187,9 @@ export function inspectPostmasterLock(
   };
 }
 
-export type RemoveStalePostmasterLockResult =
-  | { removed: true; lock: PostmasterLockFile }
-  | { removed: false; reason: string };
-
-/**
- * Delete `postmaster.pid`, but only once the postmaster that wrote it is
- * confirmed dead. Callers must not remove the lock file themselves.
- */
-export function removeStalePostmasterLock(
-  dataDir: string,
-  deps: InspectPostmasterLockDeps & { remove?: (lockPath: string) => void } = {},
-): RemoveStalePostmasterLockResult {
-  const remove = deps.remove ?? ((lockPath: string) => rmSync(lockPath, { force: true }));
-  const inspected = inspectPostmasterLock(dataDir, deps);
-
-  if (inspected.status === "absent") {
-    return { removed: false, reason: `no ${POSTMASTER_LOCK_FILE_NAME} to remove` };
-  }
-  if (inspected.status === "running") {
-    return {
-      removed: false,
-      reason: `refusing to remove ${POSTMASTER_LOCK_FILE_NAME}: pid ${inspected.lock.pid} is still running`,
-    };
-  }
-  if (inspected.status === "indeterminate") {
-    return {
-      removed: false,
-      reason: `refusing to remove ${POSTMASTER_LOCK_FILE_NAME}: ${inspected.reason}`,
-    };
-  }
-
-  remove(inspected.lock.path);
-  return { removed: true, lock: inspected.lock };
-}
+// NOTE: this module deliberately provides no way to delete postmaster.pid.
+// PostgreSQL removes a genuinely stale lock file itself in CreateLockFile,
+// atomically, inside the process about to take ownership. Any check-then-delete
+// we perform here races a cluster that starts in between and deletes its live
+// lock file -- the exact failure this module exists to prevent. Decide with
+// inspectPostmasterLock; leave the file to PostgreSQL.

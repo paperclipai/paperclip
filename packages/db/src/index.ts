@@ -24,11 +24,9 @@ export {
   probeProcessLiveness,
   canonicalizeDataDirectory,
   inspectPostmasterLock,
-  removeStalePostmasterLock,
   type PostmasterLockFile,
   type PostmasterLockStatus,
   type ProcessLiveness,
-  type RemoveStalePostmasterLockResult,
 } from "./embedded-postgres-lock.js";
 export {
   getEmbeddedPostgresTestSupport,

@@ -7,7 +7,6 @@ import {
   inspectPostmasterLock,
   postmasterLockFilePath,
   probeProcessLiveness,
-  removeStalePostmasterLock,
 } from "./embedded-postgres-lock.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -74,11 +73,11 @@ describeEmbeddedPostgres("embedded PostgreSQL lifecycle against a live cluster",
       expect(path.resolve(inspected.lock.dataDir ?? "")).toBe(path.resolve(cluster.dataDir));
       expect(probeProcessLiveness(inspected.lock.pid)).toBe("alive");
 
-      // The destructive step behind the original failure: removing a live
-      // cluster's postmaster.pid orphans it from its own lock, after which every
-      // subsequent start misdiagnoses the directory.
-      const removal = removeStalePostmasterLock(cluster.dataDir);
-      expect(removal.removed).toBe(false);
+      // The destructive step behind the original failure was deleting a live
+      // cluster's postmaster.pid, which orphans it from its own lock. No code
+      // path may remove this file any more: PostgreSQL clears a stale lock
+      // itself, atomically, as it takes ownership. A live lock therefore stays.
+      expect(inspectPostmasterLock(cluster.dataDir).status).toBe("running");
       expect(fs.existsSync(lockPath)).toBe(true);
     },
     CLUSTER_TEST_TIMEOUT_MS,

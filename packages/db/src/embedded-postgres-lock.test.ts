@@ -6,7 +6,6 @@ import {
   inspectPostmasterLock,
   probeProcessLiveness,
   readPostmasterLockFile,
-  removeStalePostmasterLock,
 } from "./embedded-postgres-lock.js";
 
 const createdDirs: string[] = [];
@@ -185,52 +184,5 @@ describe("inspectPostmasterLock", () => {
 
     const status = inspectPostmasterLock(dataDir, { probeLiveness: () => "alive" });
     expect(status.status).toBe("indeterminate");
-  });
-});
-
-describe("removeStalePostmasterLock", () => {
-  it("removes a lock file only once the postmaster is proven dead", () => {
-    const dataDir = makeDataDir();
-    writeLockFile(dataDir, { pid: 4242 });
-
-    const result = removeStalePostmasterLock(dataDir, { probeLiveness: () => "dead" });
-    expect(result.removed).toBe(true);
-    expect(fs.existsSync(path.join(dataDir, "postmaster.pid"))).toBe(false);
-  });
-
-  it("never deletes the lock file of a running postmaster", () => {
-    const dataDir = makeDataDir();
-    writeLockFile(dataDir, { pid: 4242 });
-
-    const result = removeStalePostmasterLock(dataDir, { probeLiveness: () => "alive" });
-    expect(result.removed).toBe(false);
-    expect(fs.existsSync(path.join(dataDir, "postmaster.pid"))).toBe(true);
-  });
-
-  it("never deletes the lock file when liveness is EPERM-unknowable", () => {
-    // The exact Windows regression: a live cluster whose pid answers EPERM used
-    // to be classified dead, its lock file deleted, and a second postmaster
-    // started over the same data directory.
-    const dataDir = makeDataDir();
-    writeLockFile(dataDir, { pid: 4242 });
-
-    const result = removeStalePostmasterLock(dataDir, {
-      probeLiveness: (pid) =>
-        probeProcessLiveness(pid, () => {
-          throw errorWithCode("EPERM");
-        }),
-    });
-
-    expect(result.removed).toBe(false);
-    expect(fs.existsSync(path.join(dataDir, "postmaster.pid"))).toBe(true);
-  });
-
-  it("never deletes the lock file when liveness cannot be determined", () => {
-    const dataDir = makeDataDir();
-    writeLockFile(dataDir, { pid: 4242 });
-
-    const result = removeStalePostmasterLock(dataDir, { probeLiveness: () => "unknown" });
-    expect(result.removed).toBe(false);
-    expect(fs.existsSync(path.join(dataDir, "postmaster.pid"))).toBe(true);
   });
 });
