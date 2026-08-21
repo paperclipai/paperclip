@@ -381,7 +381,7 @@ test("runtime provisioning invokes ensure-seeded once and fast-exits after succe
   assert.equal(ensureCallsAfterSecond.length, 1);
 });
 
-test("runtime provisioning supports Bash 3.2 when the base config needs no source override", () => {
+test("runtime provisioning omits the source override when the base config exists", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
   fs.writeFileSync(path.join(baseCwd, ".paperclip", "config.json"), "{}\n");
@@ -397,6 +397,21 @@ test("runtime provisioning supports Bash 3.2 when the base config needs no sourc
   );
   assert.ok(ensureCall, "expected the runtime provisioner to invoke ensure-seeded");
   assert.ok(!ensureCall.includes("--from-config"));
+});
+
+test("runtime provisioning guards every optional source-config expansion for Bash 3.2", () => {
+  const source = fs.readFileSync(runtimeScript, "utf8");
+  const ensureSeededLines = source
+    .split("\n")
+    .filter((line) => line.includes("worktree ensure-seeded --config"));
+
+  assert.equal(ensureSeededLines.length, 3);
+  for (const line of ensureSeededLines) {
+    assert.ok(
+      line.includes('${source_config_args[@]+"${source_config_args[@]}"}'),
+      `expected Bash 3.2-compatible optional array expansion in: ${line}`,
+    );
+  }
 });
 
 test("runtime provisioning seeds a worktree config that has no seed markers", () => {
