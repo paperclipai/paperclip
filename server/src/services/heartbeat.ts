@@ -12675,12 +12675,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     // For exact unblock-owner wakes the owner was authorized against the
     // reporting line at delivery time, but the hierarchy can move before the
-    // run claims. Make the re-authorization atomic with the claim: take the
-    // same per-issue advisory lock the delivery path uses, lock the company's
-    // agent rows, re-check eligibility, and only then flip the run to running.
-    // If the owner lost authorization, cancel the wake; the issue marker stays
-    // null so a later PATCH or replay redrives delivery once the hierarchy is
-    // repaired.
+    // run claims. Make the re-authorization atomic with the claim: lock the
+    // issue row and the company's agent rows, re-check eligibility, and only
+    // then flip the run to running. This path deliberately does NOT take the
+    // blocked-owner advisory lock that the delivery path holds: the wake
+    // enqueue can synchronously start this claim, and re-entering that lock
+    // would self-deadlock the delivery transaction. The issue-row FOR UPDATE
+    // lock is sufficient — descriptor changes and marker stamps serialize on
+    // the same row. If the owner lost authorization, cancel the wake; the
+    // issue marker stays null so a later PATCH or replay redrives delivery
+    // once the hierarchy is repaired.
     const claimPatch = {
       status: "running" as const,
       responsibleUserId,
@@ -12690,7 +12694,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let claimed: typeof heartbeatRuns.$inferSelect | null;
     if (exactUnblockOwnerClaim && issueId) {
       const outcome = await db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issueId}`}))`);
         const claimIssue = await tx
           .select({
             id: issues.id,
@@ -17229,7 +17232,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             await tx
               .update(agentWakeupRequests)
               .set({
-                status: "cancelled",
+                status: "skipped",
                 finishedAt: new Date(),
                 error: "Deferred unblock wake superseded: the owner intent changed",
                 updatedAt: new Date(),
