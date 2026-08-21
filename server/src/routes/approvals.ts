@@ -242,6 +242,18 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
+    // Agent-filed approvals must always be linked to at least one issue. Without an issue link,
+    // stall-recovery's pending-card gate is blind to the card (INUA-6002) and can evict the
+    // task it is meant to protect. Users filing approvals (e.g. human-initiated flows) are
+    // exempt: they may not have a task context.
+    if (actor.actorType === "agent" && uniqueIssueIds.length === 0) {
+      res.status(400).json({
+        error:
+          "Agent-filed approvals must include at least one issueId. " +
+          "Pass issueIds: [\"<issueId>\"] to link this approval to the relevant task.",
+      });
+      return;
+    }
     const approval = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,
