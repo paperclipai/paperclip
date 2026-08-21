@@ -3243,6 +3243,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  deletedAt: issues.deletedAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -8132,6 +8133,30 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [removedIssue]);
         return enriched;
       }),
+
+    // Soft-delete: identifiers/issue_number must never be reused once an issue
+    // has been created, because merged/open PRs may already cite the
+    // AGE-nnn slug in their title or body. Hard-deleting the row (see
+    // `remove` above) frees the row from MAX(issue_number), which the
+    // self-correcting counter in `create`/`importIssues` uses to mint the
+    // next identifier — so a hard delete can cause a brand-new issue to be
+    // minted with a slug some other artifact already references. Marking
+    // `deletedAt` instead keeps the row (and its issue_number) counted
+    // forever while hiding it from default list/board views via
+    // `visibleIssueCondition()`. Identifier/UUID lookups (`getById`,
+    // `getByIdentifier`) intentionally do NOT filter on `deletedAt` so
+    // provenance lookups from PRs/commits still resolve the tombstoned issue.
+    softDelete: async (id: string) => {
+      const now = new Date();
+      const [updated] = await db
+        .update(issues)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(and(eq(issues.id, id), isNull(issues.deletedAt)))
+        .returning();
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db

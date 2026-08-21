@@ -10930,20 +10930,16 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
-    const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
+    // Soft delete: the row (and its issue_number/identifier) must survive so
+    // that MAX(issue_number)-based identifier minting in issue creation never
+    // reuses a slug a PR/commit may already cite. See AGE-770 / AGE-743.
+    // Attachments/documents are intentionally left in place so a tombstoned
+    // issue still renders correctly if resolved for provenance.
+    const issue = await svc.softDelete(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
-    }
-
-    for (const attachment of attachments) {
-      try {
-        await storage.deleteObject(attachment.companyId, attachment.objectKey);
-      } catch (err) {
-        logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
-      }
     }
 
     const actor = getActorInfo(req);
