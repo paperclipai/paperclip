@@ -13,6 +13,7 @@ import {
   routines,
 } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
+import { decideEmbeddedCluster } from "../embedded-postgres-ownership.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 
@@ -83,29 +84,6 @@ async function findAvailablePort(preferredPort: number): Promise<number> {
   return port;
 }
 
-function readPidFilePort(postmasterPidFile: string): number | null {
-  if (!fs.existsSync(postmasterPidFile)) return null;
-  try {
-    const lines = fs.readFileSync(postmasterPidFile, "utf8").split("\n");
-    const port = Number(lines[3]?.trim());
-    return Number.isInteger(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-function readRunningPostmasterPid(postmasterPidFile: string): number | null {
-  if (!fs.existsSync(postmasterPidFile)) return null;
-  try {
-    const pid = Number(fs.readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
-
 async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): Promise<EmbeddedPostgresHandle> {
   const moduleName = "embedded-postgres";
   let EmbeddedPostgres: EmbeddedPostgresCtor;
@@ -119,14 +97,9 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   }
   await prepareEmbeddedPostgresNativeRuntime();
 
-  const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  if (runningPid) {
-    return {
-      port: readPidFilePort(postmasterPidFile) ?? preferredPort,
-      startedByThisProcess: false,
-      stop: async () => {},
-    };
+  const decision = await decideEmbeddedCluster(dataDir, preferredPort);
+  if (decision.action === "adopt") {
+    return { port: decision.port, startedByThisProcess: false, stop: async () => {} };
   }
 
   const port = await findAvailablePort(preferredPort);

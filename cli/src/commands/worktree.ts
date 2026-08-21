@@ -68,6 +68,7 @@ import {
   probeProcessLiveness,
 } from "@paperclipai/db";
 import type { Command } from "commander";
+import { decideEmbeddedCluster } from "../embedded-postgres-ownership.js";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
 import { expandHomePrefix } from "../config/home.js";
 import type { PaperclipConfig } from "../config/schema.js";
@@ -1184,32 +1185,18 @@ export async function ensureEmbeddedPostgres(
   }
   await prepareEmbeddedPostgresNativeRuntime();
 
-  const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  if (runningPid === UNIDENTIFIED_POSTMASTER) {
-    // The lock file exists but yielded no pid, so there is no recorded port to
-    // trust. Falling back to the preferred port would adopt whatever happens to
-    // be listening there — potentially an unrelated cluster, which seed and
-    // backup would then write to. Starting is equally unsafe: a postmaster of
-    // ours may own this directory on a port we never probed.
-    throw new Error(
-      `Embedded PostgreSQL at ${dataDir} has an unusable postmaster.pid, so its owner cannot be identified. `
-      + `Refusing to adopt or start a cluster for it. If no PostgreSQL is running for this directory, delete `
-      + `${postmasterPidFile} and retry; otherwise stop that server first.`,
-    );
-  }
-  if (runningPid) {
+  // One adjudicator for the whole repo. It refuses on ambiguity and verifies
+  // that whatever answers a port actually serves THIS data directory before we
+  // hand it to callers that create databases and take backups on it.
+  const decision = await decideEmbeddedCluster(dataDir, preferredPort);
+  if (decision.action === "adopt") {
     if (options.allowExisting === false) {
       throw new Error(
-        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running (pid=${runningPid}). `
-        + "Stop the worktree service that owns this database, then retry the seed.",
+        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running ` +
+          `(port=${decision.port}). Stop the worktree service that owns this database, then retry the seed.`,
       );
     }
-    return {
-      port: readPidFilePort(postmasterPidFile) ?? preferredPort,
-      startedByThisProcess: false,
-      stop: async () => {},
-    };
+    return { port: decision.port, startedByThisProcess: false, stop: async () => {} };
   }
 
   const port = await findAvailablePort(preferredPort);
@@ -4362,7 +4349,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   }
 
   if (runningTargetPid && opts.allowLiveTarget) {
-    p.log.warning(`Proceeding even though the target embedded PostgreSQL appears to be running (pid ${runningTargetPid}).`);
+    p.log.warning(`Proceeding even though the target embedded PostgreSQL appears to be running (${runningTargetPid === UNIDENTIFIED_POSTMASTER ? "owner unidentified" : `pid ${runningTargetPid}`}).`);
   }
 
   const spinner = p.spinner();
@@ -4487,7 +4474,8 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   const runningTargetPid = readRunningPostmasterPid(path.resolve(repairPaths.embeddedPostgresDataDir, "postmaster.pid"));
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database appears to be running (${runningTargetPid === UNIDENTIFIED_POSTMASTER ? "owner unidentified" : `pid ${runningTargetPid}`}). ` +
+        `Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
   if (runningTargetPid && opts.allowLiveTarget) {
