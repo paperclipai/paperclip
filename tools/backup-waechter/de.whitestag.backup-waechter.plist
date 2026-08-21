@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.whitestag.backup-waechter</string>
+
+    <!-- Einstieg ueber node, NICHT ueber python/bash: ein launchd-Job darf
+         sonst nicht auf die SMB-Freigabe zugreifen (TCC). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/backup-waechter/run-waechter.js</string>
+    </array>
+
+    <!-- 09:00: nach der DB-Sicherung (02:30) und nach dem Vault-Backup
+         (sonntags 03:30), damit ein frischer Lauf schon gezaehlt ist. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/backup-waechter.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/backup-waechter.launchd.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
