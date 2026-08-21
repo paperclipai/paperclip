@@ -17430,7 +17430,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        await tx
+        const executionLockResult = await tx
           .update(issues)
           .set({
             executionRunId: newRun.id,
@@ -17439,7 +17439,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: now,
           })
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
-          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)))
+          .returning();
+        if (executionLockResult.length === 0) {
+          // The issue was reassigned (or deleted) between deferral and
+          // promotion, so the assignee-scoped execution lock matched no row.
+          // The queued run would proceed without owning the issue lock; cancel
+          // both the run and the wake request so a later wake re-defers or
+          // re-delivers against the current assignee.
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              error: "Deferred wake promotion cancelled: issue execution lock no longer owned by this agent",
+              finishedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, newRun.id));
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Deferred wake promotion cancelled: issue execution lock no longer owned by this agent",
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
 
         return {
           kind: "promoted" as const,
