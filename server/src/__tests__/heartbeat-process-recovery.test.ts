@@ -3516,6 +3516,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: "workspace_validation_failed",
     });
     expect(failedRun?.error).toContain("linked to a project workspace but has no project id");
+    // The adapter process never started, so no agent could post an issue
+    // comment. The comment policy is not_applicable and no missing-comment
+    // retry is queued, which stops a pre-adapter setup failure from looping.
+    expect(failedRun?.processStartedAt).toBeNull();
+    expect(failedRun?.issueCommentStatus).toBe("not_applicable");
+    const missingCommentWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, "missing_issue_comment"),
+      ));
+    expect(missingCommentWakeups).toHaveLength(0);
     expect(failedRun?.resultJson).toMatchObject({
       workspaceValidation: {
         reason: "missing_project_id",

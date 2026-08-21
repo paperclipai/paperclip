@@ -2364,26 +2364,89 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   };
 }
 
+// A configured base ref that does not resolve to a commit, even after an
+// authenticated fetch of its `origin/<branch>` counterpart. The caller must
+// stop before `git worktree add` and raise a pre-dispatch configuration
+// failure. `attemptedRefs` names each ref the resolver tried, and `fetchError`
+// carries the first fetch warning (masked) when the fetch itself failed.
+export class UnresolvedWorkspaceBaseRefError extends Error {
+  requestedRef: string;
+  attemptedRefs: string[];
+  fetchError: string | null;
+
+  constructor(input: { requestedRef: string; attemptedRefs: string[]; fetchError?: string | null }) {
+    super(
+      `Configured workspace base ref "${input.requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
+    );
+    this.name = "UnresolvedWorkspaceBaseRefError";
+    this.requestedRef = input.requestedRef;
+    this.attemptedRefs = input.attemptedRefs;
+    this.fetchError = input.fetchError ?? null;
+  }
+}
+
+export function isUnresolvedWorkspaceBaseRefError(error: unknown): error is UnresolvedWorkspaceBaseRefError {
+  return error instanceof UnresolvedWorkspaceBaseRefError;
+}
+
+// A resolved base ref that the caller can pass to `git worktree add`, or an
+// unresolved outcome that must stop the caller before it creates the worktree.
+type AuthoritativeBaseRefResolution =
+  | { resolved: true; baseRef: string; warnings: string[]; refreshed: boolean }
+  | { resolved: false; requestedRef: string; attemptedRefs: string[]; warnings: string[]; fetchError: string | null };
+
 // Resolve the authoritative base ref for a fresh worktree. A configured local
 // branch is mapped to its `origin/<branch>` counterpart so unpushed local
-// divergence never leaks into the task branch; remote-tracking refs, SHAs, and
-// tags are used verbatim, and an unset/`HEAD` base falls back to the detected
-// default branch (which already prefers `origin/master`).
+// divergence never leaks into the task branch; SHAs and tags are used verbatim,
+// and an unset/`HEAD` base falls back to the detected default branch (which
+// already prefers `origin/master`).
+//
+// A remote-only feature branch never has a local ref or a remote-tracking ref
+// yet. The resolver fetches `origin/<branch>` with the authenticated helper,
+// then re-checks the commit. This covers both the unqualified form (`fix/foo`)
+// and the remote-tracking form (`origin/fix/foo`). A ref that still does not
+// resolve returns `resolved: false`, so the caller stops before the worktree
+// add instead of passing an invalid reference to git.
 async function resolveAuthoritativeBaseRef(
   repoRoot: string,
   configuredBaseRef: string | null,
   resolveGitAuth?: GitRemoteAuthProvider | null,
-): Promise<{ baseRef: string; warnings: string[]; refreshed: boolean }> {
+): Promise<AuthoritativeBaseRefResolution> {
   const warnings: string[] = [];
   const detectOrHead = async () => (await detectDefaultBranch(repoRoot, resolveGitAuth)) ?? "HEAD";
 
   const configured = configuredBaseRef?.trim();
   if (!configured || configured === "HEAD") {
-    return { baseRef: await detectOrHead(), warnings, refreshed: false };
+    return { resolved: true, baseRef: await detectOrHead(), warnings, refreshed: false };
   }
 
-  if (parseRemoteTrackingRef(configured)) {
-    return { baseRef: configured, warnings, refreshed: false };
+  // A remote-tracking ref supplied directly (for example `origin/fix/foo`).
+  // Use it verbatim when it already resolves. When it does not, fetch it once
+  // and re-check, then stop if it is still absent on the remote.
+  //
+  // `parseRemoteTrackingRef` only checks the `remote/branch` shape. An
+  // unqualified branch name that contains a slash (for example `fix/foo`) has
+  // the same shape but names no real remote, so it is not a remote-tracking
+  // ref. Gate this branch on the first segment naming an existing remote, and
+  // let a name like `fix/foo` fall through to the remote-only branch handling
+  // below.
+  const remoteTracking = parseRemoteTrackingRef(configured);
+  if (remoteTracking && await resolveBaseRefSha(repoRoot, configured)) {
+    return { resolved: true, baseRef: configured, warnings, refreshed: false };
+  }
+  if (remoteTracking && await remoteExists(repoRoot, remoteTracking.remote)) {
+    const fetchWarnings = await refreshRemoteTrackingBaseRef(repoRoot, configured, resolveGitAuth);
+    warnings.push(...fetchWarnings);
+    if (await resolveBaseRefSha(repoRoot, configured)) {
+      return { resolved: true, baseRef: configured, warnings, refreshed: true };
+    }
+    return {
+      resolved: false,
+      requestedRef: configured,
+      attemptedRefs: [configured],
+      warnings,
+      fetchError: fetchWarnings[0] ?? null,
+    };
   }
 
   if (await localBranchExists(repoRoot, configured)) {
@@ -2392,17 +2455,36 @@ async function resolveAuthoritativeBaseRef(
     // the returned ref (see `refreshed`) so we never fetch the same ref twice.
     warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, resolveGitAuth));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
-      return { baseRef: remoteCandidate, warnings, refreshed: true };
+      return { resolved: true, baseRef: remoteCandidate, warnings, refreshed: true };
     }
     if (await remoteExists(repoRoot, "origin")) {
       warnings.push(
         `Configured base ref "${configured}" is a local branch with no matching origin/${configured}; basing the execution workspace on the local ref, which may include unpushed commits.`,
       );
     }
-    return { baseRef: configured, warnings, refreshed: false };
+    return { resolved: true, baseRef: configured, warnings, refreshed: false };
   }
 
-  return { baseRef: configured, warnings, refreshed: false };
+  // Fall-through: an unqualified ref (for example `fix/foo`) that is not `HEAD`,
+  // not a remote-tracking ref, and not a local branch. A full SHA or a tag that
+  // already resolves stays verbatim. Otherwise treat it as a remote-only branch
+  // name: fetch `origin/<ref>` and base the worktree on the remote counterpart.
+  if (await resolveBaseRefSha(repoRoot, configured)) {
+    return { resolved: true, baseRef: configured, warnings, refreshed: false };
+  }
+  const remoteCandidate = `origin/${configured}`;
+  const fetchWarnings = await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, resolveGitAuth);
+  warnings.push(...fetchWarnings);
+  if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
+    return { resolved: true, baseRef: remoteCandidate, warnings, refreshed: true };
+  }
+  return {
+    resolved: false,
+    requestedRef: configured,
+    attemptedRefs: [remoteCandidate],
+    warnings,
+    fetchError: fetchWarnings[0] ?? null,
+  };
 }
 
 // Auto-refresh a reused worktree to the latest base only when it is provably
@@ -3117,11 +3199,15 @@ export async function realizeExecutionWorkspace(input: {
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
-  const {
-    baseRef,
-    warnings: baseRefResolutionWarnings,
-    refreshed: baseRefAlreadyRefreshed,
-  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, input.resolveGitAuth);
+  const baseRefResolution = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, input.resolveGitAuth);
+  // Keep a usable base ref for the reuse and drift paths even when the ref is
+  // unresolved: those paths tolerate a null base-ref SHA and never run
+  // `git worktree add -b <branch> <baseRef>`. Only the fresh-create path below
+  // stops on an unresolved ref. `baseRefAlreadyRefreshed` is true for the
+  // unresolved case because the resolver already attempted the fetch.
+  const baseRef = baseRefResolution.resolved ? baseRefResolution.baseRef : baseRefResolution.requestedRef;
+  const baseRefResolutionWarnings = baseRefResolution.warnings;
+  const baseRefAlreadyRefreshed = baseRefResolution.resolved ? baseRefResolution.refreshed : true;
   const baseRefreshWarnings = [
     ...baseRefResolutionWarnings,
     ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef, input.resolveGitAuth)),
@@ -3255,6 +3341,18 @@ export async function realizeExecutionWorkspace(input: {
     const validation = reusable.validation;
     const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
+  }
+
+  // No reusable worktree exists, so a fresh `git worktree add -b <branch> <baseRef>`
+  // must run next. An unresolved base ref would make git fail with
+  // `fatal: invalid reference`. Stop here instead and raise a pre-dispatch
+  // configuration failure that the setup catch routes to a human owner.
+  if (!baseRefResolution.resolved) {
+    throw new UnresolvedWorkspaceBaseRefError({
+      requestedRef: baseRefResolution.requestedRef,
+      attemptedRefs: baseRefResolution.attemptedRefs,
+      fetchError: baseRefResolution.fetchError,
+    });
   }
 
   try {

@@ -36,6 +36,7 @@ import {
   realizeExecutionWorkspace,
   refreshRemoteTrackingBaseRef,
   releaseRuntimeServicesForRun,
+  UnresolvedWorkspaceBaseRefError,
   resetRuntimeServicesForTests,
   resolveRuntimeProvisionCommand,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
@@ -249,6 +250,26 @@ async function advanceRemoteMaster(sourceRepo: string, remotePath: string, fileN
   await runGit(sourceRepo, ["commit", "-m", `Add ${fileName}`]);
   await runGit(sourceRepo, ["push", remotePath, "master"]);
   return readGit(sourceRepo, ["rev-parse", "master"]);
+}
+
+// Push a branch to the bare remote without leaving a local ref or a
+// remote-tracking ref in `repoRoot`. This reproduces a remote-only feature
+// branch: the clone was made before the push, so `repoRoot` learns the branch
+// only after an authenticated fetch of `origin/<branch>`.
+async function pushRemoteOnlyBranch(
+  sourceRepo: string,
+  remotePath: string,
+  branch: string,
+  fileName: string,
+) {
+  await runGit(sourceRepo, ["checkout", "-B", branch]);
+  await fs.writeFile(path.join(sourceRepo, fileName), `${fileName}\n`, "utf8");
+  await runGit(sourceRepo, ["add", fileName]);
+  await runGit(sourceRepo, ["commit", "-m", `Add ${fileName}`]);
+  await runGit(sourceRepo, ["push", remotePath, branch]);
+  const sha = await readGit(sourceRepo, ["rev-parse", branch]);
+  await runGit(sourceRepo, ["checkout", "master"]);
+  return sha;
 }
 
 function realizeWorktreeForTest(repoRoot: string, repoRef: string | null) {
@@ -1016,6 +1037,73 @@ describe("realizeExecutionWorkspace", () => {
     expect(reused.warnings).toEqual([
       expect.stringContaining("is behind origin/master by 1 commit"),
     ]);
+  });
+
+  it("bases a fresh worktree on a remote-only branch supplied as fix/foo", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const remoteSha = await pushRemoteOnlyBranch(sourceRepo, remotePath, "fix/foo", "remote-only.txt");
+
+    // The clone never learned the branch: no local ref and no remote-tracking ref.
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", "fix/foo"])).rejects.toThrow();
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", "origin/fix/foo"])).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "fix/foo");
+
+    expect(workspace.created).toBe(true);
+    expect(workspace.repoRef).toBe("origin/fix/foo");
+    expect(workspace.baseRefSha).toBe(remoteSha);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(remoteSha);
+  });
+
+  it("bases a fresh worktree on a remote-only branch supplied as origin/fix/foo", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const remoteSha = await pushRemoteOnlyBranch(sourceRepo, remotePath, "fix/bar", "remote-only.txt");
+
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", "origin/fix/bar"])).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "origin/fix/bar");
+
+    expect(workspace.created).toBe(true);
+    expect(workspace.repoRef).toBe("origin/fix/bar");
+    expect(workspace.baseRefSha).toBe(remoteSha);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(remoteSha);
+  });
+
+  it("stops before git worktree add when the base ref is absent on origin", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+
+    const error = await realizeWorktreeForTest(repoRoot, "fix/does-not-exist").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unresolved = error as UnresolvedWorkspaceBaseRefError;
+    expect(unresolved.requestedRef).toBe("fix/does-not-exist");
+    expect(unresolved.attemptedRefs).toEqual(["origin/fix/does-not-exist"]);
+    // No worktree directory was created for the fresh-create path.
+    await expect(
+      fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
+    ).rejects.toThrow();
+  });
+
+  it("surfaces an authenticated fetch failure as an unresolved base ref, not a crash", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    // Point origin at a path that no repository backs. The authenticated fetch
+    // fails, so the ref never resolves and the resolver reports the fetch error.
+    await runGit(repoRoot, ["remote", "set-url", "origin", path.join(os.tmpdir(), "paperclip-missing-remote.git")]);
+
+    const error = await realizeWorktreeForTest(repoRoot, "fix/unreachable").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unresolved = error as UnresolvedWorkspaceBaseRefError;
+    expect(unresolved.requestedRef).toBe("fix/unreachable");
+    expect(unresolved.fetchError).toEqual(
+      expect.stringContaining("Could not refresh base ref origin/fix/unreachable"),
+    );
   });
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {

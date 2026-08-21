@@ -142,9 +142,11 @@ import {
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  isUnresolvedWorkspaceBaseRefError,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   type RuntimeServiceRef,
+  type UnresolvedWorkspaceBaseRefError,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import {
@@ -459,6 +461,14 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+// Error codes that mark a pre-dispatch setup failure. The adapter process never
+// started, so no agent could post an issue comment. The setup catch writes one
+// of these codes when a failure happens before `adapter.execute`.
+const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
+  "setup_failed",
+  CONFIGURATION_INCOMPLETE_FAILURE_CODE,
+  WORKSPACE_VALIDATION_FAILURE_CODE,
+]);
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
@@ -540,6 +550,33 @@ export class ConfigurationIncompleteFailure extends Error {
     this.name = "ConfigurationIncompleteFailure";
     this.resultJson = resultJson;
   }
+}
+
+// Build the configuration-incomplete result payload for a workspace base ref
+// that never resolved to a commit. The setup catch maps this to errorCode
+// `configuration_incomplete`, so the recovery path routes it to a human owner
+// instead of a dispatched-then-failed run. The `fingerprint` is stable per
+// requested ref: a repeated failure with the same ref reuses one active
+// recovery action; a different ref makes a new action.
+function buildUnresolvedWorkspaceBaseRefResultJson(
+  run: typeof heartbeatRuns.$inferSelect,
+  error: UnresolvedWorkspaceBaseRefError,
+): Record<string, unknown> {
+  const context = parseObject(run.contextSnapshot);
+  return {
+    configurationIncomplete: {
+      reason: "workspace_base_ref_unresolved",
+      companyId: run.companyId,
+      agentId: run.agentId,
+      issueId: readNonEmptyString(context.issueId) ?? null,
+      projectId: readNonEmptyString(context.projectId) ?? null,
+      requestedRef: error.requestedRef,
+      attemptedRefs: error.attemptedRefs,
+      fetchError: error.fetchError,
+      fingerprint: `workspace_base_ref:${error.requestedRef}`,
+      missingBindings: [],
+    },
+  };
 }
 
 export interface SharedWorkspaceHolder {
@@ -10074,6 +10111,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
+    // A pre-dispatch setup failure means the adapter process never started (for
+    // example an unresolved workspace base ref). No agent could run, so no agent
+    // could post an issue comment. A missing-comment retry cannot help and would
+    // loop the identical pre-adapter failure, so mark the policy not_applicable
+    // and queue nothing.
+    if (run.errorCode != null && PRE_ADAPTER_SETUP_FAILURE_CODES.has(run.errorCode)) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
     if (postedComment) {
       await patchRunIssueCommentStatus(run.id, {
@@ -16677,11 +16730,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          // A remote-only base ref that never resolved is a known pre-dispatch
+          // configuration gap, not an opaque setup crash. Map it to the same
+          // configuration-incomplete code so the recovery path routes it to a
+          // human owner and bounds the repeat by its per-ref fingerprint.
+          const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(outerErr) ? outerErr : null;
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
+            (unresolvedBaseRefSetupFailure ? CONFIGURATION_INCOMPLETE_FAILURE_CODE : null) ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
@@ -16695,7 +16754,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
                 resultJson:
-                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
+                  workspaceValidationSetupFailure?.resultJson ??
+                  configurationIncompleteSetupFailure?.resultJson ??
+                  (unresolvedBaseRefSetupFailure
+                    ? buildUnresolvedWorkspaceBaseRefResultJson(run, unresolvedBaseRefSetupFailure)
+                    : null),
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));

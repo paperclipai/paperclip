@@ -331,6 +331,60 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("bounds configuration-incomplete recovery by the unresolved base ref fingerprint", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const makeUnresolvedBaseRefRun = (ref: string) =>
+      ({
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: `Configured workspace base ref "${ref}" did not resolve to a commit on origin after an authenticated fetch.`,
+        errorCode: "configuration_incomplete",
+        contextSnapshot: { issueId: sourceIssue.id },
+        livenessState: "needs_followup",
+        resultJson: {
+          configurationIncomplete: {
+            reason: "workspace_base_ref_unresolved",
+            requestedRef: ref,
+            attemptedRefs: [`origin/${ref}`],
+            fingerprint: `workspace_base_ref:${ref}`,
+          },
+        },
+      }) as const;
+
+    // Two reconciliations with the same unresolved ref reuse one active action.
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeUnresolvedBaseRefRun("fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeUnresolvedBaseRefRun("fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      cause: "configuration_incomplete",
+      status: "active",
+      attemptCount: 2,
+    });
+    // The fingerprint carries the requested ref, so the same ref stays one
+    // action and a different ref would make a distinct fingerprint.
+    expect(actions[0]?.fingerprint).toBe(
+      `source_scoped_recovery:${sourceIssue.companyId}:${sourceIssue.id}:configuration_incomplete:workspace_base_ref:fix/foo`,
+    );
+  });
+
   it.each([
     ["process_lost", undefined, "coder"],
     ["adapter_failed", "successful_run_missing_state", "coder"],
