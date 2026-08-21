@@ -1102,17 +1102,27 @@ describe("realizeExecutionWorkspace", () => {
       () => null,
       (caught: unknown) => caught,
     );
+    // The full remote-tracking spelling names the same branch as well. It must
+    // map to the same canonical recovery identity, not to its raw spelling.
+    const fullRemoteTracking = await realizeWorktreeForTest(repoRoot, "refs/remotes/origin/fix/absent").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
 
     expect(unqualified).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
     expect(remoteTracking).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    expect(fullRemoteTracking).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
     const unqualifiedError = unqualified as UnresolvedWorkspaceBaseRefError;
     const remoteTrackingError = remoteTracking as UnresolvedWorkspaceBaseRefError;
+    const fullRemoteTrackingError = fullRemoteTracking as UnresolvedWorkspaceBaseRefError;
     // Each error keeps its own operator spelling for the human notice.
     expect(unqualifiedError.requestedRef).toBe("fix/absent");
     expect(remoteTrackingError.requestedRef).toBe("origin/fix/absent");
-    // Both share one canonical recovery identity.
+    expect(fullRemoteTrackingError.requestedRef).toBe("refs/remotes/origin/fix/absent");
+    // All three share one canonical recovery identity.
     expect(unqualifiedError.recoveryIdentityRef).toBe("origin/fix/absent");
     expect(remoteTrackingError.recoveryIdentityRef).toBe("origin/fix/absent");
+    expect(fullRemoteTrackingError.recoveryIdentityRef).toBe("origin/fix/absent");
   });
 
   it("surfaces an authenticated fetch failure as an unresolved base ref, not a crash", async () => {

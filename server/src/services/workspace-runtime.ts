@@ -2461,10 +2461,15 @@ async function resolveAuthoritativeBaseRef(
     if (await resolveBaseRefSha(repoRoot, configured)) {
       return { resolved: true, baseRef: configured, warnings, refreshed: true };
     }
+    // Build the recovery identity from the parsed remote and branch. The raw
+    // ref and its remote-tracking spelling (`origin/fix/foo` and
+    // `refs/remotes/origin/fix/foo`) then share one recovery fingerprint, so
+    // recovery treats them as one identity instead of two.
+    const canonicalRemoteRef = `${remoteTracking.remote}/${remoteTracking.branch}`;
     return {
       resolved: false,
       requestedRef: configured,
-      recoveryIdentityRef: configured,
+      recoveryIdentityRef: canonicalRemoteRef,
       attemptedRefs: [configured],
       warnings,
       fetchError: fetchWarnings[0] ?? null,
