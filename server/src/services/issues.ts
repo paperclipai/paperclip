@@ -87,7 +87,8 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { buildInitialIssueMonitorFields, deriveFlatMonitorStatus, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { classifyNoWakePath, type NoWakePathReason } from "./issue-no-wake-path.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -136,6 +137,13 @@ const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "bloc
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+/**
+ * Upper bound on rows scanned server-side before applying `limit`/`offset`
+ * when `noWakePath: true` is set (AGE-924). The classification runs in
+ * process against a bounded candidate set rather than as a SQL predicate, so
+ * this caps worst-case work for a company with a huge backlog.
+ */
+export const ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP = 5000;
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS = 50;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS = 50;
@@ -577,6 +585,16 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  /**
+   * Server-side "no wake path" filter (AGE-924): only return issues matching
+   * the 4-condition `classifyNoWakePath` definition. Forces `includeBlockedBy`
+   * on internally (the classifier needs unresolved blocker ids) and, because
+   * the classification happens after the DB fetch, scans up to
+   * `ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP` matching rows before applying the
+   * requested `limit`/`offset` in-process. Intended for operator/audit sweeps,
+   * not hot-path UI polling.
+   */
+  noWakePath?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -5575,7 +5593,8 @@ export function issueService(db: Db) {
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
-      const includeBlockedBy = filters?.includeBlockedBy === true;
+      const noWakePath = filters?.noWakePath === true;
+      const includeBlockedBy = filters?.includeBlockedBy === true || noWakePath;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
       const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
       const rawSearch = filters?.q?.trim() ?? "";
@@ -5714,9 +5733,15 @@ export function issueService(db: Db) {
           sortField: filters?.sortField,
           sortDir: filters?.sortDir,
         }));
-      const pageQuery = offset > 0
-        ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
-        : (limit === undefined ? baseQuery : baseQuery.limit(limit));
+      // When `noWakePath` is set the 4-condition classification runs in process
+      // (see issue-no-wake-path.ts) after the DB fetch, so the requested
+      // limit/offset cannot be pushed down as a SQL predicate. Scan a bounded
+      // candidate set instead and apply the caller's limit/offset afterwards.
+      const scanLimit = noWakePath ? ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP : limit;
+      const scanOffset = noWakePath ? 0 : offset;
+      const pageQuery = scanOffset > 0
+        ? (scanLimit === undefined ? baseQuery.offset(scanOffset) : baseQuery.limit(scanLimit).offset(scanOffset))
+        : (scanLimit === undefined ? baseQuery : baseQuery.limit(scanLimit));
       const rows = (await pageQuery).map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
@@ -5729,7 +5754,10 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
+      const noWakePathAssigneeAgentIds = noWakePath
+        ? [...new Set(withRuns.map((row) => row.assigneeAgentId).filter((id): id is string => Boolean(id)))]
+        : [];
+      const [statsRows, readRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId, noWakePathAgentRows] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -5746,10 +5774,46 @@ export function issueService(db: Db) {
         includeLiveDescendantSummary
           ? liveDescendantCountMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, number>()),
+        noWakePathAssigneeAgentIds.length > 0
+          ? db
+              .select({ id: agents.id, status: agents.status })
+              .from(agents)
+              .where(and(eq(agents.companyId, companyId), inArray(agents.id, noWakePathAssigneeAgentIds)))
+          : Promise.resolve([] as Array<{ id: string; status: string }>),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
       const archiveByIssueId = new Map(archiveRows.map((row) => [row.issueId, row]));
+      const noWakePathAgentStatusById = new Map(noWakePathAgentRows.map((row) => [row.id, row.status]));
+      const applyNoWakePathAndPage = <T extends {
+        id: string;
+        status: string;
+        assigneeAgentId: string | null;
+        assigneeUserId: string | null;
+        activeRun: IssueActiveRunRow | null;
+        monitorNextCheckAt: Date | null;
+        monitorLastTriggeredAt: Date | null;
+        monitorAttemptCount: number | null;
+        blockedBy?: IssueRelationIssueSummary[];
+      }>(mapped: T[]): (T & { monitorStatus: ReturnType<typeof deriveFlatMonitorStatus> })[] => {
+        const withMonitorStatus = mapped.map((row) => ({
+          ...row,
+          monitorStatus: deriveFlatMonitorStatus(row),
+        }));
+        if (!noWakePath) return withMonitorStatus;
+        const filtered = withMonitorStatus.filter((row) => classifyNoWakePath({
+          status: row.status,
+          assigneeAgentId: row.assigneeAgentId,
+          assigneeUserId: row.assigneeUserId,
+          blockedByIssueIds: (row.blockedBy ?? [])
+            .filter((blocker) => blocker.status !== "done" && blocker.status !== "cancelled")
+            .map((blocker) => blocker.id),
+          monitorStatus: row.monitorStatus,
+          hasActiveRun: row.activeRun !== null,
+          assigneeAgentStatus: row.assigneeAgentId ? noWakePathAgentStatusById.get(row.assigneeAgentId) ?? null : null,
+        }) !== null);
+        return filtered.slice(offset, limit === undefined ? undefined : offset + limit);
+      };
       const [
         blockerAttentionByIssueId,
         reviewAttentionByIssueId,
@@ -5765,7 +5829,7 @@ export function issueService(db: Db) {
       ]);
 
       if (!contextUserId) {
-        return withRuns.map((row) => {
+        const mapped = withRuns.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
           const lastActivityAt = latestIssueActivityAt(
             row.updatedAt,
@@ -5785,11 +5849,12 @@ export function issueService(db: Db) {
               : {}),
           };
         });
+        return applyNoWakePathAndPage(mapped);
       }
 
       const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
 
-      return withRuns.map((row) => {
+      const mapped = withRuns.map((row) => {
         const activity = lastActivityByIssueId.get(row.id);
         const lastActivityAt = latestIssueActivityAt(
           row.updatedAt,
@@ -5815,6 +5880,7 @@ export function issueService(db: Db) {
           }),
         };
       });
+      return applyNoWakePathAndPage(mapped);
     },
 
     count: async (companyId: string, filters?: IssueFilters) => {

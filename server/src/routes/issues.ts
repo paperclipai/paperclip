@@ -201,6 +201,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
+import { deriveFlatMonitorStatus } from "../services/issue-execution-policy.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
@@ -2399,6 +2400,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.isUnreadForMe !== undefined ? { isUnreadForMe: issue.isUnreadForMe } : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
+    ...(issue.monitorStatus !== undefined ? { monitorStatus: issue.monitorStatus } : {}),
   };
 }
 
@@ -6012,6 +6014,16 @@ export function issueRoutes(
       res.status(400).json({ error: "sortDir must be 'asc' or 'desc' when provided" });
       return;
     }
+    const rawNoWakePath = req.query.noWakePath as string | undefined;
+    if (rawNoWakePath !== undefined && rawNoWakePath !== "true" && rawNoWakePath !== "1" && rawNoWakePath !== "false" && rawNoWakePath !== "0") {
+      res.status(400).json({ error: "noWakePath must be a boolean" });
+      return;
+    }
+    const noWakePath = rawNoWakePath === "true" || rawNoWakePath === "1";
+    if (noWakePath && attention === "blocked") {
+      res.status(400).json({ error: "noWakePath cannot be combined with attention=blocked" });
+      return;
+    }
     if (hasPlanDocument === null) {
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
@@ -6078,6 +6090,7 @@ export function issueRoutes(
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      noWakePath: noWakePath ? true : undefined,
     };
     const requestKey = issueListRequestKey({
       req,
@@ -6712,6 +6725,7 @@ export function issueRoutes(
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
+      monitorStatus: deriveFlatMonitorStatus(issue),
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       productivityReview,

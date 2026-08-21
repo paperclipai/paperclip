@@ -262,6 +262,39 @@ function buildClearedMonitorState(input: {
   };
 }
 
+/**
+ * Flat, list-route-cheap projection of monitor liveness derived only from the
+ * five `monitor*` columns already selected on every list row (no JSON
+ * `executionState` needed). This intentionally collapses the full
+ * `IssueExecutionMonitorStateStatus` (`scheduled` | `triggered` | `cleared`)
+ * down to three buckets:
+ *
+ * - `"scheduled"`: a live, pending wake exists (`monitorNextCheckAt` set).
+ * - `"triggered"`: the monitor fired at least once and nothing is scheduled.
+ * - `"none"`: no monitor was ever scheduled, or it was cleared without ever
+ *   triggering (both are indistinguishable from these columns alone, and both
+ *   are equally "not live" for wake-path purposes — see AGE-924).
+ *
+ * `"cleared"` is never returned here: whichever concrete clear reason applied
+ * (`done`, `cancelled`, `manual`, etc.), a cleared monitor has no live wake
+ * path, which is the only thing this projection needs to convey. Callers that
+ * need the precise persisted status/clear-reason must still read
+ * `executionState.monitor` from `GET /issues/:id`.
+ */
+export type FlatIssueMonitorStatus = "scheduled" | "triggered" | "none";
+
+export interface FlatIssueMonitorColumns {
+  monitorNextCheckAt?: Date | string | null;
+  monitorLastTriggeredAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
+}
+
+export function deriveFlatMonitorStatus(issue: FlatIssueMonitorColumns): FlatIssueMonitorStatus {
+  if (issue.monitorNextCheckAt) return "scheduled";
+  if (issue.monitorLastTriggeredAt || (issue.monitorAttemptCount ?? 0) > 0) return "triggered";
+  return "none";
+}
+
 function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
   return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
 }
