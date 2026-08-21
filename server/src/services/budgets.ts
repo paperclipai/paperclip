@@ -144,8 +144,6 @@ async function computeObservedAmount(
   db: Db,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
 ) {
-  if (policy.metric !== "billed_cents") return 0;
-
   const conditions = [eq(costEvents.companyId, policy.companyId)];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
@@ -154,6 +152,33 @@ async function computeObservedAmount(
     conditions.push(gte(costEvents.occurredAt, start));
     conditions.push(lt(costEvents.occurredAt, end));
   }
+
+  if (policy.metric === "token_count") {
+    const [row] = await db
+      .select({
+        total: sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision`,
+      })
+      .from(costEvents)
+      .where(and(...conditions));
+    return Number(row?.total ?? 0);
+  }
+
+  if (policy.metric === "run_count") {
+    // One heartbeat run can emit multiple cost_events rows (e.g. one row per
+    // model invoked during the run), so count distinct runs, not rows. Cost
+    // events reported without a heartbeat_run_id (e.g. manual API-reported
+    // costs) are not attributable to a run and are excluded.
+    conditions.push(sql`${costEvents.heartbeatRunId} is not null`);
+    const [row] = await db
+      .select({
+        total: sql<number>`coalesce(count(distinct ${costEvents.heartbeatRunId}), 0)::double precision`,
+      })
+      .from(costEvents)
+      .where(and(...conditions));
+    return Number(row?.total ?? 0);
+  }
+
+  if (policy.metric !== "billed_cents") return 0;
 
   const [row] = await db
     .select({
@@ -666,7 +691,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       });
 
       for (const policy of relevantPolicies) {
-        if (policy.metric !== "billed_cents" || policy.amount <= 0) continue;
+        if (policy.amount <= 0) continue;
         const observedAmount = await computeObservedAmount(db, policy);
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
 
@@ -754,7 +779,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         };
       }
 
-      const companyPolicy = await db
+      const companyPolicies = await db
         .select()
         .from(budgetPolicies)
         .where(
@@ -763,11 +788,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             eq(budgetPolicies.scopeType, "company"),
             eq(budgetPolicies.scopeId, companyId),
             eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (companyPolicy && companyPolicy.hardStopEnabled && companyPolicy.amount > 0) {
+        );
+      for (const companyPolicy of companyPolicies) {
+        if (!companyPolicy.hardStopEnabled || companyPolicy.amount <= 0) continue;
         const observed = await computeObservedAmount(db, companyPolicy);
         if (observed >= companyPolicy.amount) {
           return {
@@ -788,7 +812,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         };
       }
 
-      const agentPolicy = await db
+      const agentPolicies = await db
         .select()
         .from(budgetPolicies)
         .where(
@@ -797,11 +821,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             eq(budgetPolicies.scopeType, "agent"),
             eq(budgetPolicies.scopeId, agentId),
             eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (agentPolicy && agentPolicy.hardStopEnabled && agentPolicy.amount > 0) {
+        );
+      for (const agentPolicy of agentPolicies) {
+        if (!agentPolicy.hardStopEnabled || agentPolicy.amount <= 0) continue;
         const observed = await computeObservedAmount(db, agentPolicy);
         if (observed >= agentPolicy.amount) {
           return {
@@ -829,7 +852,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
 
       if (!project || project.companyId !== companyId) return null;
-      const projectPolicy = await db
+      const projectPolicies = await db
         .select()
         .from(budgetPolicies)
         .where(
@@ -838,11 +861,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             eq(budgetPolicies.scopeType, "project"),
             eq(budgetPolicies.scopeId, project.id),
             eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (projectPolicy && projectPolicy.hardStopEnabled && projectPolicy.amount > 0) {
+        );
+      for (const projectPolicy of projectPolicies) {
+        if (!projectPolicy.hardStopEnabled || projectPolicy.amount <= 0) continue;
         const observed = await computeObservedAmount(db, projectPolicy);
         if (observed >= projectPolicy.amount) {
           return {
