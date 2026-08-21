@@ -16946,6 +16946,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         } finally {
           const terminalCleanup = pendingTerminalCleanup;
           if (terminalCleanup) {
+            // Capture the narrowed retry options once so the scheduleRetry
+            // closure receives a provably non-null options object; the ternary
+            // guard below already ensures retryOptions is non-null, so no
+            // nullish fallback is needed inside the closure.
+            const cleanupRetryOptions = terminalCleanup.retryOptions;
             await completeTerminalCleanupFallback({
               finalizeWakeup: !terminalCleanup.wakeupFinalized
                 ? async () => {
@@ -16957,13 +16962,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   }
                 : undefined,
               scheduleRetry:
-                terminalCleanup.retryOptions && !terminalCleanup.retryAttempted
+                cleanupRetryOptions && !terminalCleanup.retryAttempted
                   ? async () => {
                       terminalCleanup.retryAttempted = true;
                       await scheduleBoundedRetryForRun(
                         terminalCleanup.run,
                         terminalCleanup.agent,
-                        terminalCleanup.retryOptions ?? undefined,
+                        cleanupRetryOptions,
                       );
                       terminalCleanup.retryCompleted = true;
                     }
