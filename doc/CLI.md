@@ -136,9 +136,11 @@ fi
 bash install.sh
 ```
 
-The checksum detects transfer or publishing mistakes but is served from the
-same origin as the installer. Use a release-tag or commit-pinned GitHub copy
-when you need an independently hosted source. Piped installs require supported
+Until managed install ships in a stable npm release, `install.sh` defaults to
+`paperclipai@canary`. The checksum detects transfer or publishing mistakes but
+is served from the same origin as the installer. Use a release-tag or
+commit-pinned GitHub copy when you need an independently hosted source, or when
+`paperclip.ing/install.sh` lags `master`. Piped installs require supported
 Node.js, npm, and npx to already be installed; download the script first before
 allowing it to bootstrap Node.js with privileged package-manager commands.
 

@@ -314,9 +314,19 @@ bash install.sh
 The installer ensures Node.js 20 or newer is available, installs a managed
 Paperclip CLI under `~/.paperclip/cli`, and starts interactive onboarding. It
 can also install Paperclip as a background service on supported Linux and
-macOS systems. The checksum detects transfer or publishing mistakes, but it is
-served from the same origin as the script; use a release-tag or commit-pinned
-GitHub copy when you need an independently hosted source.
+macOS systems. Until managed install ships in a stable npm release, the
+bootstrap defaults to `paperclipai@canary`. The checksum detects transfer or
+publishing mistakes, but it is served from the same origin as the script; use
+a release-tag or commit-pinned GitHub copy when you need an independently
+hosted source.
+
+If `https://paperclip.ing/install.sh` is behind `master` (for example macOS
+`bad substitution` on `${value,,}`), download the repo copy instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/paperclipai/paperclip/master/scripts/install.sh -o install.sh
+bash install.sh
+```
 
 For a non-interactive managed install:
 

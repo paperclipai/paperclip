@@ -37,7 +37,8 @@ Usage:
   curl -fsSL https://paperclip.ing/install.sh | bash -s -- --no-prompt [options]
 
 Options:
-  --canary                 Install the canary channel
+  --canary                 Install the canary channel (default until stable
+                           publishes managed install)
   --version <version>      Install an exact published version
   --no-onboard             Do not start onboarding after installation
   --no-prompt              Run non-interactively
@@ -357,11 +358,18 @@ else
   log "Installed Node.js $(node --version)"
 fi
 
-PACKAGE_SPEC="$PAPERCLIP_PACKAGE@latest"
-if [ "$CANARY" = "1" ]; then
-  PACKAGE_SPEC="$PAPERCLIP_PACKAGE@canary"
-elif [ -n "$VERSION" ]; then
+# TODO(#10739): revert canary default once a stable release ships
+# `paperclipai install`. Until then, paperclipai@latest (e.g. 2026.722.0)
+# rejects `install`, so the bootstrap would fail on every OS after parse_bool.
+# Explicit --version still pins an exact release.
+if [ -n "$VERSION" ]; then
   PACKAGE_SPEC="$PAPERCLIP_PACKAGE@$VERSION"
+else
+  if [ "$CANARY" != "1" ]; then
+    log "No stable release includes 'paperclipai install' yet; defaulting to @canary"
+    CANARY=1
+  fi
+  PACKAGE_SPEC="$PAPERCLIP_PACKAGE@canary"
 fi
 
 INSTALL_ARGS=(install)

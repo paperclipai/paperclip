@@ -65,8 +65,10 @@ run_shellcheck
 
 echo "==> existing Node"
 run_with_node with-node bash /paperclip-scripts/install.sh --no-prompt --no-onboard
-assert_line "$RESULTS_DIR/with-node.args" "paperclipai@latest"
+assert_line "$RESULTS_DIR/with-node.args" "paperclipai@canary"
+assert_no_line "$RESULTS_DIR/with-node.args" "paperclipai@latest"
 assert_line "$RESULTS_DIR/with-node.args" "install"
+assert_line "$RESULTS_DIR/with-node.args" "--canary"
 assert_line "$RESULTS_DIR/with-node.args" "--yes"
 assert_line "$RESULTS_DIR/with-node.args" "--registry=https://registry.npmjs.org"
 assert_line "$RESULTS_DIR/with-node.args" "NPM_CONFIG_REGISTRY=https://registry.npmjs.org"
@@ -109,6 +111,8 @@ fi
 
 echo "==> piped --no-prompt"
 run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard'
+assert_line "$RESULTS_DIR/piped.args" "paperclipai@canary"
+assert_line "$RESULTS_DIR/piped.args" "--canary"
 assert_line "$RESULTS_DIR/piped.args" "--yes"
 
 echo "==> piped mode refuses privileged Node bootstrap"
@@ -157,7 +161,9 @@ docker run --rm \
   -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   ubuntu:24.04 \
   bash -c 'apt-get update >/dev/null && apt-get install -y ca-certificates curl >/dev/null && bash /paperclip-scripts/install.sh --no-prompt --no-onboard'
-assert_line "$RESULTS_DIR/no-node.args" "paperclipai@latest"
+assert_line "$RESULTS_DIR/no-node.args" "paperclipai@canary"
+assert_no_line "$RESULTS_DIR/no-node.args" "paperclipai@latest"
+assert_line "$RESULTS_DIR/no-node.args" "--canary"
 node_version="$(cat "$RESULTS_DIR/no-node.args.node")"
 node_major="${node_version#v}"
 node_major="${node_major%%.*}"
