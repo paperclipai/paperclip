@@ -151,7 +151,11 @@ const POSTGRES_NOT_READY_CONNECTION_CODES = new Set([
   "CONNECTION_CLOSED",
   "CONNECTION_ENDED",
   "CONNECTION_DESTROYED",
-  "CONNECTION_CONNECT_TIMEOUT",
+  // postgres.js emits this verbatim from Errors.connection("CONNECT_TIMEOUT")
+  // when the socket opens but the startup handshake does not finish inside
+  // `connect_timeout` — routine while a postmaster replays WAL. The name is not
+  // prefixed with CONNECTION_; spelling it that way silently disables the retry.
+  "CONNECT_TIMEOUT",
 ]);
 
 const MAX_ERROR_CAUSE_DEPTH = 8;

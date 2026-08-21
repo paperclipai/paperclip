@@ -71,8 +71,24 @@ async function findAvailablePort(startPort: number): Promise<number> {
   );
 }
 
-/** Whether the server answering on `port` is serving exactly `dataDir`. */
+/**
+ * How long to wait for a server that already holds the port to identify itself.
+ * Short on purpose: something is listening, so this only has to outlast a socket
+ * that is still binding or a backend replaying WAL, not a cold start.
+ */
+const IDENTIFY_TIMEOUT_MS = 3_000;
+
+/**
+ * Whether the server answering on `port` is serving exactly `dataDir`.
+ *
+ * The readiness wait is not optional. `getPostgresDataDirectory` swallows every
+ * error and returns null, so a postmaster of ours replaying WAL answers 57P03
+ * and reads as "not ours" — after which the caller starts a second postmaster
+ * over the live directory. That is the failure this module exists to prevent,
+ * so identify the server only once it can answer.
+ */
 async function isServingDataDirectory(port: number, dataDir: string): Promise<boolean> {
+  await waitForPostgresReady(adminConnectionString(port), { timeoutMs: IDENTIFY_TIMEOUT_MS });
   const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
   return typeof actualDataDir === "string" && path.resolve(actualDataDir) === path.resolve(dataDir);
 }
@@ -147,10 +163,16 @@ async function resolveRunningCluster(
       );
       return connection;
     } catch (error) {
+      // adoptCluster fails for three different reasons — the readiness deadline,
+      // the data-directory identity check, and ensurePostgresDatabase. Asserting
+      // "no server answered" would misreport the latter two and point the
+      // operator at the wrong remedy, so surface what actually happened.
+      const cause = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Embedded PostgreSQL data directory ${dataDir} holds a ${POSTMASTER_LOCK_FILE_NAME} that cannot be ` +
-          `adjudicated (${inspected.reason}), and no server answered on port ${port}. Refusing to start a ` +
-          `second postmaster over live data. Stop any PostgreSQL still using this directory, then retry.`,
+          `adjudicated (${inspected.reason}), and the server on port ${port} could not be adopted: ${cause}. ` +
+          `Refusing to start a second postmaster over live data. Stop any PostgreSQL still using this ` +
+          `directory, then retry.`,
         { cause: error },
       );
     }
@@ -162,25 +184,51 @@ async function resolveRunningCluster(
       process.emitWarning(
         `Removed ${POSTMASTER_LOCK_FILE_NAME} for ${dataDir} left behind by dead pid ${removal.lock.pid}.`,
       );
+      return null;
     }
-    return null;
+    // removeStalePostmasterLock re-inspects before deleting, so a refusal here
+    // means the directory was claimed between our check and the removal. Falling
+    // through would hand the caller a "nothing owns this" verdict that is no
+    // longer true, and it would start a second postmaster over live data.
+    throw new Error(
+      `Embedded PostgreSQL data directory ${dataDir} appeared unowned, but ${POSTMASTER_LOCK_FILE_NAME} could ` +
+        `not be removed (${removal.reason}). Refusing to start a second postmaster. Stop any PostgreSQL still ` +
+        `using this directory, then retry.`,
+    );
   }
 
   // No lock file, but a server can still be serving this directory — one
   // started outside Paperclip, or one whose lock file was deleted.
   if (existsSync(path.resolve(dataDir, "PG_VERSION")) && (await isPortInUse(preferredPort))) {
+    let servesThisDirectory: boolean;
     try {
-      if (await isServingDataDirectory(preferredPort, dataDir)) {
-        const connection = await adoptCluster(preferredPort, dataDir);
-        process.emitWarning(
-          `Adopting the existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} ` +
-            `because ${POSTMASTER_LOCK_FILE_NAME} is missing.`,
-        );
-        return connection;
-      }
-    } catch {
-      // Not ours, or not reachable — fall through and start our own cluster.
+      servesThisDirectory = await isServingDataDirectory(preferredPort, dataDir);
+    } catch (error) {
+      // Something holds the port but would not identify itself in time. It may
+      // be our own postmaster still replaying WAL, so this is precisely the case
+      // where starting a second one destroys data. Swallowing this and falling
+      // through to the port fallback is what kept the original bug reachable.
+      throw new Error(
+        `Port ${preferredPort} is in use, but the server there did not become ready, so ownership ` +
+          `of ${dataDir} could not be established. Refusing to start a second postmaster over ` +
+          `possibly-live data. Stop whatever is using port ${preferredPort}, or point the instance ` +
+          `at a different port, then retry.`,
+        { cause: error },
+      );
     }
+
+    if (servesThisDirectory) {
+      // Ownership is proven, so a failure to adopt is fatal rather than a reason
+      // to start a rival postmaster over the same directory.
+      const connection = await adoptCluster(preferredPort, dataDir);
+      process.emitWarning(
+        `Adopting the existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} ` +
+          `because ${POSTMASTER_LOCK_FILE_NAME} is missing.`,
+      );
+      return connection;
+    }
+    // Identified as a different cluster: our directory is unowned, so the caller
+    // may start on another port.
   }
 
   return null;

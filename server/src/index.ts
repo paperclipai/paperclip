@@ -373,6 +373,11 @@ export async function startServer(): Promise<StartedServer> {
     }
     await prepareEmbeddedPostgresNativeRuntime();
   
+    // How long the "is anything already serving this port?" probe may take.
+    // Deliberately short: a negative answer is the common case and must not
+    // delay startup. Distinct from the post-start readiness budget, which has
+    // to cover WAL recovery and so uses waitForPostgresReady's own default.
+    const EMBEDDED_POSTGRES_PROBE_TIMEOUT_MS = 3_000;
     const dataDir = resolve(config.embeddedPostgresDataDir);
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
@@ -426,17 +431,30 @@ export async function startServer(): Promise<StartedServer> {
       port = lockStatus.lock.port ?? configuredPort;
       adoptedFromLock = true;
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${lockStatus.lock.pid}, port=${port})`);
-    } else if (lockStatus.status === "indeterminate") {
-      // Not provably dead. Reuse the recorded server and let the readiness wait
-      // below decide, rather than clearing a lock file we cannot vouch for.
-      // `lock` is null when the file exists but could not be parsed at all.
-      port = lockStatus.lock?.port ?? configuredPort;
+    } else if (lockStatus.status === "indeterminate" && lockStatus.lock) {
+      // Not provably dead, and the file names a pid and port. Reuse the recorded
+      // server and let the readiness wait below decide, rather than clearing a
+      // lock file we cannot vouch for.
+      port = lockStatus.lock.port ?? configuredPort;
       adoptedFromLock = true;
       logger.warn(
-        { reason: lockStatus.reason, pid: lockStatus.lock?.pid ?? null, port },
+        { reason: lockStatus.reason, pid: lockStatus.lock.pid, port },
         "Embedded PostgreSQL lock file could not be adjudicated; reusing the recorded server instead of starting a second one",
       );
     } else {
+      if (lockStatus.status === "indeterminate") {
+        // The file exists but yielded no pid at all — a zero-length or truncated
+        // postmaster.pid, typically from power loss between creation and write.
+        // There is no recorded server to adopt, so treating it as adopted would
+        // skip the start path below and strand the server permanently. Continue
+        // into the start path and leave the file in place: PostgreSQL arbitrates
+        // from there, refusing with its own actionable "bogus data in lock file"
+        // if the directory is genuinely held.
+        logger.warn(
+          { reason: lockStatus.reason, port: configuredPort },
+          "Embedded PostgreSQL lock file is unreadable and names no process; leaving it in place and letting PostgreSQL arbitrate",
+        );
+      }
       if (lockStatus.status === "stale") {
         const removal = removeStalePostmasterLock(dataDir);
         if (removal.removed) {
@@ -458,7 +476,15 @@ export async function startServer(): Promise<StartedServer> {
         // Without this gate a recovering cluster of our own falls through to the
         // port fallback below, which then starts a second postmaster over the
         // same data directory and fatals on the lock file or shared memory.
-        await waitForPostgresReady(configuredAdminConnectionString);
+        // Bounded on purpose. This probe only answers "is one of our clusters
+        // already up on this port?", and on a cold start the answer is no —
+        // ECONNREFUSED is retryable, so the default 60s deadline would be spent
+        // in full before every start. A few seconds rides out a socket that is
+        // still binding or a backend replaying WAL; the long budget belongs to
+        // the post-start wait below, once we know who owns the directory.
+        await waitForPostgresReady(configuredAdminConnectionString, {
+          timeoutMs: EMBEDDED_POSTGRES_PROBE_TIMEOUT_MS,
+        });
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
           typeof actualDataDir === "string" &&

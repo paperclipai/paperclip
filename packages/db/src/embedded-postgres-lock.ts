@@ -1,5 +1,22 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
+
+/**
+ * Canonicalize for comparison against a path PostgreSQL wrote itself.
+ *
+ * postmaster.pid records the *physical* directory (make_absolute_path over the
+ * post-chdir getcwd), so a data directory reached through a symlink is recorded
+ * as `/private/var/...` while the configured path resolves to `/var/...`.
+ * Comparing with path.resolve alone reports a healthy cluster as foreign, which
+ * is never recoverable. Falls back to path.resolve when the path is gone.
+ */
+function canonicalize(target: string): string {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
 
 /**
  * Line offsets inside `postmaster.pid`, per PostgreSQL's
@@ -138,7 +155,7 @@ export function inspectPostmasterLock(
     return { status: "absent" };
   }
 
-  if (lock.dataDir && path.resolve(lock.dataDir) !== path.resolve(dataDir)) {
+  if (lock.dataDir && canonicalize(lock.dataDir) !== canonicalize(dataDir)) {
     return {
       status: "indeterminate",
       lock,

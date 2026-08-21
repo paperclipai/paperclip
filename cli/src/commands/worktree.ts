@@ -65,6 +65,7 @@ import {
   formatEmbeddedPostgresError,
   loadWithoutEmbeddedPostgresExitHooks,
   prepareEmbeddedPostgresNativeRuntime,
+  probeProcessLiveness,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -561,15 +562,29 @@ function readPidFilePort(postmasterPidFile: string): number | null {
   }
 }
 
+/**
+ * The pid of a postmaster that may still own this data directory, or null when
+ * it is provably gone.
+ *
+ * Liveness is delegated to the shared probe rather than a local try/catch. A
+ * blanket catch reports EPERM — a postmaster left by an elevated or
+ * different-session run — as dead, and callers here use that answer to decide
+ * whether to delete postmaster.pid and start a second postmaster over live data.
+ * Anything short of proof of death therefore returns the pid, so the safety
+ * checks downstream stay engaged.
+ */
 function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   if (!existsSync(postmasterPidFile)) return null;
   try {
     const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
     if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
+    return probeProcessLiveness(pid) === "dead" ? null : pid;
   } catch {
-    return null;
+    // The file exists but could not be read or parsed. That is still evidence
+    // something claimed the directory, so do not report it as free. Callers test
+    // this with a truthy check, so the sentinel has to be truthy; -1 says "owned
+    // by someone we cannot name" rather than "owned by pid -1".
+    return -1;
   }
 }
 
