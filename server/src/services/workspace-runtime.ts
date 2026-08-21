@@ -3709,7 +3709,12 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
     const repairWarnings: string[] = [];
-    if (await isGitCheckout(reuseWorktreePath)) {
+    if (await isGitCheckout(reuseWorktreePath) && realized.branchCreatedByRuntime) {
+      // Branch-coherence repair may check out another branch, adopt a forward
+      // branch, or move the recorded ref from a detached HEAD. Those repairs
+      // are valid only for a branch that this runtime created. An attached
+      // operator-owned branch must retain its exact identity and tip; the
+      // validation below rejects any mismatch without mutating Git state.
       const coherence = await ensureGitWorktreeBranchCoherent({
         db: input.db ?? null,
         repoRoot,
@@ -3754,7 +3759,9 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, input.resolveGitAuth)
       : [];
     const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
-    const refresh = reuseBaseRef && currentBaseRefSha
+    // An unstarted-worktree refresh can fast-forward the checked-out branch.
+    // Never run it for an attached operator-owned ref.
+    const refresh = realized.branchCreatedByRuntime && reuseBaseRef && currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
           worktreePath: reuseWorktreePath,
