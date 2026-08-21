@@ -3882,26 +3882,50 @@ export async function ensureRunAccountedForCounting(
 
   const ledgerScope = await resolveLedgerScopeForRun(db, companyId, run);
   const costs = costService(db, budgetHooks);
-  try {
-    await costs.createEvent(companyId, {
-      heartbeatRunId: run.id,
-      agentId,
-      issueId: ledgerScope.issueId,
-      projectId: ledgerScope.projectId,
-      billingCode: ledgerScope.billingCode,
-      provider: "unknown",
-      biller: "unknown",
-      billingType: "unknown",
-      costStatus: "reported",
-      model: "unknown",
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      outputTokens: 0,
-      costCents: 0,
-      occurredAt: run.finishedAt ?? new Date(),
-    });
-  } catch (err) {
-    logger.warn({ err, runId: run.id }, "failed to record zero-usage cost event for terminalized run");
+  const zeroUsageEvent = {
+    heartbeatRunId: run.id,
+    agentId,
+    issueId: ledgerScope.issueId,
+    projectId: ledgerScope.projectId,
+    billingCode: ledgerScope.billingCode,
+    provider: "unknown",
+    biller: "unknown",
+    billingType: "unknown",
+    costStatus: "reported",
+    model: "unknown",
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    costCents: 0,
+    occurredAt: run.finishedAt ?? new Date(),
+  } as const;
+
+  // The run is already terminal by the time every call site reaches this
+  // helper, so a swallowed failure here has no other path back to counting
+  // this run — it would silently and permanently undercount run_count.
+  // Retry a bounded number of times against transient DB errors (the
+  // dominant real-world failure mode for a single-row insert) before giving
+  // up and logging loudly enough to page on, instead of a single best-effort
+  // attempt with a quiet warning.
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await costs.createEvent(companyId, zeroUsageEvent);
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        logger.error(
+          { err, runId: run.id, agentId, companyId, attempts: attempt },
+          "failed to record zero-usage cost event for terminalized run after retrying; run_count will undercount this run",
+        );
+        return;
+      }
+      logger.warn(
+        { err, runId: run.id, attempt },
+        "retrying zero-usage cost event insert for terminalized run",
+      );
+      await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+    }
   }
 }
 
