@@ -10363,6 +10363,37 @@ export function issueRoutes(
 
     if (issue.status === "blocked") {
       issue = await deliverBlockedOwnerNotification(issue);
+      // If this update changed the owner intent, any queued or running wake
+      // belonging to the superseded intent is now stale. Cancel it here
+      // instead of waiting for claim-time rejection: otherwise the former
+      // owner keeps executing an intent that the descriptor no longer names.
+      const currentUnblockIntent = buildAgentUnblockWakeIntent(issue);
+      const previousUnblockIntent =
+        existing.status === "blocked" && existing.blockedTransitionAt
+          ? buildAgentUnblockWakeIntent(existing)
+          : null;
+      if (
+        currentUnblockIntent &&
+        previousUnblockIntent &&
+        previousUnblockIntent.intentFingerprint !== currentUnblockIntent.intentFingerprint
+      ) {
+        const supersededOwnerRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, previousUnblockIntent.ownerAgentId),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_unblock_requested'`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'intentFingerprint' = ${previousUnblockIntent.intentFingerprint}`,
+            ),
+          );
+        for (const supersededRun of supersededOwnerRuns) {
+          await heartbeat.cancelRun(supersededRun.id, "Cancelled because the unblock owner intent changed");
+        }
+      }
     }
 
     let cancelledStatusRunId: string | null = null;
