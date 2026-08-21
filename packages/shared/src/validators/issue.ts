@@ -582,6 +582,7 @@ export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 export const conditionalQueueClaimSchema = z.object({
   companyId: z.string().uuid(),
   expectedUpdatedAt: z.string().datetime(),
+  expectedApprovalUpdatedAt: z.string().datetime(),
   approvalId: z.string().uuid(),
   approvalMarker: z.string().trim().min(1).max(200),
   scopeDigest: z.string().trim().regex(/^[a-f0-9]{64}$/i),
@@ -594,6 +595,7 @@ export type ConditionalQueueClaim = z.infer<typeof conditionalQueueClaimSchema>;
 export const conditionalQueueApprovalMarkerSchema = z.object({
   companyId: z.string().uuid(),
   expectedIssueUpdatedAt: z.string().datetime(),
+  expectedApprovalUpdatedAt: z.string().datetime(),
   approvalId: z.string().uuid(),
   approvalMarker: z.string().trim().min(1).max(200),
   scopeDigest: z.string().trim().regex(/^[a-f0-9]{64}$/i),
@@ -602,6 +604,7 @@ export const conditionalQueueApprovalMarkerSchema = z.object({
   // unattended caller, so a loader cannot raise its own fleet limit.
   maxDispatches: z.number().int().min(1).max(50),
   expiresAt: z.string().datetime(),
+  dispatcherAgentId: z.string().uuid().optional().nullable(),
 });
 
 export type ConditionalQueueApprovalMarker = z.infer<typeof conditionalQueueApprovalMarkerSchema>;
@@ -610,6 +613,7 @@ export type ConditionalQueueApprovalMarker = z.infer<typeof conditionalQueueAppr
 export const conditionalQueueWakeReservationSchema = z.object({
   companyId: z.string().uuid(),
   expectedUpdatedAt: z.string().datetime(),
+  expectedApprovalUpdatedAt: z.string().datetime(),
   approvalId: z.string().uuid(),
   approvalMarker: z.string().trim().min(1).max(200),
   scopeDigest: z.string().trim().regex(/^[a-f0-9]{64}$/i),

@@ -65,7 +65,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, preconditionFailed, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, preconditionFailed, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -4343,6 +4343,38 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
+type GovernedQueueActor = {
+  actorType: "user" | "agent";
+  actorId: string;
+  responsibleUserId: string | null;
+};
+
+function queueAuthorityMatches(claim: Record<string, unknown>, actor: GovernedQueueActor) {
+  const authority = claim.authority;
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) return false;
+  const persisted = authority as Record<string, unknown>;
+  if (persisted.actorType === actor.actorType && persisted.actorId === actor.actorId) return true;
+  if (persisted.dispatcherAgentId === actor.actorId && actor.actorType === "agent") return true;
+  return persisted.actorType === "user"
+    && typeof persisted.actorId === "string"
+    && actor.actorType === "agent"
+    && actor.responsibleUserId === persisted.actorId;
+}
+
+function expectedQueueWakeIdempotencyKey(issueId: string, approvalId: string, approvedRevision: Date) {
+  return `conditional-queue-wake:${issueId}:${approvalId}:${approvedRevision.toISOString()}`;
+}
+
+function isSerializationFailure(error: unknown) {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === "40001") return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -4355,15 +4387,21 @@ export function issueService(db: Db) {
     issueId: string;
     companyId: string;
     expectedUpdatedAt: string;
+    expectedApprovalUpdatedAt: string;
     approvalId: string;
     approvalMarker: string;
     scopeDigest: string;
     targetAgentId: string;
+    authority: GovernedQueueActor;
   }) {
     const expectedUpdatedAt = new Date(input.expectedUpdatedAt);
-    if (Number.isNaN(expectedUpdatedAt.getTime())) throw preconditionFailed("Invalid expectedUpdatedAt");
+    const expectedApprovalUpdatedAt = new Date(input.expectedApprovalUpdatedAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime()) || Number.isNaN(expectedApprovalUpdatedAt.getTime())) {
+      throw preconditionFailed("Invalid conditional queue claim revision");
+    }
 
-    return db.transaction(async (tx) => {
+    try {
+      return await db.transaction(async (tx) => {
       // Lock all facts which make this claim eligible before reading them. The
       // predicate lock on the target's open work makes competing queue claims
       // serialize instead of both observing an idle agent.
@@ -4388,12 +4426,18 @@ export function issueService(db: Db) {
         ? (approval.payload as Record<string, unknown>).queueClaim as Record<string, unknown> | undefined
         : undefined;
       const expiresAt = typeof claim?.expiresAt === "string" ? new Date(claim.expiresAt) : null;
+      if (approval && approval.updatedAt.getTime() !== expectedApprovalUpdatedAt.getTime()) {
+        throw preconditionFailed("Approval version no longer matches", { code: "stale_approval_version" });
+      }
       if (
         !approval || !linkedApproval || approval.status !== "approved" || !claim ||
         claim.approvalMarker !== input.approvalMarker || claim.scopeDigest !== input.scopeDigest ||
         claim.targetAgentId !== input.targetAgentId || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()
       ) {
         throw conflict("Queue-claim approval is absent, mismatched, or expired", { code: "approval_precondition_failed" });
+      }
+      if (!queueAuthorityMatches(claim, input.authority)) {
+        throw forbidden("Queue-claim authority does not match the approved principal", { code: "queue_authority_mismatch" });
       }
 
       const target = await tx.select({ id: agents.id, status: agents.status }).from(agents)
@@ -4421,17 +4465,25 @@ export function issueService(db: Db) {
       )).returning()
         .then((rows) => rows[0] ?? null);
       if (!claimed) throw preconditionFailed("Issue changed while claim was evaluated", { code: "claim_compare_and_swap_failed" });
-      return claimed;
-    });
+        return claimed;
+      }, { isolationLevel: "serializable" });
+    } catch (error) {
+      if (isSerializationFailure(error)) {
+        throw conflict("Queue-claim facts changed concurrently", { code: "queue_claim_serialization_conflict" });
+      }
+      throw error;
+    }
   }
 
   async function conditionalQueueApprovalMarker(input: {
-    issueId: string; companyId: string; expectedIssueUpdatedAt: string; approvalId: string;
+    issueId: string; companyId: string; expectedIssueUpdatedAt: string; expectedApprovalUpdatedAt: string; approvalId: string;
     approvalMarker: string; scopeDigest: string; targetAgentId: string; maxDispatches: number; expiresAt: string;
+    dispatcherAgentId?: string | null; authority: GovernedQueueActor;
   }) {
     const expectedUpdatedAt = new Date(input.expectedIssueUpdatedAt);
+    const expectedApprovalUpdatedAt = new Date(input.expectedApprovalUpdatedAt);
     const expiresAt = new Date(input.expiresAt);
-    if (Number.isNaN(expectedUpdatedAt.getTime()) || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+    if (Number.isNaN(expectedUpdatedAt.getTime()) || Number.isNaN(expectedApprovalUpdatedAt.getTime()) || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
       throw preconditionFailed("Invalid conditional approval-marker input");
     }
     return db.transaction(async (tx) => {
@@ -4441,21 +4493,30 @@ export function issueService(db: Db) {
       const approval = await tx.select().from(approvals).where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
       const linked = approval && await tx.select({ approvalId: issueApprovals.approvalId }).from(issueApprovals).where(and(eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, input.issueId), eq(issueApprovals.approvalId, input.approvalId))).for("update").then((rows) => rows[0] ?? null);
       if (!approval || !linked || approval.status !== "pending") throw conflict("Approval is not a linked pending approval", { code: "approval_not_markable" });
+      if (approval.updatedAt.getTime() !== expectedApprovalUpdatedAt.getTime()) throw preconditionFailed("Approval version no longer matches", { code: "stale_approval_version" });
       const payload = typeof approval.payload === "object" && approval.payload ? approval.payload as Record<string, unknown> : {};
       const now = new Date();
-      const updated = await tx.update(approvals).set({ payload: { ...payload, queueClaim: { approvalMarker: input.approvalMarker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, maxDispatches: input.maxDispatches, expiresAt: expiresAt.toISOString() } }, updatedAt: now }).where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId), eq(approvals.status, "pending"))).returning().then((rows) => rows[0] ?? null);
+      const updated = await tx.update(approvals).set({ payload: { ...payload, queueClaim: { approvalMarker: input.approvalMarker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, maxDispatches: input.maxDispatches, expiresAt: expiresAt.toISOString(), authority: { ...input.authority, dispatcherAgentId: input.dispatcherAgentId ?? null } } }, updatedAt: now }).where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId), eq(approvals.status, "pending"), sql`date_trunc('milliseconds', ${approvals.updatedAt}) = ${expectedApprovalUpdatedAt.toISOString()}`)).returning().then((rows) => rows[0] ?? null);
       if (!updated) throw preconditionFailed("Approval changed while marker was evaluated", { code: "approval_marker_compare_and_swap_failed" });
       return updated;
     });
   }
 
   async function conditionalQueueWakeReservation(input: {
-    issueId: string; companyId: string; expectedUpdatedAt: string; approvalId: string; approvalMarker: string;
-    scopeDigest: string; targetAgentId: string; idempotencyKey: string; requestedByUserId: string;
+    issueId: string; companyId: string; expectedUpdatedAt: string; expectedApprovalUpdatedAt: string; approvalId: string; approvalMarker: string;
+    scopeDigest: string; targetAgentId: string; idempotencyKey: string; authority: GovernedQueueActor;
   }) {
     const expectedUpdatedAt = new Date(input.expectedUpdatedAt);
-    if (Number.isNaN(expectedUpdatedAt.getTime())) throw preconditionFailed("Invalid expectedUpdatedAt");
-    return db.transaction(async (tx) => {
+    const expectedApprovalUpdatedAt = new Date(input.expectedApprovalUpdatedAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime()) || Number.isNaN(expectedApprovalUpdatedAt.getTime())) {
+      throw preconditionFailed("Invalid conditional wake revision");
+    }
+    const expectedIdempotencyKey = expectedQueueWakeIdempotencyKey(input.issueId, input.approvalId, expectedApprovalUpdatedAt);
+    if (input.idempotencyKey !== expectedIdempotencyKey) {
+      throw preconditionFailed("Wake idempotency key is not bound to the issue and approved revision", { code: "wake_idempotency_key_mismatch" });
+    }
+    try {
+      return await db.transaction(async (tx) => {
       // Serialize fleet-cap decisions at the company row. A per-target lock is
       // insufficient: two idle targets could otherwise both pass the cap.
       const company = await tx.select({ id: companies.id }).from(companies)
@@ -4470,7 +4531,9 @@ export function issueService(db: Db) {
       const claim = approval?.payload && typeof approval.payload === "object" ? (approval.payload as Record<string, unknown>).queueClaim as Record<string, unknown> | undefined : undefined;
       const expiresAt = typeof claim?.expiresAt === "string" ? new Date(claim.expiresAt) : null;
       const maxDispatches = typeof claim?.maxDispatches === "number" && Number.isInteger(claim.maxDispatches) && claim.maxDispatches >= 1 && claim.maxDispatches <= 50 ? claim.maxDispatches : null;
+      if (approval && approval.updatedAt.getTime() !== expectedApprovalUpdatedAt.getTime()) throw preconditionFailed("Approval version no longer matches", { code: "stale_approval_version" });
       if (!approval || !linked || approval.status !== "approved" || !claim || claim.approvalMarker !== input.approvalMarker || claim.scopeDigest !== input.scopeDigest || claim.targetAgentId !== input.targetAgentId || !maxDispatches || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) throw conflict("Wake approval is absent, mismatched, or expired", { code: "approval_precondition_failed" });
+      if (!queueAuthorityMatches(claim, input.authority)) throw forbidden("Queue-wake authority does not match the approved principal", { code: "queue_authority_mismatch" });
       const target = await tx.select({ id: agents.id, status: agents.status }).from(agents).where(and(eq(agents.id, input.targetAgentId), eq(agents.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
       if (!target || target.status !== "idle") throw conflict("Target agent is not idle", { code: "target_not_idle" });
       const activeCards = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, input.targetAgentId), inArray(issues.status, ["todo", "in_progress"]))).for("update");
@@ -4485,8 +4548,14 @@ export function issueService(db: Db) {
         .for("update");
       if (fleetDispatches.length >= maxDispatches) throw conflict("Approved fleet dispatch limit is reached", { code: "max_dispatches_reached" });
       const now = new Date();
-      return tx.insert(agentWakeupRequests).values({ companyId: input.companyId, agentId: input.targetAgentId, source: "automation", triggerDetail: "system", reason: "conditional_queue_claim", payload: { issueId: input.issueId, approvalId: input.approvalId, approvalMarker: input.approvalMarker, scopeDigest: input.scopeDigest, maxDispatches }, status: "queued", requestedByActorType: "user", requestedByActorId: input.requestedByUserId, idempotencyKey: input.idempotencyKey, updatedAt: now }).returning().then((rows) => rows[0]);
-    });
+        return tx.insert(agentWakeupRequests).values({ companyId: input.companyId, agentId: input.targetAgentId, source: "automation", triggerDetail: "system", reason: "conditional_queue_claim", payload: { issueId: input.issueId, approvalId: input.approvalId, approvalMarker: input.approvalMarker, scopeDigest: input.scopeDigest, maxDispatches, approvedRevision: expectedApprovalUpdatedAt.toISOString() }, status: "queued", requestedByActorType: input.authority.actorType, requestedByActorId: input.authority.actorId, idempotencyKey: input.idempotencyKey, updatedAt: now }).returning().then((rows) => rows[0]);
+      }, { isolationLevel: "serializable" });
+    } catch (error) {
+      if (isSerializationFailure(error)) {
+        throw conflict("Queue-wake facts changed concurrently", { code: "queue_wake_serialization_conflict" });
+      }
+      throw error;
+    }
   }
 
   async function getIssueByUuid(id: string) {

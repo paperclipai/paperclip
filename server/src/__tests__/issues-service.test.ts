@@ -698,6 +698,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .from(activityLog)
       .where(eq(activityLog.action, "issue.thread_interaction_expired"));
     expect(logged).toHaveLength(0);
+  });
 
   async function seedConditionalQueueClaim() {
     const companyId = await seedAssignableAgentCompany();
@@ -707,20 +708,40 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const approvalId = randomUUID();
     const marker = "queue-loader-approved";
     const scopeDigest = "a".repeat(64);
-    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "approved", payload: {
-      queueClaim: { approvalMarker: marker, scopeDigest, targetAgentId, maxDispatches: 1, expiresAt: "2099-01-01T00:00:00.000Z" },
+    const authority = { actorType: "agent" as const, actorId: randomUUID(), responsibleUserId: "manny-user" };
+    const approvalUpdatedAt = new Date("2026-08-21T00:00:00.000Z");
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "approved", updatedAt: approvalUpdatedAt, payload: {
+      queueClaim: { approvalMarker: marker, scopeDigest, targetAgentId, maxDispatches: 1, expiresAt: "2099-01-01T00:00:00.000Z", authority: { ...authority, dispatcherAgentId: null } },
     } });
     await db.insert(issueApprovals).values({ companyId, issueId: issue.id, approvalId });
-    return { companyId, targetAgentId, issue, approvalId, marker, scopeDigest };
+    return { companyId, targetAgentId, issue, approvalId, marker, scopeDigest, authority, approvalUpdatedAt };
   }
 
   it("atomically conditionally claims only an approved, idle todo", async () => {
     const input = await seedConditionalQueueClaim();
     const claimed = await svc.conditionalQueueClaim({
       issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(),
-      approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId,
+      expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, authority: input.authority,
     });
     expect(claimed).toMatchObject({ id: input.issue.id, status: "in_progress", assigneeAgentId: input.targetAgentId, assigneeUserId: null });
+  });
+
+  it("rejects a queue claim from a principal that was not approved or delegated", async () => {
+    const input = await seedConditionalQueueClaim();
+    await expect(svc.conditionalQueueClaim({
+      issueId: input.issue.id,
+      companyId: input.companyId,
+      expectedUpdatedAt: input.issue.updatedAt.toISOString(),
+      expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(),
+      approvalId: input.approvalId,
+      approvalMarker: input.marker,
+      scopeDigest: input.scopeDigest,
+      targetAgentId: input.targetAgentId,
+      authority: { actorType: "agent", actorId: randomUUID(), responsibleUserId: null },
+    })).rejects.toMatchObject({ status: 403, details: { code: "queue_authority_mismatch" } });
+    const persisted = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues).where(eq(issues.id, input.issue.id)).then((rows) => rows[0]);
+    expect(persisted).toMatchObject({ status: "todo", assigneeAgentId: null });
   });
 
   it("leaves the issue untouched when status, assignee, scope, expiry, or target load changes", async () => {
@@ -734,7 +755,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       if (scenario === "target-load") await svc.create(input.companyId, { title: "Already running", description: null, status: "in_progress", priority: "medium", assigneeAgentId: input.targetAgentId });
       await expect(svc.conditionalQueueClaim({
         issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(),
-        approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId,
+        expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, authority: input.authority,
       })).rejects.toMatchObject({ status: 409 });
       const persisted = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues).where(eq(issues.id, input.issue.id)).then((rows) => rows[0]);
       expect(persisted?.assigneeAgentId).toBeNull();
@@ -748,9 +769,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.insert(agents).values(agentRow(companyId, { id: targetAgentId, name: "Manny-approved target", status: "idle" }));
     const issue = await svc.create(companyId, { title: "Marker candidate", description: null, status: "todo", priority: "medium", assigneeAgentId: null });
     const approvalId = randomUUID();
-    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: {} });
+    const approvalUpdatedAt = new Date("2026-08-21T00:00:00.000Z");
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "pending", updatedAt: approvalUpdatedAt, payload: {} });
     await db.insert(issueApprovals).values({ companyId, issueId: issue.id, approvalId });
-    const markerInput = { issueId: issue.id, companyId, expectedIssueUpdatedAt: issue.updatedAt.toISOString(), approvalId, approvalMarker: "manny-marker", scopeDigest: "c".repeat(64), targetAgentId, maxDispatches: 2, expiresAt: "2099-01-01T00:00:00.000Z" };
+    const markerInput = { issueId: issue.id, companyId, expectedIssueUpdatedAt: issue.updatedAt.toISOString(), expectedApprovalUpdatedAt: approvalUpdatedAt.toISOString(), approvalId, approvalMarker: "manny-marker", scopeDigest: "c".repeat(64), targetAgentId, maxDispatches: 2, expiresAt: "2099-01-01T00:00:00.000Z", dispatcherAgentId: null, authority: { actorType: "agent" as const, actorId: randomUUID(), responsibleUserId: "manny-user" } };
     const marked = await svc.conditionalQueueApprovalMarker(markerInput);
     expect((marked.payload as any).queueClaim).toMatchObject({ approvalMarker: "manny-marker", targetAgentId });
     await db.update(issues).set({ description: "concurrent scope edit", updatedAt: new Date(issue.updatedAt.getTime() + 60_000) }).where(eq(issues.id, issue.id));
@@ -761,22 +783,24 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   it("atomically reserves exactly one approved sole-card wake and is idempotent", async () => {
     const input = await seedConditionalQueueClaim();
-    const claimed = await svc.conditionalQueueClaim({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId });
-    const reservationInput = { issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: claimed.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, idempotencyKey: `conditional-wake:${input.issue.id}:${input.scopeDigest}`, requestedByUserId: "manny-user" };
+    const claimed = await svc.conditionalQueueClaim({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(), expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, authority: input.authority });
+    const reservationInput = { issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: claimed.updatedAt.toISOString(), expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, idempotencyKey: `conditional-queue-wake:${input.issue.id}:${input.approvalId}:${input.approvalUpdatedAt.toISOString()}`, authority: input.authority };
+    await expect(svc.conditionalQueueWakeReservation({ ...reservationInput, idempotencyKey: "caller-controlled-key" })).rejects.toMatchObject({ status: 412, details: { code: "wake_idempotency_key_mismatch" } });
     const first = await svc.conditionalQueueWakeReservation(reservationInput);
     const second = await svc.conditionalQueueWakeReservation(reservationInput);
     expect(second.id).toBe(first.id);
     const persisted = await db.select({ id: agentWakeupRequests.id, requestedByActorId: agentWakeupRequests.requestedByActorId }).from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.id)).then((rows) => rows[0]);
-    expect(persisted).toMatchObject({ id: first.id, requestedByActorId: "manny-user" });
+    expect(persisted).toMatchObject({ id: first.id, requestedByActorId: input.authority.actorId });
     await svc.create(input.companyId, { title: "Concurrent second card", description: null, status: "todo", priority: "medium", assigneeAgentId: input.targetAgentId });
-    await expect(svc.conditionalQueueWakeReservation({ ...reservationInput, idempotencyKey: `${reservationInput.idempotencyKey}:changed` })).rejects.toMatchObject({ status: 409, details: { code: "target_not_sole_card" } });
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.id));
+    await expect(svc.conditionalQueueWakeReservation(reservationInput)).rejects.toMatchObject({ status: 409, details: { code: "target_not_sole_card" } });
   });
 
   it("enforces the approval-bound fleet dispatch cap without mutating on rejection", async () => {
     const input = await seedConditionalQueueClaim();
-    const claimed = await svc.conditionalQueueClaim({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId });
+    const claimed = await svc.conditionalQueueClaim({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(), expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, authority: input.authority });
     await db.insert(agentWakeupRequests).values({ companyId: input.companyId, agentId: input.targetAgentId, source: "automation", triggerDetail: "system", reason: "other-approved-dispatch", status: "queued", idempotencyKey: `existing:${input.issue.id}` });
-    await expect(svc.conditionalQueueWakeReservation({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: claimed.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, idempotencyKey: `conditional-wake:${input.issue.id}:${input.scopeDigest}`, requestedByUserId: "manny-user" })).rejects.toMatchObject({ status: 409, details: { code: "max_dispatches_reached" } });
+    await expect(svc.conditionalQueueWakeReservation({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: claimed.updatedAt.toISOString(), expectedApprovalUpdatedAt: input.approvalUpdatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, idempotencyKey: `conditional-queue-wake:${input.issue.id}:${input.approvalId}:${input.approvalUpdatedAt.toISOString()}`, authority: input.authority })).rejects.toMatchObject({ status: 409, details: { code: "max_dispatches_reached" } });
     const reservations = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId));
     expect(reservations).toHaveLength(1);
   });
