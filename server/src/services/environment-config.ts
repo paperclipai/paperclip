@@ -33,7 +33,7 @@ import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environ
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 

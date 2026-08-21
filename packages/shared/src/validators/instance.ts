@@ -10,6 +10,7 @@ import {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
+import { shapeWithoutDefaults } from "./partial.js";
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -23,22 +24,6 @@ export const backupRetentionPolicySchema = z.object({
   weeklyWeeks: presetSchema(WEEKLY_RETENTION_PRESETS, "weeklyWeeks").default(DEFAULT_BACKUP_RETENTION.weeklyWeeks),
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
-
-// Zod 4 keeps a field `.default()` active after `.partial()`, so a patch parse
-// injects the default for an absent key. A patch schema must keep only the keys
-// the caller sends, so the merge does not overwrite a stored value. This helper
-// rebuilds the shape with each top-level default removed. `.partial()` then
-// leaves an absent key absent.
-function shapeWithoutDefaults(
-  shape: Record<string, z.ZodTypeAny>,
-): Record<string, z.ZodTypeAny> {
-  return Object.fromEntries(
-    Object.entries(shape).map(([key, field]) => [
-      key,
-      field instanceof z.ZodDefault ? (field.unwrap() as z.ZodTypeAny) : field,
-    ]),
-  );
-}
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -127,7 +112,7 @@ export const instanceExperimentalSettingsWithManagedSchema = instanceExperimenta
 }).strict();
 
 export const patchInstanceSettingsSchema = z.object({
-  defaultEnvironmentId: z.string().uuid().nullable().optional(),
+  defaultEnvironmentId: z.string().guid().nullable().optional(),
 }).strict();
 
 export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
@@ -156,8 +141,8 @@ export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
 >;
 
 export const instanceSettingsSchema = z.object({
-  id: z.string().uuid(),
-  defaultEnvironmentId: z.string().uuid().nullable(),
+  id: z.string().guid(),
+  defaultEnvironmentId: z.string().guid().nullable(),
   general: instanceGeneralSettingsSchema,
   experimental: instanceExperimentalSettingsWithManagedSchema,
   createdAt: z.union([z.date(), z.string().datetime()]),

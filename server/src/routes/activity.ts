@@ -95,7 +95,7 @@ const createActivitySchema = z.object({
   action: z.string().min(1),
   entityType: z.string().min(1),
   entityId: z.string().min(1),
-  agentId: z.string().uuid().optional().nullable(),
+  agentId: z.string().guid().optional().nullable(),
   details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
@@ -103,9 +103,9 @@ const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
 
 const agentActionAuditQuerySchema = z.object({
   actorScope: agentActionAuditActorScopeSchema.default("agents"),
-  agentId: z.string().uuid().optional(),
+  agentId: z.string().guid().optional(),
   responsibleUserId: z.string().min(1).optional(),
-  runId: z.string().uuid().optional(),
+  runId: z.string().guid().optional(),
   entityType: z.string().min(1).optional(),
   entityId: z.string().min(1).optional(),
   action: z.string().min(1).optional(),

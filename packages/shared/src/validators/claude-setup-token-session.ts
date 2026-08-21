@@ -22,7 +22,7 @@ export type SetupTokenTransportAdvisory = z.infer<typeof setupTokenTransportAdvi
 // still derives the owner and the definition; this body carries no owner. A
 // missing capture starts a first-write login instead.
 export const claudeSetupTokenOverwriteSchema = z.object({
-  expectedSecretId: z.string().uuid(),
+  expectedSecretId: z.string().guid(),
   expectedLatestVersion: z.number().int().min(1),
 }).strict();
 export type ClaudeSetupTokenOverwrite =
@@ -43,7 +43,7 @@ export type ClaudeSetupTokenOverwrite =
 // runtime does not support a caller-supplied session length, so the schema
 // exposes no `ttlSeconds` field; a legacy `ttlSeconds` fails the strict parse.
 export const startClaudeSetupTokenSessionRequestSchema = z.object({
-  environmentId: z.string().uuid(),
+  environmentId: z.string().guid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
   overwrite: claudeSetupTokenOverwriteSchema.optional(),
 }).strict();
@@ -63,7 +63,7 @@ const sessionIdSchema = z.string().min(1).max(256);
 // identifier never validates.
 export const claudeSetupTokenSessionResponseSchema = z.object({
   sessionId: sessionIdSchema,
-  environmentId: z.string().uuid(),
+  environmentId: z.string().guid(),
   status: adapterAuthSessionStatusSchema,
   expiresAt: isoDateTime.nullable(),
   failure: adapterAuthSessionFailureSchema.nullable(),
@@ -163,7 +163,7 @@ export type ClaudeSetupTokenCompletionResponse =
 // route returns a fixed 404 for a missing or a foreign value, so a 200 body
 // always describes a present owner value.
 export const claudeOAuthTokenStatusResponseSchema = z.object({
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   latestVersion: z.number().int().min(1),
 }).strict();
 export type ClaudeOAuthTokenStatusResponse =

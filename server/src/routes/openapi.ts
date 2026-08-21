@@ -306,7 +306,10 @@ function applyStringChecks(jsonSchema: JsonSchema, checks: ReadonlyArray<unknown
     else if (def.check === "string_format") {
       if (def.format === "email") jsonSchema.format = "email";
       else if (def.format === "url") jsonSchema.format = "uri";
-      else if (def.format === "uuid") jsonSchema.format = "uuid";
+      // Zod 3 `.uuid()` maps to `.guid()` in zod 4 to keep the loose UUID
+      // format. Publish both as the OpenAPI `uuid` format so the spec does not
+      // change.
+      else if (def.format === "uuid" || def.format === "guid") jsonSchema.format = "uuid";
       else if (def.format === "datetime") jsonSchema.format = "date-time";
       // Zod 4 stores a `.regex()` pattern as a `RegExp`; publish its source.
       else if (def.format === "regex") {
@@ -624,11 +627,11 @@ const importRequestBody = (schema: z.ZodTypeAny) => ({
 const r = responses;
 
 const externalObjectSummariesBodySchema = z.object({
-  issueIds: z.array(z.string().uuid()).max(1000),
+  issueIds: z.array(z.string().guid()).max(1000),
 }).strict();
 
 const refreshExternalObjectsBodySchema = z.object({
-  objectIds: z.array(z.string().uuid()).max(50).optional(),
+  objectIds: z.array(z.string().guid()).max(50).optional(),
 }).strict();
 
 // The start route reads the body directly, so document the accepted fields
@@ -677,9 +680,9 @@ const workTimelineQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   userId: z.string().optional(),
-  goalId: z.string().uuid().optional(),
-  projectId: z.string().uuid().optional(),
-  issueId: z.string().uuid().optional(),
+  goalId: z.string().guid().optional(),
+  projectId: z.string().guid().optional(),
+  issueId: z.string().guid().optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
 }).strict();
@@ -1737,7 +1740,7 @@ registry.registerPath({
 
 const AgentSecretListResponseSchema = z.object({
   secrets: z.array(z.object({
-    secretRef: z.string().uuid(),
+    secretRef: z.string().guid(),
     key: z.string(),
     name: z.string(),
     description: z.string().nullable(),
@@ -1759,10 +1762,10 @@ const createAgentSecretProposalSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("binding"),
-    secretId: z.string().uuid().optional(),
+    secretId: z.string().guid().optional(),
     sourceConfigPath: z.string().min(1).optional(),
-    secretProposalId: z.string().uuid().optional(),
-    targetAgentId: z.string().uuid().optional(),
+    secretProposalId: z.string().guid().optional(),
+    targetAgentId: z.string().guid().optional(),
     configPath: z.string().min(1),
     justification: z.string().min(1),
   }),
@@ -1784,7 +1787,7 @@ const approveSecretProposalSchema = z.object({
   overrides: z.object({
     name: z.string().min(1).optional(),
     description: z.string().optional().nullable(),
-    providerConfigId: z.string().uuid().optional().nullable(),
+    providerConfigId: z.string().guid().optional().nullable(),
   }).optional(),
 });
 
@@ -1812,7 +1815,7 @@ registry.registerPath({
   path: "/api/agents/me/secret-proposals/{id}",
   tags: ["secrets"],
   summary: "Withdraw a pending secret proposal",
-  request: { params: z.object({ id: z.string().uuid() }) },
+  request: { params: z.object({ id: z.string().guid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
@@ -3031,7 +3034,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary: "List company secret proposals for board review",
   request: {
-    params: z.object({ companyId: z.string().uuid() }),
+    params: z.object({ companyId: z.string().guid() }),
     query: z.object({ status: z.enum(["pending", "approved", "rejected", "withdrawn", "expired"]).optional() }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
@@ -3043,7 +3046,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary: "Approve and execute a secret proposal as the approving board user",
   request: {
-    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    params: z.object({ companyId: z.string().guid(), id: z.string().guid() }),
     body: jsonBody(approveSecretProposalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
@@ -3055,7 +3058,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary: "Reject a pending secret proposal and dependent bindings",
   request: {
-    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    params: z.object({ companyId: z.string().guid(), id: z.string().guid() }),
     body: jsonBody(rejectSecretProposalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
@@ -3428,9 +3431,9 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
-      agentId: z.string().uuid().optional(),
+      agentId: z.string().guid().optional(),
       responsibleUserId: z.string().min(1).optional(),
-      runId: z.string().uuid().optional(),
+      runId: z.string().guid().optional(),
       entityType: z.string().min(1).optional(),
       entityId: z.string().min(1).optional(),
       action: z.string().min(1).optional(),
@@ -3452,9 +3455,9 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
-      agentId: z.string().uuid().optional(),
+      agentId: z.string().guid().optional(),
       responsibleUserId: z.string().min(1).optional(),
-      runId: z.string().uuid().optional(),
+      runId: z.string().guid().optional(),
       entityType: z.string().min(1).optional(),
       entityId: z.string().min(1).optional(),
       action: z.string().min(1).optional(),
@@ -3489,7 +3492,7 @@ registry.registerPath({
       action: z.string().min(1),
       entityType: z.string().min(1),
       entityId: z.string().min(1),
-      agentId: z.string().uuid().optional().nullable(),
+      agentId: z.string().guid().optional().nullable(),
       details: z.record(z.string(), z.unknown()).optional().nullable(),
     })),
   },
@@ -3855,9 +3858,9 @@ registerCurrentRoute({
   summary: "List decisions",
   query: z.object({
     status: z.enum(["open", "decided", "expired", "cancelled"]).optional(),
-    bundleId: z.string().uuid().optional(),
-    targetIssueId: z.string().uuid().optional(),
-    originAgentId: z.string().uuid().optional(),
+    bundleId: z.string().guid().optional(),
+    targetIssueId: z.string().guid().optional(),
+    originAgentId: z.string().guid().optional(),
     limit: z.coerce.number().int().positive().max(100).optional(),
   }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
@@ -3870,7 +3873,7 @@ registerCurrentRoute({
   summary: "Get decision telemetry grouped by rule key",
   query: z.object({
     groupBy: z.literal("ruleKey"),
-    originAgentId: z.string().uuid().optional(),
+    originAgentId: z.string().guid().optional(),
     since: z.string().datetime().optional(),
   }),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
@@ -3925,8 +3928,8 @@ registerCurrentRoute({
   summary: "Capture a decision training example",
   body: z.object({
     sourceKind: decisionTrainingSourceKindSchema,
-    sourceId: z.string().uuid(),
-    issueId: z.string().uuid(),
+    sourceId: z.string().guid(),
+    issueId: z.string().guid(),
     notes: z.string().max(100_000).default(""),
   }).strict(),
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
@@ -3939,8 +3942,8 @@ registerCurrentRoute({
   summary: "Preview a decision training snapshot",
   body: z.object({
     sourceKind: decisionTrainingSourceKindSchema,
-    sourceId: z.string().uuid(),
-    issueId: z.string().uuid(),
+    sourceId: z.string().guid(),
+    issueId: z.string().guid(),
   }).strict(),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
@@ -3951,7 +3954,7 @@ registerCurrentRoute({
   tags: ["decision-training"],
   summary: "List decision training examples",
   query: z.object({
-    project: z.string().uuid().optional(),
+    project: z.string().guid().optional(),
     kind: decisionTrainingSourceKindSchema.optional(),
     author: z.string().optional(),
     q: z.string().max(500).optional(),
@@ -6889,7 +6892,7 @@ registerCurrentRoute({
   summary: "Promote quarantined low-trust output",
   body: z.object({
     sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
-    sourceArtifactId: z.string().uuid(),
+    sourceArtifactId: z.string().guid(),
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(8_000),
   }),

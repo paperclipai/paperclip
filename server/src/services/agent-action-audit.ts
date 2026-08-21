@@ -26,7 +26,7 @@ type CursorValue = { createdAt: string; id: string };
 
 const cursorValueSchema = z.object({
   createdAt: z.string().datetime({ offset: true }),
-  id: z.string().uuid(),
+  id: z.string().guid(),
 });
 
 function decodeCursor(cursor: string | undefined): CursorValue | null {
