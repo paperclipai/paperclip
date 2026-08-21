@@ -55,6 +55,28 @@ const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
+// The two bridge modes the generated gateway supports. The file mode polls a
+// request/response queue on disk. The duplex mode forwards one request frame to
+// stdout and resolves one response frame from stdin. The generated `.mjs`
+// selects the mode from `PAPERCLIP_API_BRIDGE_MODE`.
+const SANDBOX_CALLBACK_BRIDGE_FILE_MODE = "queue_v1";
+const SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE = "duplex_v1";
+
+// The duplex gateway HTTP wait budget default. The gateway waits this long for a
+// response frame before it answers the local caller with a 502 timeout. The
+// value stays configurable through `PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS`, the
+// same environment key the file mode reads.
+const DEFAULT_DUPLEX_GATEWAY_WAIT_BUDGET_MS = 35_000;
+// How often the duplex gateway writes a heartbeat frame to stdout.
+const DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_INTERVAL_MS = 5_000;
+// The duplex gateway treats the channel as lost when no inbound frame arrives on
+// stdin within this window.
+const DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_TIMEOUT_MS = 20_000;
+// After a loss, the duplex gateway answers each new local request with a 503,
+// then exits when this grace ends. The grace gives the local caller time to read
+// the 409 for an outstanding request and a 503 for a new request.
+const DEFAULT_DUPLEX_GATEWAY_LOSS_EXIT_GRACE_MS = 1_000;
+
 /** Span name that wraps one Paperclip-API callback request — read the request,
  * write the response, and remove the request file. */
 const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest";
@@ -413,7 +435,7 @@ export function buildSandboxCallbackBridgeEnv(input: {
   maxBodyBytes?: number | null;
 }): Record<string, string> {
   return {
-    PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+    PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_FILE_MODE,
     PAPERCLIP_BRIDGE_QUEUE_DIR: input.queueDir,
     PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken,
     PAPERCLIP_BRIDGE_HOST: input.host?.trim() || "127.0.0.1",
@@ -1710,30 +1732,230 @@ export async function startSandboxCallbackBridgeServer(input: {
   };
 }
 
+/**
+ * The zero-dependency codec the generated duplex gateway embeds. It is a plain
+ * JavaScript copy of the host codec in `duplex-frame-codec.ts`. It uses only the
+ * `Buffer`, `JSON`, `Object`, `Set`, and `Array` globals, so the generated
+ * `.mjs` needs no workspace import. It carries no template literal and no `${`
+ * sequence, so it embeds inside the gateway template literal with no escape.
+ *
+ * A shared fixture file (`duplex-frame-vectors.json`) proves this copy stays wire
+ * compatible with the host codec. {@link getSandboxDuplexGatewayCodecSource}
+ * returns this exact source so a test can run every fixture vector against it.
+ */
+const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 1;
+const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1000000;
+const DUPLEX_NEWLINE_BYTE = 0x0a;
+const DUPLEX_EMPTY = Buffer.alloc(0);
+const DUPLEX_RESPONSE_OUTCOMES = new Set(["completed", "indeterminate", "unavailable"]);
+
+function duplexOk(frame) {
+  return { ok: true, frame: frame };
+}
+
+function duplexFail(code, message) {
+  return { ok: false, error: { code: code, message: message } };
+}
+
+function duplexIsPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function duplexIsStringRecord(value) {
+  if (!duplexIsPlainObject(value)) return false;
+  for (const entry of Object.values(value)) {
+    if (typeof entry !== "string") return false;
+  }
+  return true;
+}
+
+function encodeDuplexFrame(frame) {
+  return JSON.stringify(frame) + "\\n";
+}
+
+function decodeDuplexLine(line) {
+  const text = typeof line === "string" ? line : line.toString("utf8");
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return duplexFail("malformed_frame", "frame is not valid JSON");
+  }
+  if (!duplexIsPlainObject(parsed)) {
+    return duplexFail("malformed_frame", "frame is not a JSON object");
+  }
+  if (parsed.version !== DUPLEX_FRAME_VERSION) {
+    return duplexFail("version_mismatch", "frame version " + String(parsed.version) + " is not " + DUPLEX_FRAME_VERSION);
+  }
+  return duplexValidateFrame(parsed);
+}
+
+function duplexValidateFrame(frame) {
+  switch (frame.type) {
+    case "request":
+      return duplexValidateRequest(frame);
+    case "response":
+      return duplexValidateResponse(frame);
+    case "ready":
+      return duplexValidateReady(frame);
+    case "heartbeat":
+      return duplexOk(frame);
+    case "close":
+      return duplexOk(frame);
+    case "error":
+      return duplexValidateError(frame);
+    default:
+      return duplexFail("unknown_type", "unknown frame type " + JSON.stringify(frame.type));
+  }
+}
+
+function duplexValidateRequest(frame) {
+  if (
+    typeof frame.id !== "string" ||
+    typeof frame.method !== "string" ||
+    typeof frame.path !== "string" ||
+    typeof frame.query !== "string" ||
+    typeof frame.body !== "string" ||
+    !duplexIsStringRecord(frame.headers)
+  ) {
+    return duplexFail("malformed_frame", "request frame has a missing or wrong-typed field");
+  }
+  return duplexOk(frame);
+}
+
+function duplexValidateResponse(frame) {
+  if (
+    typeof frame.id !== "string" ||
+    typeof frame.status !== "number" ||
+    typeof frame.body !== "string" ||
+    !duplexIsStringRecord(frame.headers) ||
+    typeof frame.outcome !== "string" ||
+    !DUPLEX_RESPONSE_OUTCOMES.has(frame.outcome)
+  ) {
+    return duplexFail("malformed_frame", "response frame has a missing or wrong-typed field");
+  }
+  return duplexOk(frame);
+}
+
+function duplexValidateReady(frame) {
+  if (typeof frame.address !== "string") {
+    return duplexFail("malformed_frame", "ready frame has a missing or wrong-typed address");
+  }
+  return duplexOk(frame);
+}
+
+function duplexValidateError(frame) {
+  if (typeof frame.code !== "string") {
+    return duplexFail("malformed_frame", "error frame has a missing or wrong-typed code");
+  }
+  if (frame.message !== undefined && typeof frame.message !== "string") {
+    return duplexFail("malformed_frame", "error frame has a wrong-typed message");
+  }
+  return duplexOk(frame);
+}
+
+class DuplexFrameDecoder {
+  constructor(options) {
+    this.buffer = DUPLEX_EMPTY;
+    this.discarding = false;
+    this.maxFrameBytes =
+      options && options.maxFrameBytes != null ? options.maxFrameBytes : DEFAULT_MAX_DUPLEX_FRAME_BYTES;
+  }
+
+  push(chunk) {
+    const incoming = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
+    this.buffer = this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming]);
+    const results = [];
+    for (;;) {
+      if (this.discarding) {
+        const newlineIndex = this.buffer.indexOf(DUPLEX_NEWLINE_BYTE);
+        if (newlineIndex === -1) {
+          this.buffer = DUPLEX_EMPTY;
+          break;
+        }
+        this.buffer = this.buffer.subarray(newlineIndex + 1);
+        this.discarding = false;
+        continue;
+      }
+      const newlineIndex = this.buffer.indexOf(DUPLEX_NEWLINE_BYTE);
+      if (newlineIndex === -1) {
+        if (this.buffer.length > this.maxFrameBytes) {
+          results.push(duplexFail("frame_too_large", "frame exceeds the maximum size"));
+          this.discarding = true;
+          this.buffer = DUPLEX_EMPTY;
+        }
+        break;
+      }
+      const line = this.buffer.subarray(0, newlineIndex);
+      this.buffer = this.buffer.subarray(newlineIndex + 1);
+      if (line.length === 0) continue;
+      if (line.length > this.maxFrameBytes) {
+        results.push(duplexFail("frame_too_large", "frame exceeds the maximum size"));
+        continue;
+      }
+      results.push(decodeDuplexLine(line));
+    }
+    return results;
+  }
+}`;
+
+/**
+ * Return the exact zero-dependency codec source the generated duplex gateway
+ * embeds. A test runs every fixture vector against this source, so it proves the
+ * embedded copy decodes the same bytes as the host codec. The source declares
+ * `encodeDuplexFrame`, `decodeDuplexLine`, `DuplexFrameDecoder`,
+ * `DUPLEX_FRAME_VERSION`, and `DEFAULT_MAX_DUPLEX_FRAME_BYTES`, but exports none
+ * of them; a caller wraps it to read those names.
+ */
+export function getSandboxDuplexGatewayCodecSource(): string {
+  return DUPLEX_GATEWAY_CODEC_SOURCE;
+}
+
 export function getSandboxCallbackBridgeServerSource(): string {
   return `import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+const bridgeMode = process.env.PAPERCLIP_API_BRIDGE_MODE || "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}";
 const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
 const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
 const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
 const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
-const responseTimeoutMs = Number(process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "30000");
+const responseTimeoutMs = Number(
+  process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS ||
+    (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}"
+      ? "${DEFAULT_DUPLEX_GATEWAY_WAIT_BUDGET_MS}"
+      : "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}"),
+);
 const maxQueueDepth = Number(process.env.PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH || "${DEFAULT_BRIDGE_MAX_QUEUE_DEPTH}");
 const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "${DEFAULT_BRIDGE_MAX_BODY_BYTES}");
+const heartbeatIntervalMs = Number(
+  process.env.PAPERCLIP_BRIDGE_HEARTBEAT_INTERVAL_MS || "${DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_INTERVAL_MS}",
+);
+const heartbeatTimeoutMs = Number(
+  process.env.PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS || "${DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_TIMEOUT_MS}",
+);
+const lossExitGraceMs = Number(
+  process.env.PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS || "${DEFAULT_DUPLEX_GATEWAY_LOSS_EXIT_GRACE_MS}",
+);
+// The header allowlist. Both the file gateway and the duplex gateway strip an
+// inbound request to these headers before they forward it. One copy serves both
+// modes. The route allowlist stays on the host: both modes forward a request to
+// the host, and the host enforces the same route allowlist for each.
 const allowedHeaders = new Set(${JSON.stringify([...DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST])});
 
-if (!queueDir || !bridgeToken) {
+if (!bridgeToken) {
+  throw new Error("PAPERCLIP_BRIDGE_TOKEN is required.");
+}
+if (bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}" && !queueDir) {
   throw new Error("PAPERCLIP_BRIDGE_QUEUE_DIR and PAPERCLIP_BRIDGE_TOKEN are required.");
 }
 
-const requestsDir = path.posix.join(queueDir, "requests");
-const responsesDir = path.posix.join(queueDir, "responses");
-const logsDir = path.posix.join(queueDir, "logs");
-const readyFile = path.posix.join(queueDir, "ready.json");
+// The embedded zero-dependency frame codec. The duplex gateway uses it; the file
+// gateway ignores it.
+${DUPLEX_GATEWAY_CODEC_SOURCE}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1766,11 +1988,6 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function queueDepth() {
-  const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
-  return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
-}
-
 function tokensMatch(received) {
   const expected = Buffer.from(bridgeToken, "utf8");
   const actual = Buffer.from(typeof received === "string" ? received : "", "utf8");
@@ -1778,116 +1995,327 @@ function tokensMatch(received) {
   return timingSafeEqual(expected, actual);
 }
 
-async function waitForResponse(requestId) {
-  const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
-  const deadline = Date.now() + responseTimeoutMs;
-  while (Date.now() < deadline) {
-    const body = await fs.readFile(responsePath, "utf8").catch(() => null);
-    if (body != null) {
-      await fs.rm(responsePath, { force: true }).catch(() => undefined);
-      return JSON.parse(body);
-    }
-    await sleep(pollIntervalMs);
-  }
-  throw new Error("Timed out waiting for host bridge response.");
+function writeJsonResponse(res, status, body) {
+  res.statusCode = status;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(body));
 }
 
-const server = createServer(async (req, res) => {
-  try {
-    const auth = req.headers.authorization || "";
-    const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
-    if (!tokensMatch(receivedToken)) {
-      res.statusCode = 401;
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: "Invalid bridge token." }));
-      return;
-    }
+async function runFileGateway() {
+  const requestsDir = path.posix.join(queueDir, "requests");
+  const responsesDir = path.posix.join(queueDir, "responses");
+  const logsDir = path.posix.join(queueDir, "logs");
+  const readyFile = path.posix.join(queueDir, "ready.json");
 
-    if (await queueDepth() >= maxQueueDepth) {
-      res.statusCode = 503;
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: "Bridge request queue is full." }));
-      return;
-    }
-
-    const url = new URL(req.url || "/", "http://127.0.0.1");
-    const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
-    if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
-      res.statusCode = 415;
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: "Bridge only accepts JSON request bodies." }));
-      return;
-    }
-    const requestId = randomUUID();
-    const requestBody = await readBody(req);
-    const payload = {
-      id: requestId,
-      method: req.method || "GET",
-      path: url.pathname,
-      query: url.search,
-      headers: normalizeHeaders(req.headers),
-      body: requestBody,
-      createdAt: new Date().toISOString(),
-    };
-    const requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
-    const tempPath = \`\${requestPath}.tmp\`;
-    await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");
-    await fs.rename(tempPath, requestPath);
-
-    const response = await waitForResponse(requestId);
-    const responseHeaders = response.headers || {};
-    // The host marks a possibly-committed mutation with an indeterminate outcome.
-    // The host cannot cancel a host operation that is in flight, so the mutation
-    // may have committed before the worker aborted the handler. A 5xx status is
-    // retryable by convention, so a caller that retries 5xx would apply the
-    // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
-    // standard retry policy does not repeat the request. The outcome header and
-    // body stay, so a caller that reads them still sees the indeterminate result.
-    const bridgeOutcome = responseHeaders["x-paperclip-bridge-outcome"];
-    if (bridgeOutcome === "indeterminate") {
-      res.statusCode = 409;
-    } else {
-      res.statusCode = typeof response.status === "number" ? response.status : 200;
-    }
-    for (const [key, value] of Object.entries(responseHeaders)) {
-      if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
-      res.setHeader(key, value);
-    }
-    res.end(typeof response.body === "string" ? response.body : "");
-  } catch (error) {
-    res.statusCode = 502;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+  async function queueDepth() {
+    const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
   }
-});
 
-async function shutdown() {
-  server.close(() => {
-    process.exit(0);
+  async function waitForResponse(requestId) {
+    const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
+    const deadline = Date.now() + responseTimeoutMs;
+    while (Date.now() < deadline) {
+      const body = await fs.readFile(responsePath, "utf8").catch(() => null);
+      if (body != null) {
+        await fs.rm(responsePath, { force: true }).catch(() => undefined);
+        return JSON.parse(body);
+      }
+      await sleep(pollIntervalMs);
+    }
+    throw new Error("Timed out waiting for host bridge response.");
+  }
+
+  const server = createServer(async (req, res) => {
+    try {
+      const auth = req.headers.authorization || "";
+      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+      if (!tokensMatch(receivedToken)) {
+        writeJsonResponse(res, 401, { error: "Invalid bridge token." });
+        return;
+      }
+
+      if (await queueDepth() >= maxQueueDepth) {
+        writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
+        return;
+      }
+
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
+      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
+        writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
+        return;
+      }
+      const requestId = randomUUID();
+      const requestBody = await readBody(req);
+      const payload = {
+        id: requestId,
+        method: req.method || "GET",
+        path: url.pathname,
+        query: url.search,
+        headers: normalizeHeaders(req.headers),
+        body: requestBody,
+        createdAt: new Date().toISOString(),
+      };
+      const requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
+      const tempPath = \`\${requestPath}.tmp\`;
+      await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");
+      await fs.rename(tempPath, requestPath);
+
+      const response = await waitForResponse(requestId);
+      const responseHeaders = response.headers || {};
+      // The host marks a possibly-committed mutation with an indeterminate outcome.
+      // The host cannot cancel a host operation that is in flight, so the mutation
+      // may have committed before the worker aborted the handler. A 5xx status is
+      // retryable by convention, so a caller that retries 5xx would apply the
+      // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
+      // standard retry policy does not repeat the request. The outcome header and
+      // body stay, so a caller that reads them still sees the indeterminate result.
+      const bridgeOutcome = responseHeaders["x-paperclip-bridge-outcome"];
+      if (bridgeOutcome === "indeterminate") {
+        res.statusCode = 409;
+      } else {
+        res.statusCode = typeof response.status === "number" ? response.status : 200;
+      }
+      for (const [key, value] of Object.entries(responseHeaders)) {
+        if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
+        res.setHeader(key, value);
+      }
+      res.end(typeof response.body === "string" ? response.body : "");
+    } catch (error) {
+      writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  async function shutdown() {
+    server.close(() => {
+      process.exit(0);
+    });
+  }
+
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+
+  await fs.mkdir(requestsDir, { recursive: true });
+  await fs.mkdir(responsesDir, { recursive: true });
+  await fs.mkdir(logsDir, { recursive: true });
+
+  server.listen(port, host, async () => {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Bridge server did not expose a TCP address.");
+    }
+    const ready = {
+      pid: process.pid,
+      host,
+      port: address.port,
+      baseUrl: \`http://\${host}:\${address.port}\`,
+      startedAt: new Date().toISOString(),
+    };
+    const tempReadyFile = \`\${readyFile}.tmp\`;
+    await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
+    await fs.rename(tempReadyFile, readyFile);
   });
 }
 
-process.on("SIGINT", () => void shutdown());
-process.on("SIGTERM", () => void shutdown());
+function runDuplexGateway() {
+  // One outstanding local request per id. Each entry holds the HTTP resolver and
+  // the wait-budget timer.
+  const pending = new Map();
+  let unavailable = false;
+  let lossTriggered = false;
+  let lastInboundAt = Date.now();
 
-await fs.mkdir(requestsDir, { recursive: true });
-await fs.mkdir(responsesDir, { recursive: true });
-await fs.mkdir(logsDir, { recursive: true });
-
-server.listen(port, host, async () => {
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("Bridge server did not expose a TCP address.");
+  function diag(message) {
+    // Diagnostics go to stderr only. Stdout carries frames.
+    process.stderr.write("[paperclip-bridge] " + message + "\\n");
   }
-  const ready = {
-    pid: process.pid,
-    host,
-    port: address.port,
-    baseUrl: \`http://\${host}:\${address.port}\`,
-    startedAt: new Date().toISOString(),
-  };
-  const tempReadyFile = \`\${readyFile}.tmp\`;
-  await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
-  await fs.rename(tempReadyFile, readyFile);
-});`;
+
+  function writeFrame(frame) {
+    process.stdout.write(encodeDuplexFrame(frame));
+  }
+
+  function stopTimers() {
+    clearInterval(heartbeatSendTimer);
+    clearInterval(heartbeatWatchTimer);
+  }
+
+  // Loss behavior. On stdin end, a close frame, or a heartbeat timeout, answer
+  // every outstanding request with a non-retryable 409 (the request may have
+  // reached the host), answer every new request with a retryable 503 (the
+  // request never left the gateway), then exit. The gateway never replays a
+  // request.
+  function triggerLoss(reason) {
+    if (lossTriggered) return;
+    lossTriggered = true;
+    unavailable = true;
+    diag("duplex channel lost: " + reason);
+    stopTimers();
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timer);
+      entry.resolve({
+        status: 409,
+        headers: {
+          "content-type": "application/json",
+          "x-paperclip-bridge-outcome": "indeterminate",
+        },
+        body: JSON.stringify({ error: "outcome_indeterminate" }),
+      });
+    }
+    pending.clear();
+    const exitTimer = setTimeout(() => process.exit(0), lossExitGraceMs);
+    if (typeof exitTimer.unref === "function") exitTimer.unref();
+  }
+
+  function handleInboundFrame(frame) {
+    if (frame.type === "response") {
+      const entry = pending.get(frame.id);
+      if (!entry) return;
+      pending.delete(frame.id);
+      clearTimeout(entry.timer);
+      // Map an indeterminate outcome to a non-retryable 409, the same contract
+      // the file gateway applies through the outcome header.
+      const statusCode =
+        frame.outcome === "indeterminate" ? 409 : typeof frame.status === "number" ? frame.status : 200;
+      entry.resolve({
+        status: statusCode,
+        headers: frame.headers || {},
+        body: typeof frame.body === "string" ? frame.body : "",
+      });
+      return;
+    }
+    if (frame.type === "close") {
+      triggerLoss("host sent a close frame");
+      return;
+    }
+    // A heartbeat, ready, error, or request frame proves liveness but needs no
+    // local action here.
+  }
+
+  const decoder = new DuplexFrameDecoder();
+  process.stdin.on("data", (chunk) => {
+    lastInboundAt = Date.now();
+    for (const result of decoder.push(chunk)) {
+      if (!result.ok) {
+        diag("dropped an inbound frame: " + result.error.code);
+        continue;
+      }
+      handleInboundFrame(result.frame);
+    }
+  });
+  process.stdin.on("end", () => triggerLoss("stdin reached end of file"));
+  process.stdin.on("error", (error) =>
+    triggerLoss("stdin error: " + (error && error.message ? error.message : String(error))),
+  );
+
+  const heartbeatSendTimer = setInterval(() => {
+    writeFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
+  }, heartbeatIntervalMs);
+  const heartbeatWatchTimer = setInterval(() => {
+    if (Date.now() - lastInboundAt > heartbeatTimeoutMs) {
+      triggerLoss("no inbound frame within the heartbeat timeout");
+    }
+  }, Math.max(200, Math.floor(heartbeatTimeoutMs / 4)));
+
+  const server = createServer(async (req, res) => {
+    try {
+      const auth = req.headers.authorization || "";
+      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+      if (!tokensMatch(receivedToken)) {
+        writeJsonResponse(res, 401, { error: "Invalid bridge token." });
+        return;
+      }
+      if (unavailable) {
+        writeJsonResponse(res, 503, { error: "bridge_unavailable" });
+        return;
+      }
+      if (pending.size >= maxQueueDepth) {
+        writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
+        return;
+      }
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
+      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
+        writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
+        return;
+      }
+      const requestId = randomUUID();
+      const requestBody = await readBody(req);
+      if (unavailable) {
+        writeJsonResponse(res, 503, { error: "bridge_unavailable" });
+        return;
+      }
+      const requestFrame = {
+        version: DUPLEX_FRAME_VERSION,
+        type: "request",
+        id: requestId,
+        method: req.method || "GET",
+        path: url.pathname,
+        query: url.search,
+        headers: normalizeHeaders(req.headers),
+        body: requestBody,
+      };
+      const response = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          if (pending.delete(requestId)) {
+            resolve({
+              status: 502,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ error: "Timed out waiting for host bridge response." }),
+            });
+          }
+        }, responseTimeoutMs);
+        pending.set(requestId, { resolve: resolve, timer: timer });
+        writeFrame(requestFrame);
+      });
+      res.statusCode = typeof response.status === "number" ? response.status : 200;
+      for (const [key, value] of Object.entries(response.headers || {})) {
+        if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
+        res.setHeader(key, value);
+      }
+      res.end(typeof response.body === "string" ? response.body : "");
+    } catch (error) {
+      writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  process.on("SIGINT", () => {
+    try {
+      server.close();
+    } catch (error) {
+      diag("server close error: " + (error && error.message ? error.message : String(error)));
+    }
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    try {
+      server.close();
+    } catch (error) {
+      diag("server close error: " + (error && error.message ? error.message : String(error)));
+    }
+    process.exit(0);
+  });
+
+  server.listen(port, host, () => {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      diag("duplex gateway did not expose a TCP address");
+      process.exit(1);
+      return;
+    }
+    // The one READY frame carries the validated listener address. Stdout carries
+    // only frames.
+    writeFrame({
+      version: DUPLEX_FRAME_VERSION,
+      type: "ready",
+      address: "http://" + host + ":" + address.port,
+    });
+  });
+}
+
+if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}") {
+  runDuplexGateway();
+} else {
+  await runFileGateway();
+}`;
 }

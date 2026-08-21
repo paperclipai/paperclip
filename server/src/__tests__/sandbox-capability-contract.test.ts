@@ -290,6 +290,82 @@ describe("sandbox capability contract normalizer", () => {
     expect(effective.incrementalSessionOutput).toBe(false);
   });
 
+  it("test_concurrent_sync_operations_is_opt_in_and_needs_both_sync_verbs", () => {
+    // Parallel bidirectional file sync is opt-in and direction-neutral. It needs
+    // both sync verbs, so a provider that verifies only one direction cannot get
+    // the capability. An absent declaration denies it even with both verbs.
+    const undeclared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
+      declared: null,
+    });
+    expect(undeclared.concurrentSyncOperations).toBe(false);
+
+    // A positive declaration with both verified verbs resolves true.
+    const bothVerbs = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
+      declared: { concurrentSyncOperations: true },
+    });
+    expect(bothVerbs.concurrentSyncOperations).toBe(true);
+
+    // Only the inbound verb: the outbound prerequisite is missing, so it resolves
+    // false.
+    const inOnly = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncIn"],
+      declared: { concurrentSyncOperations: true },
+    });
+    expect(inOnly.concurrentSyncOperations).toBe(false);
+
+    // Only the outbound verb: the inbound prerequisite is missing, so it resolves
+    // false.
+    const outOnly = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncOut"],
+      declared: { concurrentSyncOperations: true },
+    });
+    expect(outOnly.concurrentSyncOperations).toBe(false);
+  });
+
+  it("test_duplex_command_stream_absent_declaration_resolves_false", () => {
+    // The duplex channel is opt-in and fail-closed. An absent declaration denies
+    // the capability even when the worker verifies the duplex open verb. This
+    // matches the incremental-session-output pattern: an opt-in behavioral
+    // guarantee needs a positive declaration, not just a verified verb.
+    const undeclared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["duplexChannelOpen"],
+      declared: null,
+    });
+    expect(undeclared.duplexCommandStream).toBe(false);
+  });
+
+  it("test_duplex_command_stream_needs_verified_worker_method", () => {
+    // A declaration never grants the capability without the verified duplex open
+    // verb. A provider that declares the capability but whose worker does not
+    // report the duplex open method resolves false.
+    const declaredButUnverified = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: { duplexCommandStream: true },
+    });
+    expect(declaredButUnverified.duplexCommandStream).toBe(false);
+  });
+
+  it("test_duplex_command_stream_declared_and_verified_resolves_true_but_narrowing_removes_it", () => {
+    // A provider that declares the capability and whose worker verifies the
+    // duplex open verb gets the capability.
+    const granted = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["duplexChannelOpen"],
+      declared: { duplexCommandStream: true },
+    });
+    expect(granted.duplexCommandStream).toBe(true);
+
+    // Per-target narrowing still removes a verified and declared capability, so a
+    // lease that cannot use the duplex channel keeps the file bridge.
+    const narrowed = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["duplexChannelOpen"],
+      declared: { duplexCommandStream: true },
+      narrowing: { duplexCommandStream: false },
+    });
+    expect(narrowed.duplexCommandStream).toBe(false);
+  });
+
   it("test_unknown_or_unavailable_verification_resolves_false", () => {
     const declaredAll = {
       reusableLeases: true,
@@ -298,6 +374,7 @@ describe("sandbox capability contract normalizer", () => {
       persistentProcessSessions: true,
       independentControlCommands: true,
       incrementalSessionOutput: true,
+      concurrentSyncOperations: true,
     };
 
     for (const verifiedMethods of [null, undefined, [] as string[]]) {

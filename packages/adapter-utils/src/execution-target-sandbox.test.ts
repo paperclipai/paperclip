@@ -4,8 +4,14 @@ import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  getSandboxCallbackBridgeServerSource,
+  getSandboxDuplexGatewayCodecSource,
+} from "./sandbox-callback-bridge.js";
 
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
@@ -2747,4 +2753,525 @@ describe("sandbox adapter execution targets", () => {
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
   });
+});
+
+// One decoded stdout frame from the generated duplex gateway. The gateway writes
+// newline-delimited JSON frames to stdout, so the test parses each line.
+interface DecodedGatewayFrame {
+  version?: number;
+  type?: string;
+  id?: string;
+  method?: string;
+  path?: string;
+  query?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  address?: string;
+  __unparsed?: string;
+}
+
+// One decode result from the embedded codec. The shape mirrors the host codec:
+// a valid frame or a protocol error with a code.
+interface EmbeddedDecodeResult {
+  ok: boolean;
+  frame?: unknown;
+  error?: { code: string; message: string };
+}
+
+// The names the embedded codec source declares. A test wraps the source and
+// reads these names back.
+interface EmbeddedCodec {
+  encodeDuplexFrame: (frame: unknown) => string;
+  decodeDuplexLine: (line: string | Buffer) => EmbeddedDecodeResult;
+  DuplexFrameDecoder: new (options?: { maxFrameBytes?: number }) => {
+    push: (chunk: Buffer) => EmbeddedDecodeResult[];
+  };
+  DUPLEX_FRAME_VERSION: number;
+  DEFAULT_MAX_DUPLEX_FRAME_BYTES: number;
+}
+
+type ExpectedVectorResult = { frame: unknown } | { error: string };
+
+interface DuplexFrameVector {
+  name: string;
+  category: string;
+  bytes: string;
+  splitByteOffsets?: number[];
+  maxFrameBytes?: number;
+  roundTrip?: boolean;
+  expected: ExpectedVectorResult[];
+}
+
+interface DuplexFrameFixture {
+  frameVersion: number;
+  defaultMaxFrameBytes: number;
+  vectors: DuplexFrameVector[];
+}
+
+describe("sandbox duplex gateway", () => {
+  const duplexCleanupDirs: string[] = [];
+  const duplexChildren: Array<ReturnType<typeof spawn>> = [];
+
+  afterEach(async () => {
+    while (duplexChildren.length > 0) {
+      const child = duplexChildren.pop();
+      if (!child) continue;
+      child.kill("SIGKILL");
+    }
+    while (duplexCleanupDirs.length > 0) {
+      const dir = duplexCleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  interface DuplexGatewayHandle {
+    baseUrl: string;
+    frames: DecodedGatewayFrame[];
+    stderr: () => string;
+    waitForFrame: (
+      predicate: (frame: DecodedGatewayFrame) => boolean,
+      timeoutMs?: number,
+    ) => Promise<DecodedGatewayFrame>;
+    sendFrame: (frame: Record<string, unknown>) => void;
+    sendRaw: (text: string) => void;
+    endStdin: () => void;
+    exited: Promise<number | null>;
+    stop: () => Promise<void>;
+  }
+
+  // Start the generated gateway `.mjs` in duplex mode as a real child process.
+  // The test writes response frames to the child stdin and reads request frames
+  // from the child stdout, so it stands in for the host side of the channel.
+  async function startDuplexGateway(env: Record<string, string>): Promise<DuplexGatewayHandle> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-gateway-"));
+    duplexCleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "gateway.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+
+    const child = spawn(process.execPath, [entrypoint], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
+        PAPERCLIP_BRIDGE_HOST: "127.0.0.1",
+        PAPERCLIP_BRIDGE_PORT: "0",
+        ...env,
+      },
+    });
+    duplexChildren.push(child);
+
+    const frames: DecodedGatewayFrame[] = [];
+    const waiters: Array<{
+      predicate: (frame: DecodedGatewayFrame) => boolean;
+      resolve: (frame: DecodedGatewayFrame) => void;
+    }> = [];
+    let stdoutBuffer = "";
+    let stderrText = "";
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdoutBuffer += chunk;
+      let newlineIndex = stdoutBuffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIndex);
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        if (line.length > 0) {
+          let frame: DecodedGatewayFrame;
+          try {
+            frame = JSON.parse(line) as DecodedGatewayFrame;
+          } catch {
+            frame = { __unparsed: line };
+          }
+          frames.push(frame);
+          for (const waiter of [...waiters]) {
+            if (waiter.predicate(frame)) {
+              waiters.splice(waiters.indexOf(waiter), 1);
+              waiter.resolve(frame);
+            }
+          }
+        }
+        newlineIndex = stdoutBuffer.indexOf("\n");
+      }
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderrText += chunk;
+    });
+
+    const exited = new Promise<number | null>((resolve) => {
+      child.on("exit", (code) => resolve(code));
+    });
+
+    const waitForFrame = (
+      predicate: (frame: DecodedGatewayFrame) => boolean,
+      timeoutMs = 5000,
+    ): Promise<DecodedGatewayFrame> => {
+      const existing = frames.find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return new Promise<DecodedGatewayFrame>((resolve, reject) => {
+        const waiter = {
+          predicate,
+          resolve: (frame: DecodedGatewayFrame) => {
+            clearTimeout(timer);
+            resolve(frame);
+          },
+        };
+        const timer = setTimeout(() => {
+          const index = waiters.indexOf(waiter);
+          if (index !== -1) waiters.splice(index, 1);
+          reject(new Error(`Timed out waiting for a gateway frame. stderr: ${stderrText}`));
+        }, timeoutMs);
+        waiters.push(waiter);
+      });
+    };
+
+    const handle: DuplexGatewayHandle = {
+      baseUrl: "",
+      frames,
+      stderr: () => stderrText,
+      waitForFrame,
+      sendFrame: (frame) => {
+        child.stdin?.write(`${JSON.stringify(frame)}\n`);
+      },
+      sendRaw: (text) => {
+        child.stdin?.write(text);
+      },
+      endStdin: () => {
+        child.stdin?.end();
+      },
+      exited,
+      stop: async () => {
+        child.kill("SIGKILL");
+        await exited.catch(() => null);
+      },
+    };
+
+    const ready = await waitForFrame((frame) => frame.type === "ready");
+    handle.baseUrl = String(ready.address);
+    return handle;
+  }
+
+  it("embedded gateway codec passes every vector in the shared fixture", async () => {
+    const codecFactory = new Function(
+      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES };`,
+    ) as unknown as () => EmbeddedCodec;
+    const codec = codecFactory();
+
+    const fixturePath = fileURLToPath(new URL("./duplex-frame-vectors.json", import.meta.url));
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as DuplexFrameFixture;
+
+    expect(fixture.frameVersion).toBe(codec.DUPLEX_FRAME_VERSION);
+    expect(fixture.defaultMaxFrameBytes).toBe(codec.DEFAULT_MAX_DUPLEX_FRAME_BYTES);
+    expect(fixture.vectors.length).toBeGreaterThanOrEqual(22);
+
+    const failures: string[] = [];
+    for (const vector of fixture.vectors) {
+      const decoder = new codec.DuplexFrameDecoder(
+        vector.maxFrameBytes ? { maxFrameBytes: vector.maxFrameBytes } : undefined,
+      );
+      const buffer = Buffer.from(vector.bytes, "utf8");
+      const offsets = vector.splitByteOffsets;
+      const bounds =
+        offsets && offsets.length > 0 ? [0, ...offsets, buffer.length] : [0, buffer.length];
+      const results: EmbeddedDecodeResult[] = [];
+      for (let index = 0; index < bounds.length - 1; index += 1) {
+        results.push(...decoder.push(buffer.subarray(bounds[index], bounds[index + 1])));
+      }
+
+      if (results.length !== vector.expected.length) {
+        failures.push(`${vector.name}: got ${results.length} results, want ${vector.expected.length}`);
+        continue;
+      }
+      vector.expected.forEach((want, index) => {
+        const got = results[index];
+        if ("frame" in want) {
+          if (!got.ok) {
+            failures.push(`${vector.name}[${index}]: expected a frame, got an error`);
+            return;
+          }
+          try {
+            expect(got.frame).toEqual(want.frame);
+          } catch {
+            failures.push(`${vector.name}[${index}]: frame does not match`);
+          }
+        } else {
+          if (got.ok) {
+            failures.push(`${vector.name}[${index}]: expected an error, got a frame`);
+            return;
+          }
+          if (got.error?.code !== want.error) {
+            failures.push(`${vector.name}[${index}]: error ${got.error?.code} != ${want.error}`);
+          }
+        }
+      });
+    }
+    expect(failures).toEqual([]);
+
+    // The encode side stays wire compatible too: one line, one newline, and the
+    // same frame after a decode round trip.
+    for (const vector of fixture.vectors.filter((entry) => entry.roundTrip)) {
+      const want = vector.expected[0];
+      if (!("frame" in want)) continue;
+      const encoded = codec.encodeDuplexFrame(want.frame);
+      expect(encoded.endsWith("\n")).toBe(true);
+      expect(encoded.slice(0, -1)).not.toContain("\n");
+      const decoded = codec.decodeDuplexLine(encoded.slice(0, -1));
+      expect(decoded.ok).toBe(true);
+      expect(decoded.frame).toEqual(want.frame);
+    }
+  });
+
+  it("returns the same HTTP response as the file gateway for a forwarded request", async () => {
+    const token = "duplex-token-forward";
+    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
+
+    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me?view=compact`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/json",
+        "if-none-match": '"cache-key"',
+        "x-bridge-debug": "drop-me",
+      },
+    });
+    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
+    expect(requestFrame.method).toBe("GET");
+    expect(requestFrame.path).toBe("/api/agents/me");
+    expect(requestFrame.query).toBe("?view=compact");
+    // Only allowlisted headers forward; the bearer and the debug header drop.
+    expect(requestFrame.headers).toEqual({
+      accept: "application/json",
+      "if-none-match": '"cache-key"',
+    });
+
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: requestFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json", etag: '"rev-1"', "content-length": "999" },
+      body: JSON.stringify({ ok: true }),
+      outcome: "completed",
+    });
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("etag")).toBe('"rev-1"');
+    await expect(response.json()).resolves.toEqual({ ok: true });
+
+    // An indeterminate outcome maps to a non-retryable 409, the same contract the
+    // file gateway applies through the outcome header.
+    const indeterminatePromise = fetch(`${gateway.baseUrl}/api/issues/issue-1`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "in_progress" }),
+    });
+    const patchFrame = await gateway.waitForFrame(
+      (frame) => frame.type === "request" && frame.id !== requestFrame.id,
+    );
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: patchFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ error: "outcome_indeterminate" }),
+      outcome: "indeterminate",
+    });
+    const indeterminate = await indeterminatePromise;
+    expect(indeterminate.status).toBe(409);
+
+    await gateway.stop();
+  }, 20000);
+
+  it("enforces the bearer check, JSON-only rule, body limit, and depth limit", async () => {
+    const token = "duplex-token-contract";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH: "1",
+      PAPERCLIP_BRIDGE_MAX_BODY_BYTES: "16",
+    });
+
+    const badAuth = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: "Bearer wrong-token" },
+    });
+    expect(badAuth.status).toBe(401);
+    await expect(badAuth.json()).resolves.toEqual({ error: "Invalid bridge token." });
+
+    const nonJson = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" },
+      body: "not json",
+    });
+    expect(nonJson.status).toBe(415);
+    await expect(nonJson.json()).resolves.toEqual({
+      error: "Bridge only accepts JSON request bodies.",
+    });
+
+    const oversizeBody = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ body: "x".repeat(64) }),
+    });
+    expect(oversizeBody.status).toBe(502);
+    await expect(oversizeBody.json()).resolves.toEqual({
+      error: "Bridge request body exceeded the configured size limit.",
+    });
+
+    // No request frame forwarded so far: the guards rejected before forwarding.
+    const framesBeforeDepth = gateway.frames.filter((frame) => frame.type === "request").length;
+    expect(framesBeforeDepth).toBe(0);
+
+    // One outstanding request fills the single depth slot; the host never
+    // responds, so the slot stays used.
+    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    void outstanding.catch(() => undefined);
+    await gateway.waitForFrame((frame) => frame.type === "request");
+
+    const queueFull = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(queueFull.status).toBe(503);
+    await expect(queueFull.json()).resolves.toEqual({ error: "Bridge request queue is full." });
+
+    // Only the outstanding request forwarded a frame; the queue-full request did
+    // not.
+    const framesAfterDepth = gateway.frames.filter((frame) => frame.type === "request").length;
+    expect(framesAfterDepth).toBe(1);
+
+    await gateway.stop();
+  }, 20000);
+
+  it("answers outstanding requests 409 and new requests 503 on stdin EOF, then exits", async () => {
+    const token = "duplex-token-eof";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
+    });
+
+    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await gateway.waitForFrame((frame) => frame.type === "request");
+    gateway.endStdin();
+
+    const lossResponse = await outstanding;
+    expect(lossResponse.status).toBe(409);
+    expect(lossResponse.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
+
+    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(afterLoss.status).toBe(503);
+    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
+
+    const exitCode = await gateway.exited;
+    expect(exitCode).toBe(0);
+  }, 20000);
+
+  it("applies the same loss behavior on a heartbeat timeout", async () => {
+    const token = "duplex-token-heartbeat";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "400",
+      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
+      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "30000",
+    });
+
+    // Never send an inbound frame: inbound silence trips the heartbeat timeout.
+    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await gateway.waitForFrame((frame) => frame.type === "request");
+
+    const lossResponse = await outstanding;
+    expect(lossResponse.status).toBe(409);
+    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
+
+    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(afterLoss.status).toBe(503);
+    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
+
+    const exitCode = await gateway.exited;
+    expect(exitCode).toBe(0);
+  }, 20000);
+
+  it("keeps diagnostics off stdout; stdout carries only frames", async () => {
+    const token = "duplex-token-stdout";
+    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
+
+    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
+
+    // Feed a malformed inbound line and an unknown response id. Both force a
+    // diagnostic path; none of it may reach stdout.
+    gateway.sendRaw("this is not a frame\n");
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: "unknown-id",
+      status: 200,
+      headers: {},
+      body: "",
+      outcome: "completed",
+    });
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: requestFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      outcome: "completed",
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+
+    // Every stdout line parsed as a frame; none was diagnostic text.
+    expect(gateway.frames.some((frame) => frame.__unparsed !== undefined)).toBe(false);
+    expect(
+      gateway.frames.every(
+        (frame) => typeof frame.version === "number" && typeof frame.type === "string",
+      ),
+    ).toBe(true);
+    const allowedTypes = new Set(["ready", "heartbeat", "request"]);
+    expect(gateway.frames.every((frame) => allowedTypes.has(String(frame.type)))).toBe(true);
+
+    // The malformed inbound line produced a stderr diagnostic, not a stdout one.
+    expect(gateway.stderr()).toContain("dropped an inbound frame");
+
+    await gateway.stop();
+  }, 20000);
+
+  it("defaults the wait budget to 35 s and honors the environment key override", async () => {
+    // The generated source carries the 35 s default.
+    expect(getSandboxCallbackBridgeServerSource()).toContain("35000");
+
+    const token = "duplex-token-budget";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "150",
+      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "30000",
+    });
+
+    const started = Date.now();
+    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: "Timed out waiting for host bridge response.",
+    });
+    expect(Date.now() - started).toBeLessThan(4000);
+
+    await gateway.stop();
+  }, 20000);
 });

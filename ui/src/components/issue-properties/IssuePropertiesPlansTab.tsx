@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueDocument, IssueThreadInteraction } from "@paperclipai/shared";
+import { isArtifactReviewDocumentKey } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecompositionsSection";
@@ -92,8 +93,11 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
   const hasPlans = (data?.length ?? 0) > 0;
   const pendingPlanConfirmation = hasPendingPlanConfirmation(interactions);
   // Every other non-system document (e.g. `synthesis`) renders below the plan;
-  // the `plan` doc itself stays on its dedicated annotated surface above.
-  const otherDocuments = (documents ?? []).filter((doc) => doc.key !== "plan");
+  // the `plan` doc itself stays on its dedicated annotated surface above, and
+  // proxy `artifact-review-*` documents surface only through their Work product.
+  const otherDocuments = (documents ?? []).filter(
+    (doc) => doc.key !== "plan" && !isArtifactReviewDocumentKey(doc.key),
+  );
 
   if (!planDocument && !hasPlans && otherDocuments.length === 0) {
     return (

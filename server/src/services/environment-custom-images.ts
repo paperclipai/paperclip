@@ -52,6 +52,7 @@ import {
   environmentCustomImageTemplateFromRow,
   readEnvironmentCustomImageTemplateKind as readTemplateKind,
   type EnvironmentCustomImageRelinkClassification,
+  type EnvironmentCustomImageDriftedPath,
 } from "./environment-custom-image-runtime.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -73,8 +74,21 @@ export interface EnvironmentCustomImageOverview {
    * active template, or the config could not be evaluated).
    */
   activeTemplateMatchesConfig: boolean | null;
+  /**
+   * Boot-relevant drift attribution for the active template. It classifies the
+   * drift between the capture-time boot-relevant snapshot and the current
+   * config, and lists the drifted paths with their `from`/`to` values. The UI
+   * uses it to name the changed field instead of only "configuration changed".
+   * `null` when there is no active template or the driver is not `sandbox`.
+   */
+  activeTemplateDrift: EnvironmentCustomImageActiveTemplateDrift | null;
   activeSession: EnvironmentCustomImageSetupSession | null;
   latestSession: EnvironmentCustomImageSetupSession | null;
+}
+
+export interface EnvironmentCustomImageActiveTemplateDrift {
+  classification: EnvironmentCustomImageRelinkClassification;
+  driftedPaths: EnvironmentCustomImageDriftedPath[];
 }
 
 export type EnvironmentCustomImageReconciliation =
@@ -643,21 +657,75 @@ export function environmentCustomImageService(
     }
   }
 
+  /**
+   * Computes the boot-relevant drift attribution for the active template row.
+   * It reuses the relink wiring: it reads the snapshot from the row metadata,
+   * resolves the current provider contract, and passes the current parsed
+   * config. A driver that no longer resolves fails closed (null contract, so
+   * `unclassified`). Returns `null` when there is no active template or the
+   * driver is not `sandbox`.
+   */
+  async function computeActiveTemplateDrift(
+    environment: Environment,
+    activeRow: typeof environmentCustomImageTemplates.$inferSelect | null,
+  ): Promise<EnvironmentCustomImageActiveTemplateDrift | null> {
+    if (!activeRow) return null;
+    let parsed: ReturnType<typeof parseEnvironmentDriverConfig>;
+    try {
+      parsed = parseEnvironmentDriverConfig(environment);
+    } catch {
+      return null;
+    }
+    if (parsed.driver !== "sandbox") return null;
+    const active = environmentCustomImageTemplateFromRow(activeRow);
+    // Resolve the current provider contract so the classifier can reject a
+    // snapshot captured against a different binding or identity-path set. A
+    // driver that no longer resolves fails closed (null contract).
+    const resolvedDriver = await resolvePluginSandboxProviderDriverByKey({
+      db,
+      driverKey: active.provider,
+    });
+    const currentContract = resolvedDriver
+      ? {
+          binding: templateConfigBindingFromDriver({
+            templateRefKind: active.templateKind,
+            templateConfigBinding: resolvedDriver.driver.templateConfigBinding,
+          }),
+          templateIdentityPaths: resolvedDriver.driver.templateIdentityPaths ?? [],
+        }
+      : null;
+    // The persisted snapshot is server-internal; read it from the row, not the
+    // sanitized template response.
+    const drift = classifyEnvironmentCustomImageBootRelevantDrift({
+      bootRelevantConfig: readEnvironmentCustomImageBootRelevantConfig(activeRow.metadata),
+      currentConfig: parsed.config,
+      currentContract,
+    });
+    return {
+      classification: drift.classification,
+      driftedPaths: drift.driftedPaths,
+    };
+  }
+
   return {
     getOverview: async (input: {
       environmentId: string;
     }): Promise<EnvironmentCustomImageOverview> => {
       const environment = await requireEnvironment(input.environmentId);
-      const [activeTemplate, activeSession, latestSession] = await Promise.all([
-        resolveActiveTemplate(db, input),
+      const [activeRow, activeSession, latestSession] = await Promise.all([
+        resolveActiveTemplateRow(db, input),
         getActiveSetupSession(input),
         getLatestSetupSession(input),
       ]);
+      const activeTemplate = activeRow
+        ? environmentCustomImageTemplateFromRow(activeRow)
+        : null;
       return {
         activeTemplate,
         activeTemplateMatchesConfig: activeTemplate
           ? await templateMatchesEnvironmentConfig(environment, activeTemplate)
           : null,
+        activeTemplateDrift: await computeActiveTemplateDrift(environment, activeRow),
         activeSession,
         latestSession,
       };

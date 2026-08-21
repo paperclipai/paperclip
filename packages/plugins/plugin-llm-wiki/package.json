@@ -39,11 +39,11 @@
     "@paperclipai/plugin-sdk": "workspace:*",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-typescript": "^12.1.2",
-    "@types/node": "^22.20.1",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "esbuild": "^0.28.1",
-    "react-dom": "^19.2.7",
+    "react-dom": "^19.2.8",
     "rollup": "^4.62.4",
     "tslib": "^2.8.1",
     "typescript": "^5.7.3",
@@ -51,5 +51,8 @@
   },
   "peerDependencies": {
     "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

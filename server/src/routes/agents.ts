@@ -29,6 +29,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
 } from "@paperclipai/shared";
@@ -61,6 +62,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -140,7 +142,6 @@ import {
 } from "@paperclipai/adapter-codex-local/server";
 import {
   AdapterAuthSessionConflictError,
-  CODEX_DEVICE_LOGIN_ADAPTER_TYPE,
   createCodexDeviceLoginService,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
@@ -148,6 +149,7 @@ import {
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
@@ -275,6 +277,7 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    kimi_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -362,12 +365,10 @@ export function agentRoutes(
     companyId: string;
     ownerUserId: string;
     adapterType: string;
-    environmentId: string;
   }): boolean =>
     row.companyId === identity.companyId &&
     row.ownerUserId === identity.ownerUserId &&
-    row.adapterType === identity.adapterType &&
-    row.environmentId === identity.environmentId;
+    row.adapterType === identity.adapterType;
   const inMemorySetupTokenCleanupStore: SetupTokenCleanupStore = {
     async record(record): Promise<void> {
       setupTokenCleanupRows.set(record.sessionId, { ...record });
@@ -507,6 +508,7 @@ export function agentRoutes(
         // after the fence; the lock spans the whole section.
         const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
           context.companyId,
+          context.startedByUserId,
           context.adapterType,
           () =>
             promoteDeviceLoginCredential({
@@ -637,8 +639,8 @@ export function agentRoutes(
       };
     }
 
-    const environment = await environmentsSvc.getById(input.environmentId);
-    if (!environment) {
+    const requestedEnvironment = await environmentsSvc.getById(input.environmentId);
+    if (!requestedEnvironment) {
       return {
         executionTarget: null,
         environmentName: null,
@@ -651,6 +653,40 @@ export function agentRoutes(
         ],
         release: noopRelease,
       };
+    }
+
+    // Managed-sandbox-only policy: redirect a Test that would run on the local
+    // host onto the platform-managed sandbox, the same as a real run does
+    // (resolveExecutionWorkspaceEnvironmentId in heartbeat). Without this
+    // redirect the Test probes the local host while the run executes in the
+    // managed sandbox, so a passing Test validates the wrong execution target.
+    // With no active managed sandbox the Test fails closed — never local.
+    let environment = requestedEnvironment;
+    if (requestedEnvironment.driver === "local") {
+      const managedSandboxOnly =
+        (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+      if (managedSandboxOnly) {
+        const managedSandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(
+          input.companyId,
+        );
+        if (!managedSandboxEnvironment) {
+          return {
+            executionTarget: null,
+            environmentName: requestedEnvironment.name,
+            fallbackChecks: [
+              {
+                code: "managed_sandbox_unavailable",
+                level: "error",
+                message:
+                  "This instance runs agents only in its platform-managed sandbox, but no active managed sandbox environment exists. The test did not run.",
+                hint: "Restore the managed sandbox environment, then test again.",
+              },
+            ],
+            release: noopRelease,
+          };
+        }
+        environment = managedSandboxEnvironment;
+      }
     }
 
     if (environment.driver === "local") {
@@ -746,6 +782,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Re-check the company binding atomically at lease time. The route
+        // guard already rejected a foreign environment, but the binding could
+        // change between the guard check and the lease acquire. This closes
+        // that check-to-lease race so a foreign sandbox never gets a lease.
+        assertCompanyBinding: true,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -852,7 +893,7 @@ export function agentRoutes(
           {
             code: "environment_target_failed",
             level: "error",
-            message: `Could not resolve a sandbox execution target for "${environment.name}".`,
+            message: `Could not resolve an execution target for "${environment.name}".`,
             detail: err instanceof Error ? err.message : String(err),
           },
         ],
@@ -944,9 +985,9 @@ export function agentRoutes(
     return {
       code: "sandbox_test_identity",
       level: "info",
-      message: `Sandbox test identity for "${input.environmentName}".`,
+      message: `Environment test identity for "${input.environmentName}".`,
       detail: detailParts.join("; "),
-      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed sandbox snapshots.",
+      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed environment snapshots.",
     };
   }
 
@@ -1167,9 +1208,20 @@ export function agentRoutes(
     return userId;
   }
 
-  // The device-login flow supports only the Codex adapter. Reject any other type.
-  function assertCodexLoginAdapter(type: string): void {
-    if (type !== CODEX_DEVICE_LOGIN_ADAPTER_TYPE) {
+  // Read the interactive login capability the registry declares for an adapter
+  // type. Return null when the adapter declares no capability, so a guard fails
+  // closed on the absent case.
+  function getRegistryLoginCapability(type: string) {
+    return findActiveServerAdapter(type)?.loginCapability ?? null;
+  }
+
+  // The device-login route drives a login over the streamed exec channel. It
+  // serves any adapter whose registry login capability declares that transport.
+  // The guard reads the capability, not the adapter name, so a new adapter with
+  // the same transport passes with no code change. It rejects an adapter with no
+  // matching capability with a fixed 400.
+  function assertStreamedExecLoginAdapter(type: string): void {
+    if (getRegistryLoginCapability(type)?.sandboxTransport !== "streamed_exec") {
       throw badRequest(`Adapter "${type}" does not support a device login.`);
     }
   }
@@ -1236,7 +1288,7 @@ export function agentRoutes(
     const resolved = provider
       ? await resolvePluginSandboxProviderDriverByKey({ db, driverKey: provider })
       : null;
-    if (!resolved?.driver.supportsSetupTokenLogin) {
+    if (!resolved?.driver.supportsLoginPty) {
       throw unprocessable(SETUP_TOKEN_PROVIDER_UNSUPPORTED, {
         code: SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
       });
@@ -1251,19 +1303,17 @@ export function agentRoutes(
   async function readOwnerLoginSession(
     companyId: string,
     adapterType: string,
-    sessionId: string,
+    publicSessionId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await adapterLoginStore.get(sessionId);
-    if (
-      !row ||
-      row.companyId !== companyId ||
-      row.adapterType !== adapterType ||
-      row.startedByUserId !== requestingUserId
-    ) {
+    // Read by the public session id, scoped to the company. The store predicate
+    // already carries the company id, so a foreign-company caller reads nothing
+    // and the internal row id never matches. Keep the adapter and owner checks.
+    const row = await adapterLoginStore.getByPublicId(publicSessionId, companyId);
+    if (!row || row.adapterType !== adapterType || row.startedByUserId !== requestingUserId) {
       return null;
     }
-    return adapterLoginService.readOwnerSession(sessionId, requestingUserId);
+    return adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -1841,6 +1891,10 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "kimi_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_KIMI_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
@@ -2331,6 +2385,39 @@ export function agentRoutes(
     res.json(detected);
   });
 
+  // The environment drivers the adapter Test route accepts. A local, SSH, or
+  // sandbox environment can host a probe; a plugin environment cannot.
+  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
+
+  // The fail-closed tenant-binding guard for the adapter Test route. A caller
+  // may name any instance environment by id, so the route must reject an
+  // environment that binds to another company before it resolves secrets,
+  // merges env, resolves the target, leases a sandbox, or runs the adapter
+  // test. The guard checks the company binding BEFORE it validates the status
+  // or the driver, so it never reveals the status or the driver of a foreign
+  // environment. A same-company or an instance-global environment then gets the
+  // shared driver and status validation.
+  async function assertAdapterTestEnvironmentForCompany(
+    companyId: string,
+    environmentId: string,
+  ): Promise<void> {
+    const environment = await environmentsSvc.getById(environmentId);
+    if (!environment) {
+      // A missing environment leaks no tenant state. The execution-context
+      // resolver surfaces the existing environment_not_found check.
+      return;
+    }
+    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
+      throw forbidden("The selected environment belongs to another company.", {
+        code: "environment_company_mismatch",
+      });
+    }
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -2347,6 +2434,11 @@ export function agentRoutes(
         typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
           ? (req.body.environmentId as string)
           : null;
+      // Fail closed on a foreign environment before any secret resolution, env
+      // merge, target resolution, sandbox lease, or adapter test runs.
+      if (requestedEnvironmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
@@ -2494,33 +2586,35 @@ export function agentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
-      const startedByUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertCodexLoginAdapter(type);
 
-      const environmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? (req.body.environmentId as string)
-          : null;
-      if (!environmentId) {
-        throw badRequest("A sandbox environment is required to start a device login.");
-      }
-      const ttlSeconds =
-        typeof req.body?.ttlSeconds === "number" && Number.isFinite(req.body.ttlSeconds)
-          ? (req.body.ttlSeconds as number)
-          : undefined;
-
-      // Reject a non-sandbox or inactive environment before the service starts.
-      await assertSandboxLoginEnvironment(companyId, environmentId);
+      // The shared start-route spine derives the owner, checks the path adapter
+      // type, validates the strict request schema, and checks the sandbox
+      // environment before any session or lease side effect. The client body
+      // carries no adapter type, so the spine injects the path type into the
+      // parse. The strict schema rejects an unknown field, a non-uuid
+      // environment id, and an out-of-range time-to-live with a fixed 400.
+      const resolved = await runAdapterLoginStartSpine({
+        req,
+        res,
+        deriveOwner: () => assertCanManageAdapterLogin(req, companyId),
+        guardBeforeValidate: () => assertStreamedExecLoginAdapter(type),
+        requestSchema: startAdapterAuthSessionRequestSchema,
+        invalidRequestError: "The device login start request is invalid.",
+        requestOverrides: { adapterType: type },
+        assertSandbox: (data) => assertSandboxLoginEnvironment(companyId, data.environmentId),
+      });
+      if (!resolved) return;
+      const { ownerUserId: startedByUserId, data } = resolved;
 
       const controller = new AbortController();
       let result: Awaited<ReturnType<typeof adapterLoginService.start>>;
       try {
         result = await adapterLoginService.start({
           companyId,
-          environmentId,
+          environmentId: data.environmentId,
           adapterType: type,
           startedByUserId,
-          ttlSeconds,
+          ttlSeconds: data.ttlSeconds,
           signal: controller.signal,
         });
       } catch (error) {
@@ -2556,7 +2650,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertCodexLoginAdapter(type);
+      assertStreamedExecLoginAdapter(type);
 
       const owner = await readOwnerLoginSession(companyId, type, sessionId, ownerUserId);
       if (!owner) {
@@ -2576,7 +2670,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertCodexLoginAdapter(type);
+      assertStreamedExecLoginAdapter(type);
 
       // Scope the cancel to this company, adapter, and owner. A non-owner and a
       // cross-company caller both receive a 404 and cannot cancel a session.
@@ -2589,7 +2683,7 @@ export function agentRoutes(
       // even when this process does not own the in-flight run, so a cross-process
       // cancel or a cancel after a restart does not leave the slot held until the
       // expiry. The reaper deletes the sandbox and finalizes the terminal.
-      const cancelled = await adapterLoginService.cancelOwnerSession(sessionId, ownerUserId);
+      const cancelled = await adapterLoginService.cancelOwnerSession(sessionId, companyId, ownerUserId);
       // Abort the in-flight run this process owns, so the local login stops at
       // once instead of waiting for the reaper. A run in another process, or an
       // already-terminal run, has no controller here.
@@ -4631,66 +4725,85 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/setup-token-login-sessions", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
-    res.setHeader("Cache-Control", "no-store");
 
-    // Parse the request with the shared strict validator before any session,
-    // lease, or pseudo-terminal side effect. `.strict()` rejects an unknown field,
-    // including a legacy `ttlSeconds`, with a fixed 400. The route echoes no input.
-    const parsed = startClaudeSetupTokenSessionRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "The Claude login start request is invalid." });
-      return;
-    }
-    const { environmentId, adapterType } = parsed.data;
-    const confirmedOverwrite: ClaudeSetupTokenOverwrite | null = parsed.data.overwrite ?? null;
-
-    // The company-and-environment login serves only the Claude adapter. A
-    // different adapter type gets a fixed 400.
-    if (adapterType !== CLAUDE_SETUP_TOKEN_ADAPTER_TYPE) {
-      res.status(400).json({ error: "Only the claude_local adapter supports a setup-token login." });
-      return;
-    }
-
-    if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
-      // The live login transport binds at a later call site. Fail closed with the
-      // fixed no-secret error until then.
-      res.status(503).json({ error: SETUP_TOKEN_START_FAILED });
-      return;
-    }
-
-    // Resolve the environment server-side to a live instance sandbox. It fails
-    // closed on a missing, archived, non-sandbox, or fake-provider environment, so
-    // the route never persists an empty or invalid environment scope. It runs
-    // before the session starts, so no store holds a rejected environment. It
-    // also rejects an environment that another company owns (see
-    // `assertSandboxLoginEnvironment`), so a login never runs in a foreign
-    // company sandbox. It also fails closed when the provider does not advertise
-    // the setup-token login capability, so an unsupported provider never reaches
-    // a session row, a lease, or a pseudo-terminal.
-    await assertSandboxLoginEnvironment(companyId, environmentId, {
-      requireSetupTokenLoginProvider: true,
+    // The shared start-route spine derives the owner, validates the strict
+    // request schema, runs the Claude-only guards, and checks the sandbox
+    // environment before any session, lease, or pseudo-terminal side effect.
+    //
+    // The owner step runs the company access check, derives the owner, and then
+    // sets `Cache-Control: no-store`, so a rejected member sees no cache header
+    // and every other response carries it. The strict schema rejects an unknown
+    // field, including a legacy `ttlSeconds`, with a fixed 400. The post-validate
+    // guard rejects a non-Claude adapter with a fixed 400 and fails closed with
+    // the fixed no-secret 503 until the live login transport binds. The sandbox
+    // check fails closed on a missing, archived, non-sandbox, fake-provider, or
+    // foreign environment, and on a provider without the setup-token login
+    // capability, so no rejected environment reaches a session row, a lease, or a
+    // pseudo-terminal.
+    const resolved = await runAdapterLoginStartSpine({
+      req,
+      res,
+      deriveOwner: () => {
+        assertCompanyAccess(req, companyId);
+        const ownerUserId = deriveSetupTokenOwnerUserId(req);
+        res.setHeader("Cache-Control", "no-store");
+        return ownerUserId;
+      },
+      requestSchema: startClaudeSetupTokenSessionRequestSchema,
+      invalidRequestError: "The Claude login start request is invalid.",
+      guardAfterValidate: (data) => {
+        // The setup-token route drives a login on a pseudo-terminal and records a
+        // stored session identifier on success. It serves any adapter whose
+        // registry login capability declares that transport and that claim. The
+        // guard reads the capability, not the adapter name, so a new adapter with
+        // the same capability passes with no code change. It rejects an adapter
+        // with no matching capability with a fixed 400.
+        const capability = getRegistryLoginCapability(data.adapterType);
+        if (
+          capability?.sandboxTransport !== "pseudo_terminal" ||
+          capability.completionClaim !== "storedSessionId"
+        ) {
+          res.status(400).json({ error: "This adapter does not support a setup-token login." });
+          return true;
+        }
+        if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
+          res.status(503).json({ error: SETUP_TOKEN_START_FAILED });
+          return true;
+        }
+        return false;
+      },
+      assertSandbox: (data) =>
+        assertSandboxLoginEnvironment(companyId, data.environmentId, {
+          requireSetupTokenLoginProvider: true,
+        }),
     });
+    if (!resolved) return;
+    const { ownerUserId, data } = resolved;
+    const { environmentId, adapterType } = data;
+    const confirmedOverwrite: ClaudeSetupTokenOverwrite | null = data.overwrite ?? null;
 
     const scope: SetupTokenSessionScope = {
       companyId,
       ownerUserId,
-      targetAgentId: null,
       adapterType,
       environmentId,
       confirmedOverwrite,
     };
+    // Read the panel mode from the adapter capability. The guard already checked
+    // the capability, so it is present here. The client renders the panel from
+    // this value instead of a hard-coded mode.
+    const panelMode =
+      getRegistryLoginCapability(adapterType)?.panelMode ?? "submitted_browser_code";
     try {
       const started = await setupTokenLoginService.start(scope);
       const descriptor = setupTokenLoginService.describeOwned(started.sessionId, scope);
       // The start response carries the panel mode, so the client renders the
-      // browser-code panel. The full login URL rides only through the
-      // guarded prompt read, not the start response, so the prompt is null here.
-      // The client reads the prompt route for the login URL.
+      // correct panel. The full login URL rides only through the guarded prompt
+      // read, not the start response, so the prompt is null here. The client
+      // reads the prompt route for the login URL.
       const body: ClaudeSetupTokenSessionOwnerResponse = {
         ...toClaudePublicResponse(descriptor),
-        panelMode: "submitted_browser_code",
+        panelMode,
         prompt: null,
       };
       res.status(201).json(body);

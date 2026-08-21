@@ -111,10 +111,16 @@ absent, never a misleading `0`.
 | `stage.sync` | Workspace stage-sync step. | `sandbox.startup` |
 | `snapshot.git` | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`). | `stage.sync` |
 | `snapshot.baseline` | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore. | `stage.sync` |
-| `pack` | Host-side workspace tarball build inside `stage.sync`. | `stage.sync` |
+| `stage.workspace` | One inbound workspace stage task inside `stage.sync`. It packs and uploads the workspace. | `stage.sync` |
+| `stage.asset.<key>` | One inbound asset stage task inside `stage.sync`. It packs and uploads one managed-home asset. The `<key>` segment is the asset key. | `stage.sync` |
+| `stage.project.<id>` | One inbound referenced-project stage task inside `stage.sync`. It uploads one referenced project. The `<id>` segment is the project id. | `stage.sync` |
+| `pack` | Host-side workspace tarball build inside the `stage.workspace` task. | `stage.workspace` |
 | `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
 | `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
 | `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
+| `sandbox.syncBack` | The settlement sync-back that restores the managed home at teardown. | the active run span |
+| `restore.workspace` | One outbound workspace restore task at teardown. It reads the sandbox workspace back and merges it into the host workspace. | `sandbox.syncBack` |
+| `restore.asset.<key>` | One outbound asset restore task at teardown. It reads one asset back to its host store. The `<key>` segment is the asset key. | `sandbox.syncBack` |
 | `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
 | `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
 | `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
@@ -123,9 +129,19 @@ absent, never a misleading `0`.
 
 A step span name is the step name. The `sandbox.exec` span parents to the step
 span that runs the execution, so each execution nests under its step. Within
-`stage.sync`, the host-side sub-steps `snapshot.git`, `snapshot.baseline`, and
-`pack` open as child spans of the step, so the host work at the head of the step
-is attributed rather than showing as a gap. A run-time
+`stage.sync`, the host-side sub-steps `snapshot.git` and `snapshot.baseline` open
+as child spans of the step, so the host work at the head of the step is
+attributed rather than showing as a gap. Each inbound sync operation also opens
+its own task span under `stage.sync`: `stage.workspace`, one `stage.asset.<key>`
+per asset, and one `stage.project.<id>` per referenced project. The `pack` span
+nests under `stage.workspace`, because the host builds the tarball inside that
+task. Two concurrent tasks produce overlapping spans.
+
+The settlement `sandbox.syncBack` span runs at teardown and parents to the run
+span. It wraps the managed-home restore. Each outbound restore operation opens
+its own task span under `sandbox.syncBack`: `restore.workspace` and one
+`restore.asset.<key>` per asset. Two concurrent restore tasks produce overlapping
+spans. A run-time
 `sandbox.exec` span parents instead to the run-time wrapper span that runs it
 (`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`,
 `sandbox.callbackBridge.relayRequest`, or `sandbox.agentProcess`). Each run-time
@@ -228,7 +244,7 @@ before it records the span.
 | Span | Scope | Parent |
 | --- | --- | --- |
 | `sandbox.daytona.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
-| `sandbox.daytona.transfer` | The transfer step that uploads the files to the sandbox. | the active startup step span |
+| `sandbox.daytona.transfer` | The transfer step: an upload to the sandbox (inbound) or a download from the sandbox (outbound). The `paperclip.sandbox.startup.transfer.direction` attribute records the direction. | the active sync task span (`stage.*` inbound, `restore.*` under `sandbox.syncBack` outbound) |
 | `sandbox.daytona.ensureDirectory` | The `mkdir -p` step that ensures a directory exists before a write. | the active startup step span |
 | `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use. | the active startup step span |
 | `sandbox.daytona.promote` | The atomic move of a staged temp onto its target via a pinned dir handle. | the active startup step span |
@@ -258,10 +274,12 @@ the attributes that the producer sends for one span.
 | `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span. |
 | `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span. |
 | `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
+| `paperclip.sandbox.startup.transfer.direction` | string | yes | The transfer direction (`inbound` or `outbound`). It rides the `sandbox.daytona.transfer` span. |
 
 The `span.record` host handler enforces the allowlist. It re-maps `provider`
 through the provider-family normalizer. It keeps `outcome` only when the value
-is `ok`, `skipped`, or `failed`. It keeps a numeric attribute only when the
+is `ok`, `skipped`, or `failed`. It keeps `transfer.direction` only when the
+value is `inbound` or `outbound`. It keeps a numeric attribute only when the
 value is a finite number. It drops a status message and keeps only the numeric
 status code. The handler never throws, because observability must not change the
 sync control flow.
@@ -271,9 +289,14 @@ capability. So only a plugin that registers an environment driver may emit a
 provider span. The capability gate rejects a provider span from any other
 plugin.
 
-The host parents each provider span to the active startup step span. The host
-mints a W3C `traceparent` from the active step and passes it to the plugin
-worker on the per-call invocation channel. The worker tags its span with the
+The host parents each provider span to the active sync task span. An inbound
+transfer runs inside a `stage.*` task span, so its provider spans parent there.
+An outbound transfer runs inside a `restore.*` task span under `sandbox.syncBack`
+at teardown, so its provider spans parent there. The host mints a W3C
+`traceparent` from the active task span and passes it to the plugin worker on the
+per-call invocation channel. The teardown restore runs inside the run-parented
+`sandbox.syncBack` span, so the host mints a `traceparent` for an outbound
+provider span the same way it does for an inbound one. The worker tags its span with the
 `traceparent` and treats the value as opaque. The worker never derives the
 parent from it. The host recovers the `traceparent` from its own invocation
 record, so a worker can never forge a parent. The host validates the

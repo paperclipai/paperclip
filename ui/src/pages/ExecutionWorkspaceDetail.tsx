@@ -377,6 +377,8 @@ function workspaceOperationPhaseLabel(phase: string) {
       return "Config freshness";
     case "workspace_provision":
       return "Provision";
+    case "workspace_seed":
+      return "Database seed";
     case "workspace_runtime_provision":
       return "Runtime provision";
     case "workspace_teardown":
@@ -399,14 +401,16 @@ export type RuntimeProvisionStatus =
 
 /**
  * Derives the lazy runtime-provisioning state from the configured command and the
- * `workspace_runtime_provision` operation-log entries (most-recent first). Returns
+ * database-seed or runtime-provision operation-log entries (most-recent first). Returns
  * "eager" when no runtime provision command is configured (the legacy path).
  */
 export function resolveRuntimeProvisionStatus(input: {
   runtimeProvisionCommand: string | null | undefined;
   operations: WorkspaceOperation[] | undefined;
 }): RuntimeProvisionStatus {
-  const latest = (input.operations ?? []).find((operation) => operation.phase === "workspace_runtime_provision") ?? null;
+  const latest = (input.operations ?? []).find((operation) => (
+    operation.phase === "workspace_seed" || operation.phase === "workspace_runtime_provision"
+  )) ?? null;
   if (latest) {
     const at = latest.finishedAt ?? latest.startedAt ?? null;
     if (latest.status === "running") return { kind: "provisioning", at };

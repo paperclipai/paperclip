@@ -5,7 +5,12 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
-import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
+import {
+  deriveOriginatingActor,
+  isArtifactReviewDocumentKey,
+  type Issue,
+  type IssueLabel,
+} from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
@@ -225,10 +230,15 @@ export function IssueProperties({
     enabled: taskChatShellEnabled,
   });
   const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
+  // Proxy `artifact-review-*` documents surface only through their Work
+  // product row, so they must not summon the Plan or Documents surfaces.
+  const paneTabStandaloneDocuments = (paneTabDocuments ?? []).filter(
+    (doc) => !isArtifactReviewDocumentKey(doc.key),
+  );
   const hasPlanTab =
     Boolean(paneTabPlanDocument)
     || (paneTabAcceptedPlans?.length ?? 0) > 0
-    || (paneTabDocuments?.length ?? 0) > 0
+    || paneTabStandaloneDocuments.length > 0
     || issue.workMode === "planning";
   // Artifacts covers the same three sources the tab body composes: work
   // products, documents (redundant with the Plan tab, intentionally), and
@@ -236,7 +246,7 @@ export function IssueProperties({
   // no longer summon the tab.
   const hasArtifactsTab =
     (paneTabWorkProducts?.length ?? 0) > 0
-    || (paneTabDocuments?.length ?? 0) > 0
+    || paneTabStandaloneDocuments.length > 0
     || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState("properties");
   // Once a plan document exists, surface it: switch the pane to the Plan tab so

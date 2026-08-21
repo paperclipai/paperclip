@@ -64,7 +64,7 @@ describe("heartbeat run runtime status store", () => {
       agentId: "agent-1",
       runId: "run-1",
       phase: "finalize",
-      message: "Finalizing sandbox workspace",
+      message: "Finalizing workspace",
     });
 
     expect(clearHeartbeatRunRuntimeStatus("run-1")).toBe(true);

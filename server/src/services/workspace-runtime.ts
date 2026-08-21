@@ -36,7 +36,7 @@ import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
-import { hasVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
+import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   buildManagedWorkspaceGuestEnv,
   logManagedWorkspaceReadinessRejection,
@@ -52,7 +52,9 @@ import {
   findAdoptableLocalService,
   isLocalServiceProcessOwnedBy,
   isLocalServiceProcessInWorkspace,
+  openLocalServiceLogFile,
   readLocalServiceProcessCwd,
+  readLocalServiceProcessGroupId,
   readLocalServicePortOwner,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
@@ -78,7 +80,7 @@ import {
   reserveExposure,
   type ExposureManagerDeps,
 } from "./runtime-exposure/exposure-manager.js";
-import { diagnoseRuntimeListenerBinds } from "./runtime-exposure/loopback-listener.js";
+import { diagnoseRuntimeListenerBinds, readListenerBindFacts } from "./runtime-exposure/loopback-listener.js";
 import { allocateExposurePortPair } from "./runtime-exposure/port-pair.js";
 import {
   buildExposureReservationLedger,
@@ -271,11 +273,28 @@ const DEFAULT_TAILSCALE_BROKER_SOCKET = "/run/paperclip-tailscale-broker/broker.
 
 class RuntimeServicePortBindCollision extends Error {
   readonly port: number;
+  /**
+   * Who held the port when the collision was seen, captured at failure time.
+   * Null when no owner remained (a transient racer that already released it).
+   */
+  readonly diagnosis: string | null;
 
-  constructor(port: number) {
-    super(`Runtime service could not bind allocated port ${port}`);
+  /**
+   * True when the port is only a preference and the caller may re-allocate a
+   * different one. Exposed runtimes always draw from the dedicated broker range,
+   * so a collision on the assigned port is recoverable by taking the next pair.
+   */
+  readonly exposureReallocatable: boolean;
+
+  constructor(port: number, diagnosis: string | null = null, exposureReallocatable = false) {
+    super(
+      `Runtime service could not bind allocated port ${port}` +
+        (diagnosis ? ` (${diagnosis})` : ""),
+    );
     this.name = "RuntimeServicePortBindCollision";
     this.port = port;
+    this.diagnosis = diagnosis;
+    this.exposureReallocatable = exposureReallocatable;
   }
 }
 
@@ -481,7 +500,7 @@ type ProcessOutputAccumulator = {
  * broker fake handles the removal rather than the real host broker.
  */
 export async function resetRuntimeServicesForTests(
-  opts: { terminateProcesses?: boolean } = {},
+  opts: { terminateProcesses?: boolean; simulateSupervisorExit?: boolean } = {},
 ) {
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
@@ -490,6 +509,13 @@ export async function resetRuntimeServicesForTests(
   }
   for (const record of runtimeServicesById.values()) {
     clearIdleTimer(record);
+    if (opts.simulateSupervisorExit) {
+      // A real supervisor exit closes its side of every inherited pipe. Tests
+      // use this to prove surviving request-logging services do not depend on
+      // Paperclip keeping an anonymous stdio peer alive.
+      record.child?.stdout?.destroy();
+      record.child?.stderr?.destroy();
+    }
   }
   runtimeServicesById.clear();
   runtimeServicesByReuseKey.clear();
@@ -2344,26 +2370,116 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   };
 }
 
+// A configured base ref that does not resolve to a commit, even after an
+// authenticated fetch of its `origin/<branch>` counterpart. The caller must
+// stop before `git worktree add` and raise a pre-dispatch configuration
+// failure. `requestedRef` keeps the operator spelling for the human notice.
+// `recoveryIdentityRef` is the canonical remote ref the resolver probed, so two
+// equivalent spellings of one remote branch map to one recovery identity.
+// `attemptedRefs` names each ref the resolver tried, and `fetchError` carries
+// the first fetch warning (masked) when the fetch itself failed.
+export class UnresolvedWorkspaceBaseRefError extends Error {
+  requestedRef: string;
+  recoveryIdentityRef: string;
+  attemptedRefs: string[];
+  fetchError: string | null;
+
+  constructor(input: {
+    requestedRef: string;
+    recoveryIdentityRef: string;
+    attemptedRefs: string[];
+    fetchError?: string | null;
+  }) {
+    super(
+      `Configured workspace base ref "${input.requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
+    );
+    this.name = "UnresolvedWorkspaceBaseRefError";
+    this.requestedRef = input.requestedRef;
+    this.recoveryIdentityRef = input.recoveryIdentityRef;
+    this.attemptedRefs = input.attemptedRefs;
+    this.fetchError = input.fetchError ?? null;
+  }
+}
+
+export function isUnresolvedWorkspaceBaseRefError(error: unknown): error is UnresolvedWorkspaceBaseRefError {
+  return error instanceof UnresolvedWorkspaceBaseRefError;
+}
+
+// A resolved base ref that the caller can pass to `git worktree add`, or an
+// unresolved outcome that must stop the caller before it creates the worktree.
+type AuthoritativeBaseRefResolution =
+  | { resolved: true; baseRef: string; warnings: string[]; refreshed: boolean }
+  | {
+      resolved: false;
+      requestedRef: string;
+      // The canonical remote ref the resolver probed for this branch, for
+      // example `origin/fix/foo`. Two equivalent spellings of one remote branch
+      // (`fix/foo` and `origin/fix/foo`) share this value, so recovery treats
+      // them as one identity. Two different branches get different values.
+      recoveryIdentityRef: string;
+      attemptedRefs: string[];
+      warnings: string[];
+      fetchError: string | null;
+    };
+
 // Resolve the authoritative base ref for a fresh worktree. A configured local
 // branch is mapped to its `origin/<branch>` counterpart so unpushed local
-// divergence never leaks into the task branch; remote-tracking refs, SHAs, and
-// tags are used verbatim, and an unset/`HEAD` base falls back to the detected
-// default branch (which already prefers `origin/master`).
+// divergence never leaks into the task branch; SHAs and tags are used verbatim,
+// and an unset/`HEAD` base falls back to the detected default branch (which
+// already prefers `origin/master`).
+//
+// A remote-only feature branch never has a local ref or a remote-tracking ref
+// yet. The resolver fetches `origin/<branch>` with the authenticated helper,
+// then re-checks the commit. This covers both the unqualified form (`fix/foo`)
+// and the remote-tracking form (`origin/fix/foo`). A ref that still does not
+// resolve returns `resolved: false`, so the caller stops before the worktree
+// add instead of passing an invalid reference to git.
 async function resolveAuthoritativeBaseRef(
   repoRoot: string,
   configuredBaseRef: string | null,
   resolveGitAuth?: GitRemoteAuthProvider | null,
-): Promise<{ baseRef: string; warnings: string[]; refreshed: boolean }> {
+): Promise<AuthoritativeBaseRefResolution> {
   const warnings: string[] = [];
   const detectOrHead = async () => (await detectDefaultBranch(repoRoot, resolveGitAuth)) ?? "HEAD";
 
   const configured = configuredBaseRef?.trim();
   if (!configured || configured === "HEAD") {
-    return { baseRef: await detectOrHead(), warnings, refreshed: false };
+    return { resolved: true, baseRef: await detectOrHead(), warnings, refreshed: false };
   }
 
-  if (parseRemoteTrackingRef(configured)) {
-    return { baseRef: configured, warnings, refreshed: false };
+  // A remote-tracking ref supplied directly (for example `origin/fix/foo`).
+  // Use it verbatim when it already resolves. When it does not, fetch it once
+  // and re-check, then stop if it is still absent on the remote.
+  //
+  // `parseRemoteTrackingRef` only checks the `remote/branch` shape. An
+  // unqualified branch name that contains a slash (for example `fix/foo`) has
+  // the same shape but names no real remote, so it is not a remote-tracking
+  // ref. Gate this branch on the first segment naming an existing remote, and
+  // let a name like `fix/foo` fall through to the remote-only branch handling
+  // below.
+  const remoteTracking = parseRemoteTrackingRef(configured);
+  if (remoteTracking && await resolveBaseRefSha(repoRoot, configured)) {
+    return { resolved: true, baseRef: configured, warnings, refreshed: false };
+  }
+  if (remoteTracking && await remoteExists(repoRoot, remoteTracking.remote)) {
+    const fetchWarnings = await refreshRemoteTrackingBaseRef(repoRoot, configured, resolveGitAuth);
+    warnings.push(...fetchWarnings);
+    if (await resolveBaseRefSha(repoRoot, configured)) {
+      return { resolved: true, baseRef: configured, warnings, refreshed: true };
+    }
+    // Build the recovery identity from the parsed remote and branch. The raw
+    // ref and its remote-tracking spelling (`origin/fix/foo` and
+    // `refs/remotes/origin/fix/foo`) then share one recovery fingerprint, so
+    // recovery treats them as one identity instead of two.
+    const canonicalRemoteRef = `${remoteTracking.remote}/${remoteTracking.branch}`;
+    return {
+      resolved: false,
+      requestedRef: configured,
+      recoveryIdentityRef: canonicalRemoteRef,
+      attemptedRefs: [configured],
+      warnings,
+      fetchError: fetchWarnings[0] ?? null,
+    };
   }
 
   if (await localBranchExists(repoRoot, configured)) {
@@ -2372,17 +2488,37 @@ async function resolveAuthoritativeBaseRef(
     // the returned ref (see `refreshed`) so we never fetch the same ref twice.
     warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, resolveGitAuth));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
-      return { baseRef: remoteCandidate, warnings, refreshed: true };
+      return { resolved: true, baseRef: remoteCandidate, warnings, refreshed: true };
     }
     if (await remoteExists(repoRoot, "origin")) {
       warnings.push(
         `Configured base ref "${configured}" is a local branch with no matching origin/${configured}; basing the execution workspace on the local ref, which may include unpushed commits.`,
       );
     }
-    return { baseRef: configured, warnings, refreshed: false };
+    return { resolved: true, baseRef: configured, warnings, refreshed: false };
   }
 
-  return { baseRef: configured, warnings, refreshed: false };
+  // Fall-through: an unqualified ref (for example `fix/foo`) that is not `HEAD`,
+  // not a remote-tracking ref, and not a local branch. A full SHA or a tag that
+  // already resolves stays verbatim. Otherwise treat it as a remote-only branch
+  // name: fetch `origin/<ref>` and base the worktree on the remote counterpart.
+  if (await resolveBaseRefSha(repoRoot, configured)) {
+    return { resolved: true, baseRef: configured, warnings, refreshed: false };
+  }
+  const remoteCandidate = `origin/${configured}`;
+  const fetchWarnings = await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, resolveGitAuth);
+  warnings.push(...fetchWarnings);
+  if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
+    return { resolved: true, baseRef: remoteCandidate, warnings, refreshed: true };
+  }
+  return {
+    resolved: false,
+    requestedRef: configured,
+    recoveryIdentityRef: remoteCandidate,
+    attemptedRefs: [remoteCandidate],
+    warnings,
+    fetchError: fetchWarnings[0] ?? null,
+  };
 }
 
 // Auto-refresh a reused worktree to the latest base only when it is provably
@@ -2763,6 +2899,20 @@ function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+const BUILTIN_WORKSPACE_PROVISION_COMMAND = "bash ./scripts/provision-worktree.sh";
+
+function resolveWorkspaceProvisionCommand(
+  strategy: Record<string, unknown>,
+  repoRoot: string,
+) {
+  const configuredCommand = asString(strategy.provisionCommand, "").trim();
+  if (configuredCommand) return configuredCommand;
+
+  return existsSync(path.join(repoRoot, "scripts", "provision-worktree.sh"))
+    ? BUILTIN_WORKSPACE_PROVISION_COMMAND
+    : "";
+}
+
 function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
   const patterns = [
     /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
@@ -2877,7 +3027,7 @@ async function recordGitOperation(
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "workspace_provision" | "workspace_runtime_provision" | "workspace_teardown";
+    phase: "workspace_provision" | "workspace_seed" | "workspace_runtime_provision" | "workspace_teardown";
     command: string;
     resolvedCommand?: string;
     cwd: string;
@@ -2909,26 +3059,31 @@ async function recordWorkspaceCommandOperation(
         cwd: input.cwd,
         env: input.env,
       });
+      const seedEvidence = input.phase === "workspace_seed"
+        ? readWorkspaceSeedOperationEvidence(input.cwd)
+        : null;
       stdout = result.stdout;
-      stderr = result.stderr;
-      code = result.code;
+      stderr = [result.stderr, seedEvidence?.error].filter(Boolean).join("\n");
+      code = result.code === 0 && seedEvidence && !seedEvidence.verified ? 1 : result.code;
       if (result.stdout && input.onLog) await input.onLog("stdout", `[runtime-provision] ${result.stdout}`);
-      if (result.stderr && input.onLog) await input.onLog("stderr", `[runtime-provision] ${result.stderr}`);
+      if (stderr && input.onLog) await input.onLog("stderr", `[runtime-provision] ${stderr}`);
+      const truncationMetadata = result.stdoutTruncated || result.stderrTruncated
+        ? {
+            stdoutTruncated: result.stdoutTruncated,
+            stderrTruncated: result.stderrTruncated,
+            stdoutBytes: result.stdoutBytes,
+            stderrBytes: result.stderrBytes,
+          }
+        : null;
       return {
-        status: result.code === 0 ? "succeeded" : "failed",
-        exitCode: result.code,
+        status: code === 0 ? "succeeded" : "failed",
+        exitCode: code,
         stdout: result.stdout,
-        stderr: result.stderr,
-        system: result.code === 0 ? input.successMessage ?? null : null,
-        metadata:
-          result.stdoutTruncated || result.stderrTruncated
-            ? {
-                stdoutTruncated: result.stdoutTruncated,
-                stderrTruncated: result.stderrTruncated,
-                stdoutBytes: result.stdoutBytes,
-                stderrBytes: result.stderrBytes,
-              }
-            : null,
+        stderr,
+        system: code === 0 ? input.successMessage ?? null : null,
+        metadata: seedEvidence
+          ? { ...seedEvidence.metadata, ...(truncationMetadata ?? {}) }
+          : truncationMetadata,
       };
     },
   });
@@ -2954,7 +3109,7 @@ async function provisionExecutionWorktree(input: {
   created: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
-  const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
+  const provisionCommand = resolveWorkspaceProvisionCommand(input.strategy, input.repoRoot);
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
@@ -3133,11 +3288,15 @@ export async function realizeExecutionWorkspace(input: {
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
-  const {
-    baseRef,
-    warnings: baseRefResolutionWarnings,
-    refreshed: baseRefAlreadyRefreshed,
-  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, input.resolveGitAuth);
+  const baseRefResolution = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, input.resolveGitAuth);
+  // Keep a usable base ref for the reuse and drift paths even when the ref is
+  // unresolved: those paths tolerate a null base-ref SHA and never run
+  // `git worktree add -b <branch> <baseRef>`. Only the fresh-create path below
+  // stops on an unresolved ref. `baseRefAlreadyRefreshed` is true for the
+  // unresolved case because the resolver already attempted the fetch.
+  const baseRef = baseRefResolution.resolved ? baseRefResolution.baseRef : baseRefResolution.requestedRef;
+  const baseRefResolutionWarnings = baseRefResolution.warnings;
+  const baseRefAlreadyRefreshed = baseRefResolution.resolved ? baseRefResolution.refreshed : true;
   const baseRefreshWarnings = [
     ...baseRefResolutionWarnings,
     ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef, input.resolveGitAuth)),
@@ -3373,6 +3532,19 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
+  // No reusable worktree exists, so a fresh `git worktree add -b <branch> <baseRef>`
+  // must run next. An unresolved base ref would make git fail with
+  // `fatal: invalid reference`. Stop here instead and raise a pre-dispatch
+  // configuration failure that the setup catch routes to a human owner.
+  if (!baseRefResolution.resolved) {
+    throw new UnresolvedWorkspaceBaseRefError({
+      requestedRef: baseRefResolution.requestedRef,
+      recoveryIdentityRef: baseRefResolution.recoveryIdentityRef,
+      attemptedRefs: baseRefResolution.attemptedRefs,
+      fetchError: baseRefResolution.fetchError,
+    });
+  }
+
   let branchCreatedByRuntime = true;
   try {
     await recordGitOperation(input.recorder, {
@@ -3599,22 +3771,20 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     });
     realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
-    if (provisionCommand) {
-      await provisionExecutionWorktree({
-        strategy: {
-          type: "git_worktree",
-          provisionCommand,
-        },
-        base: input.base,
-        repoRoot,
-        worktreePath: realized.worktreePath ?? cwd,
-        branchName: realized.branchName ?? "",
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-        recorder: input.recorder ?? null,
-      });
-    }
+    await provisionExecutionWorktree({
+      strategy: {
+        type: "git_worktree",
+        ...(provisionCommand ? { provisionCommand } : {}),
+      },
+      base: input.base,
+      repoRoot,
+      worktreePath: realized.worktreePath ?? cwd,
+      branchName: realized.branchName ?? "",
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+      recorder: input.recorder ?? null,
+    });
     return realized;
   }
 
@@ -4396,6 +4566,102 @@ async function canBindRuntimePort(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * True when a loopback listener is present on the port, read WITHOUT binding it.
+ *
+ * The readiness wait must never bind the exact port the guest is about to bind.
+ * A probe `listen()` holds the port for the length of one bind/close, and if the
+ * guest's own `listen()` lands in that window the guest fails with EADDRINUSE on
+ * its assigned port. That self-inflicted race is the runtime exposure port flake
+ * (a slow guest under load loses the race to the parent probe). A `/proc` read
+ * carries the same "a listener appeared" signal with no bind. Where `/proc` is
+ * absent (non-Linux dev hosts), fall back to the bind probe; those hosts do not
+ * run the concurrent managed lanes that expose the race.
+ */
+async function hasLoopbackPortListener(port: number): Promise<boolean> {
+  const facts = await readListenerBindFacts(port).catch(() => null);
+  if (facts) return facts.present;
+  return !(await canBindRuntimePort(port));
+}
+
+/**
+ * True when one line of the failure text reports an EADDRINUSE bind conflict on
+ * the given port.
+ *
+ * Node prints the failing bind on a single line, for example
+ * `Error: listen EADDRINUSE: address already in use 127.0.0.1:42000`. The match
+ * requires the EADDRINUSE marker and the port on the SAME line. So an
+ * auxiliary-port conflict on one line cannot combine with an unrelated
+ * assigned-port mention on a different, benign line and trigger a wrong
+ * quarantine.
+ *
+ * Node formats a bind address as `host:port`, so the failing port always
+ * follows a colon (for example `127.0.0.1:42000` or `:::42000`). The match
+ * requires that colon and a full-number boundary. So a different port in the
+ * same line cannot look like the assigned app or HMR port, and port 4200 never
+ * matches `:42000`.
+ */
+function eaddrinuseTextNamesPort(text: string, port: number): boolean {
+  const eaddrinusePattern = /EADDRINUSE|address already in use/i;
+  const portPattern = new RegExp(`:${port}(?![0-9])`);
+  return text
+    .split(/\r?\n/)
+    .some((line) => eaddrinusePattern.test(line) && portPattern.test(line));
+}
+
+/** Live host listener state for one assigned exposure port, read after a failure. */
+export interface ExposurePortHostState {
+  port: number;
+  /** True when the failure text reports EADDRINUSE for this port on one line. */
+  named: boolean;
+  /** True when a real listener holds the port now (from /proc or lsof). */
+  listenerPresent: boolean;
+  /** The listener pid, or null when unknown. */
+  ownerPid: number | null;
+  /** The process group id of the listener owner, or null when unknown. */
+  ownerProcessGroupId: number | null;
+}
+
+/**
+ * Decide which assigned exposure ports a real host listener owns after a guest
+ * start failure.
+ *
+ * The guest owns its own output, so an assigned-port EADDRINUSE line is a claim,
+ * not proof. A managed guest can print a synthetic EADDRINUSE line for its
+ * assigned port with no host listener behind it. A quarantine on that text alone
+ * would drain the shared exposure-port pool across repeated starts. So a port
+ * counts as a host collision only when all of the following hold:
+ * - the failure text names the port with EADDRINUSE, and
+ * - a real listener is present on the port now, and
+ * - the listener owner is not the guest process the runtime just launched, nor a
+ *   descendant of it.
+ *
+ * The runtime launches the guest as a shell process group leader, so the real dev
+ * server usually binds the port from a descendant, not the shell pid itself. The
+ * ownership test therefore matches the shell pid against both the owner pid and
+ * the owner process group id. This is the same process-group attribution that
+ * `isLocalServiceProcessOwnedBy` applies on the host platform. A raw pid equality
+ * would treat a guest descendant as an external owner and quarantine a valid pair.
+ *
+ * An unknown owner with a present listener counts as a host owner: the /proc read
+ * proves a listener, and a guest that lost its assigned port does not hold it.
+ */
+export function classifyExposureHostCollisions(input: {
+  childPid: number | null;
+  ports: ExposurePortHostState[];
+}): { hostCollisionPorts: number[]; hostCollision: boolean } {
+  const hostCollisionPorts: number[] = [];
+  for (const state of input.ports) {
+    const guestOwnsPort =
+      input.childPid != null &&
+      (state.ownerPid === input.childPid || state.ownerProcessGroupId === input.childPid);
+    if (state.named && state.listenerPresent && !guestOwnsPort) {
+      hostCollisionPorts.push(state.port);
+    }
+  }
+  return { hostCollisionPorts, hostCollision: hostCollisionPorts.length > 0 };
+}
+
 async function readReservedRuntimePorts(input: {
   db?: Db;
   ports: number[];
@@ -4872,9 +5138,10 @@ async function waitForAllocatedPortBind(input: {
       return;
     }
 
-    // A failed bind probe proves only that some listener appeared. If listener ownership cannot
+    // A present listener proves only that some listener appeared. If listener ownership cannot
     // be attributed to this child after a stability delay, retry instead of accepting a sibling.
-    if (!(await canBindRuntimePort(input.port))) {
+    // The presence read never binds the port, so it cannot steal the port from the child.
+    if (await hasLoopbackPortListener(input.port)) {
       await delay(250);
       if (input.child.exitCode !== null || input.child.signalCode !== null) {
         throw new Error("service process exited after losing its allocated port");
@@ -5232,6 +5499,7 @@ type StartLocalRuntimeServiceInput = {
   service: Record<string, unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   runtimeProvisionCommand?: string | null;
+  runtimeProvisionKind?: RuntimeProvisionKind | null;
   recorder?: WorkspaceOperationRecorder | null;
   provisionCoordinator?: RuntimeProvisionCoordinator;
   preparedProvisioningRecord?: RuntimeServiceRecord | null;
@@ -5259,6 +5527,49 @@ function readRuntimeProvisionCommand(config: Record<string, unknown>) {
   ).trim();
 }
 
+const BUILTIN_WORKSPACE_SEED_COMMAND = "bash ./scripts/provision-worktree-runtime.sh";
+
+type RuntimeProvisionKind = "workspace_seed" | "runtime_dependencies";
+
+function readWorkspaceSeedOperationEvidence(worktreePath: string): {
+  verified: boolean;
+  error: string | null;
+  metadata: Record<string, unknown>;
+} {
+  const manifestPath = path.join(worktreePath, ".paperclip", "seed-manifest.json");
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    const state = typeof manifest.state === "string" ? manifest.state : "unknown";
+    const phase = typeof manifest.phase === "string" ? manifest.phase : null;
+    const verified = isVerifiedWorktreeSeedManifest(manifest);
+    return {
+      verified,
+      error: verified
+        ? null
+        : phase
+          ? `Workspace seed command returned without a verified manifest (state: ${state}, phase: ${phase}).`
+          : `Workspace seed command returned without a verified manifest (state: ${state}).`,
+      metadata: {
+        provisionKind: "workspace_seed",
+        seedState: state,
+        seedPhase: phase,
+        seedFailurePhase: state === "failed" ? phase : null,
+      },
+    };
+  } catch {
+    return {
+      verified: false,
+      error: "Workspace seed command returned without a readable seed manifest.",
+      metadata: {
+        provisionKind: "workspace_seed",
+        seedState: existsSync(manifestPath) ? "unreadable" : "absent",
+        seedPhase: null,
+        seedFailurePhase: "seed_manifest_unreadable",
+      },
+    };
+  }
+}
+
 export function resolveRuntimeProvisionCommand(input: {
   config: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
@@ -5270,22 +5581,31 @@ export function resolveRuntimeProvisionCommand(input: {
 
   const stateDir = path.join(input.workspace.cwd, ".paperclip");
   const manifestPath = path.join(stateDir, "seed-manifest.json");
-  const pendingMarker = path.join(stateDir, "seed-pending");
-  const completeMarker = path.join(stateDir, "seed-complete");
   const provisionScript = path.join(
     input.workspace.baseCwd,
     "scripts",
     "provision-worktree-runtime.sh",
   );
-  let needsSeed = existsSync(pendingMarker) && !existsSync(completeMarker);
-  if (existsSync(manifestPath)) {
-    needsSeed = !hasVerifiedWorktreeSeedManifest(manifestPath);
-  }
+  const needsSeed = !existsSync(manifestPath) || !hasVerifiedWorktreeSeedManifest(manifestPath);
   if (!needsSeed || !existsSync(provisionScript)) {
     return "";
   }
 
-  return "bash ./scripts/provision-worktree-runtime.sh";
+  return BUILTIN_WORKSPACE_SEED_COMMAND;
+}
+
+function resolveRuntimeProvision(input: {
+  config: Record<string, unknown>;
+  workspace: RealizedExecutionWorkspace;
+}): { command: string; kind: RuntimeProvisionKind | null } {
+  const command = resolveRuntimeProvisionCommand(input);
+  if (!command) return { command, kind: null };
+  return {
+    command,
+    kind: readRuntimeProvisionCommand(input.config)
+      ? "runtime_dependencies"
+      : "workspace_seed",
+  };
 }
 
 function runtimeProvisionWorkspaceKey(input: StartLocalRuntimeServiceInput) {
@@ -5316,8 +5636,9 @@ async function runRuntimeProvisionWithWorkspaceMutex(input: StartLocalRuntimeSer
       })
     : null);
   const resolvedCommand = resolveRepoManagedWorkspaceCommand(command, input.workspace.baseCwd);
+  const workspaceSeed = input.runtimeProvisionKind === "workspace_seed";
   const promise = recordWorkspaceCommandOperation(recorder, {
-    phase: "workspace_runtime_provision",
+    phase: workspaceSeed ? "workspace_seed" : "workspace_runtime_provision",
     command,
     resolvedCommand,
     cwd: input.workspace.cwd,
@@ -5330,14 +5651,19 @@ async function runRuntimeProvisionWithWorkspaceMutex(input: StartLocalRuntimeSer
       agent: input.agent,
       created: input.workspace.created,
     }),
-    label: `Runtime provision command "${command}"`,
+    label: workspaceSeed
+      ? `Workspace seed command "${command}"`
+      : `Runtime provision command "${command}"`,
     metadata: {
       executionWorkspaceId: input.executionWorkspaceId ?? null,
       projectWorkspaceId: input.workspace.workspaceId,
       serviceName: asString(input.service.name, "service"),
+      provisionKind: workspaceSeed ? "workspace_seed" : "runtime_dependencies",
       resolvedCommand: resolvedCommand === command ? null : resolvedCommand,
     },
-    successMessage: `Provisioned runtime dependencies for ${input.workspace.cwd}\n`,
+    successMessage: workspaceSeed
+      ? `Verified the workspace database seed for ${input.workspace.cwd}\n`
+      : `Provisioned runtime dependencies for ${input.workspace.cwd}\n`,
     onLog: input.onLog,
   }).then(() => undefined);
 
@@ -5646,7 +5972,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     // still rejected by the broker unless /proc proves loopback-only listeners.
     //
     // Three independent layers force the loopback bind, because a guest checkout
-    // can be arbitrarily old (PAP-17256): the `--bind custom --bind-host` argv
+    // can be arbitrarily old (PAP-17256): the `--bind loopback` argv
     // added above, these env vars for a runner that reads them, and HOST for one
     // old enough to ignore both and infer its bind mode from HOST alone.
     env.PAPERCLIP_BIND = RUNTIME_EXPOSURE_BIND_MODE;
@@ -5859,12 +6185,21 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   const shell = resolveShell();
-  const child = spawn(shell, ["-lc", command], {
-    cwd: serviceCwd,
-    env,
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const serviceLog = await openLocalServiceLogFile(serviceKey);
+  let child: ChildProcess;
+  try {
+    child = spawn(shell, ["-lc", command], {
+      cwd: serviceCwd,
+      env,
+      detached: process.platform !== "win32",
+      // The service receives duplicate append-only file descriptors. Closing
+      // Paperclip (or this parent handle below) cannot strand a request logger
+      // on an orphaned socketpair during startup reconciliation.
+      stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
+    });
+  } finally {
+    await serviceLog.handle.close();
+  }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
@@ -5874,24 +6209,23 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     });
   });
   const earlyExitPromise = new Promise<never>((_, reject) => {
-    child.once("exit", (code, signal) => {
+    // `close` follows `exit` after the child's inherited stdout/stderr file
+    // descriptors are closed. Waiting for it makes the startup log excerpt
+    // deterministic instead of racing the final validation line.
+    child.once("close", (code, signal) => {
       reject(new Error(
         `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
       ));
     });
   });
-  let stderrExcerpt = "";
-  let stdoutExcerpt = "";
-  child.stdout?.on("data", async (chunk) => {
-    const text = String(chunk);
-    stdoutExcerpt = (stdoutExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stdout", `[service:${serviceName}] ${text}`);
-  });
-  child.stderr?.on("data", async (chunk) => {
-    const text = String(chunk);
-    stderrExcerpt = (stderrExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${text}`);
-  });
+  const readServiceOutputExcerpt = async () => {
+    try {
+      const contents = await fs.readFile(serviceLog.logPath);
+      return contents.subarray(Math.max(serviceLog.startOffset, contents.length - 4096)).toString("utf8");
+    } catch {
+      return "";
+    }
+  };
 
   if (child.pid) {
     await writeLocalServiceRegistryRecord({
@@ -6018,6 +6352,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     record.healthStatus = "healthy";
     record.lastUsedAt = new Date().toISOString();
     record.stoppedAt = null;
+    const serviceOutputExcerpt = await readServiceOutputExcerpt();
+    if (serviceOutputExcerpt && input.onLog) {
+      await input.onLog("stdout", `[service:${serviceName}] ${serviceOutputExcerpt}`);
+    }
     await touchLocalServiceRegistryRecord(record.serviceKey, {
       runtimeServiceId: record.id,
       lastSeenAt: record.lastUsedAt,
@@ -6025,18 +6363,81 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }).catch(async (err) => {
     releasePortReservation(reservedPort);
     releasePortReservation(claimedIdentityPort);
-        const failureMessage = err instanceof Error ? err.message : String(err);
+    const failureMessage = err instanceof Error ? err.message : String(err);
+    const serviceOutputExcerpt = await readServiceOutputExcerpt();
     const bindCollision = !exposureConfig && (
       err instanceof RuntimeServicePortBindCollision || Boolean(
         port
         && (input.allowFixedPortFallback || portType === "auto")
-        && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${stderrExcerpt}`),
+        && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${serviceOutputExcerpt}`),
       )
     );
+    // An exposed guest that exits with EADDRINUSE on its ASSIGNED port lost the
+    // port after allocation. Only the assigned app or HMR port is re-allocatable
+    // from the dedicated broker range, so quarantine and re-allocation apply only
+    // when the failure names one of those ports. An unrelated auxiliary-port
+    // conflict (a different port the guest also bound) leaves the valid pair
+    // intact and surfaces as a terminal error, not a quarantine that burns the
+    // bounded retries.
+    const exposureAssignedPorts: number[] =
+      exposureConfig && port
+        ? [port, ...(exposureConfig.includePaperclipViteHmr ? [deriveViteHmrPort(port)] : [])]
+        : [];
+    const collisionText = `${failureMessage}\n${serviceOutputExcerpt}`;
+    const exposureNamedPorts = exposureAssignedPorts.filter((candidate) =>
+      eaddrinuseTextNamesPort(collisionText, candidate),
+    );
+    // The guest owns its own output, so an assigned-port EADDRINUSE line is a
+    // claim, not proof. A managed guest can print a synthetic EADDRINUSE line for
+    // its assigned port with no host listener behind it. A quarantine on that text
+    // alone would burn the shared exposure-port pool across repeated starts. So the
+    // runtime reads live host listener state and quarantines only after it confirms
+    // that a real host listener owns the port.
+    const exposureTextNamesAssignedPort = Boolean(
+      exposureConfig && port && exposureNamedPorts.length > 0,
+    );
+    let exposureCollisionDiagnosis: string | null = null;
+    let exposureHostCollision = false;
+    if (exposureTextNamesAssignedPort) {
+      const facts: string[] = [];
+      const hostStates: ExposurePortHostState[] = [];
+      for (const collisionPort of exposureAssignedPorts) {
+        // `readLocalServicePortOwner` reads lsof and returns the listener pid, so a
+        // non-null pid also proves a present listener. `readListenerBindFacts` reads
+        // /proc for the same presence signal and the bound addresses.
+        const ownerPid = await readLocalServicePortOwner(collisionPort).catch(() => null);
+        const bind = await readListenerBindFacts(collisionPort).catch(() => null);
+        // Read the owner process group id too. The guest runs as a shell process
+        // group leader, so the real dev server usually binds the port from a
+        // descendant. The classify step matches the shell pid against the owner pgid
+        // to keep a guest descendant from looking like an external owner.
+        const ownerProcessGroupId =
+          ownerPid != null ? await readLocalServiceProcessGroupId(ownerPid).catch(() => null) : null;
+        hostStates.push({
+          port: collisionPort,
+          named: exposureNamedPorts.includes(collisionPort),
+          listenerPresent: Boolean(bind?.present) || ownerPid != null,
+          ownerPid,
+          ownerProcessGroupId,
+        });
+        const boundTo = bind?.present ? bind.addresses.join(", ") : "no listener";
+        facts.push(`port ${collisionPort} bound to ${boundTo}, owner pid ${ownerPid ?? "none"}`);
+      }
+      exposureHostCollision = classifyExposureHostCollisions({
+        childPid: child.pid ?? null,
+        ports: hostStates,
+      }).hostCollision;
+      exposureCollisionDiagnosis = facts.join("; ");
+    }
+    // Quarantine the whole assigned pair, not only the named port. The broker
+    // allocates the app and HMR ports as one unit, so a re-allocation must skip
+    // both to land on the next free pair.
+    const exposureCollisionPorts: number[] = exposureHostCollision ? exposureAssignedPorts : [];
     if (child.pid) {
       await terminateLocalService({
         pid: child.pid,
         processGroupId: child.pid,
+        port,
       });
     }
     await cleanupRecordExposure(record, { preserveFailure: true });
@@ -6049,8 +6450,39 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
     }
     if (bindCollision && port) throw new RuntimeServicePortBindCollision(port);
+    if (exposureHostCollision && port) {
+      // A verified host listener holds the assigned exposure port. Quarantine the
+      // pair so the bounded re-allocation never re-offers it, then throw a retryable
+      // collision. `startLocalRuntimeService` re-runs allocation, which skips the
+      // quarantined pair and takes the next free pair inside the dedicated range.
+      // This hardens a real host that races an external process for a range port.
+      for (const collisionPort of exposureCollisionPorts) {
+        quarantinedRuntimeExposurePorts.add(collisionPort);
+      }
+      if (input.onLog) {
+        await input.onLog(
+          "stderr",
+          `[service:${serviceName}] exposure port ${port} collided during startup (EADDRINUSE); `
+            + `${exposureCollisionDiagnosis ?? "owner unavailable"}. `
+            + `Quarantined pair ${exposureCollisionPorts.join("/")} and reallocating.\n`,
+        ).catch(() => undefined);
+      }
+      throw new RuntimeServicePortBindCollision(port, exposureCollisionDiagnosis, true);
+    }
+    const deploymentBindConflict = /local_trusted requires server\.bind=loopback/i.test(
+      `${failureMessage}\n${serviceOutputExcerpt}`,
+    );
+    // The guest reported an assigned-port EADDRINUSE, but no host listener owned
+    // the port. Explain that the runtime did not quarantine the pair, so a future
+    // occurrence needs no diagnostic cycle and the pool stays intact.
+    const unverifiedExposureCollision = exposureTextNamesAssignedPort && !exposureHostCollision;
+    const actionableFailure = deploymentBindConflict
+      ? `${failureMessage} | deployment/bind conflict: local_trusted requires server.bind=loopback; the managed runtime requested an incompatible bind mode`
+      : unverifiedExposureCollision
+        ? `${failureMessage} | exposure port collision not verified: the guest reported EADDRINUSE on assigned port ${exposureNamedPorts.join("/")}, but no host listener owns it (${exposureCollisionDiagnosis ?? "owner unavailable"}); the runtime did not quarantine the pair`
+        : failureMessage;
     throw new Error(
-      `Failed to start runtime service "${serviceName}": ${failureMessage}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
+      `Failed to start runtime service "${serviceName}": ${actionableFailure}${serviceOutputExcerpt ? ` | output: ${serviceOutputExcerpt.trim()}` : ""}`,
     );
   });
 
@@ -6151,7 +6583,12 @@ async function startLocalRuntimeService(
         }
         return started;
       } catch (error) {
-        if (!(error instanceof RuntimeServicePortBindCollision) || !retryBindCollisions) throw error;
+        if (
+          !(error instanceof RuntimeServicePortBindCollision)
+          || !(retryBindCollisions || error.exposureReallocatable)
+        ) {
+          throw error;
+        }
         excludedPorts.add(error.port);
         started = null;
       }
@@ -6236,19 +6673,14 @@ async function stopRuntimeService(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
-  record.status = "stopped";
-  record.healthStatus = "unknown";
-  record.lastUsedAt = new Date().toISOString();
-  record.stoppedAt = new Date().toISOString();
-  runtimeServicesById.delete(serviceId);
-  if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
-    runtimeServicesByReuseKey.delete(record.reuseKey);
-  }
+  // Remove any public exposure first, but keep the process registered and the
+  // row non-stopped until verified termination succeeds.
   await cleanupRecordExposure(record);
   if (record.child && record.child.pid) {
     await terminateLocalService({
       pid: record.child.pid,
       processGroupId: record.processGroupId ?? record.child.pid,
+      port: record.port,
     });
   } else if (record.providerRef) {
     const pid = Number.parseInt(record.providerRef, 10);
@@ -6256,8 +6688,17 @@ async function stopRuntimeService(serviceId: string) {
       await terminateLocalService({
         pid,
         processGroupId: record.processGroupId,
+        port: record.port,
       });
     }
+  }
+  record.status = "stopped";
+  record.healthStatus = "unknown";
+  record.lastUsedAt = new Date().toISOString();
+  record.stoppedAt = new Date().toISOString();
+  runtimeServicesById.delete(serviceId);
+  if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
+    runtimeServicesByReuseKey.delete(record.reuseKey);
   }
   await removeLocalServiceRegistryRecord(record.serviceKey);
   await persistRuntimeServiceRecord(record.db, record);
@@ -6504,9 +6945,22 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
       runtimeServicesByReuseKey.delete(current.reuseKey);
     }
     void (async () => {
-      await cleanupRecordExposure(current);
-      await removeLocalServiceRegistryRecord(current.serviceKey);
-      await persistRuntimeServiceRecord(db, current);
+      // The child exited on its own. Record the terminal status as best effort.
+      // The persist can fail when a parent row is already gone: a caller can
+      // delete the project or the company while this service still runs, and the
+      // `project_id` foreign key then rejects the write. Catch every error here,
+      // or the detached persist becomes an unhandled rejection and crashes the
+      // host. This path runs off the child `exit` event, so no caller awaits it.
+      try {
+        await cleanupRecordExposure(current);
+        await removeLocalServiceRegistryRecord(current.serviceKey);
+        await persistRuntimeServiceRecord(db, current);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[workspace-runtime] runtime service exit cleanup failed for ${current.id}: ${detail}`,
+        );
+      }
     })();
   });
 }
@@ -6645,7 +7099,8 @@ async function ensureRuntimeServicesForRunInvocation(
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
-  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
+  const runtimeProvision = resolveRuntimeProvision(input);
+  const runtimeProvisionCommand = runtimeProvision.command;
   const provisionCoordinator = createRuntimeProvisionCoordinator();
   const allowFixedPortFallback = await isPersistedIsolatedExecutionWorkspace({
     db: input.db,
@@ -6703,6 +7158,7 @@ async function ensureRuntimeServicesForRunInvocation(
         service,
         onLog: input.onLog,
         runtimeProvisionCommand,
+        runtimeProvisionKind: runtimeProvision.kind,
         recorder: input.recorder,
         provisionCoordinator,
         allowFixedPortFallback,
@@ -6873,6 +7329,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     deferReadiness?: boolean;
     allowFixedPortFallback?: boolean;
     runtimeProvisionCommand?: string;
+    runtimeProvisionKind?: RuntimeProvisionKind | null;
     provisionCoordinator?: RuntimeProvisionCoordinator;
     preparedProvisioning?: {
       service: Record<string, unknown>;
@@ -6939,6 +7396,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       service,
       onLog: input.onLog,
       runtimeProvisionCommand: options?.runtimeProvisionCommand,
+      runtimeProvisionKind: options?.runtimeProvisionKind,
       recorder: input.recorder,
       provisionCoordinator: options?.provisionCoordinator,
       preparedProvisioningRecord:
@@ -7041,7 +7499,8 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const invocationId = input.invocationId ?? randomUUID();
-  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
+  const runtimeProvision = resolveRuntimeProvision(input);
+  const runtimeProvisionCommand = runtimeProvision.command;
   const provisionCoordinator = createRuntimeProvisionCoordinator();
   const hasHttpsExposure = await anyRuntimeServiceUsesHttpsExposure(rawServices);
 
@@ -7060,7 +7519,11 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
       invocationId,
       input.db,
       input.db,
-      { runtimeProvisionCommand, provisionCoordinator },
+      {
+        runtimeProvisionCommand,
+        runtimeProvisionKind: runtimeProvision.kind,
+        provisionCoordinator,
+      },
     );
     return batch.refs;
   }
@@ -7111,6 +7574,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
           service,
           onLog: input.onLog,
           runtimeProvisionCommand,
+          runtimeProvisionKind: runtimeProvision.kind,
           recorder: input.recorder,
           provisionCoordinator,
           reuseKey,
@@ -7139,6 +7603,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
           deferReadiness: true,
           allowFixedPortFallback,
           runtimeProvisionCommand,
+          runtimeProvisionKind: runtimeProvision.kind,
           provisionCoordinator,
           preparedProvisioning,
         },
@@ -7763,19 +8228,29 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     }
     if (adoptedRecord) {
       const adoptedUrl = adoptedRecord.url ?? row.backendUrl ?? row.url ?? null;
+      const adoptedHealthInput = {
+        db,
+        serviceName: row.serviceName,
+        command: row.command,
+        provider: "local_process",
+        port: adoptedRecord.port ?? row.port,
+        cwd: row.cwd,
+        executionWorkspaceId: row.executionWorkspaceId ?? null,
+        companyId: row.companyId,
+      };
+      // A surviving service can be slow to answer one probe when the host is
+      // busy at startup. One timeout is not enough evidence to terminate it.
+      // Confirm an unhealthy verdict with a second probe after a short bounded
+      // delay, the same way the reuse path protects a shared runtime.
+      let adoptedHealthy = await isRuntimeServiceUrlHealthy(adoptedUrl, adoptedHealthInput);
+      if (!adoptedHealthy) {
+        await delay(250);
+        adoptedHealthy = await isRuntimeServiceUrlHealthy(adoptedUrl, adoptedHealthInput);
+      }
       if (
         backfillDecision.action === "reprovision"
         || !exposureHealthMatches
-        || !(await isRuntimeServiceUrlHealthy(adoptedUrl, {
-          db,
-          serviceName: row.serviceName,
-          command: row.command,
-          provider: "local_process",
-          port: adoptedRecord.port ?? row.port,
-          cwd: row.cwd,
-          executionWorkspaceId: row.executionWorkspaceId ?? null,
-          companyId: row.companyId,
-        }))
+        || !adoptedHealthy
       ) {
         if (backfillDecision.action === "reprovision") backfilled += 1;
         await terminateLocalService(adoptedRecord);

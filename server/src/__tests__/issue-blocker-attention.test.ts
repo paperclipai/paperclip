@@ -131,7 +131,14 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   }
 
-  async function activeRun(input: { companyId: string; agentId: string; issueId: string; status?: string; current?: boolean }) {
+  async function activeRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status?: string;
+    current?: boolean;
+    scheduledRetryAt?: Date;
+  }) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -139,6 +146,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       agentId: input.agentId,
       status: input.status ?? "running",
       contextSnapshot: { issueId: input.issueId },
+      scheduledRetryAt: input.scheduledRetryAt,
     });
     if (input.current !== false) {
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, input.issueId));
@@ -602,7 +610,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("does not treat a scheduled retry as actively covered work", async () => {
+  it("does not treat an expired scheduled retry as actively covered work", async () => {
+    const pinnedNow = new Date("2026-08-20T12:00:00.000Z");
+    const expiredRetryAt = new Date(pinnedNow.getTime() - 60_000);
     const { companyId, agentId } = await createCompany("PBY");
     const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });
     const blockerId = await insertIssue({
@@ -613,7 +623,13 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
-    await activeRun({ companyId, agentId, issueId: blockerId, status: "scheduled_retry" });
+    await activeRun({
+      companyId,
+      agentId,
+      issueId: blockerId,
+      status: "scheduled_retry",
+      scheduledRetryAt: expiredRetryAt,
+    });
 
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 

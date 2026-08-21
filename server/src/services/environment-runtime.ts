@@ -7,6 +7,7 @@ import type {
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
+  InstanceExperimentalSettings,
   IssueExecutionWorkspaceSettings,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
@@ -14,6 +15,9 @@ import type {
 } from "@paperclipai/shared";
 import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
 import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type {
+  CommandManagedDuplexChannel,
+} from "@paperclipai/adapter-utils/command-managed-runtime";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
@@ -29,6 +33,7 @@ import {
   type StartupSpanContext,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import {
   collectEnvironmentSecretRefs,
   parseEnvironmentDriverConfig,
@@ -52,7 +57,12 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { ExecuteLogSink, PluginWorkerManager } from "./plugin-worker-manager.js";
+import type {
+  ExecuteLogSink,
+  PluginWorkerManager,
+  DuplexChannelHostSession,
+  DuplexChannelOpenInput as WorkerManagerDuplexChannelOpenInput,
+} from "./plugin-worker-manager.js";
 import {
   REUSABLE_LEASE_WORKER_METHODS,
   destroyPluginEnvironmentLease,
@@ -78,6 +88,12 @@ import { logger } from "../middleware/logger.js";
 // this constant and the plain provider identifiers only.
 const SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND = "sandbox_orphan_cleanup_write_failed";
 
+// The fixed non-secret refusal a duplex channel open returns when the lease does
+// not grant the opt-in `duplexCommandStream` capability. The service resolves the
+// exact lease capability snapshot and throws this before it reaches any driver.
+const DUPLEX_CHANNEL_CAPABILITY_DENIED =
+  "Sandbox lease does not grant the duplex command stream capability.";
+
 // ---------------------------------------------------------------------------
 // Sandbox capability contract — one normalizer for both branches
 // ---------------------------------------------------------------------------
@@ -89,6 +105,8 @@ export const SANDBOX_CAPABILITY_KEYS = [
   "persistentProcessSessions",
   "independentControlCommands",
   "incrementalSessionOutput",
+  "concurrentSyncOperations",
+  "duplexCommandStream",
 ] as const;
 
 export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
@@ -104,6 +122,8 @@ export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
  */
 const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Set([
   "incrementalSessionOutput",
+  "concurrentSyncOperations",
+  "duplexCommandStream",
 ]);
 
 /**
@@ -134,6 +154,17 @@ const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Se
  *   provider tails the session log through it. The verified verb is necessary
  *   but not sufficient: this key is opt-in, so the declaration is the real gate
  *   (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
+ * - `concurrentSyncOperations` requires BOTH sync verbs, because parallel
+ *   bidirectional transfer runs an inbound and an outbound transfer at the same
+ *   time. The two verbs are separate required groups, so a provider that
+ *   verifies only one direction cannot get the capability. The verbs are
+ *   necessary but not sufficient: this key is opt-in, so the declaration is the
+ *   real gate (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
+ * - `duplexCommandStream` requires `duplexChannelOpen`, the worker verb that
+ *   opens the persistent duplex channel. The verified verb is necessary but not
+ *   sufficient: this key is opt-in, so the declaration is the real gate. A
+ *   provider that does not implement the duplex open verb resolves `false` and
+ *   keeps the file bridge.
  */
 const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, readonly (readonly string[])[]> = {
   // Reusable leases require ALL reuse verbs. Each verb is its own required
@@ -147,6 +178,8 @@ const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, read
   persistentProcessSessions: [["environmentExecute"]],
   independentControlCommands: [["environmentExecute"]],
   incrementalSessionOutput: [["environmentExecute"]],
+  concurrentSyncOperations: [["environmentSyncIn"], ["environmentSyncOut"]],
+  duplexCommandStream: [["duplexChannelOpen"]],
 };
 
 function capabilityIsVerified(
@@ -230,6 +263,8 @@ export function resolveEffectiveSandboxCapabilities(input: {
     persistentProcessSessions: resolve("persistentProcessSessions"),
     independentControlCommands: resolve("independentControlCommands"),
     incrementalSessionOutput: resolve("incrementalSessionOutput"),
+    concurrentSyncOperations: resolve("concurrentSyncOperations"),
+    duplexCommandStream: resolve("duplexCommandStream"),
   };
 }
 
@@ -244,9 +279,9 @@ export function resolveEffectiveSandboxCapabilities(input: {
  *   which falls back for a `job` backend or a `nativeFileSyncUnsupported` lease).
  * - `configResolutionFailed` marks that the runtime could not resolve the
  *   provider config. A provider whose config cannot be resolved is untrusted, so
- *   the runtime fails closed and narrows `persistentProcessSessions` and
- *   `incrementalSessionOutput` to false. An empty config alone does not fail
- *   closed; only a resolution error does.
+ *   the runtime fails closed and narrows `persistentProcessSessions`,
+ *   `incrementalSessionOutput`, and `duplexCommandStream` to false. An empty
+ *   config alone does not fail closed; only a resolution error does.
  */
 export function buildSandboxCapabilityNarrowing(input: {
   leasePolicy?: EnvironmentLease["leasePolicy"] | null;
@@ -265,11 +300,15 @@ export function buildSandboxCapabilityNarrowing(input: {
 
   if (input.configResolutionFailed === true) {
     // The runtime could not resolve the provider config, so it fails closed and
-    // denies persistent process sessions and incremental session output. The
-    // session-output streaming gate reads `incrementalSessionOutput`, so it must
-    // narrow with the persistent-session gate to keep the fail-closed behavior.
+    // denies persistent process sessions, incremental session output, and the
+    // duplex command stream. The session-output streaming gate reads
+    // `incrementalSessionOutput`, so it must narrow with the persistent-session
+    // gate to keep the fail-closed behavior. The duplex command stream opens a
+    // host-owned bidirectional channel, so an untrusted provider must not keep
+    // it either.
     narrowing.persistentProcessSessions = false;
     narrowing.incrementalSessionOutput = false;
+    narrowing.duplexCommandStream = false;
   }
 
   return narrowing;
@@ -282,6 +321,29 @@ export function buildEnvironmentLeaseContext(input: {
     executionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
     executionWorkspaceMode: input.persistedExecutionWorkspace?.mode ?? null,
   };
+}
+
+/**
+ * The per-run duplex bridge input. The host resolves it for each new run before
+ * it selects the sandbox callback bridge transport. When `enableDuplexBridge` is
+ * false the host keeps the file bridge with no manifest change and no redeploy.
+ * The transport selection reads this input in a later phase; this phase only
+ * delivers the setting and the per-run read.
+ */
+export interface ResolvedSandboxDuplexBridgeInput {
+  /** True only when the instance opts in to the sandbox duplex command stream. */
+  enableDuplexBridge: boolean;
+}
+
+/**
+ * Map the experimental instance setting `enableSandboxDuplexBridge` into the
+ * per-run duplex bridge input. The setting is the kill switch. It defaults off,
+ * so an absent or false setting keeps the file bridge.
+ */
+export function resolveSandboxDuplexBridgeInput(
+  experimental: Pick<InstanceExperimentalSettings, "enableSandboxDuplexBridge">,
+): ResolvedSandboxDuplexBridgeInput {
+  return { enableDuplexBridge: experimental.enableSandboxDuplexBridge === true };
 }
 
 function stripSecretRefValuesFromPluginLeaseMetadata(input: {
@@ -460,6 +522,15 @@ export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput 
   operations: PluginSyncOperation[];
 }
 
+export interface EnvironmentDriverOpenDuplexChannelInput extends EnvironmentDriverLeaseInput {
+  /**
+   * The command argument vector the sandbox runs as the duplex channel child
+   * process. Element 0 is the program. The worker runs the vector with no
+   * shell, so a shell metacharacter in an element cannot inject a command.
+   */
+  command: readonly string[];
+}
+
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
@@ -476,6 +547,15 @@ export interface EnvironmentRuntimeDriver {
    */
   syncIn?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
   syncOut?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  /**
+   * Optional persistent duplex channel. Present only for a plugin-backed sandbox
+   * driver whose lease grants the `duplexCommandStream` capability. The driver
+   * opens the host-owned duplex route on the plugin worker and adapts it to the
+   * cross-layer {@link CommandManagedDuplexChannel}. Other drivers omit it.
+   */
+  openDuplexChannel?(
+    input: EnvironmentDriverOpenDuplexChannelInput,
+  ): Promise<CommandManagedDuplexChannel>;
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
@@ -979,6 +1059,39 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           workspaceRealization: record,
         },
       };
+    },
+  };
+}
+
+/**
+ * Adapt the worker manager's duplex host session to the cross-layer channel. The
+ * two shapes differ in the exit and stop members: the host session resolves the
+ * exit one time from `wait()`, so the channel bridges it to a one-time `onExit`
+ * listener; `kill()` maps to `stop()`. The `write`, `onData`, and `close`
+ * members map one to one.
+ */
+function adaptDuplexChannelHostSession(
+  session: DuplexChannelHostSession,
+): CommandManagedDuplexChannel {
+  return {
+    write(data: string): void {
+      session.write(data);
+    },
+    onData(listener: (chunk: string) => void): void {
+      session.onData(listener);
+    },
+    onExit(listener: (exit: { exitCode: number | null }) => void): void {
+      // `wait()` resolves one time with the exit and never rejects, so a single
+      // `then` bridges it to the one-time exit listener.
+      void session.wait().then((exit) => {
+        listener(exit);
+      });
+    },
+    stop(): void {
+      session.kill();
+    },
+    close(): Promise<void> {
+      return session.close();
     },
   };
 }
@@ -2359,6 +2472,37 @@ function createSandboxEnvironmentDriver(
       return await callPluginEnvironmentSync("environmentSyncOut", input);
     },
 
+    async openDuplexChannel(input) {
+      // Plugin-backed sandbox providers only: open the host-owned duplex route on
+      // the plugin worker. The lease scope mirrors the sandbox execute path — the
+      // provider driver key, the company, the environment, and the provider lease
+      // id — so the route binds to the same worker session the runner streams.
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
+        throw new Error("Sandbox driver does not support duplex channels for this lease.");
+      }
+      const pluginId = readString(input.lease.metadata?.pluginId);
+      const providerKey = readString(input.lease.metadata?.provider);
+      const providerLeaseId = readString(input.lease.providerLeaseId);
+      if (!pluginId || !providerKey || !providerLeaseId) {
+        throw new Error(
+          "Sandbox duplex channel needs a plugin id, a provider key, and a provider lease id on the lease.",
+        );
+      }
+      const worker = pluginWorkerManager.getWorker(pluginId);
+      if (!worker) {
+        throw new Error(`Plugin worker "${pluginId}" is not running for the duplex channel.`);
+      }
+      const managerInput: WorkerManagerDuplexChannelOpenInput = {
+        driverKey: providerKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        providerLeaseId,
+        command: input.command,
+      };
+      const session = await worker.openDuplexChannel(managerInput);
+      return adaptDuplexChannelHostSession(session);
+    },
+
     async effectiveSandboxCapabilities(input) {
       const metadata = input.lease.metadata ?? {};
       const providerKey =
@@ -3023,6 +3167,17 @@ export function environmentRuntimeService(
   return {
     getDriver,
 
+    /**
+     * Read the sandbox duplex bridge kill switch for a new run. The host calls it
+     * per run before it selects the callback bridge transport. It reads the
+     * experimental instance setting `enableSandboxDuplexBridge` and maps it into
+     * the resolved bridge input. The default-off setting keeps the file bridge.
+     */
+    async readSandboxDuplexBridgeInput(): Promise<ResolvedSandboxDuplexBridgeInput> {
+      const experimental = await instanceSettingsService(db).getExperimental();
+      return resolveSandboxDuplexBridgeInput(experimental);
+    },
+
     async acquireRunLease(input: {
       companyId: string;
       environment: Environment;
@@ -3309,6 +3464,27 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
       }
       return await driver.syncOut(input);
+    },
+
+    async openDuplexChannel(
+      input: EnvironmentDriverOpenDuplexChannelInput,
+    ): Promise<CommandManagedDuplexChannel> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.openDuplexChannel) {
+        throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);
+      }
+      // Centralize the duplex channel authorization here. Resolve the exact lease
+      // capability snapshot and refuse unless the effective snapshot grants the
+      // opt-in `duplexCommandStream` capability. This gate runs before the driver
+      // call, so an unauthorized lease never reaches the worker. The
+      // execution-target member gate stays as defense in depth. A driver that
+      // cannot resolve the snapshot fails closed with the fixed refusal.
+      const effective =
+        (await driver.effectiveSandboxCapabilities?.(input)) ?? null;
+      if (effective?.duplexCommandStream !== true) {
+        throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
+      }
+      return await driver.openDuplexChannel(input);
     },
   };
 }
