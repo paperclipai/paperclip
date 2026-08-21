@@ -1336,7 +1336,10 @@ async function listUnresolvedBlockerIssueIds(
         eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
         // Cancelled blockers intentionally remain unresolved until the relation changes.
+        // A soft-deleted blocker can never transition to done by anyone, so treat it
+        // as resolved instead of leaving the dependent permanently blocked (AGE-770).
         ne(issues.status, "done"),
+        isNull(issues.deletedAt),
       ),
     )
     .then((rows) => rows.map((row) => row.id));
@@ -5218,6 +5221,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          deletedAt: issues.deletedAt,
         })
         .from(issues)
         .where(eq(issues.id, input.issueId))
@@ -5228,6 +5232,7 @@ export function issueService(db: Db) {
       }
 
       if (
+        lockedIssue.deletedAt ||
         lockedIssue.status !== "in_progress" ||
         lockedIssue.assigneeAgentId !== input.actorAgentId ||
         lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
@@ -8276,6 +8281,7 @@ export function issueService(db: Db) {
           .where(
             and(
               eq(issues.id, id),
+              isNull(issues.deletedAt),
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
@@ -8338,6 +8344,7 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issues.id, id),
+                isNull(issues.deletedAt),
                 inArray(issues.status, expectedStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),

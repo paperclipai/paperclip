@@ -592,6 +592,38 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(readiness?.isDependencyReady).toBe(true);
   });
 
+  it("allows an explicit in_progress transition with a soft-deleted blockedByIssueIds entry (AGE-770)", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "ExplicitBlockerCoder",
+    }));
+    const blocker = await svc.create(companyId, {
+      title: "Blocker referenced explicitly and deleted",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+    const dependent = await svc.create(companyId, {
+      title: "Dependent explicit blockedByIssueIds",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const softDeleted = await svc.softDelete(blocker.id);
+    expect(softDeleted?.deletedAt).toBeTruthy();
+
+    const updated = await svc.update(dependent.id, {
+      status: "in_progress",
+      blockedByIssueIds: [blocker.id],
+    });
+    expect(updated?.status).toBe("in_progress");
+  });
+
   it("expires pending thread interactions on any service-level terminal transition", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issue = await svc.create(companyId, {

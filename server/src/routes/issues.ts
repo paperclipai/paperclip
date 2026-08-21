@@ -11038,7 +11038,10 @@ export function issueRoutes(
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
-    void emitBlockerResolvedWakeupsOnDelete(issue, actor);
+    // Awaited (not fire-and-forget): the DELETE response must not report
+    // success before the dependency-resolved wake is durably scheduled, or a
+    // newly-unblocked dependent's assignee can be silently missed. See AGE-770.
+    await emitBlockerResolvedWakeupsOnDelete(issue, actor);
     res.json(issue);
   });
 
