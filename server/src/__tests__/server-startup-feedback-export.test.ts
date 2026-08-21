@@ -99,6 +99,7 @@ const {
       skippedUndelivered: 0,
       skippedRace: 0,
     })),
+    reconcileArchivedWorkspaceIssueLinks: vi.fn(async () => ({ cleared: 0 })),
   };
   const executionWorkspaceServiceFactoryMock = vi.fn(() => executionWorkspaceServiceMock);
   const externalObjectsServiceMock = {
@@ -500,6 +501,7 @@ describe("startServer feedback export wiring", () => {
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
+      expect(executionWorkspaceServiceMock.reconcileArchivedWorkspaceIssueLinks).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
     } finally {
