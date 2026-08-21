@@ -3025,6 +3025,12 @@ export function issueRoutes(
     issue: { companyId: string; createdByAgentId?: string | null; unblockDescriptor?: unknown },
   ): Promise<boolean> {
     const descriptor = issue.unblockDescriptor as { owner?: unknown } | null | undefined;
+    // Deliberately NOT FOR UPDATE: the delivery transaction holds these rows
+    // across the synchronous wake enqueue, and the claim-side re-authorization
+    // takes FOR UPDATE on the same rows — locking here would deadlock the
+    // delivery against a claim started by the enqueue. This read is an
+    // advisory pre-check; the claim-time re-check (issue row + agent rows
+    // FOR UPDATE) is the authoritative gate before the run goes running.
     const companyAgents = await tx
       .select({
         id: agents.id,
@@ -3035,8 +3041,7 @@ export function issueRoutes(
       })
       .from(agents)
       .where(eq(agents.companyId, issue.companyId))
-      .orderBy(asc(agents.id))
-      .for("update");
+      .orderBy(asc(agents.id));
     return isBlockedOwnerStillAuthorized({
       owner: descriptor?.owner as Parameters<typeof isBlockedOwnerStillAuthorized>[0]["owner"],
       createdByAgentId: issue.createdByAgentId,
