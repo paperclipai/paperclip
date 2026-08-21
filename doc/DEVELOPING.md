@@ -886,6 +886,21 @@ DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
 
+## Built-In Agent Startup Reconciliation
+
+By default, startup reconciles existing built-in agents and their default
+configuration across companies. To leave existing built-in-agent state unchanged
+during startup, set:
+
+```sh
+PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP=0
+```
+
+The variable accepts only `0` or `1` and defaults to `1`. Setting it to `0`
+skips only the automatic startup reconciliation; manual built-in-agent ensure,
+provision, reset, routine, and API operations are unchanged. Any other value
+fails startup with a validation error.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.

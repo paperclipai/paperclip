@@ -142,10 +142,21 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+const RECONCILE_BUILT_IN_AGENTS_ON_STARTUP_ENV = "PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP";
+
+export function parseBuiltInAgentStartupReconciliationEnv(
+  value = process.env[RECONCILE_BUILT_IN_AGENTS_ON_STARTUP_ENV],
+): boolean {
+  if (value === undefined || value === "1") return true;
+  if (value === "0") return false;
+  throw new Error(`${RECONCILE_BUILT_IN_AGENTS_ON_STARTUP_ENV} must be "0" or "1" when set`);
+}
+
 export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
+  const reconcileBuiltInAgentsOnStartupEnabled = parseBuiltInAgentStartupReconciliationEnv();
   ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
@@ -916,24 +927,26 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
     });
 
-  void reconcileBuiltInAgentsOnStartup(db as any)
-    .then((result) => {
-      if (
-        result.reconciled > 0
-        || result.unknown > 0
-        || result.duplicates > 0
-        || result.autoEnsured > 0
-        || result.companyFailures > 0
-      ) {
-        logger.warn(
-          result,
-          "startup reconciliation of built-in agents complete",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of built-in agents failed");
-    });
+  if (reconcileBuiltInAgentsOnStartupEnabled) {
+    void reconcileBuiltInAgentsOnStartup(db as any)
+      .then((result) => {
+        if (
+          result.reconciled > 0
+          || result.unknown > 0
+          || result.duplicates > 0
+          || result.autoEnsured > 0
+          || result.companyFailures > 0
+        ) {
+          logger.warn(
+            result,
+            "startup reconciliation of built-in agents complete",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of built-in agents failed");
+      });
+  }
 
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
