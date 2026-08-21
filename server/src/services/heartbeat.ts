@@ -555,9 +555,11 @@ export class ConfigurationIncompleteFailure extends Error {
 // Build the configuration-incomplete result payload for a workspace base ref
 // that never resolved to a commit. The setup catch maps this to errorCode
 // `configuration_incomplete`, so the recovery path routes it to a human owner
-// instead of a dispatched-then-failed run. The `fingerprint` is stable per
-// requested ref: a repeated failure with the same ref reuses one active
-// recovery action; a different ref makes a new action.
+// instead of a dispatched-then-failed run. The `fingerprint` uses the canonical
+// remote ref, not the operator spelling. Two equivalent spellings of one remote
+// branch (`fix/foo` and `origin/fix/foo`) share one fingerprint, so a repeated
+// failure reuses one active recovery action and does not reset the attempt
+// count or post a duplicate notice. A different branch makes a new action.
 function buildUnresolvedWorkspaceBaseRefResultJson(
   run: typeof heartbeatRuns.$inferSelect,
   error: UnresolvedWorkspaceBaseRefError,
@@ -573,7 +575,7 @@ function buildUnresolvedWorkspaceBaseRefResultJson(
       requestedRef: error.requestedRef,
       attemptedRefs: error.attemptedRefs,
       fetchError: error.fetchError,
-      fingerprint: `workspace_base_ref:${error.requestedRef}`,
+      fingerprint: `workspace_base_ref:${error.recoveryIdentityRef}`,
       missingBindings: [],
     },
   };

@@ -2367,19 +2367,29 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 // A configured base ref that does not resolve to a commit, even after an
 // authenticated fetch of its `origin/<branch>` counterpart. The caller must
 // stop before `git worktree add` and raise a pre-dispatch configuration
-// failure. `attemptedRefs` names each ref the resolver tried, and `fetchError`
-// carries the first fetch warning (masked) when the fetch itself failed.
+// failure. `requestedRef` keeps the operator spelling for the human notice.
+// `recoveryIdentityRef` is the canonical remote ref the resolver probed, so two
+// equivalent spellings of one remote branch map to one recovery identity.
+// `attemptedRefs` names each ref the resolver tried, and `fetchError` carries
+// the first fetch warning (masked) when the fetch itself failed.
 export class UnresolvedWorkspaceBaseRefError extends Error {
   requestedRef: string;
+  recoveryIdentityRef: string;
   attemptedRefs: string[];
   fetchError: string | null;
 
-  constructor(input: { requestedRef: string; attemptedRefs: string[]; fetchError?: string | null }) {
+  constructor(input: {
+    requestedRef: string;
+    recoveryIdentityRef: string;
+    attemptedRefs: string[];
+    fetchError?: string | null;
+  }) {
     super(
       `Configured workspace base ref "${input.requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
     );
     this.name = "UnresolvedWorkspaceBaseRefError";
     this.requestedRef = input.requestedRef;
+    this.recoveryIdentityRef = input.recoveryIdentityRef;
     this.attemptedRefs = input.attemptedRefs;
     this.fetchError = input.fetchError ?? null;
   }
@@ -2393,7 +2403,18 @@ export function isUnresolvedWorkspaceBaseRefError(error: unknown): error is Unre
 // unresolved outcome that must stop the caller before it creates the worktree.
 type AuthoritativeBaseRefResolution =
   | { resolved: true; baseRef: string; warnings: string[]; refreshed: boolean }
-  | { resolved: false; requestedRef: string; attemptedRefs: string[]; warnings: string[]; fetchError: string | null };
+  | {
+      resolved: false;
+      requestedRef: string;
+      // The canonical remote ref the resolver probed for this branch, for
+      // example `origin/fix/foo`. Two equivalent spellings of one remote branch
+      // (`fix/foo` and `origin/fix/foo`) share this value, so recovery treats
+      // them as one identity. Two different branches get different values.
+      recoveryIdentityRef: string;
+      attemptedRefs: string[];
+      warnings: string[];
+      fetchError: string | null;
+    };
 
 // Resolve the authoritative base ref for a fresh worktree. A configured local
 // branch is mapped to its `origin/<branch>` counterpart so unpushed local
@@ -2443,6 +2464,7 @@ async function resolveAuthoritativeBaseRef(
     return {
       resolved: false,
       requestedRef: configured,
+      recoveryIdentityRef: configured,
       attemptedRefs: [configured],
       warnings,
       fetchError: fetchWarnings[0] ?? null,
@@ -2481,6 +2503,7 @@ async function resolveAuthoritativeBaseRef(
   return {
     resolved: false,
     requestedRef: configured,
+    recoveryIdentityRef: remoteCandidate,
     attemptedRefs: [remoteCandidate],
     warnings,
     fetchError: fetchWarnings[0] ?? null,
@@ -3350,6 +3373,7 @@ export async function realizeExecutionWorkspace(input: {
   if (!baseRefResolution.resolved) {
     throw new UnresolvedWorkspaceBaseRefError({
       requestedRef: baseRefResolution.requestedRef,
+      recoveryIdentityRef: baseRefResolution.recoveryIdentityRef,
       attemptedRefs: baseRefResolution.attemptedRefs,
       fetchError: baseRefResolution.fetchError,
     });

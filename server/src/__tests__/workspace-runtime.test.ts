@@ -1080,11 +1080,39 @@ describe("realizeExecutionWorkspace", () => {
     expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
     const unresolved = error as UnresolvedWorkspaceBaseRefError;
     expect(unresolved.requestedRef).toBe("fix/does-not-exist");
+    expect(unresolved.recoveryIdentityRef).toBe("origin/fix/does-not-exist");
     expect(unresolved.attemptedRefs).toEqual(["origin/fix/does-not-exist"]);
     // No worktree directory was created for the fresh-create path.
     await expect(
       fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
     ).rejects.toThrow();
+  });
+
+  it("gives equivalent spellings of one absent remote ref the same recovery identity", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+
+    // The unqualified form and the remote-tracking form name the same remote
+    // branch. Both must map to one `recoveryIdentityRef`, so recovery does not
+    // treat a spelling change as a new blocker.
+    const unqualified = await realizeWorktreeForTest(repoRoot, "fix/absent").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    const remoteTracking = await realizeWorktreeForTest(repoRoot, "origin/fix/absent").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(unqualified).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    expect(remoteTracking).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unqualifiedError = unqualified as UnresolvedWorkspaceBaseRefError;
+    const remoteTrackingError = remoteTracking as UnresolvedWorkspaceBaseRefError;
+    // Each error keeps its own operator spelling for the human notice.
+    expect(unqualifiedError.requestedRef).toBe("fix/absent");
+    expect(remoteTrackingError.requestedRef).toBe("origin/fix/absent");
+    // Both share one canonical recovery identity.
+    expect(unqualifiedError.recoveryIdentityRef).toBe("origin/fix/absent");
+    expect(remoteTrackingError.recoveryIdentityRef).toBe("origin/fix/absent");
   });
 
   it("surfaces an authenticated fetch failure as an unresolved base ref, not a crash", async () => {
