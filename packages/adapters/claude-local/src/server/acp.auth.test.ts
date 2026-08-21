@@ -406,6 +406,8 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     "no_proxy",
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_USE_BEDROCK",
     "ANTHROPIC_BEDROCK_BASE_URL",
   ];
@@ -562,5 +564,82 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(result.checks.some((check) => check.code === "claude_oauth_token_configured")).toBe(true);
     // The host token value never enters a check.
     expect(JSON.stringify(result.checks)).not.toContain("oauth-host-token");
+  });
+
+  it("runs the host login probe with the host ANTHROPIC_AUTH_TOKEN on a local target", async () => {
+    // A local ACP run inherits the host environment, so a host bearer auth token
+    // authenticates the real run. The Test lane runs the login probe with the
+    // same host token, so the probe env matches the credential the real run
+    // receives. The probe then reports a real result, not a false auth-required.
+    process.env.ANTHROPIC_AUTH_TOKEN = "auth-host-token";
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "acp" },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    // The probe runs once with the host token, so it authenticates and reports
+    // no false auth-required and no probe-unavailable check.
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
+    expect(spawnedEnv.ANTHROPIC_AUTH_TOKEN).toBe("auth-host-token");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
+    // The host token value never enters a check.
+    expect(JSON.stringify(result.checks)).not.toContain("auth-host-token");
+  });
+
+  it("runs the host login probe with the host CLAUDE_CONFIG_DIR on a local target", async () => {
+    // A local ACP run reads the stored Claude login from the host
+    // CLAUDE_CONFIG_DIR. The Test lane runs the login probe with the same host
+    // config dir, so the probe reads the same stored login the real run uses.
+    // The probe then reports a real result, not a false auth-required.
+    process.env.CLAUDE_CONFIG_DIR = "/host/claude/config";
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "acp" },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    // The probe runs once with the host config dir, so it reads the stored login
+    // and reports no false auth-required and no probe-unavailable check.
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
+    expect(spawnedEnv.CLAUDE_CONFIG_DIR).toBe("/host/claude/config");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
+  });
+
+  it("never seeds the host ANTHROPIC_AUTH_TOKEN or CLAUDE_CONFIG_DIR on a remote target", async () => {
+    // A remote target does not inherit the host environment, so the probe keeps
+    // the deny-by-default env and never reads a host credential. The host token
+    // and host config dir must never reach the remote probe env.
+    process.env.ANTHROPIC_AUTH_TOKEN = "auth-host-token";
+    process.env.CLAUDE_CONFIG_DIR = "/host/claude/config";
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+
+    await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "acp" },
+      executionTarget: sshTarget,
+      environmentName: null,
+    });
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
+    expect(spawnedEnv.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(spawnedEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 });

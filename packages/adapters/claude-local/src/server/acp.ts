@@ -760,6 +760,8 @@ export async function testClaudeAcpEnvironment(
   const configApiKey = envConfig.ANTHROPIC_API_KEY;
   const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
   const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
+  const hostAuthToken = considerHostEnv ? process.env.ANTHROPIC_AUTH_TOKEN : undefined;
+  const hostConfigDir = considerHostEnv ? process.env.CLAUDE_CONFIG_DIR : undefined;
   if (hasBedrock) {
     checks.push({
       code: "claude_acp_bedrock_auth",
@@ -829,6 +831,20 @@ export async function testClaudeAcpEnvironment(
     // false claude_hello_probe_auth_required and fails the Test lane.
     if (isNonEmpty(hostOauthToken) && !isNonEmpty(probeEnv.CLAUDE_CODE_OAUTH_TOKEN)) {
       probeEnv.CLAUDE_CODE_OAUTH_TOKEN = hostOauthToken.trim();
+    }
+    // Seed the host ANTHROPIC_AUTH_TOKEN the same way. A local ACP run inherits
+    // a host bearer auth token, so the probe must receive the same token.
+    // Without this seed a valid host ANTHROPIC_AUTH_TOKEN setup reports a false
+    // claude_hello_probe_auth_required and fails the Test lane.
+    if (isNonEmpty(hostAuthToken) && !isNonEmpty(probeEnv.ANTHROPIC_AUTH_TOKEN)) {
+      probeEnv.ANTHROPIC_AUTH_TOKEN = hostAuthToken.trim();
+    }
+    // Seed the host CLAUDE_CONFIG_DIR the same way. A local ACP run reads the
+    // stored Claude login from the host CLAUDE_CONFIG_DIR, so the probe must
+    // read the same stored login. Without this seed a valid host stored login
+    // reports a false claude_hello_probe_auth_required and fails the Test lane.
+    if (isNonEmpty(hostConfigDir) && !isNonEmpty(probeEnv.CLAUDE_CONFIG_DIR)) {
+      probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
     }
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     checks.push(
