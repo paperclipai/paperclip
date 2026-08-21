@@ -36,6 +36,11 @@ export type UpsertIssueRecoveryActionInput = {
   timeoutAt?: Date | null;
   lastAttemptAt?: Date | null;
   attemptCount?: number;
+  // When true, a change of (cause, fingerprint) does not overwrite the active
+  // action in place. The service resolves the prior action and inserts a new
+  // one. The new failure then gets a distinct recovery identity and a fresh
+  // operator notice, and the prior identity stays as a resolved record.
+  supersedeOnIdentityChange?: boolean;
 };
 
 export type ResolveIssueRecoveryActionInput = {
@@ -179,6 +184,81 @@ export function issueRecoveryActionService(db: Db) {
     return upsertSourceScopedUnlocked(input, retryCount + 1);
   }
 
+  function buildInsertValues(
+    input: UpsertIssueRecoveryActionInput,
+    ownerType: IssueRecoveryActionOwnerType,
+    now: Date,
+  ) {
+    return {
+      companyId: input.companyId,
+      sourceIssueId: input.sourceIssueId,
+      recoveryIssueId: input.recoveryIssueId ?? null,
+      kind: input.kind,
+      status: "active" as const,
+      ownerType,
+      ownerAgentId: input.ownerAgentId ?? null,
+      ownerUserId: input.ownerUserId ?? null,
+      previousOwnerAgentId: input.previousOwnerAgentId ?? null,
+      returnOwnerAgentId: input.returnOwnerAgentId ?? null,
+      cause: input.cause,
+      fingerprint: input.fingerprint,
+      evidence: input.evidence ?? {},
+      nextAction: input.nextAction,
+      wakePolicy: input.wakePolicy ?? null,
+      monitorPolicy: input.monitorPolicy ?? null,
+      attemptCount: input.attemptCount ?? 1,
+      maxAttempts: input.maxAttempts ?? null,
+      timeoutAt: input.timeoutAt ?? null,
+      lastAttemptAt: input.lastAttemptAt ?? now,
+    };
+  }
+
+  // Resolve the prior active action, then insert a new one in one transaction.
+  // The prior identity stays as a cancelled record and the new failure gets a
+  // fresh action row with its own id. The partial unique index on the active
+  // status stays satisfied because only the new row is active at commit.
+  async function supersedePriorAndInsert(
+    input: UpsertIssueRecoveryActionInput,
+    priorActionId: string,
+    ownerType: IssueRecoveryActionOwnerType,
+    now: Date,
+    retryCount: number,
+  ): Promise<IssueRecoveryAction> {
+    try {
+      const created = await db.transaction(async (tx) => {
+        const [superseded] = await tx
+          .update(issueRecoveryActions)
+          .set({
+            status: "cancelled",
+            outcome: "cancelled",
+            resolutionNote: "A new failure with a different identity superseded this recovery action.",
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issueRecoveryActions.id, priorActionId),
+              inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+            ),
+          )
+          .returning();
+        // Another writer resolved the prior action first. Abort and retry the
+        // whole upsert so the retry reads the current active state.
+        if (!superseded) return null;
+        const [row] = await tx
+          .insert(issueRecoveryActions)
+          .values(buildInsertValues(input, ownerType, now))
+          .returning();
+        return row ?? null;
+      });
+      if (!created) return retryUpsertSourceScoped(input, retryCount);
+      return toReadModel(created);
+    } catch (error) {
+      if (!isUniqueRecoveryActionConflict(error)) throw error;
+      return retryUpsertSourceScoped(input, retryCount, error);
+    }
+  }
+
   async function upsertSourceScopedUnlocked(
     input: UpsertIssueRecoveryActionInput,
     retryCount = 0,
@@ -187,6 +267,15 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      // A distinct failure identity must not overwrite the active action of a
+      // prior identity. Resolve the prior action and insert a new one, so the
+      // operator gets a new notice for the new failure.
+      if (
+        input.supersedeOnIdentityChange &&
+        (existing.cause !== input.cause || existing.fingerprint !== input.fingerprint)
+      ) {
+        return supersedePriorAndInsert(input, existing.id, ownerType, now, retryCount);
+      }
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -229,28 +318,7 @@ export function issueRecoveryActionService(db: Db) {
     try {
       const [created] = await db
         .insert(issueRecoveryActions)
-        .values({
-          companyId: input.companyId,
-          sourceIssueId: input.sourceIssueId,
-          recoveryIssueId: input.recoveryIssueId ?? null,
-          kind: input.kind,
-          status: "active",
-          ownerType,
-          ownerAgentId: input.ownerAgentId ?? null,
-          ownerUserId: input.ownerUserId ?? null,
-          previousOwnerAgentId: input.previousOwnerAgentId ?? null,
-          returnOwnerAgentId: input.returnOwnerAgentId ?? null,
-          cause: input.cause,
-          fingerprint: input.fingerprint,
-          evidence: input.evidence ?? {},
-          nextAction: input.nextAction,
-          wakePolicy: input.wakePolicy ?? null,
-          monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: input.attemptCount ?? 1,
-          maxAttempts: input.maxAttempts ?? null,
-          timeoutAt: input.timeoutAt ?? null,
-          lastAttemptAt: input.lastAttemptAt ?? now,
-        })
+        .values(buildInsertValues(input, ownerType, now))
         .returning();
       return toReadModel(created!);
     } catch (error) {

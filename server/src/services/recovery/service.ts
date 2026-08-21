@@ -2947,6 +2947,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
+      // A configuration-incomplete failure carries a per-identity fingerprint
+      // (for example the unresolved workspace base ref). A different ref is a
+      // distinct blocker, so it must get a new recovery action and notify the
+      // operator, not overwrite the active action of the prior ref.
+      supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: recoveryCause === "provider_quota" && !ownerAgentId ? "system" : ownerAgentId ? "agent" : "board",
       ownerAgentId,

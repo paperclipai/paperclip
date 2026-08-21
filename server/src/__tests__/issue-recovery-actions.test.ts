@@ -385,6 +385,82 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("gives a distinct recovery identity and a new operator notice when the unresolved base ref changes", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const makeUnresolvedBaseRefRun = (ref: string) =>
+      ({
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: `Configured workspace base ref "${ref}" did not resolve to a commit on origin after an authenticated fetch.`,
+        errorCode: "configuration_incomplete",
+        contextSnapshot: { issueId: sourceIssue.id },
+        livenessState: "needs_followup",
+        resultJson: {
+          configurationIncomplete: {
+            reason: "workspace_base_ref_unresolved",
+            requestedRef: ref,
+            attemptedRefs: [`origin/${ref}`],
+            fingerprint: `workspace_base_ref:${ref}`,
+          },
+        },
+      }) as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeUnresolvedBaseRefRun("fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeUnresolvedBaseRefRun("fix/bar"),
+      recoveryCause: "configuration_incomplete",
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    // The prior ref keeps its own record and the new ref gets a fresh identity.
+    expect(actions).toHaveLength(2);
+    const priorAction = actions.find((row) =>
+      row.fingerprint.endsWith("workspace_base_ref:fix/foo"),
+    );
+    const newAction = actions.find((row) =>
+      row.fingerprint.endsWith("workspace_base_ref:fix/bar"),
+    );
+    expect(priorAction?.status).toBe("cancelled");
+    expect(priorAction?.outcome).toBe("cancelled");
+    expect(newAction?.status).toBe("active");
+    expect(newAction?.attemptCount).toBe(1);
+    expect(newAction?.id).not.toBe(priorAction?.id);
+
+    // The operator gets one notice per distinct ref, each bound to its action.
+    const systemComments = await db
+      .select({ metadata: issueComments.metadata })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, sourceIssue.id),
+          eq(issueComments.authorType, "system"),
+        ),
+      );
+    expect(
+      systemComments.some((row) =>
+        noticeMetadataReferencesRecoveryAction(row.metadata, priorAction!.id),
+      ),
+    ).toBe(true);
+    expect(
+      systemComments.some((row) =>
+        noticeMetadataReferencesRecoveryAction(row.metadata, newAction!.id),
+      ),
+    ).toBe(true);
+  });
+
   it.each([
     ["process_lost", undefined, "coder"],
     ["adapter_failed", "successful_run_missing_state", "coder"],
