@@ -17441,17 +17441,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
           .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)))
           .returning();
-        // Unblock-owner wakes are exempt: the owner is not necessarily the
-        // assignee, and owner wakes acquire the execution lock lazily at claim
-        // time (guarded by executionRunId IS NULL OR self), so a zero-row
-        // assignee-scoped lock here must not cancel a valid owner wake. For
-        // every other deferred wake kind the assignee-scoped lock IS the
-        // execution lock, so a zero-row result means the issue was reassigned
-        // (or deleted) between deferral and promotion: cancel both the run
-        // and the wake request instead of letting the run proceed without
-        // owning the issue lock.
+        // A zero-row assignee-scoped lock is only a problem when this wake
+        // was supposed to lock as the assignee: if deferredAgent IS the
+        // current assignee yet the update matched nothing, the issue was
+        // reassigned (or deleted) between deferral and promotion, and the
+        // queued run would proceed without owning the issue lock — cancel
+        // both the run and the wake request so a later wake re-defers or
+        // re-delivers against the current assignee.
+        // When deferredAgent is NOT the assignee (mention/context wakes and
+        // unblock-owner wakes whose owner differs from the assignee), zero
+        // rows is the expected outcome: those wakes are issue-scoped, not
+        // issue ownership transfers, and proceed without the execution lock
+        // (owner wakes acquire it lazily at claim time under the
+        // executionRunId IS NULL OR self guard).
         if (
-          readNonEmptyString(deferredContextSeed.wakeReason) !== "issue_unblock_requested" &&
+          deferredAgent.id === issue.assigneeAgentId &&
           executionLockResult.length === 0
         ) {
           await tx
