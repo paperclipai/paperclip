@@ -896,7 +896,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(cleared?.lastReviewedFingerprint).toBeNull();
   });
 
-  it("does not clear lastReviewedFingerprint when in_review still has a review disposition", async () => {
+  it("keeps lastReviewedFingerprint and denies source mutation when in_review has a board review path", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-INREVIEW-KEEP", status: "done" });
     await seedIssue(companyId, { parentId: sourceId, status: "done" });
@@ -927,7 +927,8 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       watchedIssueId: sourceId,
       stopFingerprint,
     });
-    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.allowed).toBe(false);
+    expect(revalidated.classification?.state).toBe("already_reviewed");
 
     const [kept] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(kept?.lastReviewedFingerprint).toBe(stopFingerprint);

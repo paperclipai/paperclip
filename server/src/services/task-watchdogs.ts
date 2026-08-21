@@ -1248,6 +1248,20 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return true;
   }
 
+  async function sameFingerprintWatchdogAllowsSourceMutation(
+    watchdogIssue: IssueRow | null,
+    stopFingerprint: string,
+  ) {
+    if (!watchdogIssue) return false;
+    if (watchdogIssue.originFingerprint !== stopFingerprint) return false;
+    if (isTerminalIssueStatus(watchdogIssue.status) || watchdogIssue.status === "backlog") return false;
+    if (watchdogIssue.status === "in_review") {
+      const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+      return !isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
+    }
+    return true;
+  }
+
   /**
    * Premature `done`/`blocked` on a reusable watchdog issue stamps
    * lastReviewedFingerprint. Explicit reopen to todo/in_progress/in_review
@@ -1777,7 +1791,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
           .then((rows) => rows[0] ?? null)
         : null;
-      if (await sameFingerprintWatchdogReviewIsStillOpen(watchdogIssue, classification.stopFingerprint)) {
+      if (await sameFingerprintWatchdogAllowsSourceMutation(watchdogIssue, classification.stopFingerprint)) {
         return {
           allowed: true as const,
           classification: {
