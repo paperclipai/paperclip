@@ -12688,7 +12688,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       updatedAt: claimedAt,
     };
     let claimed: typeof heartbeatRuns.$inferSelect | null;
-    if (exactUnblockOwnerClaim) {
+    if (exactUnblockOwnerClaim && issueId) {
       const outcome = await db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issueId}`}))`);
         const claimIssue = await tx

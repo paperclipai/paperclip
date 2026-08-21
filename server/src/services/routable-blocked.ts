@@ -32,16 +32,17 @@ export function isBlockedOwnerStillAuthorized(input: {
   createdByAgentId: string | null | undefined;
   companyAgents: BlockedOwnerEligibilityAgent[];
 }): boolean {
-  const owner = input.owner;
-  if (!owner || owner === "board" || typeof owner.agentId !== "string" || !owner.agentId) {
+  const owner = input.owner as { agentId?: unknown; userId?: unknown } | null | undefined;
+  const ownerAgentId = typeof owner?.agentId === "string" ? owner.agentId : "";
+  if (!owner || owner === ("board" as unknown) || !ownerAgentId) {
     return false;
   }
-  const ownerAgent = input.companyAgents.find((agent) => agent.id === owner.agentId);
+  const ownerAgent = input.companyAgents.find((agent) => agent.id === ownerAgentId);
   if (!ownerAgent) return false;
   const ownerEligibility = getAgentWorkEligibility({ agent: ownerAgent, agents: input.companyAgents });
   if (!ownerEligibility.invokable) return false;
   const creatorAgentId = typeof input.createdByAgentId === "string" ? input.createdByAgentId : "";
-  if (!creatorAgentId || creatorAgentId === owner.agentId) return true;
+  if (!creatorAgentId || creatorAgentId === ownerAgentId) return true;
   const creatorAgent = input.companyAgents.find((agent) => agent.id === creatorAgentId);
   const creatorEligibility = creatorAgent
     ? getAgentWorkEligibility({ agent: creatorAgent, agents: input.companyAgents })
