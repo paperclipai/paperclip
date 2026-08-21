@@ -263,6 +263,15 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * whose control channel died mid-turn.
    */
   readRunDisposition?(): DuplexBrokerRunDisposition;
+  /**
+   * Mark the host-observed orderly completion of the agent turn on the broker's
+   * ordered lifecycle. The caller marks it at the ACP terminal-finalization
+   * boundary for a still-success-eligible completion, so a later teardown loss
+   * cannot flip the run to a failure. A loss that already latched keeps the
+   * failure, because the broker no-ops the mark after a latched loss. The file
+   * bridge path never sets it, so the method is absent there.
+   */
+  markOrderlyCompletion?(): void;
   stop(): Promise<void>;
 }
 
@@ -3135,6 +3144,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             // seam. A loss ordered before an orderly completion reports a failure
             // with the typed loss reason; every other state reports a success.
             readRunDisposition: (): DuplexBrokerRunDisposition => activeBroker.runDisposition,
+            // Surface the broker's orderly-completion mark to the run-disposition
+            // seam. The seam marks the completion for a success-eligible terminal,
+            // so a teardown loss after the completion stays a normal teardown.
+            markOrderlyCompletion: (): void => activeBroker.markOrderlyCompletion(),
             stop: async () => {
               // Close the channel before lease release. The broker sends an orderly
               // close and releases the route, then stops the child, so no live
