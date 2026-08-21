@@ -14050,6 +14050,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: string | null;
       failureReason: string | null;
       keepIdleOnFailure: boolean;
+      wasFirstHeartbeat: boolean;
       retryOptions: Parameters<typeof scheduleBoundedRetryForRun>[2] | null;
       retryAttempted: boolean;
       retryCompleted: boolean;
@@ -16401,6 +16402,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           outcome === "failed" &&
           ((persistedRun ? readHeartbeatRunErrorFamily(persistedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
             isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         retryOptions,
         retryAttempted: false,
         retryCompleted: false,
@@ -16662,6 +16664,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // block: a workspace-sync-conflict failure must keep the agent idle so
         // the fallback does not strand it in an error state.
         keepIdleOnFailure: isWorkspaceSyncConflictFailure(message),
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         retryOptions: null,
         retryAttempted: false,
         retryCompleted: false,
@@ -16902,7 +16905,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       terminalCleanup.run.agentId,
                       terminalCleanup.outcome,
                       terminalCleanup.failureReason,
-                      { keepIdleOnFailure: terminalCleanup.keepIdleOnFailure },
+                      {
+                        keepIdleOnFailure: terminalCleanup.keepIdleOnFailure,
+                        wasFirstHeartbeat: terminalCleanup.wasFirstHeartbeat,
+                      },
                     );
                     terminalCleanup.agentFinalized = true;
                   }
