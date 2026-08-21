@@ -2,7 +2,9 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
 
 let currentPathname = "/company/settings";
@@ -89,12 +91,25 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
   });
 
+  function renderNav(root: ReturnType<typeof createRoot>, hiddenSettings?: string[]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      ...(hiddenSettings ? { hiddenSettings } : {}),
+    });
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <CompanySettingsNav />
+      </QueryClientProvider>,
+    );
+  }
+
   it("renders the active tab and navigates when a different tab is selected", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<CompanySettingsNav />);
+      renderNav(root);
     });
 
     expect(container.textContent).toContain("members");
@@ -127,6 +142,36 @@ describe("CompanySettingsNav", () => {
     });
 
     expect(navigateMock).toHaveBeenCalledWith("/company/settings/invites");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("filters operator-hidden tabs out of the tab bar", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, ["instance.plugins", "instance.heartbeats"]);
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).toEqual([
+      "general",
+      "export",
+      "import",
+      "members",
+      "invites",
+      "secrets",
+      "instance-profile",
+      "instance-environments",
+      "instance-access",
+      "instance-experimental",
+      "instance-adapters",
+    ]);
 
     await act(async () => {
       root.unmount();

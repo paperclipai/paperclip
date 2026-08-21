@@ -50,6 +50,7 @@ import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSour
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
@@ -67,6 +68,20 @@ function assertAdapterCodeInstallAllowed() {
   if (isCloudManagedInstance()) {
     throw forbidden("Adapter installation is platform-managed on cloud-managed instances", {
       code: "adapter_install_platform_managed",
+    });
+  }
+}
+
+/**
+ * Floor: when the hosting operator hides the Adapters settings surface
+ * (`instance.adapters` in PAPERCLIP_HIDDEN_SETTINGS), adapter management
+ * writes are rejected alongside it. Reads stay open — adapter metadata is
+ * consumed by agent-creation UIs outside the hidden page.
+ */
+function assertAdapterManagementVisible() {
+  if (getHiddenSettings().has("instance.adapters")) {
+    throw forbidden("Adapter management is managed by the hosting operator on this instance", {
+      code: "settings_operator_managed",
     });
   }
 }
@@ -288,6 +303,7 @@ export function adapterRoutes() {
   router.post("/adapters/install", async (req, res) => {
     assertInstanceAdmin(req);
     assertAdapterCodeInstallAllowed();
+    assertAdapterManagementVisible();
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
 
@@ -435,6 +451,8 @@ export function adapterRoutes() {
   router.patch("/adapters/:type", async (req, res) => {
     assertInstanceAdmin(req);
 
+    assertAdapterManagementVisible();
+
     const adapterType = req.params.type;
     const { disabled } = req.body as { disabled?: boolean };
 
@@ -470,6 +488,8 @@ export function adapterRoutes() {
   router.patch("/adapters/:type/override", async (req, res) => {
     assertInstanceAdmin(req);
 
+    assertAdapterManagementVisible();
+
     const adapterType = req.params.type;
     const { paused } = req.body as { paused?: boolean };
 
@@ -497,6 +517,7 @@ export function adapterRoutes() {
    */
   router.delete("/adapters/:type", async (req, res) => {
     assertInstanceAdmin(req);
+    assertAdapterManagementVisible();
 
     const adapterType = req.params.type;
 
@@ -573,6 +594,7 @@ export function adapterRoutes() {
    */
   router.post("/adapters/:type/reload", async (req, res) => {
     assertInstanceAdmin(req);
+    assertAdapterManagementVisible();
 
     const type = req.params.type;
 
@@ -626,6 +648,7 @@ export function adapterRoutes() {
   router.post("/adapters/:type/reinstall", async (req, res) => {
     assertInstanceAdmin(req);
     assertAdapterCodeInstallAllowed();
+    assertAdapterManagementVisible();
 
     const type = req.params.type;
 

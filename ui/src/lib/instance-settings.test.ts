@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_INSTANCE_SETTINGS_PATH,
+  filterHiddenInstanceSettingsPath,
   normalizeRememberedInstanceSettingsPath,
 } from "./instance-settings";
 
@@ -46,5 +47,31 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
       DEFAULT_INSTANCE_SETTINGS_PATH,
     );
     expect(normalizeRememberedInstanceSettingsPath(null)).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
+  });
+});
+
+describe("filterHiddenInstanceSettingsPath", () => {
+  const hidden = new Set(["instance.plugins", "instance.heartbeats"]);
+
+  it("remaps hidden pages (including sub-paths) to the default settings path", () => {
+    expect(
+      filterHiddenInstanceSettingsPath("/company/settings/instance/plugins", hidden),
+    ).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
+    expect(
+      filterHiddenInstanceSettingsPath("/company/settings/instance/plugins/plugin-1", hidden),
+    ).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
+    expect(
+      filterHiddenInstanceSettingsPath("/company/settings/instance/heartbeats", hidden),
+    ).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
+  });
+
+  it("keeps visible pages and non-settings paths untouched", () => {
+    expect(
+      filterHiddenInstanceSettingsPath("/company/settings/instance/experimental", hidden),
+    ).toBe("/company/settings/instance/experimental");
+    expect(filterHiddenInstanceSettingsPath("/dashboard", hidden)).toBe("/dashboard");
+    expect(
+      filterHiddenInstanceSettingsPath("/company/settings/instance/plugins", new Set()),
+    ).toBe("/company/settings/instance/plugins");
   });
 });

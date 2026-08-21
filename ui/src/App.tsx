@@ -9,6 +9,8 @@ import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGat
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
+import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
+import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -96,7 +98,7 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { useCompanyMission } from "./hooks/useCompanyMission";
-import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
 const CompanyExport = lazy(() =>
   import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
@@ -155,17 +157,31 @@ function boardRoutes() {
         <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       </Route>
       <Route path="company/settings/instance" element={<Navigate to="/company/settings" replace />} />
-      <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
+      <Route element={<HiddenSettingsPageGate pageKey="instance.profile" />}>
+        <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
+      </Route>
       <Route path="company/settings/instance/general" element={<Navigate to="/company/settings" replace />} />
-      <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
-      <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
-      <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
-      <Route path="company/settings/instance/access" element={<InstanceAccess />} />
-      <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
-      <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
-      <Route path="company/settings/instance/plugins" element={<PluginManager />} />
-      <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
-      <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      <Route element={<HiddenSettingsPageGate pageKey="instance.environments" />}>
+        <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
+        <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
+        <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
+        <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.heartbeats" />}>
+        <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
+        <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.plugins" />}>
+        <Route path="company/settings/instance/plugins" element={<PluginManager />} />
+        <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.adapters" />}>
+        <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      </Route>
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
       <Route path="skills/studio" element={<SkillStudio />} />
       <Route path="skills/studio/new" element={<SkillStudio />} />
@@ -350,6 +366,7 @@ function LegacySettingsRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const { hidden: hiddenSettings } = useHiddenSettings();
 
   if (loading) {
     return <PaperclipLoading />;
@@ -375,8 +392,11 @@ function LegacySettingsRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  const normalizedPath = normalizeRememberedInstanceSettingsPath(
-    `${location.pathname}${location.search}${location.hash}`,
+  const normalizedPath = filterHiddenInstanceSettingsPath(
+    normalizeRememberedInstanceSettingsPath(
+      `${location.pathname}${location.search}${location.hash}`,
+    ),
+    hiddenSettings,
   );
 
   return (
