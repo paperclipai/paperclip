@@ -251,6 +251,77 @@ describeEmbeddedPostgres("issue list routes livenessInvariantViolation filter", 
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([strandedId]);
   });
 
+  it("does not flag a todo issue assigned to a human (assigneeUserId set, assigneeAgentId null)", async () => {
+    // Regression for a board false-positive: a sweep keyed only on
+    // assigneeAgentId==null misread human-assigned issues (assigneeUserId set)
+    // as unassigned/stranded. The invariant requires BOTH assignee columns to
+    // be null before flagging.
+    const companyId = await seedCompany();
+    const humanAssignedId = randomUUID();
+
+    await db.insert(issues).values({
+      id: humanAssignedId,
+      companyId,
+      title: "Parked for a human decision, not stranded",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: null,
+      assigneeUserId: "cloud-user-1",
+    });
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ livenessInvariantViolation: "true", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).not.toContain(humanAssignedId);
+  });
+
+  it("treats a due/fired monitor (monitorNextCheckAt in the past, not rescheduled) as no live monitor", async () => {
+    // Regression for the "monitor.status = triggered" false-negative: a
+    // monitor that has already fired but was never rescheduled forward still
+    // has a monitorNextCheckAt column value -- just one in the past. Only a
+    // *future* monitorNextCheckAt counts as a live wake path; a stale/fired
+    // one must count as no monitor, same as null.
+    const companyId = await seedCompany();
+    const strandedId = randomUUID();
+    const liveMonitorId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: strandedId,
+        companyId,
+        title: "Monitor fired an hour ago and was never rescheduled",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+      },
+      {
+        id: liveMonitorId,
+        companyId,
+        title: "Monitor still scheduled in the future",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    ]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ livenessInvariantViolation: "true", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const flaggedIds = res.body.map((issue: { id: string }) => issue.id);
+    expect(flaggedIds).toContain(strandedId);
+    expect(flaggedIds).not.toContain(liveMonitorId);
+  });
+
   it("returns 400 for a malformed livenessInvariantViolation flag", async () => {
     const companyId = await seedCompany();
 
