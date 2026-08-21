@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RequestConfirmationInteraction } from "@/lib/issue-thread-interactions";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { expiredSecretProposalInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatInteractionCard } from "./TaskChatInteractionCard";
 import { TaskChatThreadView } from "./TaskChatThreadView";
 import type { TaskChatInteractionItem } from "./task-chat-model";
@@ -116,6 +117,25 @@ describe("TaskChatInteractionCard", () => {
     expect(container.querySelector('[data-testid="task-chat-interaction"]')).toBeNull();
     expect(container.textContent).toContain("Approve the plan");
     expect(container.textContent).toContain("expired");
+  });
+
+  it("renders an expired secret proposal as a full receipt", () => {
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(expiredSecretProposalInteraction)} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="task-chat-interaction"]')).not.toBeNull();
+    expect(container.textContent).toContain("Secret binding requested");
+    expect(container.textContent).toContain("OpenAI API key");
+    expect(container.textContent).toContain("access.evals_openai_api_key");
+    expect(container.textContent).toContain("EvalsEngineer");
+    expect(container.textContent).toContain("A fresh proposal is required");
   });
 });
 

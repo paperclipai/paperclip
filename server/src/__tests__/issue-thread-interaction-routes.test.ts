@@ -24,6 +24,7 @@ const RUN_WATCHDOG = "d0000000-0000-4000-8000-000000000003";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   listReviewAttention: vi.fn(),
+  addComment: vi.fn(),
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
@@ -40,6 +41,7 @@ const mockInteractionService = vi.hoisted(() => ({
   submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
   withdrawInteraction: vi.fn(),
+  recordSecretProposalExecutionResult: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -319,6 +321,27 @@ describe.sequential("issue thread interaction routes", () => {
       payload: { version: 1, prompt: "Proceed?" },
       result: { version: 1, outcome: "withdrawn", reason: "Replanning" },
     });
+    mockInteractionService.recordSecretProposalExecutionResult.mockImplementation(
+      async (_issue, _interactionId, _proposalId, execution) => ({
+        ...(await mockInteractionService.acceptInteraction.mock.results.at(-1)?.value)?.interaction,
+        id: _interactionId,
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Create the binding?",
+          secretProposal: {
+            version: 1,
+            proposalId: _proposalId,
+            configPath: "access.NEW_ALIAS",
+          },
+        },
+        result: { version: 1, outcome: "accepted", secretProposal: { version: 1, ...execution } },
+      }),
+    );
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -1136,6 +1159,141 @@ describe.sequential("issue thread interaction routes", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("payload.toolAction is server-owned metadata");
     expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects client-supplied secret-proposal metadata on interaction creation", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the forged secret binding?",
+          secretProposal: {
+            version: 1,
+            proposalId: "11111111-1111-4111-8111-111111111111",
+            sourceSecretLabel: "forged/source",
+            configPath: "access.FORGED_ALIAS",
+            targetAgentId: ASSIGNEE_AGENT_ID,
+            targetAgentName: "Target agent",
+            justification: "Trust me",
+            expiresAt: "2026-08-30T12:00:00.000Z",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("payload.secretProposal is server-owned metadata");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
+  it("executes an accepted secret-proposal confirmation and wakes with verification instructions", async () => {
+    const proposalId = "44444444-4444-4444-8444-444444444444";
+    const approveSecretProposal = vi.fn().mockResolvedValue({ status: "approved" });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-secret-proposal",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Create the binding?",
+          secretProposal: {
+            version: 1,
+            proposalId,
+            configPath: "access.NEW_ALIAS",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveSecretProposal });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-secret-proposal/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(approveSecretProposal).toHaveBeenCalledWith({
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      interactionId: "interaction-secret-proposal",
+      proposalId,
+      actor: { agentId: null, userId: "local-board" },
+    });
+    expect(mockInteractionService.recordSecretProposalExecutionResult).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-secret-proposal",
+      proposalId,
+      { status: "executed" },
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          secretProposal: expect.objectContaining({
+            proposalId,
+            configPath: "access.NEW_ALIAS",
+            executionStatus: "executed",
+            instructions: expect.stringContaining("GET /api/agents/me/secrets"),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("records a failed secret-proposal execution and posts a thread comment", async () => {
+    const proposalId = "55555555-5555-4555-8555-555555555555";
+    const approveSecretProposal = vi.fn().mockRejectedValue(new Error("binding failed"));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-secret-proposal-failed",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Create the binding?",
+          secretProposal: {
+            version: 1,
+            proposalId,
+            configPath: "access.NEW_ALIAS",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveSecretProposal });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-secret-proposal-failed/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.recordSecretProposalExecutionResult).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-secret-proposal-failed",
+      proposalId,
+      { status: "failed", errorCode: "secret_proposal_execution_failed" },
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.stringContaining("Binding created: **no**"),
+      { userId: "local-board" },
+    );
+    expect(res.body.result.secretProposal).toMatchObject({
+      status: "failed",
+      errorCode: "secret_proposal_execution_failed",
+    });
   });
 
   it("forwards plan-document confirmations to the interaction service for revision validation", async () => {

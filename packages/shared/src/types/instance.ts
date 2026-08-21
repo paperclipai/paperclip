@@ -90,6 +90,13 @@ export interface InstanceExperimentalSettings {
    */
   enableOwnerInstanceAdmin: boolean;
   /**
+   * Kill switch for the sandbox duplex command-stream bridge. Default off. The
+   * host reads this per run before it selects the callback bridge transport.
+   * Off forces the file bridge for every run with no manifest change and no
+   * redeploy.
+   */
+  enableSandboxDuplexBridge: boolean;
+  /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
    * this is enabled the worktree-instance scheduling suppression is lifted so

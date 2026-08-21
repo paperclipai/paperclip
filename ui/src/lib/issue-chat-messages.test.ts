@@ -17,6 +17,7 @@ import type {
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import { registerUIAdapter, unregisterUIAdapter } from "../adapters/registry";
 
 function createAgent(id: string, name: string): Agent {
   return {
@@ -1081,6 +1082,86 @@ describe("buildIssueChatMessages", () => {
       toolName: "search",
       result: "search completed",
     }));
+  });
+
+  it("honors a wider transcript window declared by an adapter's UI module", () => {
+    // Capability path: an adapter (built-in or plugin) declares
+    // transcriptPresentation on its UI module; shared code resolves it via the
+    // registry with no adapter identities. The test registers a synthetic
+    // verbose adapter — the test right above pins the default 30-entry window
+    // for adapters that declare nothing.
+    registerUIAdapter({
+      type: "verbose_test_local",
+      label: "Verbose Test",
+      parseStdoutLine: () => [],
+      ConfigFields: () => null,
+      buildAdapterConfig: () => ({}),
+      transcriptPresentation: { maxVisibleEntries: 400, liveReasoningView: "scrollLog" },
+    });
+
+    try {
+      const isoAt = (baseMs: number, offsetSeconds: number) =>
+        new Date(baseMs + offsetSeconds * 1000).toISOString();
+      const baseMs = Date.parse("2026-04-06T12:00:00.000Z");
+      // 90 renderable entries: over the default 30-entry window, under the
+      // declared 400-entry window, so nothing is trimmed.
+      const transcript = [
+        ...Array.from({ length: 9 }, (_, index) => ({
+          kind: "assistant" as const,
+          ts: isoAt(baseMs, index),
+          text: `Older update ${index + 1}`,
+        })),
+        {
+          kind: "tool_call" as const,
+          ts: isoAt(baseMs, 9),
+          name: "search",
+          toolUseId: "tool-keep",
+          input: { query: "issue chat virtualization" },
+        },
+        ...Array.from({ length: 79 }, (_, index) => ({
+          kind: "assistant" as const,
+          ts: isoAt(baseMs, 10 + index),
+          text: `Recent update ${index + 1}`,
+        })),
+        {
+          kind: "tool_result" as const,
+          ts: isoAt(baseMs, 89),
+          toolUseId: "tool-keep",
+          content: "search completed",
+          isError: false,
+        },
+      ];
+
+      const messages = buildIssueChatMessages({
+        comments: [],
+        timelineEvents: [],
+        linkedRuns: [
+          {
+            runId: "run-history-verbose",
+            status: "succeeded",
+            agentId: "agent-1",
+            agentName: "VerboseCoder",
+            adapterType: "verbose_test_local",
+            createdAt: new Date("2026-04-06T12:00:00.000Z"),
+            startedAt: new Date("2026-04-06T12:00:00.000Z"),
+            finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+          },
+        ],
+        liveRuns: [],
+        transcriptsByRunId: new Map([["run-history-verbose", transcript]]),
+        hasOutputForRun: (runId) => runId === "run-history-verbose",
+        currentUserId: "user-1",
+      });
+
+      expect(messages).toHaveLength(1);
+      const textParts = messages[0]?.content
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text) ?? [];
+      expect(textParts.join("\n")).toContain("Older update 1");
+      expect(textParts.join("\n")).toContain("Recent update 79");
+    } finally {
+      unregisterUIAdapter("verbose_test_local");
+    }
   });
 
   it("keeps the same assistant message id when a live run becomes a cancelled historical run", () => {

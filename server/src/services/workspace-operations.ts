@@ -14,7 +14,7 @@ type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
  * Managed runtime control actions. Every one of these mutates the runtime rows and
  * local listeners of a single execution workspace, so only one may be live at a time.
  */
-const RUNTIME_CONTROL_ACTIONS = new Set(["start", "stop", "restart", "run"]);
+const RUNTIME_CONTROL_ACTIONS = new Set(["start", "stop", "restart", "repair", "run"]);
 
 /**
  * Identity of this server process. A `running` runtime-control operation stamped with a
@@ -234,7 +234,10 @@ export interface WorkspaceOperationRecorder {
      * timeout error is rethrown, so a hung provider can never leave an active operation.
      */
     timeoutMs?: number | null;
-    run: () => Promise<{
+    run: (reportProgress: (input: {
+      metadata?: Record<string, unknown> | null;
+      system?: string | null;
+    }) => Promise<void>) => Promise<{
       status?: WorkspaceOperationStatus;
       exitCode?: number | null;
       stdout?: string | null;
@@ -484,7 +487,7 @@ export function workspaceOperationService(db: Db) {
           // Managed runtime controls get an ownership stamp so bounded recovery can tell a
           // slow-but-live operation from one abandoned by a dead request or server process.
           const runtimeControlAction = readRuntimeControlAction(recordInput.metadata);
-          const insertedMetadata = runtimeControlAction
+          let currentMetadata = runtimeControlAction
             ? {
                 ...(recordInput.metadata ?? {}),
                 runtimeControlOwner: {
@@ -515,7 +518,7 @@ export function workspaceOperationService(db: Db) {
               logStore: handle.store,
               logRef: handle.logRef,
               metadata: redactCurrentUserValue(
-                insertedMetadata,
+                currentMetadata,
                 currentUserRedactionOptions,
               ) as Record<string, unknown> | null,
               startedAt,
@@ -532,17 +535,21 @@ export function workspaceOperationService(db: Db) {
           if (runtimeControlAction) {
             heartbeatTimer = setInterval(() => {
               const heartbeatAt = new Date();
+              currentMetadata = combineMetadata(currentMetadata, {
+                runtimeControlOwner: {
+                  ownerId: RUNTIME_CONTROL_OWNER_ID,
+                  pid: process.pid,
+                  action: runtimeControlAction,
+                  heartbeatAt: heartbeatAt.toISOString(),
+                } satisfies RuntimeControlOwnerStamp,
+              });
               void db
                 .update(workspaceOperations)
                 .set({
-                  metadata: combineMetadata(insertedMetadata, {
-                    runtimeControlOwner: {
-                      ownerId: RUNTIME_CONTROL_OWNER_ID,
-                      pid: process.pid,
-                      action: runtimeControlAction,
-                      heartbeatAt: heartbeatAt.toISOString(),
-                    } satisfies RuntimeControlOwnerStamp,
-                  }),
+                  metadata: redactCurrentUserValue(
+                    currentMetadata,
+                    currentUserRedactionOptions,
+                  ) as Record<string, unknown> | null,
                   updatedAt: heartbeatAt,
                 })
                 .where(and(eq(workspaceOperations.id, id), eq(workspaceOperations.status, "running")))
@@ -551,9 +558,29 @@ export function workspaceOperationService(db: Db) {
             heartbeatTimer.unref?.();
           }
 
+          const reportProgress = async (progress: {
+            metadata?: Record<string, unknown> | null;
+            system?: string | null;
+          }) => {
+            await append("system", progress.system ?? null);
+            currentMetadata = combineMetadata(currentMetadata, progress.metadata);
+            await db
+              .update(workspaceOperations)
+              .set({
+                metadata: redactCurrentUserValue(
+                  currentMetadata,
+                  currentUserRedactionOptions,
+                ) as Record<string, unknown> | null,
+                stdoutExcerpt: stdoutExcerpt || null,
+                stderrExcerpt: stderrExcerpt || null,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(workspaceOperations.id, id), eq(workspaceOperations.status, "running")));
+          };
+
           const timeoutMs = recordInput.timeoutMs ?? defaultRuntimeControlTimeoutMs(runtimeControlAction);
           const settle = async () => {
-            if (!timeoutMs || timeoutMs <= 0) return await recordInput.run();
+            if (!timeoutMs || timeoutMs <= 0) return await recordInput.run(reportProgress);
             const timeout = new Promise<never>((_resolve, reject) => {
               timeoutTimer = setTimeout(
                 () => reject(new WorkspaceOperationTimeoutError(timeoutMs, runtimeControlAction)),
@@ -561,7 +588,7 @@ export function workspaceOperationService(db: Db) {
               );
               timeoutTimer.unref?.();
             });
-            return await Promise.race([recordInput.run(), timeout]);
+            return await Promise.race([recordInput.run(reportProgress), timeout]);
           };
 
           try {
@@ -583,7 +610,7 @@ export function workspaceOperationService(db: Db) {
                 logSha256: finalized.sha256,
                 logCompressed: finalized.compressed,
                 metadata: redactCurrentUserValue(
-                  combineMetadata(insertedMetadata, result.metadata),
+                  combineMetadata(currentMetadata, result.metadata),
                   currentUserRedactionOptions,
                 ) as Record<string, unknown> | null,
                 finishedAt,
@@ -613,7 +640,7 @@ export function workspaceOperationService(db: Db) {
                 ...(runtimeControlAction
                   ? {
                       metadata: redactCurrentUserValue(
-                        combineMetadata(insertedMetadata, {
+                        combineMetadata(currentMetadata, {
                           failureReason: error instanceof WorkspaceOperationTimeoutError
                             ? "runtime_control_timeout"
                             : "runtime_control_error",

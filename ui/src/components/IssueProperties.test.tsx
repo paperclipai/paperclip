@@ -12,7 +12,7 @@ import type {
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
 import { queryKeys } from "../lib/queryKeys";
@@ -36,6 +36,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   getDocument: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
   listAttachments: vi.fn(),
+  listDocuments: vi.fn(),
+  listWorkProducts: vi.fn(),
   listInteractions: vi.fn(),
   listLabels: vi.fn(),
   createLabel: vi.fn(),
@@ -153,6 +155,15 @@ vi.mock("@/lib/router", () => ({
 
 vi.mock("@/components/ui/separator", () => ({
   Separator: () => <hr />,
+}));
+
+vi.mock("@/components/MarkdownBody", () => ({
+  MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock("@/components/IssueDocumentAnnotations", () => ({
+  DocumentAnnotationsCountChip: ({ docKey }: { docKey: string }) => <span data-doc-key={docKey} />,
+  IssueDocumentAnnotations: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 vi.mock("@/components/ui/popover", () => ({
@@ -458,6 +469,8 @@ describe("IssueProperties", () => {
     mockIssuesApi.getDocument.mockResolvedValue(null);
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockIssuesApi.createLabel.mockResolvedValue(createLabel({
@@ -526,6 +539,76 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("A plan confirmation is pending, but the plan document it should confirm is missing.");
     });
 
+    act(() => root.unmount());
+  });
+
+  it("overrides a previously selected pane tab for a document deep link", async () => {
+    const planDocument = {
+      id: "document-plan",
+      companyId: "company-1",
+      issueId: "issue-1",
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "Plan body",
+      latestRevisionId: "revision-plan",
+      latestRevisionNumber: 1,
+      createdByAgentId: null,
+      createdByUserId: null,
+      updatedByAgentId: null,
+      updatedByUserId: null,
+      lockedAt: null,
+      lockedByAgentId: null,
+      lockedByUserId: null,
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-08-01T00:00:00.000Z"),
+    } satisfies IssueDocument;
+    const artifactDocument = {
+      ...planDocument,
+      id: "document-evidence",
+      key: "qa-evidence",
+      title: "QA evidence",
+      body: "Evidence body",
+      latestRevisionId: "revision-evidence",
+    } satisfies IssueDocument;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableClassicTaskInterface: false,
+    });
+    mockIssuesApi.getDocument.mockResolvedValue(planDocument);
+    mockIssuesApi.listDocuments.mockResolvedValue([planDocument, artifactDocument]);
+    Element.prototype.scrollIntoView = vi.fn();
+
+    const props = {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    } satisfies ComponentProps<typeof IssueProperties>;
+    const { root, queryClient } = renderPropertiesWithQueryClient(container, props);
+    await waitForAssertion(() => {
+      const planTab = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Plan");
+      expect(planTab?.getAttribute("data-state")).toBe("active");
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueProperties
+            {...props}
+            documentDeepLink={{ tab: "artifacts", documentKey: "qa-evidence", requestId: 1 }}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      const artifactsTab = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Artifacts");
+      expect(artifactsTab?.getAttribute("data-state")).toBe("active");
+      expect(container.querySelector('button[aria-expanded="true"]')).not.toBeNull();
+    });
     act(() => root.unmount());
   });
 

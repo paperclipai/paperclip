@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm"
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companySecretProposals,
   companies,
   documents,
   heartbeatRuns,
@@ -192,7 +193,7 @@ export function getMergeConfirmationPullRequestReferences(
   const payload = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
     ? row.payload as unknown as Record<string, unknown>
     : null;
-  if (!payload || payload.toolAction !== undefined) return [];
+  if (!payload || payload.toolAction !== undefined || payload.secretProposal !== undefined) return [];
 
   const target = payload.target && typeof payload.target === "object" && !Array.isArray(payload.target)
     ? payload.target as Record<string, unknown>
@@ -264,6 +265,7 @@ export function resolveInteractionPolicy(args: {
   requested?: IssueThreadInteractionResolverPolicy;
   governance: InteractionResolverGovernance;
   hasToolAction: boolean;
+  hasSecretProposal?: boolean;
 }) {
   const kindGovernance = args.governance[args.kind];
   const requestedPolicyInput = args.requested
@@ -275,7 +277,7 @@ export function resolveInteractionPolicy(args: {
 
   let effectiveResolverPolicy = requestedResolverPolicy;
   let effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource = "requested";
-  if (args.hasToolAction) {
+  if (args.hasToolAction || args.hasSecretProposal) {
     effectiveResolverPolicy = "human_only";
     effectiveResolverPolicySource = "governed_action";
   } else if (kindGovernance?.cap) {
@@ -313,8 +315,10 @@ function assertInteractionResolutionAllowed(current: IssueThreadInteractionRow, 
       current.kind === "request_confirmation"
       && current.payload !== null
       && typeof current.payload === "object"
-      && "toolAction" in current.payload
-      && current.payload.toolAction !== undefined,
+      && (
+        ("toolAction" in current.payload && current.payload.toolAction !== undefined)
+        || ("secretProposal" in current.payload && current.payload.secretProposal !== undefined)
+      ),
   });
 }
 
@@ -734,7 +738,20 @@ function buildAdministrativeOutcomeResult(
       items: interaction.result?.items ?? [],
     } satisfies RequestItemVerdictsResult;
   }
-  return { version: 1, outcome, reason } as const;
+  return {
+    version: 1,
+    outcome,
+    reason,
+    ...(linkedSecretProposalId(row)
+      ? {
+          secretProposal: {
+            version: 1,
+            status: outcome === "withdrawn" ? "withdrawn" : "expired",
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
+  } as const;
 }
 
 // Rollback sentinel: the interaction was resolved by another actor between the
@@ -775,6 +792,85 @@ async function resolveLinkedToolActionRequests(
       eq(toolActionRequests.interactionId, interaction.id),
       inArray(toolActionRequests.status, outcome.fromStatuses),
     ));
+}
+
+function linkedSecretProposalId(interaction: Pick<IssueThreadInteractionRow, "kind" | "payload">) {
+  if (interaction.kind !== "request_confirmation") return null;
+  const payload = interaction.payload && typeof interaction.payload === "object" && !Array.isArray(interaction.payload)
+    ? interaction.payload as unknown as Record<string, unknown>
+    : null;
+  const secretProposal = payload?.secretProposal && typeof payload.secretProposal === "object" && !Array.isArray(payload.secretProposal)
+    ? payload.secretProposal as Record<string, unknown>
+    : null;
+  return typeof secretProposal?.proposalId === "string" ? secretProposal.proposalId : null;
+}
+
+async function lockLinkedSecretProposal(
+  db: Db,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "kind" | "payload">,
+) {
+  const proposalId = linkedSecretProposalId(interaction);
+  if (!proposalId) return;
+  await db
+    .select({ id: companySecretProposals.id })
+    .from(companySecretProposals)
+    .where(and(
+      eq(companySecretProposals.id, proposalId),
+      eq(companySecretProposals.companyId, interaction.companyId),
+      eq(companySecretProposals.interactionId, interaction.id),
+    ))
+    .for("update");
+}
+
+async function resolveLinkedSecretProposal(
+  db: Db,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "kind" | "payload">,
+  outcome: {
+    status: "rejected" | "withdrawn" | "expired";
+    actor: InteractionActor;
+    reason?: string | null;
+    now: Date;
+  },
+) {
+  const proposalId = linkedSecretProposalId(interaction);
+  if (!proposalId) return;
+  const [proposal] = await db
+    .update(companySecretProposals)
+    .set({
+      status: outcome.status,
+      resolvedByUserId: outcome.actor.userId ?? null,
+      resolvedAt: outcome.now,
+      resolutionReason: outcome.reason ?? null,
+      valueCiphertext: null,
+      ciphertextScrubbedAt: outcome.now,
+      updatedAt: outcome.now,
+    })
+    .where(and(
+      eq(companySecretProposals.id, proposalId),
+      eq(companySecretProposals.companyId, interaction.companyId),
+      eq(companySecretProposals.interactionId, interaction.id),
+      eq(companySecretProposals.status, "pending"),
+    ))
+    .returning();
+  if (!proposal) throw conflict("Linked secret proposal is no longer pending");
+  const actorType = outcome.actor.userId ? "user" as const : outcome.actor.agentId ? "agent" as const : "system" as const;
+  const actorId = outcome.actor.userId ?? outcome.actor.agentId ?? outcome.actor.systemId ?? "system";
+  await logActivity(db, {
+    companyId: interaction.companyId,
+    actorType,
+    actorId,
+    action: `secret.proposal.${outcome.status}`,
+    entityType: "company_secret_proposal",
+    entityId: proposal.id,
+    agentId: proposal.proposedByAgentId,
+    runId: proposal.originRunId,
+    details: {
+      ciphertextScrubbed: true,
+      issueId: proposal.originIssueId,
+      interactionId: interaction.id,
+      reason: outcome.reason ?? null,
+    },
+  });
 }
 
 function resolveActorKind(interaction: Pick<IssueThreadInteraction, "resolvedByAgentId" | "resolvedByUserId">) {
@@ -1484,9 +1580,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
     const now = new Date();
     const result = await db.transaction(async (tx) => {
-      // Lock the issue before claiming the interaction. Policy mutations and
-      // review transitions use the same issue-row lock, so the authoritative
-      // review policy and requester are stable through the verdict write.
+      // Policy mutations and review transitions use the same issue-row lock,
+      // so the authoritative review policy and requester are stable through
+      // the verdict write. Terminal issue transitions also lock the issue
+      // before expiring linked proposals, so keep issue -> proposal ->
+      // interaction as the shared lifecycle order.
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -1506,6 +1604,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       if (!issueContext || issueContext.companyId !== args.issue.companyId) {
         throw notFound("Issue not found");
       }
+
+      await lockLinkedSecretProposal(tx as unknown as Db, args.current);
 
       const lockedCurrent = await tx
         .select()
@@ -1668,6 +1768,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw notFound("Issue not found");
       }
 
+      // Terminal issue transitions expire linked proposals while holding this
+      // issue row. Match their issue -> proposal -> interaction order so a
+      // close/cancel race cannot invert the first two locks.
+      await lockLinkedSecretProposal(tx as unknown as Db, args.current);
+
       const lockedCurrent = await tx
         .select()
         .from(issueThreadInteractions)
@@ -1695,6 +1800,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         args.actor,
       );
 
+      await resolveLinkedSecretProposal(tx as unknown as Db, lockedCurrent, {
+        status: "rejected",
+        actor: args.actor,
+        reason: reason || null,
+        now,
+      });
+
       const [resolved] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -1703,6 +1815,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             version: 1,
             outcome: "rejected",
             reason: reason || null,
+            ...(linkedSecretProposalId(lockedCurrent)
+              ? { secretProposal: { version: 1, status: "rejected", updatedAt: now.toISOString() } }
+              : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,
           resolvedByRunId: args.actor.runId ?? null,
@@ -1899,6 +2014,126 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return row ? hydrateInteraction(row) : null;
     },
 
+    recordSecretProposalExecutionResult: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      proposalId: string,
+      execution: { status: "executed" | "failed"; errorCode?: string | null },
+    ) => {
+      const updated = await db.transaction(async (tx) => {
+        // Verdict and terminal-transition paths lock issue -> proposal ->
+        // interaction. Take the same order before recording the receipt so a
+        // concurrent rejection or issue close cannot deadlock here.
+        const lockedIssue = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) throw notFound("Issue not found");
+
+        const proposal = await tx
+          .select()
+          .from(companySecretProposals)
+          .where(and(
+            eq(companySecretProposals.id, proposalId),
+            eq(companySecretProposals.companyId, issue.companyId),
+          ))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        const current = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+        if (
+          !proposal
+          || proposal.interactionId !== interactionId
+          || current.status !== "accepted"
+          || linkedSecretProposalId(current) !== proposalId
+        ) {
+          throw conflict("Secret proposal interaction is not awaiting an execution result");
+        }
+        const now = new Date();
+        const payload = current.payload && typeof current.payload === "object" && !Array.isArray(current.payload)
+          ? current.payload as unknown as Record<string, unknown>
+          : {};
+        const secretProposalPayload = payload.secretProposal && typeof payload.secretProposal === "object"
+          && !Array.isArray(payload.secretProposal)
+          ? payload.secretProposal as Record<string, unknown>
+          : {};
+        const proposalAlreadyExecuted = proposal.status === "approved"
+          && proposal.appliedBindingConfigPath === secretProposalPayload.configPath;
+        const executionStatus = proposalAlreadyExecuted ? "executed" : execution.status;
+        if (executionStatus === "failed" && proposal.status === "pending") {
+          const resolutionReason = `Interaction acceptance failed: ${execution.errorCode ?? "secret_proposal_execution_failed"}`;
+          await tx
+            .update(companySecretProposals)
+            .set({
+              status: "rejected",
+              resolvedByUserId: current.resolvedByUserId ?? null,
+              resolvedAt: now,
+              resolutionReason,
+              valueCiphertext: null,
+              ciphertextScrubbedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(companySecretProposals.id, proposal.id),
+              eq(companySecretProposals.status, "pending"),
+            ));
+          await logActivity(tx as unknown as Db, {
+            companyId: issue.companyId,
+            actorType: current.resolvedByUserId ? "user" : "system",
+            actorId: current.resolvedByUserId ?? "system",
+            action: "secret.proposal.rejected",
+            entityType: "company_secret_proposal",
+            entityId: proposal.id,
+            agentId: proposal.proposedByAgentId,
+            runId: proposal.originRunId,
+            details: {
+              ciphertextScrubbed: true,
+              issueId: proposal.originIssueId,
+              interactionId: current.id,
+              reason: resolutionReason,
+              executionFailed: true,
+            },
+          });
+        }
+        const result = current.result && typeof current.result === "object" && !Array.isArray(current.result)
+          ? current.result as unknown as Record<string, unknown>
+          : {};
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            result: {
+              ...result,
+              version: 1,
+              outcome: "accepted",
+              secretProposal: {
+                version: 1,
+                status: executionStatus,
+                errorCode: executionStatus === "failed" ? execution.errorCode ?? null : null,
+                updatedAt: now.toISOString(),
+              },
+            },
+            updatedAt: now,
+          })
+          .where(eq(issueThreadInteractions.id, current.id))
+          .returning();
+        await touchIssue(tx, issue.id);
+        return row;
+      });
+      return hydrateInteraction(updated);
+    },
+
     cancelPendingForDeletedAddressee: async (companyId: string, addresseeAgentId: string) => {
       const rows = await db
         .select()
@@ -2038,6 +2273,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         requested: data.resolverPolicy,
         governance,
         hasToolAction: data.kind === "request_confirmation" && data.payload.toolAction !== undefined,
+        hasSecretProposal: data.kind === "request_confirmation" && data.payload.secretProposal !== undefined,
       });
       const normalizedData = { ...data, resolverPolicy: policy.requestedResolverPolicy };
 
@@ -2047,6 +2283,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
         if (normalizedData.kind === "request_confirmation" && normalizedData.payload.toolAction !== undefined) {
           throw unprocessable("Tool-action confirmations cannot be addressed to agents");
+        }
+        if (normalizedData.kind === "request_confirmation" && normalizedData.payload.secretProposal !== undefined) {
+          throw unprocessable("Secret-proposal confirmations cannot be addressed to agents");
         }
         const addressee = await db
           .select({
@@ -2180,7 +2419,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           // result shape. Scoped strictly to the same agent + issue + kind, so
           // other agents' or other kinds' pending cards are untouched.
           const canSupersedeSiblingCards =
-            data.kind === "request_confirmation" || data.kind === "ask_user_questions";
+            (data.kind === "request_confirmation"
+              && data.payload.toolAction === undefined
+              && data.payload.secretProposal === undefined)
+            || data.kind === "ask_user_questions";
           if (!actor.agentId || !canSupersedeSiblingCards) {
             return { row, supersededRows: [] };
           }
@@ -2949,6 +3191,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             actor,
             now,
           });
+          await resolveLinkedSecretProposal(tx as unknown as Db, row, {
+            status: "expired",
+            actor,
+            reason: "Issue closed before the secret proposal was resolved",
+            now,
+          });
           const [resolved] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3012,6 +3260,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
           actor,
+          now,
+        });
+        await resolveLinkedSecretProposal(tx as unknown as Db, current, {
+          status: "withdrawn",
+          actor,
+          reason,
           now,
         });
         if (current.kind === "request_confirmation") {

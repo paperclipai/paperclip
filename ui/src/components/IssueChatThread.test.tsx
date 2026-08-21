@@ -28,6 +28,7 @@ import {
   issueChatLongThreadLinkedRuns,
   issueChatLongThreadTranscriptsByRunId,
 } from "../fixtures/issueChatLongThreadFixture";
+import { expiredSecretProposalInteraction } from "../fixtures/issueThreadInteractionFixtures";
 import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
@@ -2773,6 +2774,38 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Approve the plan");
     expect(container.textContent).toContain("Confirmation expired after comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders expired secret proposals as full receipts by default", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[expiredSecretProposalInteraction]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Secret binding requested");
+    expect(container.textContent).toContain("OpenAI API key");
+    expect(container.textContent).toContain("access.evals_openai_api_key");
+    expect(container.textContent).toContain("EvalsEngineer");
+    expect(container.textContent).toContain("A fresh proposal is required");
+    expect(container.textContent).not.toContain("updated this task");
 
     act(() => {
       root.unmount();

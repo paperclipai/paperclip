@@ -54,7 +54,7 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
   workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
-  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart"],
+  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
@@ -84,7 +84,7 @@ function registerWorkspaceRouteMocks() {
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
     workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
-    LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart"],
+    LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({

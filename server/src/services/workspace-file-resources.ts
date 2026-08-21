@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
@@ -20,6 +18,11 @@ import type {
   WorkspaceFileWorkspaceKind,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
+import {
+  isWorkspaceGitScanError,
+  WORKSPACE_GIT_SCAN_ERROR_CODES,
+  workspaceGitOperationScheduler,
+} from "./workspace-git-operation-scheduler.js";
 
 export const WORKSPACE_FILE_TEXT_MAX_BYTES = 512 * 1024;
 export const WORKSPACE_FILE_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
@@ -31,8 +34,12 @@ const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
 const GIT_STATUS_MAX_BUFFER_BYTES = 1024 * 1024;
-const execFileAsync = promisify(execFile);
 const LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES = new Set(["local_path", "non_git_path", "git_repo", "git_worktree"]);
+
+export interface WorkspaceFileScanContext {
+  signal?: AbortSignal;
+  fairnessKeys?: readonly string[];
+}
 
 const DENIED_SEGMENTS = new Set([
   ".git",
@@ -976,16 +983,29 @@ async function listChangedWorkspaceFiles(input: {
   normalizedQuery: string | null;
   limit: number;
   offset: number;
+  scanContext?: WorkspaceFileScanContext;
 }) {
   let stdout: string;
   try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", input.rootReal, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { maxBuffer: GIT_STATUS_MAX_BUFFER_BYTES },
-    );
+    const result = await workspaceGitOperationScheduler.run({
+      workspacePath: input.rootReal,
+      args: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      operation: "workspace_file_browser.changed_files",
+      fairnessKeys: input.scanContext?.fairnessKeys,
+      signal: input.scanContext?.signal,
+      maxStdoutBytes: GIT_STATUS_MAX_BUFFER_BYTES,
+      maxStderrBytes: GIT_STATUS_MAX_BUFFER_BYTES,
+      // The shared scheduler defaults this to ten seconds. This deliberately
+      // trades a few seconds of freshness for protection from tab/refetch bursts.
+    });
     stdout = result.stdout;
-  } catch {
+  } catch (error) {
+    if (
+      isWorkspaceGitScanError(error) &&
+      error.code !== WORKSPACE_GIT_SCAN_ERROR_CODES.failed
+    ) {
+      throw error;
+    }
     return { unavailableReason: "changed_unavailable" as const };
   }
 
@@ -1367,7 +1387,7 @@ export function workspaceFileResourceService(db: Db) {
   async function list(
     issueId: string,
     input: WorkspaceFileListQueryInput = {},
-    opts: { issue?: IssueRow } = {},
+    opts: { issue?: IssueRow; scanContext?: WorkspaceFileScanContext } = {},
   ): Promise<WorkspaceFileListResponse> {
     const issue = opts.issue ?? await getIssue(issueId);
     const selector = input.workspace ?? "auto";
@@ -1442,7 +1462,14 @@ export function workspaceFileResourceService(db: Db) {
       }
 
       if (mode === "changed") {
-        const changed = await listChangedWorkspaceFiles({ candidate, rootReal, normalizedQuery, limit, offset });
+        const changed = await listChangedWorkspaceFiles({
+          candidate,
+          rootReal,
+          normalizedQuery,
+          limit,
+          offset,
+          scanContext: opts.scanContext,
+        });
         if ("unavailableReason" in changed) {
           const reason = changed.unavailableReason ?? "changed_unavailable";
           firstUnavailable ??= { candidate, reason };

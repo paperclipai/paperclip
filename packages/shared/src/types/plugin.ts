@@ -132,6 +132,60 @@ export interface PluginEnvironmentTemplateConfigBinding {
   unsetFields?: string[];
 }
 
+/**
+ * Optional capability declaration for a sandbox provider driver.
+ *
+ * Each flag states that the provider intends to support one behavior. The
+ * declaration is a request, not a grant: the host resolves the effective
+ * capability as the intersection of the declaration, the live worker's verified
+ * methods, and any narrowing from the provider config or lease. A declared flag
+ * never grants a capability the live worker did not verify. Every flag is
+ * optional; an absent flag defers to the verified discovery baseline.
+ */
+export interface SandboxProviderCapabilities {
+  /** Provider can retain and resume a provider lease across runs. */
+  reusableLeases?: boolean;
+  /** Provider can transfer files into the sandbox through a native inbound hook. */
+  nativeSyncIn?: boolean;
+  /** Provider can transfer files out of the sandbox through a native outbound hook. */
+  nativeSyncOut?: boolean;
+  /** Provider can keep a persistent process session open across commands. */
+  persistentProcessSessions?: boolean;
+  /** Provider can run a control command that does not wait for the main command. */
+  independentControlCommands?: boolean;
+  /**
+   * Provider streams incremental stdout and stderr from a persistent session
+   * while the command runs. This is an opt-in behavioral guarantee, not a worker
+   * method property: a generic one-shot provider can keep persistent sessions and
+   * run independent control commands yet never emit incremental session output.
+   * An omitted key denies the capability. Only a provider that declares this key
+   * `true` selects the session-output streaming path; every other provider keeps
+   * the output-file poll path.
+   */
+  incrementalSessionOutput?: boolean;
+  /**
+   * Provider can run file transfers into and out of the sandbox in parallel, in
+   * both directions. This is an opt-in behavioral guarantee. An omitted key
+   * denies the capability, so the host keeps the serial transfer path. The host
+   * resolves the capability `true` only when the provider declares this key
+   * `true` and the live worker verifies both sync verbs (`environmentSyncIn` and
+   * `environmentSyncOut`). A provider that verifies only one verb resolves
+   * `false`.
+   */
+  concurrentSyncOperations?: boolean;
+  /**
+   * Provider opens one persistent, bidirectional duplex channel that carries the
+   * command stream, in place of the file transport of the callback bridge. This
+   * is an opt-in behavioral guarantee, not a worker-method property: a provider
+   * that keeps persistent sessions and runs independent control commands still
+   * does not carry a framed duplex stream unless it declares this key. An omitted
+   * key denies the capability, so the provider keeps the file bridge. Only a
+   * provider that declares this key `true` and whose worker verifies the duplex
+   * open method selects the duplex channel path.
+   */
+  duplexCommandStream?: boolean;
+}
+
 export interface PluginEnvironmentDriverDeclaration {
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
@@ -153,6 +207,13 @@ export interface PluginEnvironmentDriverDeclaration {
    * behavior even if their config schema exposes a reuse-like setting.
    */
   supportsReusableLeases?: boolean;
+  /**
+   * Fine-grained sandbox capability declaration. Optional and partial. The host
+   * resolves the effective capability as declaration ∩ verified ∩ narrowing;
+   * see {@link SandboxProviderCapabilities}. When both `supportsReusableLeases`
+   * and `sandboxCapabilities.reusableLeases` are present, the nested value wins.
+   */
+  sandboxCapabilities?: SandboxProviderCapabilities;
   /** Provider can keep a temporary setup sandbox alive for user-driven sandbox customization and capture. */
   supportsInteractiveSetup?: boolean;
   /** Connection types the setup sandbox can expose. Initially `ssh`; providers may add custom values. */
@@ -175,6 +236,22 @@ export interface PluginEnvironmentDriverDeclaration {
   templateIdentityPaths?: string[];
   /** Provider supports best-effort deletion/cleanup of captured templates. */
   supportsTemplateDelete?: boolean;
+  /**
+   * Provider can host an interactive login on a real pseudo-terminal. Only a
+   * provider with this flag exposes the login pseudo-terminal methods. The login
+   * server and the login UI both gate on this flag, so a provider without it
+   * never starts a login.
+   */
+  supportsLoginPty?: boolean;
+  /**
+   * Deprecated alias for `supportsLoginPty`. It exists only so an external
+   * plugin manifest that declares the old name still loads. The manifest
+   * validator canonicalizes it onto `supportsLoginPty` and drops it. Do not read
+   * this field; read `supportsLoginPty`.
+   *
+   * @deprecated Use `supportsLoginPty`.
+   */
+  supportsSetupTokenLogin?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */
   configSchema: JsonSchema;
 }

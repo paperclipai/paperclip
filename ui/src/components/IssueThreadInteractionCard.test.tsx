@@ -23,6 +23,11 @@ import {
   pendingRequestConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
+  pendingSecretProposalInteraction,
+  executedSecretProposalInteraction,
+  failedSecretProposalInteraction,
+  rejectedSecretProposalInteraction,
+  expiredSecretProposalInteraction,
   planApprovalResumeFailedRequestConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
   pendingSuggestedTasksInteraction,
@@ -1117,6 +1122,98 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(occurrences).toBe(1);
   });
 
+});
+
+describe("IssueThreadInteractionCard secret-proposal card", () => {
+  it("renders only safe proposal metadata and exposes accept/reject actions", async () => {
+    const onAcceptInteraction = vi.fn(async () => undefined);
+    const onRejectInteraction = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingSecretProposalInteraction,
+      onAcceptInteraction,
+      onRejectInteraction,
+    });
+
+    expect(host.textContent).toContain("Secret binding requested");
+    expect(host.textContent).toContain("OpenAI API key");
+    expect((host.textContent ?? "").split("OpenAI API key")).toHaveLength(2);
+    expect(host.textContent).toContain("access.evals_openai_api_key");
+    expect(host.textContent).toContain("EvalsEngineer");
+    expect(host.textContent).toContain("Reason given by the agent");
+    expect(host.textContent).toContain("evaluation runner needs the existing credential");
+    expect(host.textContent).toContain("Expires");
+    expect(host.textContent).not.toContain(
+      pendingSecretProposalInteraction.payload.secretProposal?.proposalId,
+    );
+    expect(host.textContent).not.toContain(
+      pendingSecretProposalInteraction.payload.secretProposal?.targetAgentId,
+    );
+    expect(host.textContent?.toLowerCase()).not.toContain("fingerprint");
+
+    const statusBadge = host.querySelector('[data-testid="interaction-status-badge"]');
+    expect(statusBadge?.querySelector(".flex-col")?.textContent).toBe(
+      "Secret binding/Awaiting approval",
+    );
+    expect(statusBadge?.querySelector(".hidden")?.textContent).toBe("/");
+    const actions = host.querySelector('[data-testid="confirmation-actions"]');
+    expect(actions?.getAttribute("data-mobile-layout")).toBe("stacked");
+    expect(actions?.classList.contains("grid-cols-2")).toBe(true);
+    const configPath = Array.from(host.querySelectorAll("dd")).find((node) =>
+      node.textContent === "access.evals_openai_api_key"
+    );
+    expect(configPath?.parentElement?.classList.contains("sm:col-span-2")).toBe(true);
+
+    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve & bind"),
+    );
+    await act(async () => {
+      approve?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onAcceptInteraction).toHaveBeenCalledWith(pendingSecretProposalInteraction);
+
+    const reject = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.trim() === "Reject",
+    );
+    await act(async () => {
+      reject?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onRejectInteraction).toHaveBeenCalledWith(
+      pendingSecretProposalInteraction,
+      undefined,
+    );
+  });
+
+  it("renders an accepted proposal as executed rather than merely accepted", () => {
+    const host = renderCard({ interaction: executedSecretProposalInteraction });
+    expect(host.textContent).toContain("Executed");
+    expect(host.textContent).toContain("Binding created");
+    expect(host.textContent).not.toContain("Accepted");
+    expect(host.querySelector("button")).toBeNull();
+  });
+
+  it("renders accepted execution failure as visibly FAILED with its error code", () => {
+    const host = renderCard({ interaction: failedSecretProposalInteraction });
+    expect(host.textContent).toContain("FAILED");
+    expect(host.textContent).toContain("binding_snapshot_stale");
+    expect(host.textContent).toContain("binding was not created");
+    expect(host.textContent).not.toContain("Approve & bind");
+  });
+
+  it("distinguishes rejected and expired proposals as non-executed terminal states", () => {
+    const rejected = renderCard({ interaction: rejectedSecretProposalInteraction });
+    expect(rejected.textContent).toContain("Rejected");
+    expect(rejected.textContent).toContain("The binding was not created");
+    expect(rejected.textContent).toContain("project-scoped credential");
+
+    act(() => root?.unmount());
+    rejected.remove();
+    root = null;
+
+    const expired = renderCard({ interaction: expiredSecretProposalInteraction });
+    expect(expired.textContent).toContain("Expired");
+    expect(expired.textContent).toContain("A fresh proposal is required");
+    expect(expired.textContent).not.toContain("Approve & bind");
+  });
 });
 
 /**
