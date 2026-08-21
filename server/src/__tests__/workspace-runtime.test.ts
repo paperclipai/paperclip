@@ -195,6 +195,7 @@ async function expectPersistedBranchMismatchRejected(input: {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: input.expectedBranch,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: input.issueId,
@@ -3093,6 +3094,7 @@ describe("realizeExecutionWorkspace", () => {
           repoUrl: null,
           baseRef: "HEAD",
           branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
         issue: {
           id: "issue-deleted-branch",
@@ -3174,6 +3176,7 @@ describe("realizeExecutionWorkspace", () => {
           repoUrl: null,
           baseRef: "HEAD",
           branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
         issue: {
           id: "issue-deleted-branch-flag-off",
@@ -5671,6 +5674,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: input.expectedBranch,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: input.ids.sourceIssueId,

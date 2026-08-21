@@ -408,6 +408,10 @@ async function seedBranchContainmentRun(
       branchName: expectedBranch,
       providerType: "git_worktree",
       providerRef: worktreePath,
+      metadata: {
+        createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
+      },
       lastUsedAt: now,
       openedAt: now,
       createdAt: now,
