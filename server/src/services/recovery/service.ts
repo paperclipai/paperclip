@@ -274,7 +274,9 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
-  return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
+  const error = latestRun.error ?? "";
+  return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(error) ||
+    hasProviderCreditExhaustion(error, latestRun.resultJson);
 }
 
 function resolveStrandedRecoveryCause(
@@ -385,8 +387,22 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+const PROVIDER_CREDIT_EXHAUSTION_ERROR_RE =
+  /(?:http\s*402\b|requires? more credits?|add more credits?|insufficient credits?|insufficient balance for (?:this )?(?:request|model|provider)|not enough credits?|(?:^|[\n"'=:]\s*)provider payment required|(?:^|[\n"'=:]\s*)(?:your )?credit balance (?:is )?(?:too low|insufficient))/i;
+const PROVIDER_CREDIT_EXHAUSTION_RESULT_SIGNATURE_RE =
+  /(?:\bmax_tokens\b|can only afford|openrouter\.ai\/settings\/credits)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+
+function hasProviderCreditExhaustion(error: string | null | undefined, resultJson: unknown) {
+  if (PROVIDER_CREDIT_EXHAUSTION_ERROR_RE.test(error ?? "")) return true;
+  const resultText = readNonEmptyString(parseObject(resultJson).result);
+  return Boolean(
+    resultText &&
+    /http\s*402\b/i.test(resultText) &&
+    PROVIDER_CREDIT_EXHAUSTION_RESULT_SIGNATURE_RE.test(resultText),
+  );
+}
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
@@ -477,7 +493,11 @@ export function classifyAdapterFailureForRecovery(
   if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
     return { kind: "configuration_incomplete" };
   }
-  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
+  if (
+    latestRun.errorCode !== "provider_quota" &&
+    !PROVIDER_QUOTA_ERROR_RE.test(error) &&
+    !hasProviderCreditExhaustion(latestRun.error, resultJson)
+  ) return null;
 
   const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
     readNonEmptyString(resultJson.transientRetryNotBefore) ??
@@ -3035,6 +3055,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
+    const classification = latestRun ? classifyAdapterFailureForRecovery(latestRun, now) : null;
+    if (classification?.kind === "provider_quota") return classification.retryAt;
+
     const result = parseObject(latestRun?.resultJson);
     const context = parseObject(latestRun?.contextSnapshot);
     const raw = result.providerQuotaRetryNotBefore ??
