@@ -2562,7 +2562,24 @@ function createDuplexReadinessGate(
       }
       // Slice only the single candidate line for the decode.
       const line = buffer.slice(lineStart, newlineIndex);
-      const decoded = decodeDuplexLine(line);
+      let decoded = decodeDuplexLine(line);
+      if (!decoded.ok) {
+        // The whole line did not decode. A terminal can put bytes in front of the
+        // gateway's first frame on the same line, with no newline between them: a
+        // shell with bracketed paste enabled writes its disable sequence and a
+        // bare carriage return (`ESC [ ? 2 0 0 4 l CR`) immediately before the
+        // child's first output. So retry the decode from the first `{` in the
+        // line, which is where a frame can start.
+        //
+        // This does not weaken the handshake. The retry still runs the same
+        // strict decode over the remainder of the line, and readiness still
+        // authenticates on the nonce below, so a prefix cannot forge a frame or
+        // smuggle a second one — it can only be discarded.
+        const braceIndex = line.indexOf("{");
+        if (braceIndex > 0) {
+          decoded = decodeDuplexLine(line.slice(braceIndex));
+        }
+      }
       if (decoded.ok && decoded.frame.type === "ready") {
         // A line that decodes as a READY frame authenticates by the nonce. A wrong
         // nonce fails the handshake; the matching nonce passes it.

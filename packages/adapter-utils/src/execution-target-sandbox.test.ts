@@ -4629,6 +4629,115 @@ describe("sandbox adapter execution targets", () => {
       await api.close();
     }
   }, 20000);
+
+  // ---------------------------------------------------------------------------
+  // Real-PTY replay.
+  //
+  // The earlier PTY-echo defect shipped because a fake PTY does not echo the way
+  // a real terminal does. These cases replay byte sequences captured from an
+  // actual `pty.fork()` + bash session driven through the same launch wrapper the
+  // Daytona plugin builds, so the gate is exercised against terminal output
+  // rather than against synthetic frames.
+  // ---------------------------------------------------------------------------
+
+  async function runReadinessReplay(emit: (ctx: DuplexOpenContext) => void) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pty-replay-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    const { runner, control } = makeDuplexSelectionRunner(emit);
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-pty-replay",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+      duplexReadinessTimeoutMs: 2_000,
+    });
+    const mode = bridge?.env.PAPERCLIP_API_BRIDGE_MODE;
+    await bridge?.stop();
+    await api.close();
+    return { mode, control };
+  }
+
+  // Case 1: the shape observed on a real Daytona PTY. bash echoes its prompt and
+  // the wrapper line, terminated by CRLF, then the gateway's READY frame follows
+  // on its own clean line.
+  it("PTY replay: accepts READY after an echoed prompt and wrapper line", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      ctx.emitRaw(
+        "daytona@212487a7f3c9:~$ exec 2>'/tmp/paperclip-duplex-x.log'; stty raw -echo; " +
+          "exec 'bash' '-c' 'exec env PAPERCLIP_BRIDGE_NONCE=" + ctx.nonce + " node gateway.mjs'\r\n",
+      );
+      ctx.emitRaw('{"version":1,"type":"ready","nonce":"' + ctx.nonce + '"}\n');
+    });
+    expect(mode).toBe("duplex_v1");
+  }, 20000);
+
+  // Case 2: captured from a local pty.fork() + bash on a host whose bash enables
+  // bracketed paste. The disable sequence and a bare CR land immediately before
+  // the READY frame, on the same line with no newline between them, so the whole
+  // line does not decode. The Daytona image in use today does not do this; another
+  // image or another provider can, and the gate must not depend on it.
+  it("PTY replay: accepts READY prefixed by a bracketed-paste disable sequence", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      ctx.emitRaw(
+        "\x1b[?2004h\x1b]0;user@host: /srv\x07user@host:/srv$ exec 2>'/tmp/d.log'; " +
+          "stty raw -echo; exec 'bash' '-c' 'exec env node gateway.mjs'\r\n",
+      );
+      // No newline between the escape sequence and the frame: same line.
+      ctx.emitRaw('\x1b[?2004l\r{"version":1,"type":"ready","nonce":"' + ctx.nonce + '"}\n');
+    });
+    expect(mode).toBe("duplex_v1");
+  }, 20000);
+
+  // Case 3: the READY frame split across two chunk deliveries.
+  it("PTY replay: accepts READY split across chunk boundaries", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      ctx.emitRaw("prompt$ wrapper-line\r\n");
+      const frame = '{"version":1,"type":"ready","nonce":"' + ctx.nonce + '"}\n';
+      ctx.emitRaw(frame.slice(0, 12));
+      ctx.emitRaw(frame.slice(12));
+    });
+    expect(mode).toBe("duplex_v1");
+  }, 20000);
+
+  // Case 4: a multibyte character split across two chunks in the pre-READY noise.
+  it("PTY replay: accepts READY when a multibyte char splits across chunks", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      const noise = Buffer.from("prompt ✓ done\r\n", "utf8");
+      ctx.emitRaw(noise.slice(0, 8).toString("utf8"));
+      ctx.emitRaw(noise.slice(8).toString("utf8"));
+      ctx.emitRaw('{"version":1,"type":"ready","nonce":"' + ctx.nonce + '"}\n');
+    });
+    expect(mode).toBe("duplex_v1");
+  }, 20000);
+
+  // Case 5: a flood of short noise lines must fail closed at the cap rather than
+  // scanning forever. This is the hole the cursor-based scan closes.
+  it("PTY replay: fails closed on a pre-READY noise flood", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      const line = "x".repeat(64) + "\n";
+      for (let i = 0; i < 80_000; i += 1) ctx.emitRaw(line);
+      ctx.emitRaw('{"version":1,"type":"ready","nonce":"' + ctx.nonce + '"}\n');
+    });
+    expect(mode).toBe("queue_v1");
+  }, 30000);
+
 });
 
 // One decoded stdout frame from the generated duplex gateway. The gateway writes
