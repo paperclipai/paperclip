@@ -41,6 +41,8 @@ import {
   createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
   conditionalQueueClaimSchema,
+  conditionalQueueApprovalMarkerSchema,
+  conditionalQueueWakeReservationSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -10749,6 +10751,39 @@ export function issueRoutes(
     await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
       action: "issue.conditionally_queue_claimed", entityType: "issue", entityId: id, details: { targetAgentId: req.body.targetAgentId, approvalId: req.body.approvalId } });
     res.json(claimed);
+  });
+
+  // These endpoints are deliberately board-only: the approval marker and its
+  // resulting dispatch authority must be attributable to an authenticated
+  // board principal, never to an implicit queue-loader caller.
+  router.post("/issues/:id/conditional-queue-approval-marker", validate(conditionalQueueApprovalMarkerSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, existing.companyId);
+    if (req.body.companyId !== existing.companyId) { res.status(409).json({ error: "Issue does not belong to company" }); return; }
+    const marker = await svc.conditionalQueueApprovalMarker({ issueId: id, ...req.body });
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
+      action: "approval.conditionally_queue_marked", entityType: "approval", entityId: marker.id,
+      details: { issueId: id, scopeDigest: req.body.scopeDigest, targetAgentId: req.body.targetAgentId } });
+    res.json(marker);
+  });
+
+  router.post("/issues/:id/conditional-queue-wake-reservation", validate(conditionalQueueWakeReservationSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, existing.companyId);
+    if (req.body.companyId !== existing.companyId) { res.status(409).json({ error: "Issue does not belong to company" }); return; }
+    const actor = getActorInfo(req);
+    const reservation = await svc.conditionalQueueWakeReservation({ issueId: id, ...req.body, requestedByUserId: actor.actorId });
+    await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
+      action: "issue.conditionally_queue_wake_reserved", entityType: "issue", entityId: id,
+      details: { targetAgentId: req.body.targetAgentId, approvalId: req.body.approvalId, idempotencyKey: req.body.idempotencyKey } });
+    res.status(201).json(reservation);
   });
 
   router.post("/issues/:id/release", async (req, res) => {

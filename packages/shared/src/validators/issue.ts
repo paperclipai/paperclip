@@ -604,6 +604,35 @@ export const conditionalQueueClaimSchema = z.object({
 
 export type ConditionalQueueClaim = z.infer<typeof conditionalQueueClaimSchema>;
 
+/** CAS-gated approval marker write for the unattended queue loader. */
+export const conditionalQueueApprovalMarkerSchema = z.object({
+  companyId: z.string().uuid(),
+  expectedIssueUpdatedAt: z.string().datetime(),
+  approvalId: z.string().uuid(),
+  approvalMarker: z.string().trim().min(1).max(200),
+  scopeDigest: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  targetAgentId: z.string().uuid(),
+  // This is approved with the marker, rather than accepted from an
+  // unattended caller, so a loader cannot raise its own fleet limit.
+  maxDispatches: z.number().int().min(1).max(50),
+  expiresAt: z.string().datetime(),
+});
+
+export type ConditionalQueueApprovalMarker = z.infer<typeof conditionalQueueApprovalMarkerSchema>;
+
+/** Atomically reserves an approved assigned queue card for one wake attempt. */
+export const conditionalQueueWakeReservationSchema = z.object({
+  companyId: z.string().uuid(),
+  expectedUpdatedAt: z.string().datetime(),
+  approvalId: z.string().uuid(),
+  approvalMarker: z.string().trim().min(1).max(200),
+  scopeDigest: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  targetAgentId: z.string().uuid(),
+  idempotencyKey: z.string().trim().min(1).max(300),
+});
+
+export type ConditionalQueueWakeReservation = z.infer<typeof conditionalQueueWakeReservationSchema>;
+
 const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
 const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
 

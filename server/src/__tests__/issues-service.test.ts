@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   approvals,
   companies,
@@ -320,6 +321,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
@@ -706,7 +708,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const marker = "queue-loader-approved";
     const scopeDigest = "a".repeat(64);
     await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "approved", payload: {
-      queueClaim: { approvalMarker: marker, scopeDigest, targetAgentId, expiresAt: "2099-01-01T00:00:00.000Z" },
+      queueClaim: { approvalMarker: marker, scopeDigest, targetAgentId, maxDispatches: 1, expiresAt: "2099-01-01T00:00:00.000Z" },
     } });
     await db.insert(issueApprovals).values({ companyId, issueId: issue.id, approvalId });
     return { companyId, targetAgentId, issue, approvalId, marker, scopeDigest };
@@ -727,8 +729,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       const input = await seedConditionalQueueClaim();
       if (scenario === "status") await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, input.issue.id));
       if (scenario === "assignee") await db.update(issues).set({ assigneeUserId: "board-user" }).where(eq(issues.id, input.issue.id));
-      if (scenario === "scope") await db.update(approvals).set({ payload: { queueClaim: { approvalMarker: input.marker, scopeDigest: "b".repeat(64), targetAgentId: input.targetAgentId, expiresAt: "2099-01-01T00:00:00.000Z" } } }).where(eq(approvals.id, input.approvalId));
-      if (scenario === "expiry") await db.update(approvals).set({ payload: { queueClaim: { approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, expiresAt: "2000-01-01T00:00:00.000Z" } } }).where(eq(approvals.id, input.approvalId));
+      if (scenario === "scope") await db.update(approvals).set({ payload: { queueClaim: { approvalMarker: input.marker, scopeDigest: "b".repeat(64), targetAgentId: input.targetAgentId, maxDispatches: 1, expiresAt: "2099-01-01T00:00:00.000Z" } } }).where(eq(approvals.id, input.approvalId));
+      if (scenario === "expiry") await db.update(approvals).set({ payload: { queueClaim: { approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, maxDispatches: 1, expiresAt: "2000-01-01T00:00:00.000Z" } } }).where(eq(approvals.id, input.approvalId));
       if (scenario === "target-load") await svc.create(input.companyId, { title: "Already running", description: null, status: "in_progress", priority: "medium", assigneeAgentId: input.targetAgentId });
       await expect(svc.conditionalQueueClaim({
         issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(),
@@ -738,6 +740,45 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       expect(persisted?.assigneeAgentId).toBeNull();
       expect(persisted?.status).not.toBe("in_progress");
     }
+  });
+
+  it("conditionally writes a linked approval marker without clobbering a concurrent issue edit", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: targetAgentId, name: "Manny-approved target", status: "idle" }));
+    const issue = await svc.create(companyId, { title: "Marker candidate", description: null, status: "todo", priority: "medium", assigneeAgentId: null });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: {} });
+    await db.insert(issueApprovals).values({ companyId, issueId: issue.id, approvalId });
+    const markerInput = { issueId: issue.id, companyId, expectedIssueUpdatedAt: issue.updatedAt.toISOString(), approvalId, approvalMarker: "manny-marker", scopeDigest: "c".repeat(64), targetAgentId, maxDispatches: 2, expiresAt: "2099-01-01T00:00:00.000Z" };
+    const marked = await svc.conditionalQueueApprovalMarker(markerInput);
+    expect((marked.payload as any).queueClaim).toMatchObject({ approvalMarker: "manny-marker", targetAgentId });
+    await db.update(issues).set({ description: "concurrent scope edit", updatedAt: new Date(issue.updatedAt.getTime() + 60_000) }).where(eq(issues.id, issue.id));
+    await expect(svc.conditionalQueueApprovalMarker(markerInput)).rejects.toMatchObject({ status: 412 });
+    const persisted = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, issue.id)).then((rows) => rows[0]);
+    expect(persisted?.description).toBe("concurrent scope edit");
+  });
+
+  it("atomically reserves exactly one approved sole-card wake and is idempotent", async () => {
+    const input = await seedConditionalQueueClaim();
+    const claimed = await svc.conditionalQueueClaim({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId });
+    const reservationInput = { issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: claimed.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, idempotencyKey: `conditional-wake:${input.issue.id}:${input.scopeDigest}`, requestedByUserId: "manny-user" };
+    const first = await svc.conditionalQueueWakeReservation(reservationInput);
+    const second = await svc.conditionalQueueWakeReservation(reservationInput);
+    expect(second.id).toBe(first.id);
+    const persisted = await db.select({ id: agentWakeupRequests.id, requestedByActorId: agentWakeupRequests.requestedByActorId }).from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.id)).then((rows) => rows[0]);
+    expect(persisted).toMatchObject({ id: first.id, requestedByActorId: "manny-user" });
+    await svc.create(input.companyId, { title: "Concurrent second card", description: null, status: "todo", priority: "medium", assigneeAgentId: input.targetAgentId });
+    await expect(svc.conditionalQueueWakeReservation({ ...reservationInput, idempotencyKey: `${reservationInput.idempotencyKey}:changed` })).rejects.toMatchObject({ status: 409, details: { code: "target_not_sole_card" } });
+  });
+
+  it("enforces the approval-bound fleet dispatch cap without mutating on rejection", async () => {
+    const input = await seedConditionalQueueClaim();
+    const claimed = await svc.conditionalQueueClaim({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: input.issue.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId });
+    await db.insert(agentWakeupRequests).values({ companyId: input.companyId, agentId: input.targetAgentId, source: "automation", triggerDetail: "system", reason: "other-approved-dispatch", status: "queued", idempotencyKey: `existing:${input.issue.id}` });
+    await expect(svc.conditionalQueueWakeReservation({ issueId: input.issue.id, companyId: input.companyId, expectedUpdatedAt: claimed.updatedAt.toISOString(), approvalId: input.approvalId, approvalMarker: input.marker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, idempotencyKey: `conditional-wake:${input.issue.id}:${input.scopeDigest}`, requestedByUserId: "manny-user" })).rejects.toMatchObject({ status: 409, details: { code: "max_dispatches_reached" } });
+    const reservations = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId));
+    expect(reservations).toHaveLength(1);
   });
 
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {

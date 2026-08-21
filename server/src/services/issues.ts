@@ -4477,6 +4477,70 @@ export function issueService(db: Db) {
     });
   }
 
+  async function conditionalQueueApprovalMarker(input: {
+    issueId: string; companyId: string; expectedIssueUpdatedAt: string; approvalId: string;
+    approvalMarker: string; scopeDigest: string; targetAgentId: string; maxDispatches: number; expiresAt: string;
+  }) {
+    const expectedUpdatedAt = new Date(input.expectedIssueUpdatedAt);
+    const expiresAt = new Date(input.expiresAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime()) || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+      throw preconditionFailed("Invalid conditional approval-marker input");
+    }
+    return db.transaction(async (tx) => {
+      const issue = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
+      if (!issue) throw conflict("Issue does not belong to company", { code: "issue_company_mismatch" });
+      if (issue.updatedAt.getTime() !== expectedUpdatedAt.getTime()) throw preconditionFailed("Issue version no longer matches", { code: "stale_issue_version" });
+      const approval = await tx.select().from(approvals).where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
+      const linked = approval && await tx.select({ approvalId: issueApprovals.approvalId }).from(issueApprovals).where(and(eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, input.issueId), eq(issueApprovals.approvalId, input.approvalId))).for("update").then((rows) => rows[0] ?? null);
+      if (!approval || !linked || approval.status !== "pending") throw conflict("Approval is not a linked pending approval", { code: "approval_not_markable" });
+      const payload = typeof approval.payload === "object" && approval.payload ? approval.payload as Record<string, unknown> : {};
+      const now = new Date();
+      const updated = await tx.update(approvals).set({ payload: { ...payload, queueClaim: { approvalMarker: input.approvalMarker, scopeDigest: input.scopeDigest, targetAgentId: input.targetAgentId, maxDispatches: input.maxDispatches, expiresAt: expiresAt.toISOString() } }, updatedAt: now }).where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId), eq(approvals.status, "pending"))).returning().then((rows) => rows[0] ?? null);
+      if (!updated) throw preconditionFailed("Approval changed while marker was evaluated", { code: "approval_marker_compare_and_swap_failed" });
+      return updated;
+    });
+  }
+
+  async function conditionalQueueWakeReservation(input: {
+    issueId: string; companyId: string; expectedUpdatedAt: string; approvalId: string; approvalMarker: string;
+    scopeDigest: string; targetAgentId: string; idempotencyKey: string; requestedByUserId: string;
+  }) {
+    const expectedUpdatedAt = new Date(input.expectedUpdatedAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime())) throw preconditionFailed("Invalid expectedUpdatedAt");
+    return db.transaction(async (tx) => {
+      // Serialize fleet-cap decisions at the company row. A per-target lock is
+      // insufficient: two idle targets could otherwise both pass the cap.
+      const company = await tx.select({ id: companies.id }).from(companies)
+        .where(eq(companies.id, input.companyId)).for("update").then((rows) => rows[0] ?? null);
+      if (!company) throw conflict("Issue does not belong to company", { code: "issue_company_mismatch" });
+      const issue = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
+      if (!issue) throw conflict("Issue does not belong to company", { code: "issue_company_mismatch" });
+      if (issue.updatedAt.getTime() !== expectedUpdatedAt.getTime()) throw preconditionFailed("Issue version no longer matches", { code: "stale_issue_version" });
+      if (issue.status !== "in_progress" || issue.assigneeAgentId !== input.targetAgentId || issue.assigneeUserId !== null) throw conflict("Issue is not exactly assigned to the target agent", { code: "issue_not_wakeable" });
+      const approval = await tx.select().from(approvals).where(and(eq(approvals.id, input.approvalId), eq(approvals.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
+      const linked = approval && await tx.select({ approvalId: issueApprovals.approvalId }).from(issueApprovals).where(and(eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, input.issueId), eq(issueApprovals.approvalId, input.approvalId))).for("update").then((rows) => rows[0] ?? null);
+      const claim = approval?.payload && typeof approval.payload === "object" ? (approval.payload as Record<string, unknown>).queueClaim as Record<string, unknown> | undefined : undefined;
+      const expiresAt = typeof claim?.expiresAt === "string" ? new Date(claim.expiresAt) : null;
+      const maxDispatches = typeof claim?.maxDispatches === "number" && Number.isInteger(claim.maxDispatches) && claim.maxDispatches >= 1 && claim.maxDispatches <= 50 ? claim.maxDispatches : null;
+      if (!approval || !linked || approval.status !== "approved" || !claim || claim.approvalMarker !== input.approvalMarker || claim.scopeDigest !== input.scopeDigest || claim.targetAgentId !== input.targetAgentId || !maxDispatches || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) throw conflict("Wake approval is absent, mismatched, or expired", { code: "approval_precondition_failed" });
+      const target = await tx.select({ id: agents.id, status: agents.status }).from(agents).where(and(eq(agents.id, input.targetAgentId), eq(agents.companyId, input.companyId))).for("update").then((rows) => rows[0] ?? null);
+      if (!target || target.status !== "idle") throw conflict("Target agent is not idle", { code: "target_not_idle" });
+      const activeCards = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, input.targetAgentId), inArray(issues.status, ["todo", "in_progress"]))).for("update");
+      if (activeCards.length !== 1 || activeCards[0]?.id !== input.issueId) throw conflict("Target agent does not have this sole active card", { code: "target_not_sole_card" });
+      const existing = await tx.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.targetAgentId), eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey))).for("update").then((rows) => rows[0] ?? null);
+      if (existing) return existing;
+      // The reservation is the durable dispatch intent. Count every live
+      // reservation/run-linked wake so callers cannot bypass MAX_DISPATCHES by
+      // racing different targets before the dispatcher consumes the queue.
+      const fleetDispatches = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, input.companyId), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"])))
+        .for("update");
+      if (fleetDispatches.length >= maxDispatches) throw conflict("Approved fleet dispatch limit is reached", { code: "max_dispatches_reached" });
+      const now = new Date();
+      return tx.insert(agentWakeupRequests).values({ companyId: input.companyId, agentId: input.targetAgentId, source: "automation", triggerDetail: "system", reason: "conditional_queue_claim", payload: { issueId: input.issueId, approvalId: input.approvalId, approvalMarker: input.approvalMarker, scopeDigest: input.scopeDigest, maxDispatches }, status: "queued", requestedByActorType: "user", requestedByActorId: input.requestedByUserId, idempotencyKey: input.idempotencyKey, updatedAt: now }).returning().then((rows) => rows[0]);
+    });
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -5526,6 +5590,8 @@ export function issueService(db: Db) {
 
   return {
     conditionalQueueClaim,
+    conditionalQueueApprovalMarker,
+    conditionalQueueWakeReservation,
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
