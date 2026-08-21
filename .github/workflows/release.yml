@@ -53,12 +53,14 @@ env:
   # npm accepts a publish immediately, but the registry's CDN can lag packument
   # propagation by several minutes (observed 2.5-4+ minutes on 2026-08-21,
   # which failed four consecutive canary runs mid-loop). Give release.sh's
-  # post-publish visibility poll a 5-minute budget per package instead of its
+  # post-publish visibility poll a 10-minute budget per package instead of its
   # 60-second default; a healthy publish still exits the poll on the first
-  # visible check. The publish jobs' timeout-minutes are sized for several
+  # visible check. (A 5-minute budget missed by seconds on 2026-08-21:
+  # adapter-opencode-local was accepted at 07:02:27 and became visible at
+  # 07:07:40.) The publish jobs' timeout-minutes are sized for several
   # laggard packages; if most of a batch lags the full budget, npm is having
   # a real incident and the job failing is correct.
-  NPM_PUBLISH_VERIFY_ATTEMPTS: "30"
+  NPM_PUBLISH_VERIFY_ATTEMPTS: "60"
   NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"
 
 jobs:
