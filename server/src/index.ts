@@ -446,19 +446,39 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
+      let adoptedExistingServer = false;
       try {
+        // Wait the cluster out before concluding the data directory is unowned.
+        // A postmaster replaying WAL answers 57P03, and getPostgresDataDirectory
+        // reports that as null — indistinguishable from "nothing is listening".
+        // Without this gate a recovering cluster of our own falls through to the
+        // port fallback below, which then starts a second postmaster over the
+        // same data directory and fatals on the lock file or shared memory.
+        await waitForPostgresReady(configuredAdminConnectionString);
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
-          typeof actualDataDir !== "string" ||
-          resolve(actualDataDir) !== resolve(dataDir)
+          typeof actualDataDir === "string" &&
+          resolve(actualDataDir) === resolve(dataDir)
         ) {
-          throw new Error("reachable postgres does not use the expected embedded data directory");
+          port = configuredPort;
+          adoptedExistingServer = true;
+          logger.warn(
+            `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
+          );
+        } else {
+          logger.warn(
+            { actualDataDir },
+            "A PostgreSQL server holds the configured port but serves a different data directory; starting our cluster on another port",
+          );
         }
-        port = configuredPort;
-        logger.warn(
-          `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
+      } catch (err) {
+        logger.info(
+          { err },
+          `No PostgreSQL server reachable on port ${configuredPort}; starting the embedded cluster`,
         );
-      } catch {
+      }
+
+      if (!adoptedExistingServer) {
         const detectedPort = await detectPort(configuredPort);
         if (detectedPort !== configuredPort) {
           logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
