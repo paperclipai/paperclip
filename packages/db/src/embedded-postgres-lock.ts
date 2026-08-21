@@ -33,8 +33,12 @@ export type PostmasterLockStatus =
   | { status: "absent" }
   | { status: "running"; lock: PostmasterLockFile }
   | { status: "stale"; lock: PostmasterLockFile }
-  /** A lock file we cannot adjudicate — treated as occupied, never cleared. */
-  | { status: "indeterminate"; lock: PostmasterLockFile; reason: string };
+  /**
+   * A lock file we cannot adjudicate — treated as occupied, never cleared.
+   * `lock` is null when the file exists but could not be read or parsed at all,
+   * which is still evidence of ownership, not of absence.
+   */
+  | { status: "indeterminate"; lock: PostmasterLockFile | null; reason: string };
 
 export function postmasterLockFilePath(dataDir: string): string {
   return path.resolve(dataDir, POSTMASTER_LOCK_FILE_NAME);
@@ -98,6 +102,7 @@ export function probeProcessLiveness(
 export type InspectPostmasterLockDeps = {
   readLockFile?: (dataDir: string) => PostmasterLockFile | null;
   probeLiveness?: (pid: number) => ProcessLiveness;
+  lockFileExists?: (dataDir: string) => boolean;
 };
 
 /**
@@ -114,9 +119,24 @@ export function inspectPostmasterLock(
 ): PostmasterLockStatus {
   const readLockFile = deps.readLockFile ?? readPostmasterLockFile;
   const probeLiveness = deps.probeLiveness ?? ((pid: number) => probeProcessLiveness(pid));
+  const lockFileExists = deps.lockFileExists ?? ((dir: string) => existsSync(postmasterLockFilePath(dir)));
 
   const lock = readLockFile(dataDir);
-  if (!lock) return { status: "absent" };
+  if (!lock) {
+    // "Could not parse" is not "not there". An unreadable file, or one whose pid
+    // line is malformed, still means something claimed this directory — and that
+    // postmaster may be listening on a port we would never probe. Reporting
+    // "absent" here sends callers down the start path and reintroduces the
+    // duplicate-postmaster failure through the back door.
+    if (lockFileExists(dataDir)) {
+      return {
+        status: "indeterminate",
+        lock: null,
+        reason: `${POSTMASTER_LOCK_FILE_NAME} exists but could not be read or parsed`,
+      };
+    }
+    return { status: "absent" };
+  }
 
   if (lock.dataDir && path.resolve(lock.dataDir) !== path.resolve(dataDir)) {
     return {

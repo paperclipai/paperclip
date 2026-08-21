@@ -113,6 +113,38 @@ describe("inspectPostmasterLock", () => {
     expect(inspectPostmasterLock(makeDataDir()).status).toBe("absent");
   });
 
+  it("reports an unparseable lock file as indeterminate, not absent", () => {
+    // A file we cannot read still means something claimed the directory, and
+    // that postmaster may be on a port we would never probe. Calling it
+    // "absent" sends callers down the start path and recreates the duplicate
+    // postmaster failure.
+    const dataDir = makeDataDir();
+    fs.writeFileSync(path.resolve(dataDir, "postmaster.pid"), "not-a-pid");
+
+    const status = inspectPostmasterLock(dataDir);
+    expect(status.status).toBe("indeterminate");
+    if (status.status !== "indeterminate") throw new Error("expected indeterminate");
+    expect(status.lock).toBeNull();
+    expect(status.reason).toContain("could not be read or parsed");
+  });
+
+  it("still reports absent when no lock file exists at all", () => {
+    const dataDir = makeDataDir();
+    const status = inspectPostmasterLock(dataDir, {
+      readLockFile: () => null,
+      lockFileExists: () => false,
+    });
+    expect(status.status).toBe("absent");
+  });
+
+  it("treats an unreadable lock file as occupied even when the reader returns null", () => {
+    const status = inspectPostmasterLock(makeDataDir(), {
+      readLockFile: () => null,
+      lockFileExists: () => true,
+    });
+    expect(status.status).toBe("indeterminate");
+  });
+
   it("reports a live postmaster as running, carrying its real port", () => {
     const dataDir = makeDataDir();
     writeLockFile(dataDir, { pid: 4242, port: 54331 });

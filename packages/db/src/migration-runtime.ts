@@ -93,8 +93,20 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
  * recovery first, and hand back a connection whose `stop` is a no-op — we did
  * not start this postmaster, so we must not stop it.
  */
-async function adoptCluster(port: number): Promise<MigrationConnection> {
+async function adoptCluster(port: number, expectedDataDir: string): Promise<MigrationConnection> {
   await waitForPostgresReady(adminConnectionString(port));
+
+  // A recorded port is not proof of identity. If an unrelated PostgreSQL now
+  // occupies it, adopting blindly would create our database and run migrations
+  // against someone else's cluster while the intended directory stays unresolved.
+  const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
+  if (typeof actualDataDir !== "string" || path.resolve(actualDataDir) !== path.resolve(expectedDataDir)) {
+    throw new Error(
+      `PostgreSQL on port ${port} serves ${actualDataDir ?? "an unreported data directory"}, ` +
+        `not ${path.resolve(expectedDataDir)}; refusing to adopt an unrelated cluster.`,
+    );
+  }
+
   await ensurePostgresDatabase(adminConnectionString(port), "paperclip");
   return {
     connectionString: databaseConnectionString(port),
@@ -123,13 +135,13 @@ async function resolveRunningCluster(
     process.emitWarning(
       `Embedded PostgreSQL is already running for ${dataDir} (pid=${inspected.lock.pid}, port=${port}); reusing it.`,
     );
-    return await adoptCluster(port);
+    return await adoptCluster(port, dataDir);
   }
 
   if (inspected.status === "indeterminate") {
-    const port = inspected.lock.port ?? preferredPort;
+    const port = inspected.lock?.port ?? preferredPort;
     try {
-      const connection = await adoptCluster(port);
+      const connection = await adoptCluster(port, dataDir);
       process.emitWarning(
         `Adopted the PostgreSQL server on port ${port} for ${dataDir} after an inconclusive lock-file check.`,
       );
@@ -159,7 +171,7 @@ async function resolveRunningCluster(
   if (existsSync(path.resolve(dataDir, "PG_VERSION")) && (await isPortInUse(preferredPort))) {
     try {
       if (await isServingDataDirectory(preferredPort, dataDir)) {
-        const connection = await adoptCluster(preferredPort);
+        const connection = await adoptCluster(preferredPort, dataDir);
         process.emitWarning(
           `Adopting the existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} ` +
             `because ${POSTMASTER_LOCK_FILE_NAME} is missing.`,

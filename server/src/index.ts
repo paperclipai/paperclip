@@ -421,15 +421,19 @@ export async function startServer(): Promise<StartedServer> {
     // service holding the port, never for our own cluster.
     const lockStatus = inspectPostmasterLock(dataDir);
 
+    let adoptedFromLock = false;
     if (lockStatus.status === "running") {
       port = lockStatus.lock.port ?? configuredPort;
+      adoptedFromLock = true;
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${lockStatus.lock.pid}, port=${port})`);
     } else if (lockStatus.status === "indeterminate") {
       // Not provably dead. Reuse the recorded server and let the readiness wait
       // below decide, rather than clearing a lock file we cannot vouch for.
-      port = lockStatus.lock.port ?? configuredPort;
+      // `lock` is null when the file exists but could not be parsed at all.
+      port = lockStatus.lock?.port ?? configuredPort;
+      adoptedFromLock = true;
       logger.warn(
-        { reason: lockStatus.reason, pid: lockStatus.lock.pid, port },
+        { reason: lockStatus.reason, pid: lockStatus.lock?.pid ?? null, port },
         "Embedded PostgreSQL lock file could not be adjudicated; reusing the recorded server instead of starting a second one",
       );
     } else {
@@ -575,6 +579,22 @@ export async function startServer(): Promise<StartedServer> {
         recentLogs: logBuffer.getRecentLogs(),
       });
     }
+    // Adopting on a port recorded in a lock file is not proof of identity: an
+    // unrelated PostgreSQL may now hold that port. Creating our database and
+    // running migrations against someone else's cluster would leave the intended
+    // directory unresolved, so confirm before touching it. A cluster this
+    // process started needs no check — we chose its data directory.
+    if (adoptedFromLock) {
+      const adoptedDataDir = await getPostgresDataDirectory(embeddedAdminConnectionString);
+      if (typeof adoptedDataDir !== "string" || resolve(adoptedDataDir) !== resolve(dataDir)) {
+        throw new Error(
+          `PostgreSQL on port ${port} serves ${adoptedDataDir ?? "an unreported data directory"}, not ${resolve(dataDir)}. ` +
+            `Refusing to adopt an unrelated cluster. Stop whatever is using port ${port}, or remove the stale ` +
+            `postmaster.pid if its process is genuinely gone, then retry.`,
+        );
+      }
+    }
+
     const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
