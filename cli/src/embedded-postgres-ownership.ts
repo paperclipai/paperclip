@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import {
   POSTMASTER_LOCK_FILE_NAME,
   canonicalizeDataDirectory,
@@ -21,6 +22,21 @@ export type EmbeddedClusterDecision =
 
 function adminConnectionString(port: number): string {
   return `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+}
+
+/** Whether anything holds `port`, regardless of what it is. */
+async function isPortInUse(port: number): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      resolve(error.code === "EADDRINUSE");
+    });
+    server.listen(port, "127.0.0.1", () => {
+      server.close();
+      resolve(false);
+    });
+  });
 }
 
 /**
@@ -72,7 +88,37 @@ export async function decideEmbeddedCluster(
     return { action: "adopt", port };
   }
 
-  // "absent" or "stale": the lock file records no live owner. PostgreSQL clears a
-  // stale file itself as it takes ownership, so leave it alone and start.
+  // "absent" or "stale": the lock file records no live owner. That is not the
+  // same as the directory being free -- a cluster started outside Paperclip, or
+  // one whose lock file was deleted, can still be serving it. This is the exact
+  // shape of the bug this change set exists to fix, so probe before starting.
+  if (!(await isPortInUse(preferredPort))) {
+    return { action: "start" };
+  }
+
+  let servesThisDirectory: boolean;
+  try {
+    await waitForPostgresReady(adminConnectionString(preferredPort), { timeoutMs: IDENTIFY_TIMEOUT_MS });
+    const actualDataDir = await getPostgresDataDirectory(adminConnectionString(preferredPort));
+    servesThisDirectory =
+      typeof actualDataDir === "string" &&
+      canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir);
+  } catch (error) {
+    // Something holds the port and will not identify itself. It may be our own
+    // postmaster replaying WAL, so refusing is the only safe answer.
+    throw new Error(
+      `Port ${preferredPort} is in use, but the server there did not identify itself, so ownership of `
+      + `${dataDir} cannot be established. Refusing to start a second postmaster over possibly-live data. `
+      + `Stop whatever is using port ${preferredPort}, then retry.`,
+      { cause: error },
+    );
+  }
+
+  if (servesThisDirectory) {
+    return { action: "adopt", port: preferredPort };
+  }
+
+  // Identified as a different cluster: our directory is unowned, so the caller
+  // may start on another port.
   return { action: "start" };
 }
