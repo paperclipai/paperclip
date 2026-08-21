@@ -523,7 +523,7 @@ export const upsertIssueWatchdogSchema = z.object({
 
 export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;
 
-export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
+const createChildIssueBaseSchema = createIssueBaseSchema
   .omit({
     parentId: true,
     inheritExecutionWorkspaceFromIssueId: true,
@@ -532,13 +532,21 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  })).superRefine(requireBlockedStatusForUnblockDescriptor);
+  });
+
+export const createChildIssueSchema = withCreateIssueStatusDefault(createChildIssueBaseSchema.extend({
+  idempotencyKey: createIssueDuplicateGuardSchema.idempotencyKey,
+})).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
+const createAcceptedPlanChildIssueSchema = withCreateIssueStatusDefault(
+  createChildIssueBaseSchema,
+).superRefine(requireBlockedStatusForUnblockDescriptor);
+
 export const createAcceptedPlanDecompositionSchema = z.object({
   acceptedPlanRevisionId: z.string().uuid(),
-  children: z.array(createChildIssueSchema).min(1).max(25),
+  children: z.array(createAcceptedPlanChildIssueSchema).min(1).max(25),
 });
 
 export type CreateAcceptedPlanDecomposition = z.infer<typeof createAcceptedPlanDecompositionSchema>;

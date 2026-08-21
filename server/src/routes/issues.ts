@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   approvals,
   companyMemberships,
@@ -66,6 +67,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  getAgentWorkEligibility,
   isClosedIsolatedExecutionWorkspace,
   isMarkdownArtifactWorkProduct,
   isMarkdownAttachmentContent,
@@ -85,6 +87,7 @@ import {
   type IssueSubtreeDiagnosticEdge,
   type IssueSubtreeDiagnosticNode,
   type IssueSubtreeDiagnosticsResponse,
+  type IssueUnblockDescriptor,
   type IssueWakeDiagnosticActivityRecord,
   type IssueWakeDiagnosticEvent,
   type IssueWakeDiagnosticWakeFailureClass,
@@ -233,7 +236,12 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
-import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import {
+  buildAgentUnblockWakeIntent,
+  deliverAgentUnblockNotification,
+  isBlockedOwnerStillAuthorized,
+  isProspectiveBlockedTransition,
+} from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -1847,6 +1855,42 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+function buildDependencyReadyUnblockOwnerWake(input: {
+  dependent: {
+    id: string;
+    status: string;
+    unblockDescriptor: IssueUnblockDescriptor | null;
+    blockedTransitionAt: Date | null;
+    blockedOwnerNotifiedAt: Date | null;
+  };
+  resolvedBlockerIssueId: string;
+  requestedByActorType: "agent" | "user";
+  requestedByActorId: string;
+}) {
+  const intent = buildAgentUnblockWakeIntent(input.dependent);
+  if (!intent) return null;
+  return {
+    agentId: intent.ownerAgentId,
+    wakeup: {
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_unblock_requested",
+      idempotencyKey: `${intent.idempotencyKey}:dependency:${input.resolvedBlockerIssueId}`,
+      payload: intent.payload,
+      requestedByActorType: input.requestedByActorType,
+      requestedByActorId: input.requestedByActorId,
+      contextSnapshot: {
+        issueId: input.dependent.id,
+        taskId: input.dependent.id,
+        wakeReason: "issue_unblock_requested",
+        source: "issue.unblock_prerequisite_resolved",
+        resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+        intentFingerprint: intent.intentFingerprint,
+      },
+    },
+  };
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -2789,6 +2833,10 @@ export function issueRoutes(
       agentId: string,
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
+    blockedOwnerEnqueueWakeup?: (
+      agentId: string,
+      options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
+    ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
     issueListDiagnostics?: IssueListDiagnostics;
     approveToolActionRequest?: (input: {
       companyId: string;
@@ -2815,6 +2863,7 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const enqueueStalledReviewDecisionWakeup = opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
+  const enqueueBlockedOwnerWakeup = opts.blockedOwnerEnqueueWakeup ?? heartbeat.wakeup;
   const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
@@ -2897,6 +2946,246 @@ export function issueRoutes(
       .catch((err) => {
         logger.warn({ err, issueId: issue.id }, "task watchdog evaluation hook failed");
       });
+  }
+
+  const ACCEPTED_BLOCKED_OWNER_WAKE_STATUSES = [
+    "queued",
+    "claimed",
+    "deferred_issue_execution",
+    "completed",
+  ];
+
+  async function assertCreateUnblockOwnerAllowed(
+    descriptor: IssueUnblockDescriptor | null | undefined,
+    companyId: string,
+    actor: { type: string; agentId?: string | null },
+  ) {
+    if (!descriptor || typeof descriptor !== "object") return;
+    const owner = descriptor.owner;
+    if (actor.type === "agent" && (owner === "board" || "userId" in owner)) {
+      throw forbidden("Agents may only name themselves or a reporting-line manager as an unblock owner");
+    }
+    if (owner !== "board" && "agentId" in owner) {
+      const companyAgents = await db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          status: agents.status,
+          reportsTo: agents.reportsTo,
+        })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      const target = companyAgents.find((agent) => agent.id === owner.agentId);
+      if (!target) {
+        throw unprocessable("Unblock owner agent must belong to the issue company");
+      }
+      const targetEligibility = getAgentWorkEligibility({ agent: target, agents: companyAgents });
+      if (!targetEligibility.invokable) {
+        throw unprocessable("Unblock owner agent must be invokable");
+      }
+      if (actor.type === "agent" && actor.agentId !== owner.agentId) {
+        const report = actor.agentId
+          ? companyAgents.find((agent) => agent.id === actor.agentId)
+          : null;
+        const reportEligibility = report
+          ? getAgentWorkEligibility({ agent: report, agents: companyAgents })
+          : null;
+        const targetIsReportingLineManager = Boolean(
+          reportEligibility?.invokable &&
+          targetEligibility.invokable &&
+          reportEligibility.orgChainHealth.fullChain.some(
+            (entry) => entry.relation === "ancestor" && entry.id === target.id,
+          ),
+        );
+        if (!targetIsReportingLineManager) {
+          throw forbidden("Agents may only name themselves or a reporting-line manager as an unblock owner");
+        }
+      }
+      return;
+    }
+    if (owner !== "board" && "userId" in owner) {
+      const member = await db
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, owner.userId),
+          eq(companyMemberships.status, "active"),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!member) throw unprocessable("Unblock owner user must be an active company member");
+    }
+  }
+
+  async function isPersistedBlockedOwnerStillAuthorized(
+    tx: Pick<Db, "select">,
+    issue: { companyId: string; createdByAgentId?: string | null; unblockDescriptor?: unknown },
+  ): Promise<boolean> {
+    const descriptor = issue.unblockDescriptor as { owner?: unknown } | null | undefined;
+    // Deliberately NOT FOR UPDATE: the delivery transaction holds these rows
+    // across the synchronous wake enqueue, and the claim-side re-authorization
+    // takes FOR UPDATE on the same rows — locking here would deadlock the
+    // delivery against a claim started by the enqueue. This read is an
+    // advisory pre-check; the claim-time re-check (issue row + agent rows
+    // FOR UPDATE) is the authoritative gate before the run goes running.
+    const companyAgents = await tx
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, issue.companyId))
+      .orderBy(asc(agents.id));
+    return isBlockedOwnerStillAuthorized({
+      owner: descriptor?.owner as Parameters<typeof isBlockedOwnerStillAuthorized>[0]["owner"],
+      createdByAgentId: issue.createdByAgentId,
+      companyAgents,
+    });
+  }
+
+  async function deliverBlockedOwnerNotification<
+    T extends Parameters<typeof deliverAgentUnblockNotification>[0]["issue"] & { companyId: string },
+  >(issue: T): Promise<T> {
+    const owner = issue.unblockDescriptor?.owner;
+    if (
+      !isProspectiveBlockedTransition(issue) ||
+      !owner ||
+      owner === "board" ||
+      !("agentId" in owner)
+    ) {
+      return issue;
+    }
+    let deliveryError: unknown = null;
+    // Serialize concurrent deliveries for the same issue on the blocked-owner
+    // advisory lock. The claim side deliberately does NOT take this lock (it
+    // serializes on the issue row + agent rows instead), so the synchronous
+    // wake enqueue below cannot deadlock against a claim started by the
+    // enqueue itself.
+    const reconciled = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issue.id}`}))`);
+      const current = await tx
+        .select()
+        .from(issueRows)
+        .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!current) return issue;
+      const descriptor = current.unblockDescriptor;
+      if (
+        current.status !== "blocked" ||
+        !current.blockedTransitionAt ||
+        !descriptor ||
+        descriptor.owner === "board" ||
+        !("agentId" in descriptor.owner)
+      ) {
+        return current as T;
+      }
+
+      const intent = buildAgentUnblockWakeIntent(current);
+      if (!intent) return current as T;
+      const findAcceptedWake = () => tx
+        .select({
+          requestedAt: agentWakeupRequests.requestedAt,
+          status: agentWakeupRequests.status,
+        })
+        .from(agentWakeupRequests)
+        .leftJoin(heartbeatRuns, eq(agentWakeupRequests.runId, heartbeatRuns.id))
+        .where(and(
+          eq(agentWakeupRequests.companyId, current.companyId),
+          eq(agentWakeupRequests.agentId, intent.ownerAgentId),
+          eq(agentWakeupRequests.idempotencyKey, intent.idempotencyKey),
+          sql`${agentWakeupRequests.payload} ->> 'intentFingerprint' = ${intent.intentFingerprint}`,
+          or(
+            inArray(agentWakeupRequests.status, ACCEPTED_BLOCKED_OWNER_WAKE_STATUSES),
+            and(
+              eq(agentWakeupRequests.status, "coalesced"),
+              inArray(heartbeatRuns.status, ["queued", "running", "succeeded"]),
+            ),
+          ),
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      let acceptedWake = await findAcceptedWake();
+      if (!acceptedWake) {
+        // The owner was authorized against the reporting line at create time,
+        // but that hierarchy can change before delivery. Reauthorize the
+        // persisted owner under the same lock: a former manager who is no
+        // longer the creator's ancestor must not receive the unblock wake.
+        // A failed re-authorization leaves the marker null so a later PATCH
+        // or replay can retry once the hierarchy is repaired.
+        if (!(await isPersistedBlockedOwnerStillAuthorized(tx, current))) {
+          return current as T;
+        }
+        // Owner eligibility may legitimately change after the issue
+        // transaction commits. Heartbeat admission is the authoritative
+        // delivery check: a rejected/suppressed wake leaves the marker null
+        // so an idempotent replay or later PATCH can retry.
+        try {
+          await deliverAgentUnblockNotification({
+            issue: { ...current, blockedOwnerNotifiedAt: null },
+            wakeup: enqueueBlockedOwnerWakeup,
+            markNotified: async () => undefined,
+          });
+        } catch (err) {
+          deliveryError = err;
+        }
+        acceptedWake = await findAcceptedWake();
+      }
+      if (!acceptedWake) {
+        if (!current.blockedOwnerNotifiedAt) return current;
+        const [cleared] = await tx
+          .update(issueRows)
+          .set({ blockedOwnerNotifiedAt: null })
+          .where(and(
+            eq(issueRows.id, current.id),
+            eq(issueRows.companyId, current.companyId),
+            eq(issueRows.status, "blocked"),
+            eq(issueRows.blockedTransitionAt, current.blockedTransitionAt),
+            sql`${issueRows.unblockDescriptor} = ${JSON.stringify(descriptor)}::jsonb`,
+          ))
+          .returning();
+        return (cleared ?? { ...current, blockedOwnerNotifiedAt: null }) as unknown as T;
+      }
+
+      const descriptorJson = JSON.stringify(descriptor);
+      const [updated] = await tx
+        .update(issueRows)
+        .set({ blockedOwnerNotifiedAt: acceptedWake.requestedAt })
+        .where(and(
+          eq(issueRows.id, current.id),
+          eq(issueRows.companyId, current.companyId),
+          eq(issueRows.status, "blocked"),
+          eq(issueRows.blockedTransitionAt, current.blockedTransitionAt),
+          sql`${issueRows.unblockDescriptor} = ${descriptorJson}::jsonb`,
+        ))
+        .returning();
+      if (updated) return updated as T;
+      return tx
+        .select()
+        .from(issueRows)
+        .where(and(eq(issueRows.id, current.id), eq(issueRows.companyId, current.companyId)))
+        .then((rows) => (rows[0] ?? current) as T);
+    });
+    if (deliveryError && !reconciled.blockedOwnerNotifiedAt) throw deliveryError;
+    return reconciled as T;
+  }
+
+  function hasCanonicalBlockedOwnerWakeForAssignee(
+    issue: Parameters<typeof buildAgentUnblockWakeIntent>[0] & { assigneeAgentId?: string | null },
+  ) {
+    const intent = buildAgentUnblockWakeIntent(issue);
+    return Boolean(
+      issue.blockedOwnerNotifiedAt &&
+      issue.assigneeAgentId &&
+      intent?.ownerAgentId === issue.assigneeAgentId,
+    );
   }
 
   async function sourceTrustForActorWrite(
@@ -8597,6 +8886,7 @@ export function issueRoutes(
         }
         : {}),
     };
+    await assertCreateUnblockOwnerAllowed(createBody.unblockDescriptor, companyId, req.actor);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
@@ -8658,6 +8948,8 @@ export function issueRoutes(
       issue = await svc.create(companyId, ordinaryCreateInput);
     }
     if (deduplicationReason) {
+      await assertCreateUnblockOwnerAllowed(issue.unblockDescriptor, companyId, req.actor);
+      issue = await deliverBlockedOwnerNotification(issue);
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
         ...issue,
@@ -8667,6 +8959,14 @@ export function issueRoutes(
         referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
       return;
+    }
+    try {
+      issue = await deliverBlockedOwnerNotification(issue);
+    } catch (err) {
+      // The durable marker remains null, so a retry can redrive the canonical
+      // unblock intent. Continue to the generic assignee wake below instead of
+      // turning a committed blocked issue into a 500 with no delivery attempt.
+      logger.warn({ err, issueId: issue.id }, "blocked owner wake failed; falling back to assignee wake");
     }
     await issueReferencesSvc.syncIssue(issue.id);
     await externalObjectsSvc.syncIssueSafely(issue.id);
@@ -8788,15 +9088,17 @@ export function issueRoutes(
       }
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (!hasCanonicalBlockedOwnerWakeForAssignee(issue)) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
     res.status(201).json({
@@ -8847,6 +9149,7 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+    await assertCreateUnblockOwnerAllowed(createBody.unblockDescriptor, parent.companyId, req.actor);
     const serializationContext = await resolveWatchdogFollowUpSerializationContext(req, parent);
     const currentSerializedChild = serializationContext
       ? await findCurrentSerializedWatchdogChild(parent)
@@ -8863,7 +9166,8 @@ export function issueRoutes(
       projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
     }, actor);
-    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+    let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    let { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
@@ -8883,7 +9187,40 @@ export function issueRoutes(
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
+      onDeduplicated: (reason) => {
+        deduplicationReason = reason;
+      },
+      authorizeDeduplicatedIssue: (deduplicatedIssue) =>
+        assertCreateUnblockOwnerAllowed(deduplicatedIssue.unblockDescriptor, parent.companyId, req.actor),
     });
+    const reconcileChildNotification = async () => {
+      let deliveryFailed = false;
+      try {
+        issue = await deliverBlockedOwnerNotification(issue);
+      } catch (err) {
+        deliveryFailed = true;
+        issue = { ...issue, blockedOwnerNotifiedAt: null };
+        logger.warn({ err, issueId: issue.id }, "blocked child owner notification remains pending");
+      }
+      const owner = issue.unblockDescriptor?.owner;
+      return deliveryFailed || isProspectiveBlockedTransition(issue) &&
+        Boolean(owner && owner !== "board" && "agentId" in owner) &&
+        !issue.blockedOwnerNotifiedAt;
+    };
+    if (deduplicationReason) {
+      await assertCreateUnblockOwnerAllowed(issue.unblockDescriptor, parent.companyId, req.actor);
+      const notificationPending = await reconcileChildNotification();
+      await externalObjectsSvc.syncIssueSafely(issue.id);
+      res.status(notificationPending ? 202 : 200).json({
+        ...issue,
+        parentBlockerAdded,
+        deduplicated: true,
+        deduplicationReason,
+        notificationPending,
+      });
+      return;
+    }
+    const notificationPending = await reconcileChildNotification();
     await externalObjectsSvc.syncIssueSafely(issue.id);
 
     await logActivity(db, {
@@ -8959,7 +9296,7 @@ export function issueRoutes(
       });
     }
 
-    if (!serializationContext || !currentSerializedChild) {
+    if ((!serializationContext || !currentSerializedChild) && !hasCanonicalBlockedOwnerWakeForAssignee(issue)) {
       void queueIssueAssignmentWakeup({
         heartbeat,
         issue,
@@ -8977,7 +9314,7 @@ export function issueRoutes(
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
-    res.status(201).json(issue);
+    res.status(notificationPending ? 202 : 201).json({ ...issue, notificationPending });
   });
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
@@ -8994,6 +9331,7 @@ export function issueRoutes(
     if (!sourceIssue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
 
+    const actor = getActorInfo(req);
     const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
       const sanitizedChild = await sanitizeIssueCreateAttribution(db, req, res, sourceIssue.companyId, child, {
@@ -9010,7 +9348,8 @@ export function issueRoutes(
         ...sanitizedChild,
         ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       };
-      requestedChildren.push(childBody);
+      await assertCreateUnblockOwnerAllowed(childBody.unblockDescriptor, sourceIssue.companyId, req.actor);
+      requestedChildren.push({ ...childBody, allowDuplicate: true });
       assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
       if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, childBody))) return;
       if (childBody.assigneeAgentId || childBody.assigneeUserId) {
@@ -9024,7 +9363,6 @@ export function issueRoutes(
       await assertIssueEnvironmentSelection(sourceIssue.companyId, childBody.executionWorkspaceSettings?.environmentId);
     }
 
-    const actor = getActorInfo(req);
     const normalizedChildren = [];
     for (const child of requestedChildren) {
       const executionPolicy = applyActorMonitorScheduledBy(
@@ -9081,6 +9419,23 @@ export function issueRoutes(
       actorRunId: actor.runId ?? null,
     });
 
+    const decompositionChildIssues = result.childIssues ?? result.newlyCreatedIssues;
+    const notifiedChildIssues = new Map<string, typeof result.newlyCreatedIssues[number]>();
+    for (const childIssue of decompositionChildIssues) {
+      await assertCreateUnblockOwnerAllowed(childIssue.unblockDescriptor, sourceIssue.companyId, req.actor);
+      let notifiedIssue = childIssue;
+      try {
+        notifiedIssue = await deliverBlockedOwnerNotification(childIssue);
+      } catch (err) {
+        // The child has already been committed. Preserve the null marker so the
+        // generic assignee wake below remains available while a later replay can
+        // redrive the canonical unblock-owner intent.
+        notifiedIssue = { ...childIssue, blockedOwnerNotifiedAt: null };
+        logger.warn({ err, issueId: childIssue.id }, "accepted-plan child owner notification remains pending");
+      }
+      notifiedChildIssues.set(notifiedIssue.id, notifiedIssue);
+    }
+
     await logActivity(db, {
       companyId: sourceIssue.companyId,
       actorType: actor.actorType,
@@ -9109,7 +9464,8 @@ export function issueRoutes(
       },
     });
 
-    for (const issue of result.newlyCreatedIssues) {
+    for (const createdIssue of result.newlyCreatedIssues) {
+      const issue = notifiedChildIssues.get(createdIssue.id) ?? createdIssue;
       await logActivity(db, {
         companyId: sourceIssue.companyId,
         actorType: actor.actorType,
@@ -9163,7 +9519,7 @@ export function issueRoutes(
         });
       }
 
-      if (!serializedBlockedChildIds.has(issue.id)) {
+      if (!serializedBlockedChildIds.has(issue.id) && !hasCanonicalBlockedOwnerWakeForAssignee(issue)) {
         void queueIssueAssignmentWakeup({
           heartbeat,
           issue,
@@ -10016,22 +10372,38 @@ export function issueRoutes(
     }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
 
-    if (enteringBlocked) {
-      const blockedIssue = issue;
-      let ownerNotifiedAt: Date | null = null;
-      await deliverAgentUnblockNotification({
-        issue: blockedIssue,
-        wakeup: heartbeat.wakeup,
-        markNotified: async (blockedOwnerNotifiedAt) => {
-          ownerNotifiedAt = blockedOwnerNotifiedAt;
-        },
-      });
-      if (ownerNotifiedAt) {
-        await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
-          eq(issueRows.id, blockedIssue.id),
-          eq(issueRows.companyId, blockedIssue.companyId),
-        ));
-        issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
+    if (issue.status === "blocked") {
+      issue = await deliverBlockedOwnerNotification(issue);
+      // If this update changed the owner intent, any queued or running wake
+      // belonging to the superseded intent is now stale. Cancel it here
+      // instead of waiting for claim-time rejection: otherwise the former
+      // owner keeps executing an intent that the descriptor no longer names.
+      const currentUnblockIntent = buildAgentUnblockWakeIntent(issue);
+      const previousUnblockIntent =
+        existing.status === "blocked" && existing.blockedTransitionAt
+          ? buildAgentUnblockWakeIntent(existing)
+          : null;
+      if (
+        currentUnblockIntent &&
+        previousUnblockIntent &&
+        previousUnblockIntent.intentFingerprint !== currentUnblockIntent.intentFingerprint
+      ) {
+        const supersededOwnerRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, previousUnblockIntent.ownerAgentId),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_unblock_requested'`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'intentFingerprint' = ${previousUnblockIntent.intentFingerprint}`,
+            ),
+          );
+        for (const supersededRun of supersededOwnerRuns) {
+          await heartbeat.cancelRun(supersededRun.id, "Cancelled because the unblock owner intent changed");
+        }
       }
     }
 
@@ -10748,6 +11120,16 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          const ownerWake = buildDependencyReadyUnblockOwnerWake({
+            dependent,
+            resolvedBlockerIssueId: issue.id,
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+          if (ownerWake) {
+            addWakeup(ownerWake.agentId, ownerWake.wakeup);
+            continue;
+          }
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
@@ -12780,6 +13162,16 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
         for (const dependent of dependents) {
+          const ownerWake = buildDependencyReadyUnblockOwnerWake({
+            dependent,
+            resolvedBlockerIssueId: currentIssue.id,
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+          if (ownerWake) {
+            addWakeup(ownerWake.agentId, ownerWake.wakeup);
+            continue;
+          }
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,

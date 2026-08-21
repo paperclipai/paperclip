@@ -154,6 +154,7 @@ import {
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { buildAgentUnblockWakeIntent, isBlockedOwnerStillAuthorized } from "./routable-blocked.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -4171,6 +4172,25 @@ function allowsIssueInteractionWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
+}
+
+export function allowsIssueUnblockRequestWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  issue: {
+    id: string;
+    status: string;
+    unblockDescriptor: typeof issues.$inferSelect.unblockDescriptor;
+    blockedTransitionAt: Date | null;
+  } | null | undefined,
+  agentId: string,
+) {
+  if (readNonEmptyString(contextSnapshot?.wakeReason) !== "issue_unblock_requested" || !issue) {
+    return false;
+  }
+  const intent = buildAgentUnblockWakeIntent(issue);
+  return issue.status === "blocked" &&
+    intent?.ownerAgentId === agentId &&
+    readNonEmptyString(contextSnapshot?.intentFingerprint) === intent.intentFingerprint;
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -12569,6 +12589,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    let exactUnblockOwnerClaim = false;
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -12602,14 +12623,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      const unblockRequestIssue = readNonEmptyString(context.wakeReason) === "issue_unblock_requested"
+        ? await db
+            .select({
+              id: issues.id,
+              status: issues.status,
+              unblockDescriptor: issues.unblockDescriptor,
+              blockedTransitionAt: issues.blockedTransitionAt,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const exactUnblockRequestWake = allowsIssueUnblockRequestWake(
+        context,
+        unblockRequestIssue,
+        run.agentId,
+      );
+      exactUnblockOwnerClaim = exactUnblockRequestWake;
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
-        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
-        return null;
-      }
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
@@ -12618,6 +12652,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
         );
+        return null;
+      }
+
+      if (
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(context) &&
+        !exactUnblockRequestWake
+      ) {
+        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
+        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
       }
     }
@@ -12629,18 +12673,111 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+    // For exact unblock-owner wakes the owner was authorized against the
+    // reporting line at delivery time, but the hierarchy can move before the
+    // run claims. Make the re-authorization atomic with the claim: lock the
+    // issue row and the company's agent rows, re-check eligibility, and only
+    // then flip the run to running. This path deliberately does NOT take the
+    // blocked-owner advisory lock that the delivery path holds: the wake
+    // enqueue can synchronously start this claim, and re-entering that lock
+    // would self-deadlock the delivery transaction. The issue-row FOR UPDATE
+    // lock is sufficient — descriptor changes and marker stamps serialize on
+    // the same row. If the owner lost authorization, cancel the wake; the
+    // issue marker stays null so a later PATCH or replay redrives delivery
+    // once the hierarchy is repaired.
+    const claimPatch = {
+      status: "running" as const,
+      responsibleUserId,
+      startedAt: run.startedAt ?? claimedAt,
+      updatedAt: claimedAt,
+    };
+    let claimed: typeof heartbeatRuns.$inferSelect | null;
+    if (exactUnblockOwnerClaim && issueId) {
+      const outcome = await db.transaction(async (tx) => {
+        const claimIssue = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            unblockDescriptor: issues.unblockDescriptor,
+            blockedTransitionAt: issues.blockedTransitionAt,
+            createdByAgentId: issues.createdByAgentId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        const companyAgents = await tx
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            status: agents.status,
+            reportsTo: agents.reportsTo,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, run.companyId))
+          .orderBy(asc(agents.id))
+          .for("update");
+        // Revalidate the intent fingerprint inside the same lock: a descriptor
+        // change that commits between the unlocked pre-check and the claim
+        // must supersede this queued wake instead of letting it execute.
+        const claimIntent = claimIssue ? buildAgentUnblockWakeIntent(claimIssue) : null;
+        const intentStillExact =
+          claimIssue?.status === "blocked" &&
+          claimIntent?.ownerAgentId === run.agentId &&
+          readNonEmptyString(context.intentFingerprint) === claimIntent?.intentFingerprint;
+        if (!intentStillExact) return { refused: "intent_changed" as const };
+        const stillAuthorized = isBlockedOwnerStillAuthorized({
+          owner: claimIssue?.unblockDescriptor?.owner,
+          createdByAgentId: claimIssue?.createdByAgentId,
+          companyAgents,
+        });
+        if (!stillAuthorized) return { refused: "owner_unauthorized" as const };
+        const claimedRow = await tx
+          .update(heartbeatRuns)
+          .set(claimPatch)
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return claimedRow
+          ? ({ claimed: claimedRow } as const)
+          : ({ refused: "race_lost" as const });
+      });
+      if ("refused" in outcome) {
+        if (outcome.refused !== "race_lost") {
+          const staleness: Extract<QueuedRunStaleness, { stale: true }> =
+            outcome.refused === "intent_changed"
+              ? {
+                  stale: true,
+                  errorCode: "issue_unblock_intent_changed",
+                  reason: "Cancelled because the unblock owner intent changed before the queued run could start",
+                  details: { issueId, wakeAgentId: run.agentId },
+                }
+              : {
+                  stale: true,
+                  errorCode: "issue_unblock_owner_unauthorized",
+                  reason: "Cancelled because the unblock owner is no longer authorized for this issue",
+                  details: { issueId, wakeAgentId: run.agentId },
+                };
+          await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+          logger.info(
+            { runId: run.id, issueId, errorCode: staleness.errorCode },
+            "claimQueuedRun: refused unblock wake claim",
+          );
+        }
+        return null;
+      }
+      claimed = outcome.claimed;
+    } else {
+      claimed = await db
+        .update(heartbeatRuns)
+        .set(claimPatch)
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimed) return null;
+    }
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -12760,6 +12897,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
+          | "issue_unblock_intent_changed"
+          | "issue_unblock_owner_unauthorized"
           | "issue_review_participant_changed"
           | "issue_continuation_waiting_on_review";
         details: Record<string, unknown>;
@@ -12775,6 +12914,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: issues.id,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        unblockDescriptor: issues.unblockDescriptor,
+        blockedTransitionAt: issues.blockedTransitionAt,
+        createdByAgentId: issues.createdByAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
       })
@@ -12795,9 +12937,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isInteractionWake = allowsIssueInteractionWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    const exactUnblockRequestWake = allowsIssueUnblockRequestWake(context, issue, run.agentId);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
     const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
+
+    if (wakeReason === "issue_unblock_requested" && !exactUnblockRequestWake) {
+      return {
+        stale: true,
+        errorCode: "issue_unblock_intent_changed",
+        reason: "Cancelled because the unblock owner intent changed before the queued run could start",
+        details: {
+          issueId,
+          wakeAgentId: run.agentId,
+        },
+      };
+    }
 
     if (
       issue.status === "in_progress" &&
@@ -12857,7 +13012,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !isInteractionWake &&
       !isCurrentReviewParticipant &&
       !authorizedSourceScopedRecovery &&
-      !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
+      !isNonAssigneeWorkspaceBusyRetry(retryReason, context) &&
+      !exactUnblockRequestWake
     ) {
       return {
         stale: true,
@@ -12978,6 +13134,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       level: "warn",
       message: staleness.reason,
       payload: staleness.details,
+    });
+
+    await releaseIssueExecutionAndPromote(cancelled, {
+      suppressImmediateRecovery: true,
+      deferPromotedStart: true,
     });
 
     return cancelled;
@@ -16856,7 +17017,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; deferPromotedStart?: boolean } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -17052,6 +17213,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         const deferredPayload = parseObject(deferred.payload);
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+        // An owner wake queued for an earlier unblock descriptor must not be
+        // promoted once the descriptor changes: its fingerprint no longer
+        // matches the current intent, and promoting it would strand the
+        // current owner's wake behind a stale run. Mark it superseded so the
+        // loop advances to the current intent.
+        if (readNonEmptyString(deferredContextSeed.wakeReason) === "issue_unblock_requested") {
+          const currentIntent = buildAgentUnblockWakeIntent(issue);
+          const deferredFingerprint =
+            readNonEmptyString(deferredContextSeed.intentFingerprint) ??
+            readNonEmptyString(deferredPayload.intentFingerprint);
+          if (
+            !currentIntent ||
+            currentIntent.ownerAgentId !== deferred.agentId ||
+            !deferredFingerprint ||
+            deferredFingerprint !== currentIntent.intentFingerprint
+          ) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "skipped",
+                finishedAt: new Date(),
+                error: "Deferred unblock wake superseded: the owner intent changed",
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, deferred.id));
+            continue;
+          }
+        }
         const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
         const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(tx, {
           companyId: issue.companyId,
@@ -17199,14 +17388,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           existingRunResponsibleUserId: run.responsibleUserId,
         });
         if (!promotedResponsibleUserId) {
-          throw new HttpError(422, "Unable to resolve responsible user for promoted heartbeat run", {
-            code: "responsible_user_unresolved",
-            runId: run.id,
-            agentId: deferredAgent.id,
-            companyId: deferredAgent.companyId,
-            issueId: issue.id,
-            wakeReason: readNonEmptyString(promotedContextSnapshot.wakeReason),
-          });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "failed",
+              finishedAt: new Date(),
+              error: "Deferred wake could not be promoted: responsible user is unresolved",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
         }
         const now = new Date();
         const newRun = await tx
@@ -17239,7 +17430,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        await tx
+        const executionLockResult = await tx
           .update(issues)
           .set({
             executionRunId: newRun.id,
@@ -17248,7 +17439,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: now,
           })
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
-          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)))
+          .returning();
+        // A zero-row assignee-scoped lock is only a problem when this wake
+        // was supposed to lock as the assignee: if deferredAgent IS the
+        // current assignee yet the update matched nothing, the issue was
+        // reassigned (or deleted) between deferral and promotion, and the
+        // queued run would proceed without owning the issue lock — cancel
+        // both the run and the wake request so a later wake re-defers or
+        // re-delivers against the current assignee.
+        // When deferredAgent is NOT the assignee (mention/context wakes and
+        // unblock-owner wakes whose owner differs from the assignee), zero
+        // rows is the expected outcome: those wakes are issue-scoped, not
+        // issue ownership transfers, and proceed without the execution lock
+        // (owner wakes acquire it lazily at claim time under the
+        // executionRunId IS NULL OR self guard).
+        if (
+          deferredAgent.id === issue.assigneeAgentId &&
+          executionLockResult.length === 0
+        ) {
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              error: "Deferred wake promotion cancelled: issue execution lock no longer owned by this agent",
+              finishedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, newRun.id));
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Deferred wake promotion cancelled: issue execution lock no longer owned by this agent",
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
 
         return {
           kind: "promoted" as const,
@@ -17624,6 +17853,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    if (options.deferPromotedStart) {
+      queueMicrotask(() => {
+        void startNextQueuedRunForAgent(promotedRun.agentId).catch((err) => {
+          logger.error({ err, agentId: promotedRun.agentId }, "failed to start deferred promoted run");
+        });
+      });
+      return;
+    }
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
@@ -17934,6 +18171,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: issues.companyId,
             identifier: issues.identifier,
             status: issues.status,
+            unblockDescriptor: issues.unblockDescriptor,
+            blockedTransitionAt: issues.blockedTransitionAt,
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
             executionWorkspaceId: issues.executionWorkspaceId,
@@ -18205,12 +18444,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ).then((rows) => rows.get(issue.id) ?? null);
 
         // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
+        // Human comment/mention wakes may run in bounded interaction mode.
+        // Exact unblock-owner intents must also run because unresolved blockers
+        // are the reason the named owner is being invoked.
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (
+            allowsIssueInteractionWake(enrichedContextSnapshot) ||
+            allowsIssueUnblockRequestWake(enrichedContextSnapshot, issue, agentId)
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
@@ -18375,12 +18618,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             normalizeAgentNameKey(executionAgent?.name);
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
-          const shouldDeferFollowupWake = shouldDeferFollowupWakeForSameIssue({
-            activeRunStatus: activeExecutionRun.status,
-            isSameExecutionAgent,
-            wakeCommentId,
-            forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
-          });
+          const shouldDeferFollowupWake =
+            reason === "issue_unblock_requested" ||
+            shouldDeferFollowupWakeForSameIssue({
+              activeRunStatus: activeExecutionRun.status,
+              isSameExecutionAgent,
+              wakeCommentId,
+              forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
+            });
           const shouldQueueFollowupForRunningWake =
             shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
             activeExecutionRun.status === "running" &&
@@ -18444,6 +18689,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   eq(agentWakeupRequests.agentId, agentId),
                   eq(agentWakeupRequests.status, "deferred_issue_execution"),
                   sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+                  ...(reason === "issue_unblock_requested" && opts.idempotencyKey
+                    ? [eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey)]
+                    : []),
                 ),
               )
               .orderBy(asc(agentWakeupRequests.requestedAt))
