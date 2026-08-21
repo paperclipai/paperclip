@@ -654,6 +654,7 @@
       },
       "env": {
         "local": "Local",
+        "managedByPaperclip": "Managed by Paperclip",
         "hostDetail": "Paperclip host",
         "localTitle": "Local - Paperclip host",
         "loading": "Loading environment",
@@ -1230,6 +1231,7 @@
       "breadcrumbRun": "Run {{id}}",
       "breadcrumbInstructions": "Instructions",
       "breadcrumbConfiguration": "Configuration",
+      "breadcrumbSecrets": "Secrets",
       "breadcrumbTools": "Tools",
       "breadcrumbBudget": "Budget",
       "breadcrumbDashboard": "Dashboard",
@@ -1254,6 +1256,7 @@
       "tabInstructions": "Instructions",
       "tabSkills": "Skills",
       "tabConfiguration": "Configuration",
+      "tabSecrets": "Secrets",
       "tabTools": "Tools",
       "tabRuns": "Runs",
       "tabAudit": "Audit",

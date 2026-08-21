@@ -654,6 +654,7 @@
       },
       "env": {
         "local": "Локально",
+        "managedByPaperclip": "Управляется Paperclip",
         "hostDetail": "Хост Paperclip",
         "localTitle": "Локально — хост Paperclip",
         "loading": "Загружаем окружение",
@@ -1230,6 +1231,7 @@
       "breadcrumbRun": "Запуск {{id}}",
       "breadcrumbInstructions": "Инструкции",
       "breadcrumbConfiguration": "Конфигурация",
+      "breadcrumbSecrets": "Секреты",
       "breadcrumbTools": "Инструменты",
       "breadcrumbBudget": "Бюджет",
       "breadcrumbDashboard": "Обзор",
@@ -1254,6 +1256,7 @@
       "tabInstructions": "Инструкции",
       "tabSkills": "Навыки",
       "tabConfiguration": "Конфигурация",
+      "tabSecrets": "Секреты",
       "tabTools": "Инструменты",
       "tabRuns": "Запуски",
       "tabAudit": "Аудит",
