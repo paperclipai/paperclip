@@ -68,7 +68,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   // The lead is no longer pre-named. Choosing a role fills the name from the
   // role's label, which is also what gates "Next".
   await page.waitForSelector("#onboarding-agent-role", { timeout: 30_000 });
-  await page.selectOption("#onboarding-agent-role", "ceo");
+  await page.locator("#onboarding-agent-role").click();
+  await page.getByRole("option", { name: "CEO", exact: true }).click();
   await expect(page.locator("#onboarding-agent-name")).toHaveValue(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();

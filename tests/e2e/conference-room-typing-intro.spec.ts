@@ -84,7 +84,8 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   // Step 3: the lead's role, then its name. The role gates "Next", and
   // choosing one fills the name — so the walk only types here to override it.
   await page.waitForSelector("#onboarding-agent-role", { timeout: 15_000 });
-  await page.selectOption("#onboarding-agent-role", "ceo");
+  await page.locator("#onboarding-agent-role").click();
+  await page.getByRole("option", { name: "CEO", exact: true }).click();
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 4: adapter (claude_local default); heartbeat is intercepted.

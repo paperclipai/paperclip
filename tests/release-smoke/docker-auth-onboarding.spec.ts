@@ -64,7 +64,8 @@ test.describe("Docker authenticated onboarding smoke", () => {
     // Step 3: give the team lead a role, then a name. The role gates "Next".
     const roleSelect = page.locator("#onboarding-agent-role");
     await expect(roleSelect).toBeVisible({ timeout: 20_000 });
-    await roleSelect.selectOption("ceo");
+    await roleSelect.click();
+    await page.getByRole("option", { name: "CEO", exact: true }).click();
     await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
     await page.getByRole("button", { name: "Next" }).click();
 
