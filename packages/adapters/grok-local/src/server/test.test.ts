@@ -65,10 +65,11 @@ describe("grok_local testEnvironment", () => {
         stdout: [
           "You are logged in with grok.com.",
           "",
-          "Default model: grok-build",
+          "Default model: grok-4.6",
           "",
           "Available models:",
-          "  * grok-build (default)",
+          "  * grok-4.6 (default)",
+          "  - grok-4.5",
         ].join("\n"),
         stderr: "",
       })
@@ -115,7 +116,7 @@ describe("grok_local testEnvironment", () => {
         "dontAsk",
         "--disable-web-search",
         "--model",
-        "grok-build",
+        "grok-4.6",
         "--single",
         "Respond with exactly hello.",
       ]),

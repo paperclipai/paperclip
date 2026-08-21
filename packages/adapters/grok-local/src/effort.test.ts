@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { grokModelSupportsXhigh, resolveGrokReasoningEffort } from "./effort.js";
+import { grokModelSupportsXhigh, resolveGrokCliModelId, resolveGrokReasoningEffort } from "./effort.js";
 
 describe("grokModelSupportsXhigh", () => {
   it("treats empty model as grok-4.6", () => {
@@ -16,6 +16,23 @@ describe("grokModelSupportsXhigh", () => {
   it("rejects xhigh on 4.5", () => {
     expect(grokModelSupportsXhigh("grok-4.5")).toBe(false);
     expect(grokModelSupportsXhigh("grok-4.5-preview")).toBe(false);
+  });
+});
+
+describe("resolveGrokCliModelId", () => {
+  it("defaults empty ids to grok-4.6", () => {
+    expect(resolveGrokCliModelId("")).toBe("grok-4.6");
+    expect(resolveGrokCliModelId(null)).toBe("grok-4.6");
+  });
+
+  it("remaps the retired grok-build alias to grok-4.6", () => {
+    expect(resolveGrokCliModelId("grok-build")).toBe("grok-4.6");
+    expect(resolveGrokCliModelId("Grok-Build")).toBe("grok-4.6");
+  });
+
+  it("passes through current CLI model ids", () => {
+    expect(resolveGrokCliModelId("grok-4.6")).toBe("grok-4.6");
+    expect(resolveGrokCliModelId("grok-4.5")).toBe("grok-4.5");
   });
 });
 

@@ -40,7 +40,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
-import { resolveGrokReasoningEffort } from "../effort.js";
+import { resolveGrokCliModelId, resolveGrokReasoningEffort } from "../effort.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -203,7 +203,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "grok");
-  const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
+  const model = resolveGrokCliModelId(asString(config.model, DEFAULT_GROK_LOCAL_MODEL));
   // No default permission mode: Grok >= 1.0 enforces `dontAsk` as
   // deny-by-default and it overrides --always-approve, so passing it broke
   // every unattended run (the first tool call died with "User cancelled the

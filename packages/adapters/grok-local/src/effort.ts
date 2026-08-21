@@ -7,6 +7,16 @@ function normalizeGrokModelId(model: string | null | undefined): string {
   return trimmed || "grok-4.6";
 }
 
+/**
+ * Map catalog/saved ids onto what the current Grok CLI accepts.
+ * `grok-build` was the old host alias; Grok CLI 1.0.5 rejects it as an unknown model.
+ */
+export function resolveGrokCliModelId(model: string | null | undefined): string {
+  const id = normalizeGrokModelId(model);
+  if (id === "grok-build" || id.startsWith("grok-build-")) return "grok-4.6";
+  return id;
+}
+
 /** grok-4.6 and grok-build advertise xhigh. grok-4.5 does not and rejects it. */
 export function grokModelSupportsXhigh(model: string | null | undefined): boolean {
   const id = normalizeGrokModelId(model);

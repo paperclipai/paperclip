@@ -18,6 +18,7 @@ import {
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
+import { resolveGrokCliModelId } from "../effort.js";
 import { parseGrokJsonl } from "./parse.js";
 
 export interface GrokModelsProbe {
@@ -164,7 +165,7 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "grok_cwd_invalid" && check.code !== "grok_command_unresolvable");
 
-  const configuredModel = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
+  const configuredModel = resolveGrokCliModelId(asString(config.model, DEFAULT_GROK_LOCAL_MODEL));
 
   if (canRunProbe) {
     const modelsProbe = await runAdapterExecutionTargetProcess(

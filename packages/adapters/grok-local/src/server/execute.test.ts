@@ -277,6 +277,43 @@ describe("grok_local execute", () => {
     expect(result.errorMessage).toBeNull();
   });
 
+  it("remaps saved grok-build to grok-4.6 before spawn", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      expect(args).toEqual(expect.arrayContaining(["--model", "grok-4.6"]));
+      expect(args).not.toEqual(expect.arrayContaining(["--model", "grok-build"]));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "ok" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-alias", requestId: "req-alias" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const result = await execute({
+      runId: "run-grok-build-alias",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-build" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+  });
+
   it("accepts effort as an alias for reasoningEffort", async () => {
     const root = await makeTempRoot();
     runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
