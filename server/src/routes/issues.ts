@@ -319,6 +319,120 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
   }));
 }
 
+// AGE-628: two independent close-gates from the corrected AGE-333 post-mortem.
+// Gate A rejects an issue whose own title/headline asserts a per-day/hour/
+// month RATE claim unless the body states its observation window and either
+// (a) cites at least two non-adjacent samples, or (b) explicitly justifies a
+// single sample. Gate B rejects any monetary claim in the body/comments that
+// cites Paperclip's own internal `/costs` ledger as its source (known to
+// undercount spend ~10x per AGE-335) instead of the vendor's own billing API
+// (e.g. `gh api /orgs/{org}/settings/billing/usage`), pasted command+output.
+// Narrow, title/body regex match only -- same scope discipline as AGE-569/626,
+// not a general anomaly-detection system. Both are independent of, and do not
+// substitute for, the AGE-569 PR gate or the AGE-626 metric gate.
+const RATE_CLAIM_PATTERN =
+  /(\$\s*[\d,.]+(?:k|m)?\s*\/\s*(day|hour|hr|week|wk|month|mo)\b)|(\brun[- ]rate\b)|(\bburn[- ]rate\b)|(\bper[- ](day|hour|month)\b.{0,20}\$)/i;
+const RATE_CLAIM_WINDOW_PATTERN = /\bwindow\b|\bobservation window\b|\btrailing\b|\bover\s+\d+\s*(day|hour|week|month)s?\b/i;
+const RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN =
+  /\bonly one sample\b|\bsingle sample\b.{0,80}\bbecause\b|\bno other sample(?:s)? (?:exist|available)\b/i;
+// Two non-adjacent samples: look for two distinct calendar month/date tokens
+// (e.g. "July 2026" and "August 2026", or two ISO-ish dates), which is the
+// literal signal that separated windows were actually compared.
+const CALENDAR_MONTH_TOKEN_PATTERN =
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{2,4}\b/gi;
+
+function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolean {
+  if (typeof title !== "string") return false;
+  const trimmed = title.trim();
+  if (trimmed.length === 0) return false;
+  return RATE_CLAIM_PATTERN.test(trimmed);
+}
+
+function rateClaimHasAdequateEvidence(text: string | null | undefined): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (!RATE_CLAIM_WINDOW_PATTERN.test(text)) return false;
+  if (RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN.test(text)) return true;
+  const monthTokens = text.match(CALENDAR_MONTH_TOKEN_PATTERN) ?? [];
+  const distinctMonthTokens = new Set(monthTokens.map((token) => token.toLowerCase()));
+  return distinctMonthTokens.size >= 2;
+}
+
+/**
+ * Gate A (AGE-628): an issue whose own title/headline asserts a per-day/
+ * hour/month rate claim must state its observation window and either cite
+ * two non-adjacent samples or explicitly justify why only one sample
+ * exists. Modeled on the AGE-333 post-mortem: a single trailing-24h data
+ * point was reported as a sustained "$8,400/day" run rate.
+ */
+async function assertRateClaimHasAdequateEvidence(
+  db: Db,
+  issueId: string,
+  effectiveTitle: string | null,
+  effectiveDescription: string | null,
+) {
+  if (!issueHeadlineAssertsRateClaim(effectiveTitle)) return;
+  if (rateClaimHasAdequateEvidence(effectiveDescription)) return;
+  const rows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
+  for (const row of rows) {
+    if (rateClaimHasAdequateEvidence(row.body)) return;
+  }
+  throw unprocessable(
+    "Cannot mark issue done: this issue's title asserts a per-day/hour/month rate claim, but no observation window and no second, non-adjacent sample (or explicit single-sample justification) was found in the description or comments. State the window used, cite two separated samples, or explicitly justify why only one sample exists.",
+    { code: "done_transition_rate_claim_gate", reason: "missing_rate_claim_evidence" },
+  );
+}
+
+const MONETARY_CLAIM_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b|\bspend\b|\bcost(?:s)?\b|\bburn\b/i;
+const INTERNAL_COSTS_LEDGER_CITATION_PATTERN =
+  /\/costs\b|\bpaperclip(?:'s)? (?:internal )?(?:cost|costs) (?:ledger|endpoint|api)\b|\binternal (?:cost|costs) ledger\b/i;
+const VENDOR_BILLING_API_CITATION_PATTERN =
+  /\bgh api\b.{0,60}\bbilling\b|\bbilling api\b|\bvendor(?:'s)? (?:own )?billing api\b|orgs\/[\w.-]+\/settings\/billing/i;
+
+function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | undefined): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (!MONETARY_CLAIM_PATTERN.test(text)) return false;
+  if (!INTERNAL_COSTS_LEDGER_CITATION_PATTERN.test(text)) return false;
+  return true;
+}
+
+function textCitesVendorBillingApi(text: string | null | undefined): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  return VENDOR_BILLING_API_CITATION_PATTERN.test(text);
+}
+
+/**
+ * Gate B (AGE-628): reject a monetary/spend claim sourced from Paperclip's
+ * own internal `/costs` ledger -- independently proven to undercount actual
+ * spend ~10x per AGE-335 -- unless the same text (or another comment) also
+ * cites the vendor's own billing API (command + pasted output), which is
+ * the authoritative source. Blocks recurrence of the AGE-333 failure where
+ * each retelling of a Paperclip-`/costs`-sourced number went unverified
+ * against GitHub's own billing API.
+ */
+async function assertMonetaryClaimCitesVendorBillingApi(
+  db: Db,
+  issueId: string,
+  effectiveDescription: string | null,
+) {
+  const citesInternalLedger = textCitesInternalCostsLedgerForMonetaryClaim(effectiveDescription);
+  if (!citesInternalLedger) return;
+  if (textCitesVendorBillingApi(effectiveDescription)) return;
+  const rows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
+  for (const row of rows) {
+    if (textCitesVendorBillingApi(row.body)) return;
+  }
+  throw unprocessable(
+    "Cannot mark issue done: this issue cites Paperclip's internal /costs ledger for a monetary/spend claim, which is known to undercount actual spend (AGE-335). Cite the vendor's own billing API (e.g. `gh api /orgs/{org}/settings/billing/usage`) with the command and its pasted output before closing.",
+    { code: "done_transition_billing_source_gate", reason: "internal_costs_ledger_cited_for_monetary_claim" },
+  );
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
@@ -9688,6 +9802,28 @@ export function issueRoutes(
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
+    if (nextStatus === "done" && existing.status !== "done") {
+      const effectiveTitleForCloseGates = updateFields.title !== undefined
+        ? (updateFields.title as string | null)
+        : existing.title;
+      const effectiveDescriptionForCloseGates = updateFields.description !== undefined
+        ? (updateFields.description as string | null)
+        : existing.description;
+      // AGE-628 Gate A: single-sample rate claims.
+      await assertRateClaimHasAdequateEvidence(
+        db,
+        existing.id,
+        effectiveTitleForCloseGates,
+        effectiveDescriptionForCloseGates,
+      );
+      // AGE-628 Gate B: monetary claims must cite the vendor billing API,
+      // not Paperclip's internal /costs ledger.
+      await assertMonetaryClaimCitesVendorBillingApi(
+        db,
+        existing.id,
+        effectiveDescriptionForCloseGates,
+      );
+    }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }
