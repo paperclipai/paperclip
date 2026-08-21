@@ -40,7 +40,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
-import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
+import { isGrokCancelledStopReason, isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -203,10 +203,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "grok");
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
-  const permissionMode = asString(config.permissionMode, "dontAsk").trim() || "dontAsk";
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
+  // Unattended default must not be dontAsk: Grok auto-denies shell tools and
+  // ends with stopReason=Cancelled (exit 0). Also, dontAsk wins over
+  // --always-approve when both are set, so never emit that combination.
+  const permissionModeDefault = alwaysApprove ? "bypassPermissions" : "dontAsk";
+  const configuredPermissionMode =
+    asString(config.permissionMode, permissionModeDefault).trim() || permissionModeDefault;
+  const permissionMode =
+    alwaysApprove && configuredPermissionMode === "dontAsk"
+      ? "bypassPermissions"
+      : configuredPermissionMode;
   const disableWebSearch = asBoolean(config.disableWebSearch, true);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -509,13 +518,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       }
 
-      const failed = (attempt.proc.exitCode ?? 0) !== 0;
+      const cancelled = isGrokCancelledStopReason(attempt.parsed.stopReason);
+      const failed = (attempt.proc.exitCode ?? 0) !== 0 || cancelled;
+      const exitCode =
+        cancelled && (attempt.proc.exitCode ?? 0) === 0 ? 1 : attempt.proc.exitCode;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-      const fallbackErrorMessage =
-        parsedError ||
-        stderrLine ||
-        `Grok exited with code ${attempt.proc.exitCode ?? -1}`;
+      const fallbackErrorMessage = cancelled
+        ? (parsedError ||
+          `Grok run cancelled (stopReason=${attempt.parsed.stopReason}). ` +
+            "Tool calls were denied or interrupted before the turn completed.")
+        : (
+          parsedError ||
+          stderrLine ||
+          `Grok exited with code ${attempt.proc.exitCode ?? -1}`
+        );
 
       const canFallbackToRuntimeSession = !isRetry;
       const resolvedSessionId = attempt.parsed.sessionId
@@ -536,7 +553,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
 
       return {
-        exitCode: attempt.proc.exitCode,
+        exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: failed ? fallbackErrorMessage : null,

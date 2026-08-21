@@ -96,7 +96,7 @@ describe("grok_local testEnvironment", () => {
         "streaming-json",
         "--always-approve",
         "--permission-mode",
-        "dontAsk",
+        "bypassPermissions",
         "--disable-web-search",
         "--single",
         "Respond with exactly hello.",

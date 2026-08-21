@@ -107,3 +107,8 @@ export function isGrokUnknownSessionError(stdout: string, stderr: string): boole
 
   return /unknown\s+session|session(?:\s+.*)?\s+not\s+found|resume\s+.*\s+not\s+found|invalid\s+session/i.test(haystack);
 }
+
+/** Grok can exit 0 with stopReason=Cancelled (e.g. permission_cancelled). Treat as failure. */
+export function isGrokCancelledStopReason(stopReason: string | null | undefined): boolean {
+  return typeof stopReason === "string" && /^cancel/i.test(stopReason.trim());
+}

@@ -26,7 +26,8 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\`
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Grok model id. Defaults to grok-build.
-- permissionMode (string, optional): Grok permission mode. Defaults to \`dontAsk\`
+- permissionMode (string, optional): Grok permission mode. Defaults to \`bypassPermissions\` when alwaysApprove is true, otherwise \`dontAsk\`.
+- alwaysApprove (boolean, optional): Pass \`--always-approve\`. Defaults to true.
 - reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
 - maxTurns (number, optional): maximum agent turns for the run
 - command (string, optional): defaults to "grok"
@@ -41,5 +42,6 @@ Notes:
 - Runs use \`grok --single\` with \`--output-format streaming-json\`.
 - Sessions resume with \`--resume <sessionId>\` when the saved session cwd matches the current cwd.
 - Paperclip stages desired runtime skills into \`.claude/skills\` inside the execution workspace so Grok discovers them as project skills.
+- Stream \`stopReason=Cancelled\` fails the run even when the process exits 0.
 - Use \`grok models\` to inspect authentication and available models on the host.
 `;
