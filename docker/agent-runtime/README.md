@@ -4,7 +4,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 ## Image Lineup
 
-- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
+- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + IANA timezone data + non-root user (uid 1000) + the agent shim.
 - **`agent-runtime-opencode`**: Extends base with `opencode-ai` globally installed.
 - **`agent-runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
 - **`agent-runtime-codex`**: Extends base with `@openai/codex`.
@@ -15,7 +15,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 ## Base Image Contents
 
 **OS & Runtime:**
-- Ubuntu 22.04
+- Ubuntu 22.04 with the IANA timezone database (`tzdata`)
 - Node.js 22 (via NodeSource APT repo)
 - git
 - tini (PID-1 init, ensures signal propagation)
@@ -61,6 +61,30 @@ Build and verify the `agent-runtime-claude` image runs locally:
 docker buildx bake -f docker/agent-runtime/buildx-bake.hcl base claude --load
 docker run --rm ghcr.io/paperclipai/agent-runtime-claude:dev claude-code --version
 ```
+
+## Timezone Canary
+
+The base image build runs `/usr/local/bin/paperclip-timezone-canary`. The same
+command is available at runtime and fails unless `America/New_York` resolves a
+fixed winter instant as `EST` (`-0500`) and a fixed summer instant as `EDT`
+(`-0400`):
+
+```bash
+docker run --rm \
+  --entrypoint /usr/local/bin/paperclip-timezone-canary \
+  ghcr.io/paperclipai/agent-runtime-codex:<version>
+```
+
+Record the immutable image digest and the successful canary output with each
+deployment. The deployed image identity is
+`ghcr.io/paperclipai/agent-runtime-<harness>@sha256:<digest>`; a mutable version
+tag alone is not sufficient evidence. To roll back, restore the previously
+recorded signed digest and run the canary against that digest before returning
+the runtime to service.
+
+This image check is defense in depth. Application logic that gates actions by
+local time must still fail closed when its own timezone library or zone data is
+unavailable; the image canary does not authorize time-sensitive actions.
 
 ## Agent Container (paperclip-agent-shim)
 

@@ -25,8 +25,8 @@ ARG NODE_VERSION
 # fail ("Transport error ... BurntSushi/ripgrep/releases/..."), wasting run
 # budget on every agent run. The root repo Dockerfile already ships rg; this
 # restores parity for the agent-runtime image.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git tini gnupg ripgrep \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl git tini gnupg ripgrep tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
@@ -36,6 +36,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -u 1000 -g 1000 -d /home/paperclip -m -s /bin/bash paperclip
 
 COPY --from=shim-build   /out/paperclip-agent-shim                          /usr/local/bin/paperclip-agent-shim
+COPY --chmod=0755 docker/agent-runtime/timezone-canary.sh                    /usr/local/bin/paperclip-timezone-canary
+COPY --chmod=0755 docker/agent-runtime/tests/timezone-canary.test.sh         /tmp/timezone-canary.test.sh
+
+# Fail the image build if the platform timezone database cannot resolve both
+# sides of the America/New_York daylight-saving boundary.
+RUN /tmp/timezone-canary.test.sh /usr/local/bin/paperclip-timezone-canary \
+    && rm /tmp/timezone-canary.test.sh
 
 USER 1000:1000
 WORKDIR /workspace
