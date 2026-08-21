@@ -12702,6 +12702,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         const companyAgents = await tx
           .select({

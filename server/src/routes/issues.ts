@@ -3059,6 +3059,7 @@ export function issueRoutes(
         .select()
         .from(issueRows)
         .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId)))
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!current) return issue;
       const descriptor = current.unblockDescriptor;
