@@ -2353,6 +2353,23 @@ function duplexReadinessFallbackReason(reason: DuplexReadinessFailure): DuplexFa
 }
 
 /**
+ * The fixed marker the worker manager puts in a route-busy rejection. The manager
+ * defines the constant; this module matches the fixed string, because the two
+ * layers ship in separate packages and share no import. The marker names the
+ * process-scoped route ceiling, so it carries no route, query, body, or token.
+ */
+const DUPLEX_ROUTE_BUSY_ERROR_MARKER = "DUPLEX_CHANNEL_ROUTE_BUSY";
+
+/**
+ * Report whether the caught open error is a route-busy rejection. The host maps it
+ * to the `route_busy` fallback stage, so a full process-scoped route ceiling never
+ * folds into a generic open failure.
+ */
+function isDuplexRouteBusyError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(DUPLEX_ROUTE_BUSY_ERROR_MARKER);
+}
+
+/**
  * The cap on the pre-READY readiness buffer, in bytes. The gate reads untrusted
  * bytes before the READY line arrives, so it bounds the buffer. The cap is the
  * codec frame-size bound plus one line of margin, so a legitimate maximum-size
@@ -2946,6 +2963,9 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const sandboxOrigin = `http://127.0.0.1:${assignedPort}`;
 
     let channel: CommandManagedDuplexChannel | null = null;
+    // The open runs two stages under one try: the entrypoint sync, then the
+    // channel open. The stage names the exact open-failure outcome in the catch.
+    let openStage: "entrypoint_sync" | "channel_open" = "entrypoint_sync";
     try {
       const assetSync = await syncSandboxCallbackBridgeEntrypoint({
         runner,
@@ -2968,17 +2988,26 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         remoteEntrypoint: assetSync.remoteEntrypoint,
         env: gatewayEnv,
       });
+      openStage = "channel_open";
       channel = await openDuplexChannel({ command });
-    } catch {
+    } catch (error) {
       // The channel never opened, so no request could carry the bridge token.
       // The open call is the last statement of the try, so `channel` is still
       // null here; there is nothing to close. Fall through to the file bridge
-      // below. The log line names no raw provider error, so no provider error
-      // rides a log line on the duplex path.
-      duplexChannelOpen.fallback("open_failed");
+      // below. Bind and keep the caught error, so the fallback names the exact
+      // open-failure stage: a full process-scoped route ceiling is `route_busy`;
+      // otherwise the stage is the entrypoint sync or the channel open. The log
+      // line names only the fixed stage enum, so no raw provider error rides a log
+      // line on the duplex path.
+      const reason: DuplexFallbackReason = isDuplexRouteBusyError(error)
+        ? "route_busy"
+        : openStage === "entrypoint_sync"
+          ? "entrypoint_sync_failed"
+          : "channel_open_failed";
+      duplexChannelOpen.fallback(reason);
       await onLog(
         "stderr",
-        "[paperclip] Could not open the sandbox duplex channel. Using the file bridge.\n",
+        `[paperclip] Could not open the sandbox duplex channel (${reason}). Using the file bridge.\n`,
       );
       channel = null;
     }
@@ -3060,7 +3089,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           // The log line names no raw error, so no raw error rides a log line on
           // the duplex path.
           await closeDuplexChannelWithinBudget(channel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
-          duplexChannelOpen.fallback("open_failed");
+          duplexChannelOpen.fallback("broker_construction_failed");
           await onLog(
             "stderr",
             "[paperclip] Could not start the sandbox duplex broker. Using the file bridge.\n",

@@ -2968,6 +2968,46 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+  /**
+   * The process-scoped aggregate ceiling for concurrent duplex channel routes,
+   * across every worker in the process. The manager builds one shared slot
+   * controller from it and injects it into every worker handle, so one tenant can
+   * never exhaust the manager-wide resource. The manager validates it and falls
+   * back to {@link DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES} for an absent or an
+   * invalid value. It is not the per-agent `heartbeat.maxConcurrentRuns`, which
+   * stays upstream admission only.
+   */
+  maxConcurrentDuplexRoutes?: number | null;
+}
+
+/**
+ * The default process-scoped aggregate ceiling for concurrent duplex channel
+ * routes. It caps the manager-wide resource, not one agent's run budget. The host
+ * reports an explicit route-busy outcome when the ceiling is full.
+ */
+export const DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES = 128;
+
+/**
+ * Build one process-scoped aggregate route-slot controller. The controller holds a
+ * strictly positive integer ceiling and a live count. `tryAcquire` reserves one
+ * slot only when a slot is free, so the count never passes the ceiling.
+ */
+export function createDuplexRouteSlotController(maxRoutes?: number | null): DuplexRouteSlotController {
+  const ceiling =
+    typeof maxRoutes === "number" && Number.isInteger(maxRoutes) && maxRoutes > 0
+      ? maxRoutes
+      : DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES;
+  let active = 0;
+  return {
+    tryAcquire(): boolean {
+      if (active >= ceiling) return false;
+      active += 1;
+      return true;
+    },
+    release(): void {
+      if (active > 0) active -= 1;
+    },
+  };
 }
 
 /**
@@ -3003,6 +3043,12 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  // The one shared, process-scoped aggregate route-slot controller. The manager
+  // injects it into every worker handle, so the duplex route ceiling counts every
+  // concurrent route across the process, not one agent's setting.
+  const duplexRouteSlots = createDuplexRouteSlotController(
+    managerOptions?.maxConcurrentDuplexRoutes,
+  );
 
   return {
     async startWorker(
@@ -3023,7 +3069,12 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      const handle = createPluginWorkerHandle(pluginId, {
+        // Inject the shared process-scoped route-slot controller, unless the caller
+        // already supplied one (a test may inject its own).
+        duplexRouteSlots,
+        ...options,
+      });
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding

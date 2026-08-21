@@ -58,11 +58,20 @@ export type DuplexTransportValue = "duplex" | "file";
 /** The outcome of a record. */
 export type DuplexOutcomeValue = "ok" | "error";
 
-/** The reason the host selected the file bridge instead of the duplex transport. */
+/**
+ * The reason the host selected the file bridge instead of the duplex transport.
+ * The open-failure stage is split, so a reader groups a failed open by the exact
+ * stage: the process-scoped route ceiling was full (`route_busy`), the entrypoint
+ * sync failed (`entrypoint_sync_failed`), the broker construction failed
+ * (`broker_construction_failed`), or the channel open failed (`channel_open_failed`).
+ */
 export type DuplexFallbackReason =
   | "gate_off"
   | "capability_absent"
-  | "open_failed"
+  | "route_busy"
+  | "entrypoint_sync_failed"
+  | "broker_construction_failed"
+  | "channel_open_failed"
   | "ready_invalid"
   | "ready_nonce_mismatch"
   | "ready_timeout"

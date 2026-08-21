@@ -3692,7 +3692,10 @@ describe("sandbox adapter execution targets", () => {
       const approvedReasons = [
         "gate_off",
         "capability_absent",
-        "open_failed",
+        "route_busy",
+        "entrypoint_sync_failed",
+        "broker_construction_failed",
+        "channel_open_failed",
         "ready_invalid",
         "ready_nonce_mismatch",
         "ready_timeout",
@@ -3712,6 +3715,77 @@ describe("sandbox adapter execution targets", () => {
       await api.close();
     }
   }, 20000);
+
+  it.each([
+    {
+      name: "a full process-scoped route ceiling",
+      error: new Error("worker route rejected: DUPLEX_CHANNEL_ROUTE_BUSY"),
+      expectedReason: "route_busy",
+    },
+    {
+      name: "a generic channel-open failure",
+      error: new Error("provider channel open failed"),
+      expectedReason: "channel_open_failed",
+    },
+  ])(
+    "names the open-failure stage $expectedReason and falls back to the file bridge on $name",
+    async ({ error, expectedReason }) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-stage-"));
+      cleanupDirs.push(rootDir);
+      const remoteCwd = path.join(rootDir, "workspace");
+      await mkdir(remoteCwd, { recursive: true });
+      const api = await startRecordingApiServer();
+      // A runner whose duplex open rejects. The host binds the caught error and
+      // names the exact open-failure stage.
+      const base = createLocalSandboxRunner();
+      const openDuplexChannel = async (): Promise<CommandManagedDuplexChannel> => {
+        throw error;
+      };
+      const runner = { ...base, openDuplexChannel };
+      const { recorder, spans, counters, events } = createRecordingDuplexRecorder();
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "daytona",
+        remoteCwd,
+        timeoutMs: 30_000,
+        runner,
+        effectiveCapabilities: duplexCapabilities(true),
+      };
+
+      const bridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId: "run-stage",
+        target,
+        runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+        adapterKey: "codex",
+        hostApiToken: "real-run-jwt",
+        hostApiUrl: api.origin,
+        enableSandboxDuplexBridge: true,
+        duplexTelemetryRecorder: recorder,
+      });
+      try {
+        // The channel never opened, so the host serves the file bridge.
+        expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+        // The channel-open span and the fallback counter name the exact stage.
+        const openSpan = spans.find(
+          (s) => s.name === DUPLEX_SPAN_CHANNEL_OPEN && s.dimensions.outcome === "error",
+        );
+        expect(openSpan?.dimensions.fallback_reason).toBe(expectedReason);
+        const fallback = counters.find((c) => c.metric === DUPLEX_COUNTER_FALLBACK_TOTAL);
+        expect(fallback?.dimensions.fallback_reason).toBe(expectedReason);
+        assertOnlyFixedDimensionKeys(fallback?.dimensions);
+        expect(
+          events.some(
+            (e) => e.name === DUPLEX_TRANSPORT_EVENT && e.dimensions.transport === "file",
+          ),
+        ).toBe(true);
+      } finally {
+        await bridge?.stop();
+        await api.close();
+      }
+    },
+    20000,
+  );
 
   it.each([
     { name: "before any dispatch", dispatchFirst: false, expectedClass: "pre_dispatch" },

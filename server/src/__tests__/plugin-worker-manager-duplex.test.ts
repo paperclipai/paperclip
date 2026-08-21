@@ -2,7 +2,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
+import {
+  createDuplexRouteSlotController,
+  createPluginWorkerHandle,
+} from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DUPLEX_CHANNEL_WORKER_ENTRYPOINT = path.join(
@@ -37,10 +40,10 @@ function makeDuplexHandle(extra?: Record<string, unknown>) {
 // The test directive rides in `providerLeaseId`, an opaque field the manager
 // forwards to the worker unchanged. The duplex channel is generic, so the
 // command is a plain fixed string with no allowlist.
-function duplexOpenInput(directive: unknown) {
+function duplexOpenInput(directive: unknown, companyId = "company-1") {
   return {
     driverKey: "daytona",
-    companyId: "company-1",
+    companyId,
     environmentId: "env-1",
     providerLeaseId: JSON.stringify(directive),
     command: "bridge-callback",
@@ -230,15 +233,15 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
-  it("routes two concurrent duplex routes by the exact pair with no cross-talk", async () => {
+  it("routes two concurrent cross-company duplex routes by the exact pair with no cross-talk", async () => {
     const handle = makeDuplexHandle();
     try {
       await handle.start();
       const routeA = await handle.openDuplexChannel(
-        duplexOpenInput({ workerSessionId: "ws-A", data: [{ chunk: "a-1" }], exitCode: 0 }),
+        duplexOpenInput({ workerSessionId: "ws-A", data: [{ chunk: "a-1" }], exitCode: 0 }, "company-A"),
       );
       const routeB = await handle.openDuplexChannel(
-        duplexOpenInput({ workerSessionId: "ws-B", data: [{ chunk: "b-1" }], exitCode: 0 }),
+        duplexOpenInput({ workerSessionId: "ws-B", data: [{ chunk: "b-1" }], exitCode: 0 }, "company-B"),
       );
       const aChunks: string[] = [];
       const bChunks: string[] = [];
@@ -252,6 +255,27 @@ describe("plugin worker manager duplex channel route", () => {
       expect(bChunks).toEqual(["b-1"]);
       await routeA.close();
       await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("reports an explicit route-busy result when the aggregate ceiling is full", async () => {
+    // A process-scoped ceiling of one slot. The manager injects one shared
+    // controller into every worker; the test injects a small one directly.
+    const handle = makeDuplexHandle({ duplexRouteSlots: createDuplexRouteSlotController(1) });
+    try {
+      await handle.start();
+      const first = await handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-A" }));
+      // The ceiling is full, so the second open rejects with the fixed route-busy
+      // error before it reaches the worker. An active channel never downgrades.
+      await expect(
+        handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-B" })),
+      ).rejects.toThrow("DUPLEX_CHANNEL_ROUTE_BUSY");
+      // Closing the first route releases its slot, so a later open is admitted.
+      await first.close();
+      const third = await handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-C" }));
+      await third.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }
