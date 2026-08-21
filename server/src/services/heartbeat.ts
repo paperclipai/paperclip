@@ -154,7 +154,7 @@ import {
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { buildAgentUnblockWakeIntent } from "./routable-blocked.js";
+import { buildAgentUnblockWakeIntent, isBlockedOwnerStillAuthorized } from "./routable-blocked.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -12803,6 +12803,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_unblock_intent_changed"
+          | "issue_unblock_owner_unauthorized"
           | "issue_review_participant_changed"
           | "issue_continuation_waiting_on_review";
         details: Record<string, unknown>;
@@ -12820,6 +12821,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         unblockDescriptor: issues.unblockDescriptor,
         blockedTransitionAt: issues.blockedTransitionAt,
+        createdByAgentId: issues.createdByAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
       })
@@ -12855,6 +12857,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           wakeAgentId: run.agentId,
         },
       };
+    }
+
+    // The wake was admitted against the reporting line at delivery time, but
+    // the hierarchy can move between enqueue and claim. Re-authorize the
+    // persisted owner here so a former manager can no longer execute a wake
+    // queued before the reporting line changed. The marker stays null, so a
+    // later PATCH or replay redrives delivery once the hierarchy is repaired.
+    if (wakeReason === "issue_unblock_requested" && exactUnblockRequestWake) {
+      const companyAgents = await db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          status: agents.status,
+          reportsTo: agents.reportsTo,
+        })
+        .from(agents)
+        .where(eq(agents.companyId, run.companyId))
+        .orderBy(asc(agents.id));
+      if (
+        !isBlockedOwnerStillAuthorized({
+          owner: issue.unblockDescriptor?.owner,
+          createdByAgentId: issue.createdByAgentId,
+          companyAgents,
+        })
+      ) {
+        return {
+          stale: true,
+          errorCode: "issue_unblock_owner_unauthorized",
+          reason: "Cancelled because the unblock owner is no longer authorized for this issue",
+          details: {
+            issueId,
+            wakeAgentId: run.agentId,
+          },
+        };
+      }
     }
 
     if (

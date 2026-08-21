@@ -236,6 +236,7 @@ import { externalObjectService } from "../services/external-objects.js";
 import {
   buildAgentUnblockWakeIntent,
   deliverAgentUnblockNotification,
+  isBlockedOwnerStillAuthorized,
   isProspectiveBlockedTransition,
 } from "../services/routable-blocked.js";
 import {
@@ -3019,12 +3020,7 @@ export function issueRoutes(
     tx: Pick<Db, "select">,
     issue: { companyId: string; createdByAgentId?: string | null; unblockDescriptor?: unknown },
   ): Promise<boolean> {
-    const descriptor = issue.unblockDescriptor as { owner?: { agentId?: unknown } | "board" | null } | null | undefined;
-    const owner = descriptor?.owner;
-    if (!owner || owner === "board" || typeof owner.agentId !== "string" || !owner.agentId) {
-      return false;
-    }
-    const ownerAgentId = owner.agentId;
+    const descriptor = issue.unblockDescriptor as { owner?: unknown } | null | undefined;
     const companyAgents = await tx
       .select({
         id: agents.id,
@@ -3037,22 +3033,11 @@ export function issueRoutes(
       .where(eq(agents.companyId, issue.companyId))
       .orderBy(asc(agents.id))
       .for("update");
-    const ownerAgent = companyAgents.find((agent) => agent.id === ownerAgentId);
-    if (!ownerAgent) return false;
-    const ownerEligibility = getAgentWorkEligibility({ agent: ownerAgent, agents: companyAgents });
-    if (!ownerEligibility.invokable) return false;
-    const creatorAgentId = typeof issue.createdByAgentId === "string" ? issue.createdByAgentId : "";
-    if (!creatorAgentId || creatorAgentId === ownerAgentId) return true;
-    const creatorAgent = companyAgents.find((agent) => agent.id === creatorAgentId);
-    const creatorEligibility = creatorAgent
-      ? getAgentWorkEligibility({ agent: creatorAgent, agents: companyAgents })
-      : null;
-    return Boolean(
-      creatorEligibility?.invokable &&
-      creatorEligibility.orgChainHealth.fullChain.some(
-        (entry) => entry.relation === "ancestor" && entry.id === ownerAgent.id,
-      ),
-    );
+    return isBlockedOwnerStillAuthorized({
+      owner: descriptor?.owner as Parameters<typeof isBlockedOwnerStillAuthorized>[0]["owner"],
+      createdByAgentId: issue.createdByAgentId,
+      companyAgents,
+    });
   }
 
   async function deliverBlockedOwnerNotification<

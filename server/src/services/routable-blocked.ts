@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import { getAgentWorkEligibility, type IssueUnblockDescriptor } from "@paperclipai/shared";
 
 export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
 
@@ -10,6 +10,49 @@ type RoutableBlockedIssue = {
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
 };
+
+type BlockedOwnerEligibilityAgent = {
+  id: string;
+  companyId: string;
+  name: string;
+  status: string;
+  reportsTo: string | null;
+};
+
+/**
+ * Decide whether a persisted unblock owner is still authorized to receive the
+ * owner wake for a blocked issue. The owner must belong to the company, be
+ * invokable, and — when the issue was created by another agent — remain that
+ * creator's reporting-line ancestor. Delivery and claim-time admission must
+ * both enforce this, otherwise a reporting-line change that commits after the
+ * wake is queued would still let a former manager execute the wake.
+ */
+export function isBlockedOwnerStillAuthorized(input: {
+  owner: IssueUnblockDescriptor["owner"] | null | undefined;
+  createdByAgentId: string | null | undefined;
+  companyAgents: BlockedOwnerEligibilityAgent[];
+}): boolean {
+  const owner = input.owner;
+  if (!owner || owner === "board" || typeof owner.agentId !== "string" || !owner.agentId) {
+    return false;
+  }
+  const ownerAgent = input.companyAgents.find((agent) => agent.id === owner.agentId);
+  if (!ownerAgent) return false;
+  const ownerEligibility = getAgentWorkEligibility({ agent: ownerAgent, agents: input.companyAgents });
+  if (!ownerEligibility.invokable) return false;
+  const creatorAgentId = typeof input.createdByAgentId === "string" ? input.createdByAgentId : "";
+  if (!creatorAgentId || creatorAgentId === owner.agentId) return true;
+  const creatorAgent = input.companyAgents.find((agent) => agent.id === creatorAgentId);
+  const creatorEligibility = creatorAgent
+    ? getAgentWorkEligibility({ agent: creatorAgent, agents: input.companyAgents })
+    : null;
+  return Boolean(
+    creatorEligibility?.invokable &&
+    creatorEligibility.orgChainHealth.fullChain.some(
+      (entry) => entry.relation === "ancestor" && entry.id === ownerAgent.id,
+    ),
+  );
+}
 
 type ProspectiveBlockedIssue = RoutableBlockedIssue & {
   status: "blocked";
