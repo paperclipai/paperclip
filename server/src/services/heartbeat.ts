@@ -14128,7 +14128,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: string | null;
       failureReason: string | null;
       keepIdleOnFailure: boolean;
-      wasFirstHeartbeat: boolean;
+      wasFirstHeartbeat: true | undefined;
       retryOptions: Parameters<typeof scheduleBoundedRetryForRun>[2] | null;
       retryAttempted: boolean;
       retryCompleted: boolean;
