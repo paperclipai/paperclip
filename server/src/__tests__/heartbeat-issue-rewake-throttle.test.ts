@@ -208,6 +208,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
   it("skips event-free re-wakes after consecutive no-progress runs and admits them again on new input", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
@@ -220,7 +221,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     const heartbeatSkip = (skipped?.payload as Record<string, unknown> | null)?.heartbeatSkip as
       | Record<string, unknown>
       | undefined;
-    expect(heartbeatSkip?.noProgressStreak).toBe(2);
+    expect(heartbeatSkip?.noProgressStreak).toBe(3);
     expect(typeof heartbeatSkip?.nextAllowedAt).toBe("string");
 
     const runCount = await db
@@ -228,7 +229,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.companyId, companyId))
       .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(2);
+    expect(runCount).toBe(3);
 
     // A board comment on the issue is new input: the next event-free wake is
     // admitted even though the streak has not been broken by a run.
@@ -331,6 +332,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
   it("does not throttle when a recent run produced issue-visible progress", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     const progressRunId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
     await db.insert(activityLog).values({
@@ -362,6 +364,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       responsibleUserId: "responsible-user",
     });
 
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     const progressRunId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
     await db.insert(activityLog).values({
@@ -391,6 +394,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       finishedSecondsAgo: 40,
       startedSecondsAgo: 7 * 60 * 60,
     });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 25 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
     const wake = await assignmentWake(agentId, issueId);

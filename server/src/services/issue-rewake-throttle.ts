@@ -22,14 +22,21 @@
  * down.
  */
 
-/** Consecutive no-progress runs required before the cooldown engages. */
-export const ISSUE_REWAKE_NO_PROGRESS_THRESHOLD = 2;
+/** Consecutive no-progress runs required before the cooldown engages.
+ * 2026-08-21 recalibration: 2 was set when runs were expensive context-burners;
+ * with small oneshot runs it throttled 4,695 wakes in 72h and starved lanes
+ * that converge over several short runs. 3 keeps loop protection while
+ * allowing one extra attempt before cooldowns engage. */
+export const ISSUE_REWAKE_NO_PROGRESS_THRESHOLD = 3;
 
 /** Cooldown after the threshold streak; doubles per additional no-progress run. */
 export const ISSUE_REWAKE_BASE_COOLDOWN_MS = 120_000;
 
-/** Upper bound for the escalating cooldown. */
-export const ISSUE_REWAKE_MAX_COOLDOWN_MS = 30 * 60_000;
+/** Upper bound for the escalating cooldown.
+ * 2026-08-21: 30min parked deadline work for half-hour stretches on a machine
+ * whose runs finish in 1-3 minutes; 10min still damps loops (2→4→8→10) without
+ * writing off a lane's whole window. */
+export const ISSUE_REWAKE_MAX_COOLDOWN_MS = 10 * 60_000;
 
 /** Only runs newer than this feed the streak; older history is ignored.
  * 2026-08-20: shrunk from 6h to 90min — the churn-era no-progress runs

@@ -121,7 +121,7 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
     executeAdapter.mockClear();
     const target = await seedScopedTarget(1);
     const now = new Date();
-    const priorAgentIds = Array.from({ length: 10 }, () => randomUUID());
+    const priorAgentIds = Array.from({ length: 25 }, () => randomUUID());
     await db.insert(agents).values(priorAgentIds.map((id, index) => ({
       id,
       companyId: target.companyId,
@@ -153,7 +153,7 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
       errorCode: "issue_generation_ceiling_exceeded",
       resultJson: {
         reason: "generation_run_ceiling",
-        priorGenerationRuns: 10,
+        priorGenerationRuns: 25,
         modelDispatched: false,
       },
     });

@@ -393,7 +393,13 @@ export const HIGH_INPUT_TOKEN_RUN_THRESHOLD = 1_000_000;
 // ceiling (HIGH_INPUT_TOKEN_RUN_THRESHOLD) remains the real burn backstop underneath this.
 // Proper follow-up (TSMC-20820): count runs since the last productive disposition instead
 // of all-runs-ever, so the guard measures "stuck without progress", not "total work".
-export const ISSUE_GENERATION_RUN_CEILING = 10;
+// 2026-08-21 recalibration (operator: "we overcorrected... missed the middle where
+// the machine actually works"): at 10, this ceiling killed 1,007 runs across 36
+// lanes in 72h while the token caps it was meant to backstop barely fired
+// (token_budget_exhausted: 20, max_turns: 8). Runs are now small oneshots
+// (~50-150s), so 25 attempts costs little; the 1M aggregate-input ceiling stays
+// the real burn backstop, and a board/user comment still resets the counter.
+export const ISSUE_GENERATION_RUN_CEILING = 25;
 
 export type IssueGenerationAdmissionDecision =
   | { decision: "allow"; remainingInputTokens: number }
@@ -15017,6 +15023,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // wake also now skips any card already wake-targeted in the last 10
       // minutes — the assignment-reason wake path is not covered by the
       // per-issue rewake throttle, which is how the loop tightened.
+      // STRANDED-WAKEUP RE-OFFER (2026-08-21, dispatch-race durable fix): a wakeup
+      // that arrives within ~1s of another run finishing loses the dispatch race —
+      // its run row sits `queued` forever because dispatch is event-only and no
+      // event ever re-offers it (4+ strands measured 2026-08-20/21; the external
+      // sweep healer was the interim). Run-completion IS the moment the slot
+      // frees, so service the oldest stranded queued run for this agent here:
+      // finalize the stale row and emit a fresh dispatch event for its issue.
+      if (!existing.adapterType.includes("shell")) {
+        try {
+          const stranded = await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.status, "queued"),
+              lt(heartbeatRuns.createdAt, new Date(Date.now() - 60 * 1000)),
+            ))
+            .orderBy(heartbeatRuns.createdAt)
+            .limit(1);
+          const strandedRun = stranded[0];
+          if (strandedRun) {
+            const strandedWake = await db
+              .select({ payload: agentWakeupRequests.payload })
+              .from(agentWakeupRequests)
+              .where(eq(agentWakeupRequests.runId, strandedRun.id))
+              .limit(1);
+            const strandedIssueId = readNonEmptyString(
+              parseObject(strandedWake[0]?.payload ?? null).issueId,
+            );
+            await db
+              .update(heartbeatRuns)
+              .set({ status: "cancelled", finishedAt: new Date(), error: "stranded_queue_reoffered_at_completion" })
+              .where(and(eq(heartbeatRuns.id, strandedRun.id), eq(heartbeatRuns.status, "queued")));
+            if (strandedIssueId) {
+              void trackWakeup(agentId, {
+                source: "automation",
+                triggerDetail: "completion_reoffer",
+                reason: "issue_assigned",
+                payload: { issueId: strandedIssueId },
+                contextSnapshot: { issueId: strandedIssueId, wakeReason: "completion_reoffer", strandedRunId: strandedRun.id },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, agentId }, "stranded-wakeup completion re-offer failed");
+        }
+      }
+
       if (
         outcome === "succeeded" &&
         nextStatus === "idle" &&
@@ -22676,7 +22730,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               hasNewIssueInputSinceLastRun: newInputRows.length > 0,
             };
-            if (immediateNoopLifecycleWake && shouldSuppressImmediateNoopLifecycleRewake(throttleInput)) {
+            // 2026-08-21: a user-actor invoke is a deliberate board decision and
+            // must never be silently eaten as a lifecycle echo, whatever its
+            // trigger classification — the operator explicitly re-drove this
+            // issue (a board amnesty invoke was recorded suppressed 2026-08-20
+            // 22:31:56 and the target card sat dead for 15 minutes).
+            const userActorWake = opts.requestedByActorType === "user";
+            if (!userActorWake && immediateNoopLifecycleWake && shouldSuppressImmediateNoopLifecycleRewake(throttleInput)) {
               const lastRunFinishedAt = recentTerminalRuns[0]?.finishedAt;
               await tx.insert(agentWakeupRequests).values({
                 companyId: agent.companyId,

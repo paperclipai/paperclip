@@ -84,7 +84,10 @@ describe("computeIssueRewakeCooldownMs", () => {
   it("starts at the base cooldown and doubles per extra no-progress run, capped", () => {
     expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
     expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD + 1)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 2);
-    expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD + 3)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 8);
+    // 2026-08-21 recalibration: the cap (10min) now lands before the third
+    // doubling — BASE*8 would be 16min.
+    expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD + 2)).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 4);
+    expect(computeIssueRewakeCooldownMs(ISSUE_REWAKE_NO_PROGRESS_THRESHOLD + 3)).toBe(ISSUE_REWAKE_MAX_COOLDOWN_MS);
     expect(computeIssueRewakeCooldownMs(100)).toBe(ISSUE_REWAKE_MAX_COOLDOWN_MS);
   });
 });
@@ -130,15 +133,16 @@ describe("evaluateIssueRewakeThrottle", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
       recentTerminalRuns: [
-        runSample({ id: "r2", finishedSecondsAgo: 10 }),
-        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+        runSample({ id: "r3", finishedSecondsAgo: 10 }),
+        runSample({ id: "r2", finishedSecondsAgo: 40 }),
+        runSample({ id: "r1", finishedSecondsAgo: 70 }),
       ],
       runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision.blocked).toBe(true);
     if (decision.blocked) {
-      expect(decision.noProgressStreak).toBe(2);
+      expect(decision.noProgressStreak).toBe(3);
       expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
       expect(decision.nextAllowedAt.getTime()).toBe(
         NOW.getTime() - 10_000 + ISSUE_REWAKE_BASE_COOLDOWN_MS,
@@ -174,7 +178,7 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision.blocked).toBe(true);
     if (decision.blocked) {
       expect(decision.noProgressStreak).toBe(4);
-      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 4);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 2);
     }
   });
 
