@@ -67,6 +67,17 @@ describe("evaluatePriorOwnerTerminalCloseGrant", () => {
     }).allowed).toBe(false);
   });
 
+  it("never grants prior-owner close to the current assignee", () => {
+    expect(evaluatePriorOwnerTerminalCloseGrant({
+      ...base,
+      actorAgentId: currentAssigneeAgentId,
+      previousOwnerAgentId: currentAssigneeAgentId,
+    })).toEqual({
+      allowed: false,
+      reason: "not_prior_owner",
+    });
+  });
+
   it("revokes after the new owner successfully checkouts", () => {
     expect(evaluatePriorOwnerTerminalCloseGrant({
       ...base,

@@ -4036,15 +4036,19 @@ export function issueRoutes(
   ) {
     if (req.actor.type !== "agent" || !req.actor.agentId) return false;
     if (!isPriorOwnerTerminalClosePatch(body)) return false;
+    if (issue.assigneeAgentId === req.actor.agentId) return false;
     const recovery = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    if (!recovery?.previousOwnerAgentId || recovery.previousOwnerAgentId !== req.actor.agentId) {
+      return false;
+    }
     const checkoutRunId = issue.checkoutRunId ?? null;
     const checkoutRun = checkoutRunId ? await heartbeat.getRun(checkoutRunId) : null;
     const comments = await svc.listComments(issue.id, { order: "desc", limit: 100 });
     return evaluatePriorOwnerTerminalCloseGrant({
       actorAgentId: req.actor.agentId,
       currentAssigneeAgentId: issue.assigneeAgentId,
-      previousOwnerAgentId: recovery?.previousOwnerAgentId ?? null,
-      recoveryCreatedAt: recovery?.createdAt ?? null,
+      previousOwnerAgentId: recovery.previousOwnerAgentId,
+      recoveryCreatedAt: recovery.createdAt ?? null,
       checkoutRunAgentId: checkoutRun?.agentId ?? null,
       comments,
     }).allowed;

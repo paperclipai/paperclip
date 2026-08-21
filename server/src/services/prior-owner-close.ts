@@ -51,7 +51,11 @@ export function evaluatePriorOwnerTerminalCloseGrant(input: {
   checkoutRunAgentId: string | null;
   comments: PriorOwnerCloseComment[];
 }): PriorOwnerCloseDecision {
-  if (!input.previousOwnerAgentId || input.actorAgentId !== input.previousOwnerAgentId) {
+  if (
+    !input.previousOwnerAgentId
+    || input.actorAgentId !== input.previousOwnerAgentId
+    || input.actorAgentId === input.currentAssigneeAgentId
+  ) {
     return { allowed: false, reason: "not_prior_owner" };
   }
   if (
