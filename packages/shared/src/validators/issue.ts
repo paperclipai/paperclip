@@ -524,7 +524,7 @@ export const upsertIssueWatchdogSchema = z.object({
 
 export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;
 
-export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
+const createChildIssueBaseSchema = createIssueBaseSchema
   .omit({
     parentId: true,
     inheritExecutionWorkspaceFromIssueId: true,
@@ -533,7 +533,14 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  })).superRefine(requireBlockedStatusForUnblockDescriptor);
+  });
+
+export const createChildIssueSchema = withCreateIssueStatusDefault(createChildIssueBaseSchema)
+  .superRefine(requireBlockedStatusForUnblockDescriptor);
+
+export const createChildIssueWithDuplicateGuardSchema = withCreateIssueStatusDefault(
+  createChildIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
+).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 

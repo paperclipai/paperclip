@@ -403,6 +403,7 @@ export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
+  createChildIssueWithDuplicateGuardSchema,
   createAcceptedPlanDecompositionSchema,
   resolveCreateIssueStatusDefault,
   createIssueLabelSchema,

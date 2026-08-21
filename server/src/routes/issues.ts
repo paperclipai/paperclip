@@ -42,7 +42,7 @@ import {
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
-  createChildIssueSchema,
+  createChildIssueWithDuplicateGuardSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
@@ -8806,7 +8806,7 @@ export function issueRoutes(
     });
   });
 
-  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
+  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueWithDuplicateGuardSchema), async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
@@ -8863,7 +8863,7 @@ export function issueRoutes(
       projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
     }, actor);
-    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+    const { issue, parentBlockerAdded, deduplicationReason } = await svc.createChild(parent.id, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
@@ -8884,6 +8884,14 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
     });
+    if (deduplicationReason) {
+      res.status(200).json({
+        ...issue,
+        deduplicated: true,
+        deduplicationReason,
+      });
+      return;
+    }
     await externalObjectsSvc.syncIssueSafely(issue.id);
 
     await logActivity(db, {

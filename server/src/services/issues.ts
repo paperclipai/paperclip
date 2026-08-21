@@ -6695,6 +6695,30 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
 
+      const idempotencyKey = data.idempotencyKey?.trim() || null;
+      if (idempotencyKey) {
+        const retentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+        const existingIssue = await db
+          .select({ issue: issues })
+          .from(issueCreateIdempotencyKeys)
+          .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+          .where(and(
+            eq(issueCreateIdempotencyKeys.companyId, parent.companyId),
+            eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+            gte(issueCreateIdempotencyKeys.createdAt, retentionCutoff),
+          ))
+          .limit(1)
+          .then((rows) => rows[0]?.issue ?? null);
+        if (existingIssue) {
+          data.onDeduplicated?.("idempotency_key");
+          return {
+            issue: existingIssue,
+            parentBlockerAdded: false,
+            deduplicationReason: "idempotency_key" as const,
+          };
+        }
+      }
+
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
@@ -6720,8 +6744,14 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+      let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+      const onDeduplicated = issueData.onDeduplicated;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
+        onDeduplicated: (reason) => {
+          deduplicationReason = reason;
+          onDeduplicated?.(reason);
+        },
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
         projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
@@ -6740,6 +6770,10 @@ export function issueService(db: Db) {
           : { inheritExecutionWorkspaceFromIssueId: parent.id }),
       });
 
+      if (deduplicationReason) {
+        return { issue: child, parentBlockerAdded: false, deduplicationReason };
+      }
+
       if (blockParentUntilDone) {
         const existingBlockers = await db
           .select({ blockerIssueId: issueRelations.issueId })
@@ -6757,6 +6791,7 @@ export function issueService(db: Db) {
       return {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
+        deduplicationReason: null,
       };
     },
 
