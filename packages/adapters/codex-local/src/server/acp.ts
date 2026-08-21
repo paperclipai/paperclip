@@ -36,7 +36,11 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import {
+  classifyCodexAuthRefreshFailure,
+  extractCodexRetryNotBefore,
+  isCodexProviderQuotaError,
+} from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -285,25 +289,47 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
-function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+function withCodexAcpFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
+  const errorMessage = [result.errorMessage ?? "", result.summary ?? "", stopReason]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
   const authFailure = classifyCodexAuthRefreshFailure({
-    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n"),
+    errorMessage,
   });
-  if (!authFailure) return result;
+  if (authFailure) {
+    return {
+      ...result,
+      errorCode: authFailure,
+      errorFamily: authFailure,
+      resultJson: {
+        ...(result.resultJson ?? {}),
+        errorFamily: authFailure,
+      },
+    };
+  }
 
+  if (!isCodexProviderQuotaError({ errorMessage })) return result;
+
+  const retryNotBefore = extractCodexRetryNotBefore({ errorMessage })?.toISOString() ?? null;
   return {
     ...result,
-    errorCode: authFailure,
-    errorFamily: authFailure,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore,
     resultJson: {
       ...(result.resultJson ?? {}),
-      errorFamily: authFailure,
+      errorFamily: "provider_quota",
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            transientRetryNotBefore: retryNotBefore,
+            providerQuotaRetryNotBefore: retryNotBefore,
+          }
+        : {}),
     },
   };
 }
@@ -355,7 +381,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
-    return withCodexAuthRefreshFailureClassification(result);
+    return withCodexAcpFailureClassification(result);
   };
 }
 

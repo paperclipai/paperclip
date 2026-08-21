@@ -1179,6 +1179,32 @@ describe("codex_local ACP lane", () => {
     expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
   });
 
+  it("classifies ACP subscription usage-limit failures as provider quota", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-provider-quota-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: {
+            message:
+              "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:33 PM.",
+          },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toEqual(expect.any(String));
+    expect(result.resultJson?.errorFamily).toBe("provider_quota");
+    expect(result.resultJson?.providerQuotaRetryNotBefore).toBe(result.retryNotBefore);
+  });
+
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-resume-");
     const runtimes: FakeRuntime[] = [];
