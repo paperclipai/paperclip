@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import type { AppDetailSectionProps } from "./types";
 
@@ -43,8 +44,8 @@ function KeySection({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between px-5 py-4">
+    <section>
+      <div className="flex items-center justify-between">
         <div className="flex items-start gap-3">
           <Lock className="mt-0.5 h-4 w-4 text-muted-foreground" />
           <div>
@@ -61,7 +62,7 @@ function KeySection({
         )}
       </div>
       {open && (
-        <div className="border-t border-border px-5 py-4">
+        <div className="pt-4">
           <ReconnectForm
             connection={connection}
             galleryEntry={galleryEntry}
@@ -89,7 +90,16 @@ export function ReconnectCard({
   const { pushToast } = useToast();
   const reconnectOAuth = useMutation({
     mutationFn: () => toolsApi.startOAuth(connection.id),
-    onSuccess: ({ authorizationUrl }) => navigateTopLevel(authorizationUrl),
+    onSuccess: ({ authorizationUrl }) => {
+      // Reconnect navigates to the same discovered address a fresh connect does,
+      // so it goes through the same gate (PAP-17099).
+      const target = resolveAuthorizationTarget(authorizationUrl);
+      if (!target.ok) {
+        pushToast({ title: "Couldn’t start sign-in", body: target.message, tone: "error" });
+        return;
+      }
+      navigateTopLevel(target.url);
+    },
     onError: (error) =>
       pushToast({
         title: "Couldn’t start sign-in",
@@ -140,8 +150,11 @@ function ReconnectForm({
   onReconnected: () => void;
 }) {
   const { pushToast } = useToast();
+  const methodKey = typeof connection.config?.connectionMethodKey === "string"
+    ? connection.config.connectionMethodKey
+    : null;
   const method = galleryEntry && Array.isArray(galleryEntry.methods)
-    ? getAvailableConnectionMethod(galleryEntry)
+    ? getAvailableConnectionMethod(galleryEntry, methodKey)
     : null;
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
@@ -242,7 +255,7 @@ function ReconnectForm({
 
 function TechnicalDetails({ connection }: { connection: ToolConnection }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <h2 className="text-sm font-bold text-foreground">Technical details</h2>
       <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-(--gtc-59)">
         <dt className="text-muted-foreground">Address</dt>
@@ -265,15 +278,16 @@ export function DangerZone({
 }) {
   const [confirming, setConfirming] = useState(false);
   return (
-    <section className="rounded-xl border border-destructive/40 bg-card">
-      <div className="border-b border-destructive/40 px-5 py-3 text-sm font-bold text-destructive">
+    <section className="space-y-3">
+      <div className="text-sm font-bold text-destructive">
         Danger zone
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-foreground">Remove this app</p>
           <p className="text-xs text-muted-foreground">
-            Agents lose access to {appName} right away. You can connect it again later.
+            Deletes the saved credentials for {appName} and takes agent access away right away.
+            Connecting it again later needs a new sign-in or key.
           </p>
         </div>
         {confirming ? (

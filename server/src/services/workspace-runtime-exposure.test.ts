@@ -353,6 +353,7 @@ function startInput(options?: {
         services: [{
           name: options?.serviceName ?? "preview",
           command: options?.command ?? serviceCommand(),
+          env: { PAPERCLIP_PUBLIC_URL: "http://127.0.0.1:3100" },
           port: options?.port ?? { type: "auto", envKey: "PORT" },
           readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 5 },
           ...(expose ? { expose } : {}),

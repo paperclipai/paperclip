@@ -137,6 +137,7 @@ function boardRoutes() {
         <Route path="apps" element={<Browse />} />
         <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
         <Route path="apps/connections" element={<Connections />} />
+        <Route path="apps/byo" element={<AppsConnect byoOnly />} />
         <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
         <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
         <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
@@ -147,6 +148,7 @@ function boardRoutes() {
         <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
         <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
         <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+        <Route path="apps/advanced/gateways" element={<GatewaysList />} />
         <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
         <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
         <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
@@ -422,6 +424,8 @@ function LegacyToolsRedirect() {
 function legacyToolsRedirectTarget(tab?: string) {
   if (!tab) return "/apps/advanced/profiles";
   if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps/connections";
+  if (tab === "runtime") return "/apps/connections";
+  if (tab === "policies") return "/apps/advanced/profiles";
   return `/apps/advanced/${tab}`;
 }
 

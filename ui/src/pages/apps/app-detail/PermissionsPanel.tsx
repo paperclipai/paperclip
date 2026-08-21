@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, PackageCheck, RefreshCw } from "lucide-react";
+import { Loader2, PackageCheck, RefreshCw, X } from "lucide-react";
 import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
+import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
@@ -105,13 +106,15 @@ function AccessSection({
   const summary =
     access.mode === "all"
       ? "Every agent can use it"
-      : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} can use it`;
+      : access.agentIds.size === 0
+        ? "No agents can use it"
+        : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} can use it`;
 
-  const canSave = draft.mode === "all" || draft.agentIds.size > 0;
+  const grantedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
 
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between px-5 py-4">
+    <section>
+      <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-bold text-foreground">Who can use it</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">{summary}</p>
@@ -123,8 +126,32 @@ function AccessSection({
         )}
       </div>
 
+      {!editing && access.mode === "specific" && grantedAgents.length > 0 && (
+        <div className="space-y-0.5 pt-3">
+          {grantedAgents.map((agent) => (
+            <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
+              <AgentIcon icon={agent.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
+              <button
+                type="button"
+                aria-label={`Remove ${agent.name} access`}
+                disabled={disabled}
+                className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                  const nextAgentIds = new Set(access.agentIds);
+                  nextAgentIds.delete(agent.id);
+                  onSave({ mode: "specific", agentIds: nextAgentIds });
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {editing && (
-        <div className="space-y-3 border-t border-border px-5 py-4">
+        <div className="space-y-3 pt-4">
           <label className="flex items-start gap-3">
             <input
               type="radio"
@@ -162,7 +189,7 @@ function AccessSection({
           <div className="flex items-center gap-2 pt-1">
             <Button
               size="sm"
-              disabled={disabled || !canSave}
+              disabled={disabled}
               onClick={() => {
                 onSave(draft);
                 setEditing(false);
@@ -206,8 +233,8 @@ function InstalledSection({
   const installedCount = install.onAll ? liveAgents.length : install.agentIds.size;
 
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between gap-3 px-5 py-4">
+    <section>
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-bold text-foreground">Installed on agents</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
@@ -228,7 +255,7 @@ function InstalledSection({
         </div>
       </div>
 
-      <div className="space-y-3 border-t border-border px-5 py-4">
+      <div className="space-y-3 pt-4">
         <InlineBanner tone="info" compact>
           {installInfoNotice(appName)}
         </InlineBanner>
@@ -255,12 +282,7 @@ function InstalledSection({
           />
         )}
 
-        <label
-          className={cn(
-            "flex items-start gap-3 rounded-lg border px-3 py-2.5",
-            install.onAll ? "border-foreground bg-muted/40" : "border-border bg-muted/20",
-          )}
-        >
+        <label className="flex items-start gap-3 py-2.5">
           <Checkbox
             checked={install.onAll}
             disabled={disabled}
@@ -417,8 +439,8 @@ function ActionGroup({
   }, [focusId]);
   if (actions.length === 0) return null;
   return (
-    <div className="rounded-xl border border-border bg-card">
-      <div className="border-b border-border px-5 py-3 text-sm">
+    <div>
+      <div className="pb-2 text-sm">
         <span className="font-bold text-foreground">{title}</span>
         <span className="ml-2 text-muted-foreground">- {hint}</span>
       </div>
@@ -431,7 +453,7 @@ function ActionGroup({
               key={action.id}
               ref={focused ? focusRef : undefined}
               className={cn(
-                "flex items-center gap-4 px-5 py-3",
+                "flex items-center gap-4 py-3",
                 focused && "rounded-md bg-primary/5 ring-2 ring-primary/40",
               )}
               data-action-id={action.id}

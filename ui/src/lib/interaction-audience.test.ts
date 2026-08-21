@@ -163,6 +163,20 @@ describe("describeInteractionAudience", () => {
     expect(audience.label).toBe("Human only");
   });
 
+  it("names one addressed user instead of the whole board", () => {
+    const audience = describeInteractionAudience({
+      interaction: confirmation({
+        addresseeUserId: "user-alice",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+      }),
+      addresseeLabel: "Alice",
+    });
+    expect(audience.summary).toBe("Only Alice can respond.");
+    expect(audience.shortSummary).toBe("Only Alice can respond");
+    expect(audience.label).toBe("Addressed");
+  });
+
   it("explains a governed-action clamp", () => {
     const audience = describeInteractionAudience({
       interaction: confirmation({

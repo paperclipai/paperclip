@@ -5,10 +5,15 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agents,
   companies,
   companyMemberships,
+  connectionGrantDelegations,
+  connectionGrants,
   createDb,
   principalPermissionGrants,
+  toolApplications,
+  toolConnections,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -90,8 +95,13 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(connectionGrantDelegations);
+    await db.delete(connectionGrants);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -163,5 +173,86 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       scope: customScope,
       grantedByUserId: owner.principalId,
     });
+  });
+
+  it("sweeps personal connection access when the member route suspends a user", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `member-${randomUUID()}`,
+      status: "active",
+      membershipRole: "member",
+    }).returning().then((rows) => rows[0]!);
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Delegated route agent",
+      role: "worker",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `route-app-${randomUUID()}`,
+      name: "Route personal app",
+      type: "mcp",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Route personal connection",
+      uid: `route-connection-${randomUUID()}`,
+      connectionKind: "managed",
+      ownership: "customer",
+      transport: "mcp_remote",
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      status: "active",
+      enabled: true,
+    }).returning().then((rows) => rows[0]!);
+    const grant = await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "user",
+      subjectUserId: member.principalId,
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(connectionGrantDelegations).values({
+      companyId: company.id,
+      grantId: grant.id,
+      agentId: agent.id,
+      createdByUserId: member.principalId,
+    });
+
+    const res = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}`)
+      .send({ status: "suspended" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("suspended");
+    expect(await db.select().from(connectionGrantDelegations)).toHaveLength(0);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))
+      .toEqual([expect.objectContaining({ status: "revoked" })]);
+
+    await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}/role-and-grants`)
+      .send({ status: "active", grants: [] })
+      .expect(200);
+    await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, grant.id));
+    await db.insert(connectionGrantDelegations).values({
+      companyId: company.id,
+      grantId: grant.id,
+      agentId: agent.id,
+      createdByUserId: member.principalId,
+    });
+
+    const permissionsRoute = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}/role-and-grants`)
+      .send({ status: "suspended", grants: [] });
+    expect(permissionsRoute.status, JSON.stringify(permissionsRoute.body)).toBe(200);
+    expect(await db.select().from(connectionGrantDelegations)).toHaveLength(0);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))
+      .toEqual([expect.objectContaining({ status: "revoked" })]);
   });
 });

@@ -57,7 +57,7 @@ the URL bar, e.g. `PAP`). Replace it in the example paths.
 ## 2. Open the Smoke Lab and start the services
 
 1. In the left sidebar open **Apps**, then under the **Developer** section
-   ("Advanced setup for developers. Most teams never open this.") click
+   ("Advanced setup for developers.") click
    **Smoke Lab** (`/{PREFIX}/apps/advanced/smoke-lab`). The breadcrumb reads
    *Apps → Advanced setup → Smoke Lab*.
 2. **You should see:** a *Developer tools* page header, then the **Smoke Lab**

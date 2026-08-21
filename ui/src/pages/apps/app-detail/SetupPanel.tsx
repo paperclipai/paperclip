@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
+import type { ConnectionGrant, ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
+import { AgentMultiSelect, type AgentMultiSelectOption } from "@/components/AgentMultiSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -16,6 +17,12 @@ export function SetupPanel({
   configUpdateDisabled,
   onStartOAuth,
   oauthStartDisabled,
+  personalGrant,
+  agents = [],
+  delegationLoading = false,
+  delegationError = false,
+  delegationPending = false,
+  onReplaceDelegations,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
@@ -26,6 +33,12 @@ export function SetupPanel({
   configUpdateDisabled: boolean;
   onStartOAuth: () => void;
   oauthStartDisabled: boolean;
+  personalGrant?: ConnectionGrant;
+  agents?: AgentMultiSelectOption[];
+  delegationLoading?: boolean;
+  delegationError?: boolean;
+  delegationPending?: boolean;
+  onReplaceDelegations?: (grant: ConnectionGrant, agentIds: string[]) => void;
 }) {
   const description = galleryEntry?.description ?? null;
   const oauth = connection.config?.oauth;
@@ -43,16 +56,122 @@ export function SetupPanel({
           onUpdateConfig={onUpdateConfig}
         />
       )}
+      {appDefinitionSlug(galleryEntry) === "posthog" && (
+        <PostHogConfigurationSection connection={connection} />
+      )}
       {hasOAuthSignIn && (
         <OAuthConnectionSection
           connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          providerName={appDefinitionSlug(galleryEntry) === "notion" ? "Notion" : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
+          providerName={appDefinitionSlug(galleryEntry) === "notion"
+            ? "Notion"
+            : appDefinitionSlug(galleryEntry) === "posthog"
+              ? "PostHog"
+              : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
           disabled={oauthStartDisabled}
           onStart={onStartOAuth}
         />
       )}
+      {connection.credentialPolicy === "per_user" && onReplaceDelegations && (
+        <PersonalDelegationSection
+          grant={personalGrant}
+          agents={agents}
+          loading={delegationLoading}
+          error={delegationError}
+          pending={delegationPending}
+          onReplace={onReplaceDelegations}
+        />
+      )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
+  );
+}
+
+function PersonalDelegationSection({
+  grant,
+  agents,
+  loading,
+  error,
+  pending,
+  onReplace,
+}: {
+  grant?: ConnectionGrant;
+  agents: AgentMultiSelectOption[];
+  loading: boolean;
+  error: boolean;
+  pending: boolean;
+  onReplace: (grant: ConnectionGrant, agentIds: string[]) => void;
+}) {
+  if (loading) {
+    return <p id="personal-identity" className="text-sm text-muted-foreground">Loading autonomous access…</p>;
+  }
+  if (error) {
+    return <p id="personal-identity" className="text-sm text-destructive">Couldn’t load autonomous access.</p>;
+  }
+  if (!grant || grant.status !== "active") return null;
+
+  const delegatedAgentIds = new Set((grant.delegations ?? []).map((delegation) => delegation.agentId));
+  const delegationCount = delegatedAgentIds.size;
+
+  return (
+    <section id="personal-identity" className="flex flex-wrap items-start justify-between gap-4">
+      <div className="min-w-0 flex-1">
+        <h2 className="text-sm font-bold text-foreground">Your identity</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Select the named agents that may use your identity in autonomous runs.
+        </p>
+      </div>
+      <AgentMultiSelect
+        agents={agents}
+        selectedAgentIds={delegatedAgentIds}
+        pending={pending}
+        disabled={pending}
+        triggerFullWidth={false}
+        triggerSize="sm"
+        triggerLabel={delegationCount === 0
+          ? "Allow autonomous access"
+          : `${delegationCount} ${delegationCount === 1 ? "agent" : "agents"} allowed`}
+        headerContent={(
+          <p className="text-xs text-muted-foreground">
+            Only selected agents can use this personal identity without you present.
+          </p>
+        )}
+        onSave={(next) => onReplace(grant, [...next])}
+      />
+    </section>
+  );
+}
+
+function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
+  const raw = connection.config?.methodConfig;
+  const config = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? "PostHog sign-in" : "Personal API key";
+  const features = typeof config.features === "string" ? config.features : "None";
+  const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
+  const rows = [
+    ["Connection method", method],
+    ["Project ID", typeof config.projectId === "string" ? config.projectId : "Not set"],
+    ["Read-only mode", config.readOnly === true ? "On" : "Off"],
+    ["Feature groups", features],
+    ["Individual tools", tools],
+    ["Response mode", typeof config.mode === "string" ? config.mode : "tools"],
+  ];
+  return (
+    <section>
+      <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">
+        This connection is pinned to the project and analytics surface below.
+      </p>
+      <dl className="mt-4 divide-y divide-border">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid gap-1 py-2 sm:grid-cols-3 sm:gap-4">
+            <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+            <dd className="break-words text-sm text-foreground sm:col-span-2">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -68,7 +187,7 @@ function OAuthConnectionSection({
   onStart: () => void;
 }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold text-foreground">
@@ -113,7 +232,7 @@ function GoogleSheetsAllowlistSection({
     onUpdateConfig(googleSheetsConfigWithAllowlist(connection.config, nextIds));
 
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <div>
         <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
@@ -206,7 +325,7 @@ export function AppLifecycleSection({
 }) {
   const enabled = connection.enabled !== false && connection.status !== "disabled";
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold text-foreground">
@@ -243,8 +362,8 @@ export function QuarantinedActionsReview({
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
   return (
-    <section className="overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/[0.08]">
-      <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
             Review {count} new {count === 1 ? "action" : "actions"}
@@ -272,12 +391,12 @@ export function QuarantinedActionsReview({
           </button>
         </div>
       </div>
-      <div className="divide-y divide-amber-500/25 border-y border-amber-500/25 bg-background">
+      <div className="divide-y divide-border">
         {entries.map((entry) => {
           const enabled = enabledIds.has(entry.id);
           const label = entry.title ?? entry.toolName;
           return (
-            <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
+            <div key={entry.id} className="flex items-center gap-3 py-3">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-foreground">{label}</div>
                 {entry.description && (
@@ -301,7 +420,7 @@ export function QuarantinedActionsReview({
           );
         })}
       </div>
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
           {selectedIds.length} of {count} will be on
         </span>

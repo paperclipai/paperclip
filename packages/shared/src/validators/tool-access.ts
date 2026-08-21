@@ -30,6 +30,12 @@ import {
   TOOL_RUNTIME_KINDS,
   TOOL_RUNTIME_SLOT_STATUSES,
 } from "../constants.js";
+import {
+  checkMcpRemoteHeaderName,
+  checkMcpRemoteHeaderValue,
+  mcpRemoteHeaderNameFromConfigPath,
+  mcpRemoteHeaderRejectionMessage,
+} from "../mcp-remote-headers.js";
 import { jsonSchemaSchema } from "./plugin.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
@@ -37,8 +43,13 @@ export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
-export const connectionGrantKindSchema = z.enum(["workspace", "user"]);
+export const connectionGrantKindSchema = z.enum(["organization", "user"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
+export const createConnectionGrantDelegationSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
+export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
 export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
@@ -148,6 +159,7 @@ export const createToolConnectionSchema = z.object({
   name: z.string().trim().min(1).max(160),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
+  credentialPolicy: toolConnectionCredentialPolicySchema.optional(),
   ownership: toolConnectionOwnershipSchema.default("customer"),
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
@@ -190,7 +202,7 @@ export const connectionGrantSchema = z.object({
   updatedAt: z.coerce.date(),
 }).superRefine((grant, ctx) => {
   if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; workspace grants must not have one" });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
   }
 });
 
@@ -258,13 +270,100 @@ export const disableToolStdioCommandTemplateSchema = z.object({
 
 export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCommandTemplateSchema>;
 
+/**
+ * How an operator says a generic remote MCP endpoint authenticates (PAP-17087).
+ *
+ * `auto` is the default and the only value the simple path sends: Paperclip
+ * probes the endpoint and branches on what it finds. The rest are the explicit
+ * choices behind "Advanced authentication", where the operator already knows.
+ */
+export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
+
+export const genericMcpAuthModeSchema = z.enum(GENERIC_MCP_AUTH_MODES);
+
+export type GenericMcpAuthMode = z.infer<typeof genericMcpAuthModeSchema>;
+
+/**
+ * A preregistered OAuth client an operator pasted in because the authorization
+ * server supports neither CIMD nor dynamic registration. The secret is write-only:
+ * it becomes a Paperclip secret ref and is never read back.
+ */
+export const genericMcpOAuthClientSchema = z.object({
+  clientId: z.string().trim().min(1).max(4096),
+  clientSecret: z.string().min(1).max(16384).optional(),
+}).strict();
+
+export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
+
+/**
+ * Reject `headers.*` credential paths whose header name Paperclip refuses to
+ * send, and any value that could split the outbound request. This runs at the
+ * API boundary so both the guided wizard and normalized paste-config go through
+ * exactly one gate; the service re-checks when it projects the headers.
+ */
+function rejectUnsafeHeaderCredentials(
+  credentialValues: Record<string, string>,
+  ctx: z.RefinementCtx,
+  path: (string | number)[],
+) {
+  for (const [configPath, value] of Object.entries(credentialValues)) {
+    const headerName = mcpRemoteHeaderNameFromConfigPath(configPath);
+    if (configPath.startsWith("headers.") && !headerName) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: "Header names cannot be blank.",
+      });
+      continue;
+    }
+    if (!headerName) continue;
+    const nameCheck = checkMcpRemoteHeaderName(headerName);
+    if (!nameCheck.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: mcpRemoteHeaderRejectionMessage(headerName, nameCheck.reason!),
+      });
+      continue;
+    }
+    const valueCheck = checkMcpRemoteHeaderValue(value);
+    if (!valueCheck.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, configPath],
+        message: mcpRemoteHeaderRejectionMessage(headerName, valueCheck.reason!),
+      });
+    }
+  }
+}
+
 export const connectToolAppSchema = z.object({
   galleryKey: z.string().trim().min(1).max(120).optional(),
+  connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().uuid().optional(),
+  authMode: genericMcpAuthModeSchema.optional(),
+  oauthClient: genericMcpOAuthClientSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
+  if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
+  if (value.authMode && value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["authMode"],
+      message: "Authentication mode selection applies to a pasted URL, not a gallery app",
+    });
+  }
+  if (value.oauthClient && value.galleryKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["oauthClient"],
+      message: "Preregistered OAuth client credentials apply to a pasted URL, not a gallery app",
+    });
+  }
 }).refine(
   (value) => Boolean(value.galleryKey) !== Boolean(value.link),
   { message: "Provide exactly one of galleryKey or link" },
@@ -505,7 +604,7 @@ export const createToolMcpGatewayTokenSchema = z.object({
   subjectType: toolMcpGatewayTokenSubjectTypeSchema.default("gateway_client").optional(),
   subjectId: z.string().trim().min(1).max(240).optional().nullable(),
   clientLabel: z.string().trim().min(1).max(160),
-  ownerNote: z.string().trim().min(1).max(1000),
+  ownerNote: z.string().trim().max(1000).default(""),
   allowedActions: z.array(toolMcpGatewayTokenActionSchema).min(1).max(TOOL_MCP_GATEWAY_TOKEN_ACTIONS.length).default(["tools/list", "tools/call"]).optional(),
   expiresAt: z.coerce.date().optional().nullable(),
   expiryOverrideReason: z.string().trim().min(1).max(1000).optional().nullable(),

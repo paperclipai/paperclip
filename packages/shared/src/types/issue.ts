@@ -1347,6 +1347,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
   addresseeAgentId?: string | null;
+  addresseeUserId?: string | null;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;

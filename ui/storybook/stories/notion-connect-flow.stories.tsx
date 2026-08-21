@@ -67,6 +67,7 @@ function notionConnection(overrides: Partial<ToolConnection> = {}): ToolConnecti
     ownership: "dcr",
     transport: "mcp_remote",
     authKind: "oauth",
+    credentialPolicy: "per_user",
     status: "active",
     transportConfig: { url: "https://mcp.notion.com/mcp" },
     config: {

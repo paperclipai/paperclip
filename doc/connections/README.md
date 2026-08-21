@@ -2,6 +2,8 @@
 
 Audience: internal engineers and product contributors working on integrations.
 
+Provider notes: [PostHog](./POSTHOG.md).
+
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.
 
@@ -145,8 +147,12 @@ not own durable tokens.
 - [First-30 matrix](./FIRST-30-MATRIX.md) harvests the keeper from
   [PAP-2432](/PAP/issues/PAP-2432) and is the source matrix for connector
   playbook work.
+- [Connecting any remote MCP server](./GENERIC-REMOTE-MCP.md) is the baseline:
+  how an operator connects a standards-compliant remote MCP endpoint with no
+  Paperclip code change, and how sign-in resolves a client.
 - [Connector playbook](./CONNECTOR-PLAYBOOK.md) is the repeatable template for
-  adding a vendor as a catalog entry on Apps v2.
+  adding a vendor as a catalog entry on Apps v2 — the optional branded
+  convenience layer over the baseline above.
 - [MCP access governance](../MCP-ACCESS-GOVERNANCE.md) remains the operator
   runbook for the current gateway, profile, policy, approval, runtime, and audit
   APIs.

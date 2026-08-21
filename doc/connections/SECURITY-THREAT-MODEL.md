@@ -48,7 +48,13 @@ context and server-side ownership checks.
 8. **External content is untrusted.** Provider responses, chat messages,
    documents, webhook payloads, and remote MCP outputs may contain prompt
    injection and must not widen grants or bypass approvals.
-
+9. **Link-local egress is always denied.** Operator-configured remote MCP and
+   OAuth URLs may reach intentional loopback, RFC 1918, or IPv6 ULA services in
+   local/private deployments, but never IPv4 `169.254.0.0/16` or IPv6
+   `fe80::/10`. Every hostname is resolved once and pinned; DNS answers, the
+   connected socket peer, and every redirect are mediated before request bytes
+   are written. Public deployments continue to deny the broader private and
+   reserved address set.
 ## Protected Assets
 
 - OAuth tokens, refresh tokens, app-installation tokens, API keys, webhook
@@ -111,6 +117,10 @@ Required controls:
   first, then persist only refs and redacted account metadata on the connection.
 - Create/update routes validate same-company ownership for every referenced
   secret, app, connection, agent, user, project, routine, and issue.
+- Create/update routes validate every configured token-broker exchange URL
+  against the private-host policy before persisting the connection. Minting
+  repeats the check and pins the approved address before transmitting the
+  parent credential, covering legacy rows and DNS rebinding.
 - Health and auth failures transition failure-closed: `missing_secret`,
   `degraded`, `failed`, `auth_required`, or disabled equivalents.
 - Error payloads and logs redact provider responses that may contain credentials.

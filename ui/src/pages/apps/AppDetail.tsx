@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
@@ -11,7 +11,7 @@ import {
   humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
-import { Navigate, useParams, useNavigate } from "@/lib/router";
+import { Navigate, useParams, useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -20,14 +20,16 @@ import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
-import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
+import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
+import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import {
   appDefinitionLogoUrl,
   appDefinitionName,
@@ -48,23 +50,36 @@ import {
   connectionTransportLabel,
 } from "./app-detail/AdvancedPanel";
 import type { AccessDraft } from "./app-detail/types";
+import {
+  ConnectionOwnerIdentity,
+  connectionDisplayNameForOwner,
+  connectionOwnerProfile,
+  type ConnectionOwnerProfile,
+} from "./connection-owner";
 
 export { DangerZone, connectionAddress, connectionTransportLabel };
 
 export function AppDetail() {
   const { connectionId = "", tab } = useParams<{ connectionId: string; tab?: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;
+  const needsCatalog = activeTab === "review" || activeTab === "permissions" || activeTab === "test";
 
   const connectionQuery = useQuery({
     queryKey: queryKeys.tools.connection(connectionId),
     queryFn: () => toolsApi.getConnection(connectionId),
     enabled: !!connectionId && !!activeTab,
+  });
+  const grantsQuery = useQuery({
+    queryKey: queryKeys.tools.connectionGrants(connectionId),
+    queryFn: () => toolsApi.listConnectionGrants(connectionId),
+    enabled: !!connectionId && activeTab === "setup",
   });
   const installsQuery = useQuery({
     queryKey: queryKeys.tools.connectionInstalls(connectionId),
@@ -79,22 +94,24 @@ export function AppDetail() {
   const catalogQuery = useQuery({
     queryKey: queryKeys.tools.catalog(connectionId),
     queryFn: () => toolsApi.listCatalog(connectionId),
-    enabled: !!connectionId && !!activeTab,
+    enabled: !!connectionId && needsCatalog,
   });
   const profilesQuery = useQuery({
     queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
+    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listPolicies(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
+    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
   });
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
+    enabled: !!selectedCompanyId && (
+      activeTab === "setup" || activeTab === "permissions" || activeTab === "activity"
+    ),
   });
   const activityQuery = useQuery({
     queryKey: queryKeys.tools.connectionActivity(connectionId),
@@ -105,16 +122,47 @@ export function AppDetail() {
   const userDirectoryQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId && activeTab === "activity",
+    enabled: !!selectedCompanyId && !!activeTab,
   });
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: activeTab === "activity",
+    enabled: activeTab === "setup" || activeTab === "activity",
   });
 
   const connection = connectionQuery.data;
-  const appName = connection ? humanizeConnectionDisplayName(connection) : "App";
+  const logoEntry = useMemo(
+    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
+    [galleryQuery.data, connection],
+  );
+  const userProfileById = useMemo(
+    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
+    [userDirectoryQuery.data],
+  );
+  const owner = connection ? connectionOwnerProfile(connection, userProfileById) : null;
+  const baseAppName = connection
+    ? logoEntry ? appDefinitionName(logoEntry) : humanizeConnectionDisplayName(connection)
+    : "App";
+  const appName = connection
+    ? connectionDisplayNameForOwner(connection, baseAppName, owner)
+    : "App";
+  const successNoticeShownFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      activeTab !== "test"
+      || searchParams.get("success") !== "1"
+      || !connection
+      || successNoticeShownFor.current === connection.id
+    ) return;
+    successNoticeShownFor.current = connection.id;
+    pushToast({
+      title: `${appName} connected`,
+      body: "The connection is ready. You can test an action below.",
+      tone: "success",
+    });
+    navigate(appTabHref(connection.id, "test"), { replace: true });
+  }, [activeTab, appName, connection, navigate, pushToast, searchParams]);
 
   useEffect(() => {
     if (!activeTab) return;
@@ -152,11 +200,6 @@ export function AppDetail() {
     }
     return labels;
   }, [userDirectoryQuery.data, sessionQuery.data]);
-  const logoEntry = useMemo(
-    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
-    [galleryQuery.data, connection],
-  );
-
   const [pending, setPending] = useState(false);
   const persist = useMutation({
     mutationFn: (next: {
@@ -246,7 +289,14 @@ export function AppDetail() {
   const startOAuth = useMutation({
     mutationFn: () => toolsApi.startOAuth(connectionId),
     onSuccess: ({ authorizationUrl }) => {
-      navigateTopLevel(authorizationUrl);
+      // Checked again at the navigation boundary (PAP-17099): the address came
+      // from the remote server, and this is where an unsafe scheme would run.
+      const target = resolveAuthorizationTarget(authorizationUrl);
+      if (!target.ok) {
+        pushToast({ title: "Couldn't start sign-in", body: target.message, tone: "error" });
+        return;
+      }
+      navigateTopLevel(target.url);
     },
     onError: (error) =>
       pushToast({
@@ -256,6 +306,53 @@ export function AppDetail() {
       }),
   });
 
+  const invalidateGrants = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.connectionGrants(connectionId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+  };
+
+  const replaceDelegations = useMutation({
+    mutationFn: async ({
+      grantId,
+      currentDelegations,
+      agentIds,
+    }: {
+      grantId: string;
+      currentDelegations: Array<{ id: string; agentId: string }>;
+      agentIds: string[];
+    }) => {
+      const desired = new Set(agentIds);
+      const existing = new Map(currentDelegations.map((delegation) => [delegation.agentId, delegation]));
+      await Promise.all([
+        ...currentDelegations
+          .filter((delegation) => !desired.has(delegation.agentId))
+          .map((delegation) => toolsApi.revokeConnectionGrantDelegation(
+            connectionId,
+            grantId,
+            delegation.id,
+          )),
+        ...agentIds
+          .filter((agentId) => !existing.has(agentId))
+          .map((agentId) => toolsApi.createConnectionGrantDelegation(connectionId, grantId, agentId)),
+      ]);
+    },
+    onSuccess: () => {
+      invalidateGrants();
+      pushToast({
+        title: "Autonomous access saved",
+        body: "Only the agents you selected can use your identity in autonomous runs.",
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      invalidateGrants();
+      pushToast({
+        title: "Couldn't save autonomous access",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      });
+    },
+  });
   const removeApp = useMutation({
     mutationFn: () => toolsApi.archiveConnection(connectionId),
     onSuccess: () => {
@@ -264,7 +361,7 @@ export function AppDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
         title: "App removed",
-        body: `${appName} no longer has access. You can connect it again any time.`,
+        body: `${appName} no longer has access and its credentials are deleted. Connecting it again needs a new sign-in or key.`,
         tone: "success",
       });
       navigate("/apps/connections");
@@ -350,7 +447,7 @@ export function AppDetail() {
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to manage apps.</div>;
   }
-  if (connectionQuery.isLoading || catalogQuery.isLoading) {
+  if (connectionQuery.isLoading) {
     return (
       <div className="max-w-3xl space-y-4">
         <Skeleton className="h-10 w-56" />
@@ -376,7 +473,11 @@ export function AppDetail() {
   const active = catalog.filter((e) => e.status !== "quarantined" && e.status !== "removed");
   const readOnly = active.filter((e) => e.isReadOnly);
   const canChange = active.filter((e) => !e.isReadOnly);
-  const actionCount = active.length;
+  const actionCount = catalogQuery.data ? active.length : null;
+  const reviewLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading;
+  const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading;
+  const reviewFailed = catalogQuery.isError || profilesQuery.isError || policiesQuery.isError;
+  const permissionsFailed = reviewFailed || installsQuery.isError || agentsQuery.isError;
 
   return (
     <div className="max-w-3xl space-y-6 pb-12">
@@ -386,6 +487,7 @@ export function AppDetail() {
         logoEntry={logoEntry}
         status={status}
         actionCount={actionCount}
+        owner={owner}
         renaming={renaming}
         nameDraft={nameDraft}
         renamePending={rename.isPending}
@@ -414,48 +516,96 @@ export function AppDetail() {
       )}
 
       {activeTab === "setup" && (
-        <SetupPanel
-          connection={connection}
-          galleryEntry={logoEntry}
-          appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
-          onToggleApp={() => toggleEnabled.mutate()}
-          configUpdateDisabled={updateConfig.isPending}
-          onUpdateConfig={(config) => updateConfig.mutate(config)}
-          oauthStartDisabled={startOAuth.isPending}
-          onStartOAuth={() => startOAuth.mutate()}
-        />
+        <div className="space-y-8">
+          <SetupPanel
+            connection={connection}
+            galleryEntry={logoEntry}
+            appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
+            onToggleApp={() => toggleEnabled.mutate()}
+            configUpdateDisabled={updateConfig.isPending}
+            onUpdateConfig={(config) => updateConfig.mutate(config)}
+            oauthStartDisabled={startOAuth.isPending}
+            onStartOAuth={() => startOAuth.mutate()}
+            personalGrant={(grantsQuery.data?.grants ?? []).find((grant) =>
+              grant.kind === "user" && grant.subjectUserId === sessionQuery.data?.user?.id
+            )}
+            agents={agents}
+            delegationLoading={grantsQuery.isLoading || sessionQuery.isLoading || agentsQuery.isLoading}
+            delegationError={grantsQuery.isError || sessionQuery.isError || agentsQuery.isError}
+            delegationPending={replaceDelegations.isPending}
+            onReplaceDelegations={(grant, agentIds) => replaceDelegations.mutate({
+              grantId: grant.id,
+              currentDelegations: grant.delegations ?? [],
+              agentIds,
+            })}
+          />
+          <AdvancedPanel
+            connection={connection}
+            appName={appName}
+            galleryEntry={logoEntry}
+            removing={removeApp.isPending}
+            onRemove={() => removeApp.mutate()}
+            onReplaced={() => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+              queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
+              queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId) });
+            }}
+          />
+        </div>
       )}
       {activeTab === "review" && (
-        <ReviewPanel
-          connectionId={connectionId}
-          quarantined={quarantined}
-          pending={pending}
-          onReviewQuarantined={reviewQuarantined}
-        />
+        reviewFailed
+          ? <ToolsLoadError onRetry={() => {
+              void catalogQuery.refetch();
+              void profilesQuery.refetch();
+              void policiesQuery.refetch();
+            }} />
+          : reviewLoading
+          ? <ToolsLoading />
+          : <ReviewPanel
+              connectionId={connectionId}
+              quarantined={quarantined}
+              pending={pending}
+              onReviewQuarantined={reviewQuarantined}
+            />
       )}
       {activeTab === "permissions" && (
-        <PermissionsPanel
-          appName={appName}
-          access={access}
-          agents={agents}
-          install={install}
-          readOnly={readOnly}
-          canChange={canChange}
-          quarantined={quarantined}
-          enabledIds={enabledIds}
-          askFirstIds={askFirstIds}
-          pending={pending}
-          installPending={persistInstall.isPending || installsQuery.isLoading}
-          refreshPending={refreshTools.isPending}
-          onSaveAccess={(next) => apply({ access: next })}
-          onSaveInstall={(next) => persistInstall.mutate(next)}
-          onRefreshActions={() => refreshTools.mutate()}
-          onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
-          onReviewQuarantined={reviewQuarantined}
-        />
+        permissionsFailed
+          ? <ToolsLoadError onRetry={() => {
+              void catalogQuery.refetch();
+              void profilesQuery.refetch();
+              void policiesQuery.refetch();
+              void installsQuery.refetch();
+              void agentsQuery.refetch();
+            }} />
+          : permissionsLoading
+          ? <ToolsLoading />
+          : <PermissionsPanel
+              appName={appName}
+              access={access}
+              agents={agents}
+              install={install}
+              readOnly={readOnly}
+              canChange={canChange}
+              quarantined={quarantined}
+              enabledIds={enabledIds}
+              askFirstIds={askFirstIds}
+              pending={pending}
+              installPending={persistInstall.isPending}
+              refreshPending={refreshTools.isPending}
+              onSaveAccess={(next) => apply({ access: next })}
+              onSaveInstall={(next) => persistInstall.mutate(next)}
+              onRefreshActions={() => refreshTools.mutate()}
+              onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
+              onReviewQuarantined={reviewQuarantined}
+            />
       )}
       {activeTab === "test" && (
-        <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
+        catalogQuery.isError
+          ? <ToolsLoadError onRetry={() => { void catalogQuery.refetch(); }} />
+          : catalogQuery.isLoading
+          ? <ToolsLoading mcpActions />
+          : <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
       )}
       {activeTab === "activity" && (
         <ActivityPanel
@@ -470,20 +620,6 @@ export function AppDetail() {
           userLabelById={userLabelById}
         />
       )}
-      {activeTab === "advanced" && (
-        <AdvancedPanel
-          connection={connection}
-          appName={appName}
-          galleryEntry={logoEntry}
-          removing={removeApp.isPending}
-          onRemove={() => removeApp.mutate()}
-          onReplaced={() => {
-            queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId) });
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -494,6 +630,7 @@ function AppDetailHeader({
   logoEntry,
   status,
   actionCount,
+  owner,
   renaming,
   nameDraft,
   renamePending,
@@ -506,7 +643,8 @@ function AppDetailHeader({
   connection: ToolConnection;
   logoEntry: AppGalleryDisplayEntry | null;
   status: StatusInfo;
-  actionCount: number;
+  actionCount: number | null;
+  owner: ConnectionOwnerProfile | null;
   renaming: boolean;
   nameDraft: string;
   renamePending: boolean;
@@ -515,6 +653,8 @@ function AppDetailHeader({
   onRenameCancel: () => void;
   onRenameSubmit: (value: string) => void;
 }) {
+  const unverifiedHost = unverifiedRemoteHost(connection);
+
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
@@ -559,16 +699,65 @@ function AppDetailHeader({
           {connectionDisplaySecondaryHint(connection) && (
             <p className="text-xs text-muted-foreground">{connectionDisplaySecondaryHint(connection)}</p>
           )}
+          {owner && (
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span>Connected by</span>
+              <ConnectionOwnerIdentity owner={owner} />
+            </div>
+          )}
+          {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-1" /> : null}
           <div className="mt-1 flex items-center gap-2">
             <StatusBadge status={status} />
-            <span className="text-xs text-muted-foreground">
-              {actionCount} {actionCount === 1 ? "action" : "actions"} available
-            </span>
+            {actionCount !== null && (
+              <span className="text-xs text-muted-foreground">
+                {actionCount} {actionCount === 1 ? "action" : "actions"} available
+              </span>
+            )}
           </div>
         </div>
       </div>
     </header>
   );
+}
+
+function ToolsLoading({ mcpActions = false }: { mcpActions?: boolean }) {
+  return (
+    <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      {mcpActions ? "Loading MCP actions, this may take a minute." : "Loading tools…"}
+    </div>
+  );
+}
+
+function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="space-y-3 py-8">
+      <p className="text-sm text-destructive">Couldn’t load tools for this app.</p>
+      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+    </div>
+  );
+}
+
+function unverifiedRemoteHost(connection: ToolConnection): string | null {
+  const sourceTemplateKey = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;
+  if (
+    connection.transport !== "mcp_remote"
+    || (typeof sourceTemplateKey === "string" && sourceTemplateKey.trim())
+  ) return null;
+
+  const value = connection.config?.url
+    ?? connection.config?.endpoint
+    ?? connection.config?.remoteUrl
+    ?? connection.transportConfig.url
+    ?? connection.transportConfig.endpoint
+    ?? connection.transportConfig.remoteUrl;
+  if (typeof value !== "string") return null;
+
+  try {
+    return new URL(value).host || null;
+  } catch {
+    return null;
+  }
 }
 
 type StatusInfo = { label: string; tone: "connected" | "attention" | "paused" };
