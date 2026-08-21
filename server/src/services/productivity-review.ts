@@ -35,10 +35,16 @@ const SYNTHETIC_REVIEW_TITLE_PREFIXES = [
   "review silent active run for ",
   "escalated: silent active run for ",
 ];
-export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
-export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
-export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
-export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
+// 2026-08-21 recalibration: thresholds below were set for the 15%-duty era
+// where 10 runs/hour on one card meant a stuck loop. Under productive-run
+// continuation (8s gaps) a HEALTHY card legitimately does 30-40 runs/hour —
+// the old values minted 73 review cards in one day (the single biggest
+// card factory in the intake-vs-close ledger). Aligned with the 25-run
+// generation ceiling, which already caps genuine spins.
+export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 25;
+export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 12;
+export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 40;
+export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 120;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;

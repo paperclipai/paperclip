@@ -206,7 +206,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
-    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 25");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
@@ -532,7 +532,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
       status: "in_progress",
-      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      startedAt: new Date(now.getTime() - 13 * 60 * 60 * 1000),
     });
     const service = productivityReviewService(db);
 
@@ -558,7 +558,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
       agentId: seeded.coderId,
       issueId: seeded.issueId,
-      count: 10,
+      count: 40,
       now,
       withRunComments: true,
     });
@@ -571,7 +571,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.created).toBe(1);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.description).toContain("Primary trigger: `high_churn`");
-    expect(review?.description).toContain("Runs in rolling windows: 10/1h");
+    expect(review?.description).toContain("Runs in rolling windows: 40/1h");
   });
 
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {
@@ -588,7 +588,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
       agentId: seeded.managerId,
       issueId: seeded.issueId,
-      count: 10,
+      count: 40,
       now,
     });
     await db.insert(issueComments).values(
@@ -640,13 +640,13 @@ describeEmbeddedPostgres("productivity review service", () => {
       parentId: reviewId,
       issueNumber: 3,
       identifier: `${seeded.issuePrefix}-3`,
-      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      startedAt: new Date(now.getTime() - 13 * 60 * 60 * 1000),
     });
     await insertRuns({
       companyId: seeded.companyId,
       agentId: seeded.coderId,
       issueId: childId,
-      count: 10,
+      count: 40,
       now,
     });
 
@@ -667,7 +667,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
       agentId: seeded.coderId,
       issueId: seeded.issueId,
-      count: 10,
+      count: 40,
       now,
     });
     const service = productivityReviewService(db);
@@ -695,7 +695,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
       agentId: seeded.coderId,
       issueId: seeded.issueId,
-      count: 10,
+      count: 40,
       now,
     });
     const service = productivityReviewService(db);
@@ -724,7 +724,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
       agentId: seeded.coderId,
       issueId: seeded.issueId,
-      count: 10,
+      count: 40,
       now,
     });
     const service = productivityReviewService(db);
