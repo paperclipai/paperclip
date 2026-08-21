@@ -181,6 +181,16 @@ describeEmbeddedPostgres("issue list routes livenessInvariantViolation filter", 
     const stillBlockedId = randomUUID();
     const resolvedBlockerId = randomUUID();
     const liveBlockerId = randomUUID();
+    const liveBlockerAssigneeId = randomUUID();
+
+    await db.insert(agents).values({
+      id: liveBlockerAssigneeId,
+      companyId,
+      name: "Blocker Owner Agent",
+      role: "engineer",
+      adapter: "claude_local",
+      status: "active",
+    });
 
     await db.insert(issues).values([
       {
@@ -207,9 +217,12 @@ describeEmbeddedPostgres("issue list routes livenessInvariantViolation filter", 
       {
         id: liveBlockerId,
         companyId,
+        // Assigned so this itself does not independently trip the invariant --
+        // its only role here is to be a genuinely live blocker for stillBlockedId.
         title: "Live blocker, still open",
         status: "todo",
         priority: "medium",
+        assigneeAgentId: liveBlockerAssigneeId,
       },
     ]);
 
