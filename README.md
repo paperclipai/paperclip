@@ -67,7 +67,7 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 
 ## Paperclip is right for you if
 
-- ✅ You want to build **autonomous AI companies**
+- ✅ You want to build **autonomous AI organizations**
 - ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
 - ✅ You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
 - ✅ You want agents running **autonomously 24/7**, but still want to audit work and chime in when needed
@@ -106,7 +106,7 @@ Any agent, any runtime, one org chart. If it can receive a heartbeat, it's hired
 </td>
 <td align="center" width="33%">
 <h3>🎯 Goal Alignment</h3>
-Every task traces back to the company mission. Agents know <em>what</em> to do and <em>why</em>.
+Every task traces back to the organization mission. Agents know <em>what</em> to do and <em>why</em>.
 </td>
 <td align="center" width="33%">
 <h3>💓 Heartbeats</h3>
@@ -119,8 +119,8 @@ Agents wake on a schedule, check work, and act. Delegation flows up and down the
 Monthly budgets per agent. When they hit the limit, they stop. No runaway costs.
 </td>
 <td align="center">
-<h3>🏢 Multi-Company</h3>
-One deployment, many companies. Complete data isolation. One control plane for your portfolio.
+<h3>🏢 Multi-Organization</h3>
+One deployment, many organizations. Complete data isolation. One control plane for your portfolio.
 </td>
 <td align="center">
 <h3>🎫 Ticket System</h3>
@@ -170,7 +170,7 @@ Paperclip handles the hard orchestration details correctly.
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
-| **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
+| **True multi-organization isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
 
 <br/>
 

@@ -1454,7 +1454,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               ) : (
                 <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
                   This instance requires the Kubernetes sandbox, but no managed Kubernetes
-                  environment is available for this company yet. Configure one before creating
+                  environment is available for this organization yet. Configure one before creating
                   agents; execution will not fall back to local.
                 </div>
               )}

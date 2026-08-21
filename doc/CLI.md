@@ -297,7 +297,7 @@ npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 
-## Company Commands
+## Organization Commands
 
 ```sh
 npx paperclipai company list
@@ -633,7 +633,7 @@ npx paperclipai skills install paperclipai:optional:browser:agent-browser --comp
 External GitHub, skills.sh, local-path, and URL sources still go through
 `skills import`; catalog commands are for the app-shipped catalog only.
 
-### Company library
+### Organization library
 
 ```sh
 npx paperclipai skills list --company-id <company-id>

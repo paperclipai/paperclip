@@ -756,7 +756,7 @@ export function BoardChat() {
 
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
-                    label: "Draft a Company Brief",
+                    label: "Draft an Organization Brief",
                     prompt: `Draft a one-page Company Brief for ${companyName} — include our mission, team roster, and first priorities.`,
                   },
                   {
@@ -967,7 +967,7 @@ export function BoardChat() {
               value={input}
               onChange={setInput}
               onSubmit={handleSend}
-              placeholder="Ask anything about your company..."
+              placeholder="Ask anything about your organization..."
               submitKey="enter"
               surface="translucent"
               submitting={sending}

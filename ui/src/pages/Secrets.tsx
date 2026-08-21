@@ -1958,7 +1958,7 @@ export function Secrets() {
               !(showFolderView && folderPath) ? (
               <EmptyState
                 icon={KeyRound}
-                message="No secrets yet. Create a shared company secret or one that each user supplies."
+                message="No secrets yet. Create a shared organization secret or one that each user supplies."
                 action="New secret"
                 onAction={openCreateSecret}
               />
@@ -2076,7 +2076,7 @@ export function Secrets() {
                             <div className="mt-1">
                               {row.kind === "company" ? (
                                 <MetaChip>
-                                  <ShieldCheck className="h-3 w-3" /> Company
+                                  <ShieldCheck className="h-3 w-3" /> Organization
                                 </MetaChip>
                               ) : (
                                 <UserSecretChip label="Each user" />
@@ -2581,12 +2581,12 @@ export function Secrets() {
                   }}
                 >
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="company">Company</TabsTrigger>
+                    <TabsTrigger value="company">Organization</TabsTrigger>
                     <TabsTrigger value="user">Each user</TabsTrigger>
                   </TabsList>
                 </Tabs>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Company stores one shared value. Each user lets every member supply their own value under My secrets.
+                  Organization stores one shared value. Each user lets every member supply their own value under My secrets.
                 </p>
               </div>
             ) : null}
@@ -3182,7 +3182,7 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Delete user-provided secret</DialogTitle>
             <DialogDescription>
-              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole company.
+              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole organization.
               Existing member values become unreferenced and active bindings must be remapped.
             </DialogDescription>
           </DialogHeader>
@@ -3585,7 +3585,7 @@ export function ProviderVaultsTab({
               <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
                 {isComingSoonFamily
                   ? "Not yet supported."
-                  : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
+                  : "No organization-specific vaults yet. Secrets can still use the deployment default provider settings."}
               </div>
             ) : (
               <div className="space-y-3">

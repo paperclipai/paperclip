@@ -1759,7 +1759,7 @@ function OnboardingWizardInner({
                     <div>
                       <h3 className="font-medium">Name your organization</h3>
                       <p className="text-xs text-muted-foreground">
-                        What should we call your team or company?
+                        What should we call your team or organization?
                       </p>
                     </div>
                   </div>

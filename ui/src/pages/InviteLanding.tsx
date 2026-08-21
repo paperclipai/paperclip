@@ -431,7 +431,7 @@ export function InviteLandingPage() {
 
   const joinButtonLabel = useMemo(() => {
     if (!invite) return "Continue";
-    if (isCurrentMember) return "Open company";
+    if (isCurrentMember) return "Open organization";
     if (invite.inviteType === "bootstrap_ceo") return "Accept invite";
     if (showsAgentForm) return "Submit request";
     return sessionQuery.data ? "Accept invite" : "Continue";
@@ -533,7 +533,7 @@ export function InviteLandingPage() {
                 companyBrandColor={companyBrandColor}
                 className="h-12 w-12 border border-zinc-800 rounded-none"
               />
-              <h1 className="text-lg font-semibold">You joined the company</h1>
+              <h1 className="text-lg font-semibold">You joined the organization</h1>
             </div>
             <div className="mt-4">
               <Button asChild className="w-full rounded-none">
@@ -587,7 +587,7 @@ export function InviteLandingPage() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Company</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Organization</div>
                 <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
               </div>
               <div className="border border-zinc-800 p-3">
@@ -829,7 +829,7 @@ export function InviteLandingPage() {
                       ? "Completing company access"
                       : invite.inviteType === "bootstrap_ceo"
                         ? "Accept bootstrap invite"
-                        : "Accept company invite"}
+                        : "Accept organization invite"}
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {shouldAutoAcceptHumanInvite

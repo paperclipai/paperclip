@@ -3656,7 +3656,7 @@ export function SkillDetailPage({
               <div className="rounded-md border border-destructive/40 p-3">
                 <div className="text-xs font-semibold uppercase tracking-wide text-destructive">Danger zone</div>
                 <div className="mt-2 flex items-center justify-between gap-3">
-                  <p className="min-w-0 text-xs text-muted-foreground">Remove this skill from the company library.</p>
+                  <p className="min-w-0 text-xs text-muted-foreground">Remove this skill from the organization library.</p>
                   <Button
                     variant="destructive"
                     size="sm"
@@ -5063,7 +5063,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: "Skill removed",
-        body: `${skill.name} was removed from the company skill library.`,
+        body: `${skill.name} was removed from the organization skill library.`,
       });
     },
     onError: (error) => {

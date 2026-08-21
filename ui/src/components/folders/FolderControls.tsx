@@ -637,7 +637,7 @@ export function FolderFormDialog({
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit folder" : "Create folder"}</DialogTitle>
           <DialogDescription>
-            {kind === "routine" ? "Organize routines in this company." : "Organize installed company skills."}
+            {kind === "routine" ? "Organize routines in this company." : "Organize installed organization skills."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">

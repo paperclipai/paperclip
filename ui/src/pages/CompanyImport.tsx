@@ -1906,7 +1906,7 @@ export function CompanyImport() {
           </Field>
         )}
 
-        <Field label="Target" hint="Import into this company or create a new one.">
+        <Field label="Target" hint="Import into this organization or create a new one.">
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
@@ -1916,7 +1916,7 @@ export function CompanyImport() {
               resetImportFlowState();
             }}
           >
-            <option value="new">Create new company</option>
+            <option value="new">Create new organization</option>
             <option value="existing">
               Existing company: {selectedCompany?.name}
             </option>

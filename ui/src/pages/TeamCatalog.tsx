@@ -1407,7 +1407,7 @@ export function StepTargetManager({
         className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2.5 text-sm text-blue-700 dark:text-blue-300"
         id="target-manager-help"
       >
-        This team&apos;s root agents need a manager in your company. Pick the agent who will become
+        This team&apos;s root agents need a manager in your organization. Pick the agent who will become
         their parent. Internal team hierarchy is preserved.
       </div>
 
@@ -1998,7 +1998,7 @@ export function ApplySuccess({
         <p className="text-base font-semibold">Team installed</p>
       </div>
       <p className="text-sm text-muted-foreground">
-        {team.name} was imported into your company. Imported entities are stamped with catalog provenance.
+        {team.name} was imported into your organization. Imported entities are stamped with catalog provenance.
       </p>
       {result && (
         <ul className="divide-y divide-border/60 rounded-md border border-border px-3">

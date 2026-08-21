@@ -17,7 +17,7 @@ const inviteRoleOptions = [
     value: "viewer",
     label: "Viewer",
     description: "Can view company work and follow along.",
-    gets: "View-only company membership.",
+    gets: "View-only organization membership.",
   },
   {
     value: "operator",
@@ -182,10 +182,10 @@ export function CompanyInvites() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <MailPlus className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Invites</h1>
+          <h1 className="text-lg font-semibold">Organization Invites</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Invite people to request access to this company. New invite links are copied to your clipboard when they are generated.
+          Invite people to request access to this organization. New invite links are copied to your clipboard when they are generated.
         </p>
       </div>
 
@@ -311,7 +311,7 @@ export function CompanyInvites() {
 
         {inviteHistory.length === 0 ? (
           <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this company yet.
+            No invites have been created for this organization yet.
           </div>
         ) : (
           <div className="border-t border-border">

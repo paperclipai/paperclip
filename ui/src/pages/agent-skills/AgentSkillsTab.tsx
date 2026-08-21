@@ -604,7 +604,7 @@ function EmptyLibraryCard() {
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center">
       <Store className="h-8 w-8 text-muted-foreground/60" />
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">No skills in the company library</p>
+        <p className="text-sm font-medium text-foreground">No skills in the organization library</p>
         <p className="text-xs text-muted-foreground">
           Install skills to the company, then enable them on this agent.
         </p>

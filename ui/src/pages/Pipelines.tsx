@@ -941,7 +941,7 @@ function PipelinesIndex() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view pipelines.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select an organization to view pipelines.</div>;
   }
   if (pipelinesQuery.isLoading) return <PageSkeleton />;
 
@@ -5046,7 +5046,7 @@ export function ReviewQueue() {
   }, [activeRowId, decideRow, openItem, visibleRows]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view the review queue." />;
+    return <EmptyState icon={Hexagon} message="Select an organization to view the review queue." />;
   }
 
   if (attentionQuery.isLoading || reviewCasesQuery.isLoading) {

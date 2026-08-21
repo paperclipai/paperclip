@@ -187,7 +187,7 @@ export function Issues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view tasks." />;
+    return <EmptyState icon={CircleDot} message="Select an organization to view tasks." />;
   }
 
   return (
