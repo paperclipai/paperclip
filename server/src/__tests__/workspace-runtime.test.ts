@@ -7565,14 +7565,26 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-pnpm-reconcile-${randomUUID()}`;
 
-    const portProbe = net.createServer();
-    await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
-    const address = portProbe.address();
-    const port = typeof address === "object" && address ? address.port : null;
-    await new Promise<void>((resolve, reject) => {
-      portProbe.close((error) => error ? reject(error) : resolve());
-    });
-    if (!port) throw new Error("Failed to reserve pnpm reconciliation test port");
+    // Reserve a port outside the runtime exposure app-port range (42000-42999).
+    // The reconciler stores this port on the row. A port inside that range makes
+    // the reconciler treat the row as an exposure reservation and report drift,
+    // so the live service never reaches the adoption path this test verifies.
+    const reservePort = async () => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const probe = net.createServer();
+        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        const address = probe.address();
+        const candidate = typeof address === "object" && address ? address.port : null;
+        await new Promise<void>((resolve, reject) => {
+          probe.close((error) => error ? reject(error) : resolve());
+        });
+        if (candidate && candidate <= 55_535 && (candidate < 42_000 || candidate > 42_999)) {
+          return candidate;
+        }
+      }
+      throw new Error("Failed to reserve pnpm reconciliation test port outside the broker range");
+    };
+    const port = await reservePort();
 
     const companyId = randomUUID();
     const projectId = randomUUID();
