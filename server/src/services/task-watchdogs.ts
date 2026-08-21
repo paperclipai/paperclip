@@ -1253,8 +1253,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
    * lastReviewedFingerprint. Explicit reopen to todo/in_progress/in_review
    * (without a completed review path) must clear that stamp so the same stop
    * fingerprint is no longer already_reviewed. cancelled/backlog keep
-   * completed-review suppression. The UPDATE is status-conditional so a
-   * concurrent terminal stamp is not wiped.
+   * completed-review suppression. The UPDATE re-checks reopen status and
+   * in_review disposition so a concurrent terminal or review-path stamp is
+   * not wiped.
    */
   async function clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(
     watchdog: IssueWatchdogRow,
@@ -1289,7 +1290,30 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           from issues
           where issues.id = ${watchdog.watchdogIssueId}
             and issues.company_id = ${watchdog.companyId}
-            and issues.status in ('todo', 'in_progress', 'in_review')
+            and (
+              issues.status in ('todo', 'in_progress')
+              or (
+                issues.status = 'in_review'
+                and issues.assignee_user_id is null
+                and issues.execution_state is null
+                and issues.monitor_next_check_at is null
+                and not exists (
+                  select 1
+                  from issue_thread_interactions
+                  where issue_thread_interactions.company_id = issues.company_id
+                    and issue_thread_interactions.issue_id = issues.id
+                    and issue_thread_interactions.status = 'pending'
+                )
+                and not exists (
+                  select 1
+                  from issue_approvals
+                  inner join approvals on approvals.id = issue_approvals.approval_id
+                  where issue_approvals.company_id = issues.company_id
+                    and issue_approvals.issue_id = issues.id
+                    and approvals.status in ('pending', 'revision_requested')
+                )
+              )
+            )
         )`,
       ))
       .returning();
