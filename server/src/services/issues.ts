@@ -138,16 +138,23 @@ const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 /**
- * Upper bound on rows scanned server-side before applying `limit`/`offset`
- * when `noWakePath: true` is set (AGE-924). The classification runs in
- * process against a bounded candidate set rather than as a SQL predicate, so
- * this caps worst-case work for a company with a huge backlog. Generous on
+ * Upper bound on rows scanned server-side in one request when `noWakePath:
+ * true` is set (AGE-924). The classification runs in process against a
+ * bounded candidate set rather than as a SQL predicate, so this caps
+ * worst-case work per request for a company with a huge backlog. Generous on
  * purpose: real companies rarely have this many issues matching a given base
- * filter, so in practice this is a circuit breaker, not a working limit. If
- * the raw (pre-classification) row count returned equals this cap, the scan
- * may be incomplete; `list()` signals that via `noWakePathScanTruncated` so
- * callers (e.g. `GET /companies/:companyId/issues`) can surface it instead of
- * silently returning a partial result.
+ * filter, so in practice this is a circuit breaker, not a working limit.
+ *
+ * When `noWakePath` is set, the caller's `offset` is pushed down as the raw
+ * SQL scan offset (skip this many *candidate rows*, not matches), and the
+ * response contains at most `limit` matches found within that single
+ * `[offset, offset + cap)` window. If the raw row count returned equals this
+ * cap, the window may contain further matches beyond it that were not
+ * scanned; `list()` signals that via `noWakePathScanTruncated`, and the route
+ * surfaces it as `X-Paperclip-No-Wake-Path-Scan-Truncated: true`. A caller
+ * that sees the header must advance `offset` by this cap (not by the number
+ * of results received) and repeat, until a response omits the header — that
+ * is the retrieval path for any matches an earlier window omitted.
  */
 export const ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP = 20_000;
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
@@ -5796,11 +5803,20 @@ export function issueService(db: Db) {
           sortDir: filters?.sortDir,
         }));
       // When `noWakePath` is set the 4-condition classification runs in process
-      // (see issue-no-wake-path.ts) after the DB fetch, so the requested
-      // limit/offset cannot be pushed down as a SQL predicate. Scan a bounded
-      // candidate set instead and apply the caller's limit/offset afterwards.
+      // (see issue-no-wake-path.ts) after the DB fetch, so it cannot be pushed
+      // down as a SQL predicate. To keep results retrievable even when a
+      // company has more matching issues than `ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP`
+      // (Greptile review on AGE-924 PR #11911), the caller's `offset` is pushed
+      // down as the SQL scan offset directly — NOT re-applied to the classified
+      // matches. This changes what `offset` means for `noWakePath` requests:
+      // it is "skip this many raw candidate rows", not "skip this many matches".
+      // A caller that gets `X-Paperclip-No-Wake-Path-Scan-Truncated: true` must
+      // advance `offset` by `ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP` (not by the
+      // number of results returned) to scan the next window and retrieve any
+      // omitted matches, repeating until a response comes back without the
+      // truncation header.
       const scanLimit = noWakePath ? ISSUE_LIST_NO_WAKE_PATH_SCAN_CAP : limit;
-      const scanOffset = noWakePath ? 0 : offset;
+      const scanOffset = offset;
       const pageQuery = scanOffset > 0
         ? (scanLimit === undefined ? baseQuery.offset(scanOffset) : baseQuery.limit(scanLimit).offset(scanOffset))
         : (scanLimit === undefined ? baseQuery : baseQuery.limit(scanLimit));
@@ -5882,7 +5898,7 @@ export function issueService(db: Db) {
           hasActiveRun: row.activeRun !== null || noWakePathLiveIssueIds.has(row.id),
           assigneeAgentStatus: row.assigneeAgentId ? noWakePathAgentStatusById.get(row.assigneeAgentId) ?? null : null,
         }) !== null);
-        const page = filtered.slice(offset, limit === undefined ? undefined : offset + limit);
+        const page = filtered.slice(0, limit === undefined ? undefined : limit);
         if (noWakePathScanTruncated) {
           Object.defineProperty(page, "noWakePathScanTruncated", { value: true, enumerable: false });
         }

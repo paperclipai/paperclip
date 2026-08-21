@@ -308,4 +308,35 @@ describeEmbeddedPostgres("issue list monitorStatus + noWakePath (AGE-924)", () =
       .expect(200);
     expect(healthyRes.headers["x-paperclip-no-wake-path-scan-truncated"]).toBeUndefined();
   });
+
+  it("?offset= is the raw-scan continuation cursor for noWakePath, not a match-count skip (Greptile follow-up on PR #11911)", async () => {
+    // When noWakePath is truncated, a caller must advance `offset` by the
+    // scan cap to reach matches a prior window missed — which only works if
+    // `offset` skips raw candidate rows (SQL order), not already-classified
+    // matches. This pins that contract on a small, fast dataset: two
+    // no-wake-path issues exist, ordered by identifier/creation; skipping past
+    // the first one via `offset=1` must still find the second, and skipping
+    // past both must return empty even though matches exist earlier.
+    const company = await seedCompanyWithBoardAccess(ctx.db, "No wake path offset is a scan cursor");
+    const companyId = company.companyId;
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    await ctx.db.insert(issues).values([
+      { id: firstId, companyId, title: "Todo, unassigned, first", status: "todo", priority: "medium" },
+      { id: secondId, companyId, title: "Todo, unassigned, second", status: "todo", priority: "medium" },
+    ]);
+
+    const fullRes = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true`)
+      .expect(200);
+    const fullIds = (fullRes.body as Array<{ id: string }>).map((row) => row.id);
+    expect(fullIds).toHaveLength(2);
+
+    // Skip past every raw candidate row: no matches remain in this window,
+    // even though two real matches exist starting at offset 0.
+    const pastEndRes = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true&offset=2`)
+      .expect(200);
+    expect(pastEndRes.body).toEqual([]);
+  });
 });
