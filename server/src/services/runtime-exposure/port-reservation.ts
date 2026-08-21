@@ -185,6 +185,24 @@ function rowClaimsLiveExposure(row: PersistedExposureRowSnapshot): boolean {
   return Boolean(row.exposure) && row.exposure!.state !== "removed";
 }
 
+/**
+ * True when the row itself says nothing of its own should be listening: it is
+ * recorded stopped/failed, its exposure was explicitly torn down, or it never
+ * reached `running` and left only a reserved pair behind.
+ *
+ * A RUNNING row with no exposure state at all is the one shape that must not
+ * count as dormant. Pre-exposure services carry a plain `port` column with
+ * `exposure: null`, and when that port happens to sit inside the dedicated
+ * range, a dormant classification turns the row's own live listener into a
+ * "drift" finding — which the startup sweep then quarantines instead of
+ * adopting, orphaning a healthy surviving service.
+ */
+export function isDormantExposureRow(row: PersistedExposureRowSnapshot): boolean {
+  if (row.status === "stopped" || row.status === "failed") return true;
+  if (row.exposure) return row.exposure.state === "removed";
+  return row.status !== "running";
+}
+
 function rowIdentity(row: PersistedExposureRowSnapshot): ExposureOwnerIdentity {
   return {
     runtimeServiceId: row.id,
@@ -459,8 +477,7 @@ export function findExposureReservationDrift(
 
   const drift: ExposureReservationDrift[] = [];
   for (const row of rows) {
-    const dormant = row.status === "stopped" || row.status === "failed" || !rowClaimsLiveExposure(row);
-    if (!dormant) continue;
+    if (!isDormantExposureRow(row)) continue;
     const owner = rowIdentity(row);
     for (const port of collectRowExposurePorts(row)) {
       const mappingOwner = mappingOwnerByPort.get(port) ?? null;

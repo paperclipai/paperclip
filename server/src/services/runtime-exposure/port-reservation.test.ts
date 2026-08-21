@@ -320,6 +320,29 @@ describe("regression 3: Serve mapping ownership mismatch is visible and fails cl
     expect(drift).toEqual([]);
   });
 
+  it("does not report a running pre-exposure service's own in-range port as drift", () => {
+    // The row is RUNNING with `exposure: null` — a pre-exposure service whose
+    // configured port happens to sit inside the dedicated range. At startup its
+    // surviving listener is unattributable (the in-memory runtime registry is
+    // empty), which used to read as drift and quarantine the row before the
+    // reconciler could adopt the service.
+    const drift = findExposureReservationDrift({
+      persistedRows: [stoppedTornDownRow({ status: "running", exposure: null })],
+      livePorts: new Set([42001, 52001]),
+    });
+
+    expect(drift).toEqual([]);
+  });
+
+  it("still sweeps a stopped pre-exposure row's reserved pair", () => {
+    const drift = findExposureReservationDrift({
+      persistedRows: [stoppedTornDownRow({ exposure: null })],
+      livePorts: new Set([42001]),
+    });
+
+    expect(drift).toMatchObject([{ port: 42001, reason: "live_listener", conflictingOwner: null }]);
+  });
+
   it("does not report a healthy running lane as drift", () => {
     const drift = findExposureReservationDrift({
       persistedRows: [{

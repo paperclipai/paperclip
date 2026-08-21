@@ -61,7 +61,13 @@ import {
   buildWorkspaceRealizationRequest,
   readWorkspaceRealizationRequest,
 } from "../services/workspace-realization.ts";
-import { deriveViteHmrPort, type Environment, type EnvironmentLease } from "@paperclipai/shared";
+import {
+  deriveViteHmrPort,
+  RUNTIME_EXPOSURE_APP_PORT_MAX,
+  RUNTIME_EXPOSURE_APP_PORT_MIN,
+  type Environment,
+  type EnvironmentLease,
+} from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -7469,6 +7475,42 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await expect(fetch(service!.url!)).rejects.toThrow();
   });
 
+  /**
+   * A free loopback port inside the dedicated runtime exposure app range,
+   * falling back to an OS-assigned ephemeral port when the whole range is
+   * busy on this host.
+   *
+   * The adoption test below used to reserve with `listen(0)`, and on Linux CI
+   * the kernel's ephemeral span contains the dedicated range, so roughly one
+   * run in thirty landed in it by accident — the exact shape that made the
+   * startup drift sweep quarantine the row instead of adopting it. Reserving
+   * in-range on purpose turns that once-probabilistic collision into the case
+   * the test always exercises.
+   */
+  async function reserveAdoptionTestPort(): Promise<number> {
+    for (let candidate = RUNTIME_EXPOSURE_APP_PORT_MIN; candidate <= RUNTIME_EXPOSURE_APP_PORT_MAX; candidate += 1) {
+      const probe = net.createServer();
+      const bound = await new Promise<boolean>((resolve) => {
+        probe.once("error", () => resolve(false));
+        probe.listen(candidate, "127.0.0.1", () => resolve(true));
+      });
+      if (!bound) continue;
+      await new Promise<void>((resolve, reject) => {
+        probe.close((error) => error ? reject(error) : resolve());
+      });
+      return candidate;
+    }
+    const fallback = net.createServer();
+    await new Promise<void>((resolve) => fallback.listen(0, "127.0.0.1", resolve));
+    const address = fallback.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    await new Promise<void>((resolve, reject) => {
+      fallback.close((error) => error ? reject(error) : resolve());
+    });
+    if (!port) throw new Error("Failed to reserve pnpm reconciliation test port");
+    return port;
+  }
+
   it("re-adopts a live service whose shell command differs from the surviving process argv", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pnpm-reconcile-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
@@ -7477,14 +7519,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-pnpm-reconcile-${randomUUID()}`;
 
-    const portProbe = net.createServer();
-    await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
-    const address = portProbe.address();
-    const port = typeof address === "object" && address ? address.port : null;
-    await new Promise<void>((resolve, reject) => {
-      portProbe.close((error) => error ? reject(error) : resolve());
-    });
-    if (!port) throw new Error("Failed to reserve pnpm reconciliation test port");
+    const port = await reserveAdoptionTestPort();
 
     const companyId = randomUUID();
     const projectId = randomUUID();

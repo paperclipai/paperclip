@@ -90,6 +90,7 @@ import {
   ExposurePortPairClaims,
   findExposurePairConflict,
   findExposureReservationDrift,
+  isDormantExposureRow,
   isExposureAdoptionPermitted,
   type BrokerMappingSnapshot,
   type ExposureOwnerIdentity,
@@ -4084,13 +4085,12 @@ async function detectPersistedExposureReservationDrift(input: {
     issueId: row.issueId,
   }));
 
-  // Probe only the ports dormant rows actually reserve; a startup sweep must not
-  // walk the whole dedicated range.
+  // Probe only the ports dormant rows actually reserve; a startup sweep must
+  // not walk the whole dedicated range, and a running pre-exposure service's
+  // own port is not a reservation to police at all.
   const candidatePorts = new Set<number>();
   for (const row of snapshots) {
-    if (row.status !== "stopped" && row.status !== "failed" && row.exposure && row.exposure.state !== "removed") {
-      continue;
-    }
+    if (!isDormantExposureRow(row)) continue;
     for (const port of collectRowExposurePorts(row)) candidatePorts.add(port);
   }
 
