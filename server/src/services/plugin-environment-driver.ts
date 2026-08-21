@@ -78,7 +78,7 @@ export interface ReadyPluginEnvironmentDriver {
   templateRefKind?: PluginEnvironmentDriverDeclaration["templateRefKind"];
   templateConfigBinding?: PluginEnvironmentDriverDeclaration["templateConfigBinding"];
   supportsTemplateDelete?: PluginEnvironmentDriverDeclaration["supportsTemplateDelete"];
-  supportsSetupTokenLogin?: PluginEnvironmentDriverDeclaration["supportsSetupTokenLogin"];
+  supportsLoginPty?: PluginEnvironmentDriverDeclaration["supportsLoginPty"];
 }
 
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
@@ -257,7 +257,7 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
-          supportsSetupTokenLogin: driver.supportsSetupTokenLogin,
+          supportsLoginPty: driver.supportsLoginPty,
         })),
     );
   }

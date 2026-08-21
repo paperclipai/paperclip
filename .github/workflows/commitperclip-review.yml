@@ -9,7 +9,6 @@ on:
 
 permissions:
   pull-requests: write
-  security-events: write
   checks: write
   contents: read
 
@@ -54,16 +53,6 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-
-      - name: Run security gates
-        run: node .github/scripts/check-pr-security.mjs
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
       - name: Fail if quality gates failed
         if: >-

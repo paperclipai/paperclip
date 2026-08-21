@@ -536,6 +536,14 @@ const responses = {
     description: "Conflict",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  payloadTooLarge: {
+    description: "Payload too large",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  unsupportedMediaType: {
+    description: "Unsupported media type",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
   unprocessable: {
     description: "Unprocessable entity",
     content: { "application/json": { schema: ErrorSchema } },
@@ -2316,6 +2324,25 @@ registry.registerPath({
     body: jsonBody(createIssueWorkProductSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/work-products/{workProductId}/review-document",
+  tags: ["issues"],
+  summary: "Ensure the review document for a Markdown work product",
+  request: { params: z.object({ id: z.string(), workProductId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    413: r.payloadTooLarge,
+    415: r.unsupportedMediaType,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

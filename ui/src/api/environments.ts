@@ -20,8 +20,20 @@ export interface EnvironmentCustomImageOverview {
    * back to the base image until a new image is captured. `null` when unknown.
    */
   activeTemplateMatchesConfig?: boolean | null;
+  /**
+   * Boot-relevant drift attribution for the active template. It names the
+   * classification and the drifted paths with their `from`/`to` values, so the
+   * banner can name the changed field. `null` or absent when there is no active
+   * template or the driver is not `sandbox`.
+   */
+  activeTemplateDrift?: EnvironmentCustomImageActiveTemplateDrift | null;
   activeSession: EnvironmentCustomImageSetupSession | null;
   latestSession: EnvironmentCustomImageSetupSession | null;
+}
+
+export interface EnvironmentCustomImageActiveTemplateDrift {
+  classification: EnvironmentCustomImageRelinkClassification;
+  driftedPaths: EnvironmentCustomImageDriftedPath[];
 }
 
 export type EnvironmentCustomImageReconciliation =
