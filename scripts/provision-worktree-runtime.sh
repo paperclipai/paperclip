@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep this script compatible with macOS's system Bash 3.2.
 set -euo pipefail
 
 base_cwd="${PAPERCLIP_WORKSPACE_BASE_CWD:?PAPERCLIP_WORKSPACE_BASE_CWD is required}"
@@ -139,7 +140,7 @@ run_ensure_seeded() {
   if ensure_base_cli_healthy; then
     (
       cd "$worktree_cwd" &&
-        node "$base_cli_runner_path" "$base_cli_entry_path" worktree ensure-seeded --config "$worktree_config_path" "${source_config_args[@]}"
+        node "$base_cli_runner_path" "$base_cli_entry_path" worktree ensure-seeded --config "$worktree_config_path" ${source_config_args[@]+"${source_config_args[@]}"}
     )
     return
   fi
@@ -147,7 +148,7 @@ run_ensure_seeded() {
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd" &&
-        pnpm paperclipai worktree ensure-seeded --config "$worktree_config_path" "${source_config_args[@]}"
+        pnpm paperclipai worktree ensure-seeded --config "$worktree_config_path" ${source_config_args[@]+"${source_config_args[@]}"}
     )
     return
   fi
@@ -155,7 +156,7 @@ run_ensure_seeded() {
   if command -v paperclipai >/dev/null 2>&1; then
     (
       cd "$worktree_cwd" &&
-        paperclipai worktree ensure-seeded --config "$worktree_config_path" "${source_config_args[@]}"
+        paperclipai worktree ensure-seeded --config "$worktree_config_path" ${source_config_args[@]+"${source_config_args[@]}"}
     )
     return
   fi
