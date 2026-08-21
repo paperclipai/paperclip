@@ -75,6 +75,8 @@ rl.on("line", (line) => {
       closeMode,
       echoInput: directive.echoInput === true,
       noWriteReply: mode === "no-write-reply",
+      emitAfterCloseChunk:
+        typeof directive.emitAfterCloseChunk === "string" ? directive.emitAfterCloseChunk : null,
     });
 
     if (mode === "no-open-reply") {
@@ -176,6 +178,22 @@ rl.on("line", (line) => {
       ? { hostRouteId: params.hostRouteId, workerSessionId: entry.workerSessionId }
       : { hostRouteId: params.hostRouteId };
     send({ jsonrpc: "2.0", id: message.id, result: ack });
+    if (entry && entry.emitAfterCloseChunk) {
+      // Emit one late data frame for the just-closed pair, so a test proves the
+      // host drops a late frame for a tombstoned pair and does not retire the
+      // worker.
+      setImmediate(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "duplexChannel.data",
+          params: {
+            hostRouteId: entry.hostRouteId,
+            workerSessionId: entry.workerSessionId,
+            chunk: entry.emitAfterCloseChunk,
+          },
+        });
+      });
+    }
     return;
   }
 

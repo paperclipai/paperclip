@@ -224,6 +224,22 @@ function nextDuplexHostRouteId(): string {
   return `duplex-route-${duplexHostRouteIdSequence}`;
 }
 
+// The separator between the two identifiers of a duplex route pair key. It is a
+// null byte, which appears in neither a host route id nor a worker session id, so
+// two distinct pairs never collapse to one key.
+const DUPLEX_PAIR_KEY_SEPARATOR = "\u0000";
+/** Build the exact-pair routing key from the host route id and the worker session id. */
+function duplexPairKey(hostRouteId: string, workerSessionId: string): string {
+  return `${hostRouteId}${DUPLEX_PAIR_KEY_SEPARATOR}${workerSessionId}`;
+}
+
+// The maximum number of tombstoned duplex pairs one worker retains. The worker
+// keeps every tombstone until it retires, so a closed pair never returns. Before
+// the set would exceed this bound, the host retires the worker, which drops every
+// route and every tombstone at once. A tombstone overflow fails closed; the host
+// never evicts a tombstone and lets a pair return.
+const MAX_DUPLEX_ROUTE_TOMBSTONES = 4096;
+
 /** Minimum time between two dropped-`execute.log` debug records. The router
  * rate-limits the record so a flood of dropped chunks writes at most one line
  * per window with a running count. */
@@ -319,6 +335,18 @@ export function resolveRpcCallTimeoutMs(
 /**
  * Options for starting a worker process.
  */
+/**
+ * The process-scoped aggregate route-slot controller. The manager injects one
+ * shared instance into every worker handle, so the ceiling counts every
+ * concurrent duplex route across the process, not one agent's setting.
+ */
+export interface DuplexRouteSlotController {
+  /** Reserve one route slot. Return true when a slot was free and is now held. */
+  tryAcquire(): boolean;
+  /** Release one held route slot. */
+  release(): void;
+}
+
 export interface WorkerStartOptions {
   /** Absolute path to the plugin worker entrypoint (CJS bundle). */
   entrypointPath: string;
@@ -345,6 +373,13 @@ export interface WorkerStartOptions {
   execArgv?: string[];
   /** Environment variables passed to the child process. */
   env?: Record<string, string>;
+  /**
+   * The process-scoped aggregate route-slot controller for the duplex channel
+   * ceiling. The manager injects one shared instance into every worker handle.
+   * When it is absent, the worker admits every duplex open unbounded (a unit test
+   * constructs a handle this way).
+   */
+  duplexRouteSlots?: DuplexRouteSlotController | null;
   /**
    * Companies this worker may act on from proactive (no-invocation) worker→host
    * calls — the plugin's configured companies. Seeded onto the handle at
@@ -1501,10 +1536,83 @@ export function createPluginWorkerHandle(
     lifetimeTimer: ReturnType<typeof setTimeout> | null;
     terminalized: boolean;
     settleWait: (value: { exitCode: number | null }) => void;
+    // The frames that arrived before the bind, held in order. The bind replays
+    // them through the exact-pair routing, so an early frame is never lost and a
+    // frame whose pair does not match the bound pair still fails closed.
+    preBind: JsonRpcNotification[];
+    preBindChars: number;
   }
-  // At most one active duplex channel per worker. A non-null route blocks a
-  // second open until the manager confirms the first route's close.
-  let duplexChannelRoute: DuplexChannelRoute | null = null;
+  // The live duplex routes on this worker, keyed by the exact
+  // `{ hostRouteId, workerSessionId }` pair. The host binds one pair once, at
+  // open, and routes each data, exit, and close frame only to the route that owns
+  // its exact pair. The host never routes by the worker session id alone.
+  const liveDuplexRoutes = new Map<string, DuplexChannelRoute>();
+  // The reserved-or-opening routes, keyed by the host route id. A route lives here
+  // from the open call until the worker session id binds. The host then moves it
+  // to `liveDuplexRoutes` under the exact pair key.
+  const openingDuplexRoutes = new Map<string, DuplexChannelRoute>();
+  // The tombstoned pairs on this worker, keyed by the exact pair key. The host
+  // installs a tombstone atomically when it removes a live binding, and retains it
+  // until the worker retires. A late frame for a tombstoned pair reaches no
+  // listener. A closed pair never returns.
+  const duplexPairTombstones = new Set<string>();
+
+  // The process-scoped aggregate route-slot controller. The manager injects it, so
+  // the ceiling counts every duplex route across every worker in the process, not
+  // one agent's setting. When it is absent, the worker admits every open, so the
+  // handle runs unbounded in isolation (a unit test constructs it this way).
+  const duplexRouteSlots = options.duplexRouteSlots ?? null;
+  // The routes that currently hold one aggregate slot. The host releases a slot one
+  // time per route, so a double terminalize never releases two slots.
+  const duplexRouteSlotHolders = new Set<DuplexChannelRoute>();
+
+  // Try to reserve one aggregate route slot for a route. Return true when the
+  // route holds a slot after the call. When no controller is present, the route
+  // always holds a slot.
+  function acquireDuplexRouteSlot(route: DuplexChannelRoute): boolean {
+    if (!duplexRouteSlots) return true;
+    if (!duplexRouteSlots.tryAcquire()) return false;
+    duplexRouteSlotHolders.add(route);
+    return true;
+  }
+
+  // Release the aggregate route slot a route holds, one time. A route that never
+  // held a slot releases nothing.
+  function releaseDuplexRouteSlot(route: DuplexChannelRoute): void {
+    if (!duplexRouteSlotHolders.delete(route)) return;
+    duplexRouteSlots?.release();
+  }
+
+  // Retire the worker at once. The host kills the process, so every live route,
+  // every reserved route, and every tombstone drops together. The host uses this
+  // as the fail-closed response to an ownership violation and to a tombstone-set
+  // overflow. The host never logs the raw frame content on a violation.
+  function retireDuplexWorkerOnViolation(reason: string): void {
+    log.error({ pluginId }, `duplex channel ownership violation (${reason}); retiring worker`);
+    void killProcess();
+  }
+
+  // Install a tombstone for a bound pair atomically with the removal of its live
+  // binding. This runs in one synchronous step, before any slot release or reuse,
+  // so a late frame for the pair reaches no listener. Before the set would exceed
+  // its hard bound, retire the worker, which drops every route and every tombstone
+  // at once. A tombstone overflow fails closed; the host never evicts a tombstone
+  // and lets a pair return.
+  function tombstoneBoundDuplexPair(route: DuplexChannelRoute): void {
+    if (route.workerSessionId === null) return;
+    const pairKey = duplexPairKey(route.hostRouteId, route.workerSessionId);
+    liveDuplexRoutes.delete(pairKey);
+    if (!duplexPairTombstones.has(pairKey)) {
+      if (duplexPairTombstones.size >= MAX_DUPLEX_ROUTE_TOMBSTONES) {
+        // The set is full. Do not evict a tombstone. Retire the worker, which
+        // drops every route and every tombstone together, so no closed pair ever
+        // returns.
+        retireDuplexWorkerOnViolation("tombstone set overflow");
+        return;
+      }
+      duplexPairTombstones.add(pairKey);
+    }
+  }
 
   // Close the worker channel by the host route identifier and verify the bound
   // acknowledgement. Return true only when the worker returns an acknowledgement
@@ -1557,12 +1665,20 @@ export function createPluginWorkerHandle(
     route.listener = null;
     route.buffered = [];
     route.bufferedChars = 0;
+    route.preBind = [];
+    route.preBindChars = 0;
     clearDuplexChannelLifetimeTimer(route);
+    // Remove the live binding and install the tombstone in one synchronous step,
+    // before the worker close and before any reuse. A reserved route that never
+    // bound leaves the opening map only; it has no pair to tombstone, and the
+    // monotonic host route id never returns.
+    openingDuplexRoutes.delete(route.hostRouteId);
+    tombstoneBoundDuplexPair(route);
+    releaseDuplexRouteSlot(route);
     // A terminalized route reports a null exit code, which the caller treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
     const confirmed = await closeDuplexChannelTerminal(route.hostRouteId, route.workerSessionId);
-    if (duplexChannelRoute === route) duplexChannelRoute = null;
     if (!confirmed) {
       // The worker did not acknowledge the close, so the host cannot prove the
       // channel is gone. Fail closed: retire the worker before any reuse.
@@ -1610,23 +1726,55 @@ export function createPluginWorkerHandle(
   // larger than the per-chunk limit or when the cumulative bytes pass the total
   // cap. Buffer a valid frame under the pre-bind bounds when no listener has
   // attached yet. Never log the raw bytes.
+  // Resolve one inbound duplex frame to its owning route by the exact pair. Return
+  // the live route on an exact live-pair match. Return `"tombstoned"` for a late
+  // frame whose exact pair the host already closed; that frame reaches no listener
+  // and changes no state. Return `"violation"` for any unknown, foreign,
+  // duplicate, ambiguous, or malformed pair; the caller fails closed and retires
+  // the worker. The lookup never routes by the worker session id alone.
+  function resolveDuplexRouteByPair(
+    hostRouteId: string | null,
+    workerSessionId: string | null,
+  ): DuplexChannelRoute | "tombstoned" | "opening" | "violation" {
+    if (!hostRouteId || !workerSessionId) return "violation";
+    const pairKey = duplexPairKey(hostRouteId, workerSessionId);
+    const live = liveDuplexRoutes.get(pairKey);
+    if (live && live.state === "open") return live;
+    if (duplexPairTombstones.has(pairKey)) return "tombstoned";
+    // A frame whose host route id names a route that is still opening arrived
+    // before the bind. It is the host's own reserved route, not a foreign frame.
+    // The caller defers it, so the bind replays it through the exact-pair routing.
+    if (openingDuplexRoutes.has(hostRouteId)) return "opening";
+    return "violation";
+  }
+
   function routeDuplexChannelData(notification: JsonRpcNotification): void {
-    const route = duplexChannelRoute;
-    if (!route || route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const hostRouteId = readNonEmptyString(params.hostRouteId);
     const workerSessionId = readNonEmptyString(params.workerSessionId);
+    const resolved = resolveDuplexRouteByPair(hostRouteId, workerSessionId);
+    if (resolved === "tombstoned") {
+      // A late frame for a closed pair. It reaches no listener and changes no
+      // state. Never log the raw frame content.
+      return;
+    }
+    if (resolved === "violation") {
+      // An unknown, foreign, duplicate, ambiguous, or malformed pair. Fail closed:
+      // retire the worker. Never log the raw frame content.
+      retireDuplexWorkerOnViolation("data frame pair");
+      return;
+    }
+    if (resolved === "opening") {
+      // The frame arrived before the bind. Hold it; the bind replays it through the
+      // exact-pair routing.
+      bufferPreBindDuplexFrame(hostRouteId, notification);
+      return;
+    }
+    const route = resolved;
     const chunk = params.chunk;
-    if (
-      !hostRouteId ||
-      hostRouteId !== route.hostRouteId ||
-      !workerSessionId ||
-      workerSessionId !== route.workerSessionId ||
-      typeof chunk !== "string" ||
-      chunk.length === 0
-    ) {
-      // A late, unknown, malformed, or mismatched frame, or a frame that does not
-      // match the exact live pair. Drop it and count one protocol error.
+    if (typeof chunk !== "string" || chunk.length === 0) {
+      // The exact pair matches, but the chunk is malformed. Count one per-route
+      // protocol error.
       recordDuplexChannelProtocolError(route);
       return;
     }
@@ -1666,39 +1814,94 @@ export function createPluginWorkerHandle(
   // the route is `open` and the notification carries the exact bound worker
   // session identifier.
   function routeDuplexChannelExit(notification: JsonRpcNotification): void {
-    const route = duplexChannelRoute;
-    if (!route || route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const hostRouteId = readNonEmptyString(params.hostRouteId);
     const workerSessionId = readNonEmptyString(params.workerSessionId);
-    // Resolve only on the exact live pair. A frame that does not match both the
-    // host route id and the worker session id reaches no wait.
-    if (
-      !hostRouteId ||
-      hostRouteId !== route.hostRouteId ||
-      !workerSessionId ||
-      workerSessionId !== route.workerSessionId
-    ) {
+    const resolved = resolveDuplexRouteByPair(hostRouteId, workerSessionId);
+    if (resolved === "tombstoned") {
+      // A late exit for a closed pair. It reaches no wait and changes no state.
+      return;
+    }
+    if (resolved === "violation") {
+      // An unknown, foreign, duplicate, ambiguous, or malformed pair. Fail closed:
+      // retire the worker.
+      retireDuplexWorkerOnViolation("exit frame pair");
+      return;
+    }
+    if (resolved === "opening") {
+      // The exit arrived before the bind. Hold it; the bind replays it through the
+      // exact-pair routing.
+      bufferPreBindDuplexFrame(hostRouteId, notification);
       return;
     }
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
-    settleRouteWait(route, { exitCode });
+    settleRouteWait(resolved, { exitCode });
   }
 
-  // Close the one route on a worker exit. The worker is gone, so the manager
-  // resolves the wait with the fixed non-secret exit and clears the route one
-  // time. The pending channel calls reject through `rejectAllPending`.
-  function closeDuplexChannelRouteOnWorkerExit(): void {
-    const route = duplexChannelRoute;
+  // Hold one frame that arrived before its route bound, in order. The bind replays
+  // the held frames through the exact-pair routing. The pre-bind hold obeys the
+  // same frame-count and character bounds as the post-bind buffer, so an early
+  // flood ends the route instead of growing without limit.
+  function bufferPreBindDuplexFrame(
+    hostRouteId: string | null,
+    notification: JsonRpcNotification,
+  ): void {
+    if (!hostRouteId) return;
+    const route = openingDuplexRoutes.get(hostRouteId);
     if (!route) return;
-    duplexChannelRoute = null;
-    route.terminalized = true;
-    route.state = "closed";
-    route.listener = null;
-    route.buffered = [];
-    route.bufferedChars = 0;
-    clearDuplexChannelLifetimeTimer(route);
-    settleRouteWait(route, { exitCode: null });
+    const params = isRecord(notification.params) ? notification.params : {};
+    const chunk = typeof params.chunk === "string" ? params.chunk : "";
+    if (
+      route.preBind.length + 1 > maxDuplexChannelPreBindFrames ||
+      route.preBindChars + chunk.length > maxDuplexChannelPreBindChars
+    ) {
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
+    route.preBind.push(notification);
+    route.preBindChars += chunk.length;
+  }
+
+  // Replay the frames a route held before it bound. The route is live now, so the
+  // exact-pair routing delivers each held frame or fails closed on a mismatch.
+  function replayPreBindDuplexFrames(route: DuplexChannelRoute): void {
+    const held = route.preBind;
+    route.preBind = [];
+    route.preBindChars = 0;
+    for (const notification of held) {
+      if (route.terminalized) break;
+      if (notification.method === DUPLEX_CHANNEL_DATA_NOTIFICATION) {
+        routeDuplexChannelData(notification);
+      } else if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
+        routeDuplexChannelExit(notification);
+      }
+    }
+  }
+
+  // Close every route on a worker exit. The worker is gone, so the manager
+  // resolves each wait with the fixed non-secret exit, releases each aggregate
+  // slot, and clears the live, opening, and tombstone state. A worker exit is a
+  // worker retirement, so the host drops every tombstone; the monotonic host route
+  // id never returns, so no closed pair can revive on a restart. The pending
+  // channel calls reject through `rejectAllPending`.
+  function closeDuplexChannelRouteOnWorkerExit(): void {
+    const routes = [...openingDuplexRoutes.values(), ...liveDuplexRoutes.values()];
+    openingDuplexRoutes.clear();
+    liveDuplexRoutes.clear();
+    duplexPairTombstones.clear();
+    for (const route of routes) {
+      if (route.terminalized) continue;
+      route.terminalized = true;
+      route.state = "closed";
+      route.listener = null;
+      route.buffered = [];
+      route.bufferedChars = 0;
+      route.preBind = [];
+      route.preBindChars = 0;
+      clearDuplexChannelLifetimeTimer(route);
+      releaseDuplexRouteSlot(route);
+      settleRouteWait(route, { exitCode: null });
+    }
   }
 
   // Open one live generic duplex channel route. Reserve the route before the open
@@ -1708,11 +1911,6 @@ export function createPluginWorkerHandle(
   async function openDuplexChannel(
     input: DuplexChannelOpenInput,
   ): Promise<DuplexChannelHostSession> {
-    if (duplexChannelRoute) {
-      // A route for this worker is not yet closed and confirmed. Reject the
-      // second open with one fixed non-secret error before it reaches the worker.
-      throw new Error(DUPLEX_CHANNEL_ROUTE_BUSY);
-    }
     const hostRouteId = nextDuplexHostRouteId();
     let settleWait: (value: { exitCode: number | null }) => void = () => {};
     const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
@@ -1731,8 +1929,16 @@ export function createPluginWorkerHandle(
       lifetimeTimer: null,
       terminalized: false,
       settleWait,
+      preBind: [],
+      preBindChars: 0,
     };
-    duplexChannelRoute = route;
+    // Reserve one aggregate route slot before any work. When the process-scoped
+    // ceiling is full, reject with the fixed route-busy error and open nothing, so
+    // an active channel never downgrades and the ceiling never overcommits.
+    if (!acquireDuplexRouteSlot(route)) {
+      throw new Error(DUPLEX_CHANNEL_ROUTE_BUSY);
+    }
+    openingDuplexRoutes.set(hostRouteId, route);
 
     route.state = "opening";
     let openResult: HostToWorkerMethods["duplexChannelOpen"][1];
@@ -1770,9 +1976,20 @@ export function createPluginWorkerHandle(
       await terminalizeDuplexChannelRoute(route);
       throw new Error(DUPLEX_CHANNEL_OPEN_FAILED);
     }
-    // Bind the worker session identifier one time and move the route to `open`.
+    const pairKey = duplexPairKey(hostRouteId, workerSessionId);
+    if (liveDuplexRoutes.has(pairKey) || duplexPairTombstones.has(pairKey)) {
+      // The worker returned a pair that is already live or already tombstoned. Fail
+      // closed: terminalize this route and retire the worker before any reuse.
+      await terminalizeDuplexChannelRoute(route);
+      retireDuplexWorkerOnViolation("duplicate bound pair");
+      throw new Error(DUPLEX_CHANNEL_OPEN_FAILED);
+    }
+    // Bind the worker session identifier one time and move the route from the
+    // opening map to the live map under the exact pair key.
     route.workerSessionId = workerSessionId;
     route.state = "open";
+    openingDuplexRoutes.delete(hostRouteId);
+    liveDuplexRoutes.set(pairKey, route);
 
     // Start the route lifetime timer now the route is open. The route ends when
     // the timer expires. Every terminal path and the worker-exit path clears the
@@ -1781,6 +1998,10 @@ export function createPluginWorkerHandle(
       void terminalizeDuplexChannelRoute(route);
     }, maxDuplexChannelDurationMs);
     route.lifetimeTimer.unref?.();
+
+    // Replay any frame that arrived before the bind. The route is live now, so the
+    // exact-pair routing delivers each held frame or fails closed on a mismatch.
+    replayPreBindDuplexFrames(route);
 
     // Send one host→worker request under the pending-request bound. End the route
     // when too many requests are in-flight, so a worker that never replies cannot
