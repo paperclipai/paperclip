@@ -16958,12 +16958,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // died here with most of their budget consumed by recovery churn).
           // A board/user comment IS the supervision event the deny message
           // demands, so only runs started after the most recent one count.
-          sql`${heartbeatRuns.startedAt} > coalesce((
-            select max(c.created_at) from issue_comments c
-            where c.issue_id = ${input.issueId}
-              and c.author_type = 'user'
-              and c.deleted_at is null
-          ), '-infinity'::timestamptz)`,
+          // 2026-08-21 (TSMC-20820 follow-up, measured tonight): count runs
+          // since the last board/user comment OR the last run that produced
+          // issue-visible progress, whichever is later. Under productive-run
+          // continuation (8s gaps), 25 runs pass in ~40 min and lanes were
+          // self-blocking MID-PRODUCTIVE-WORK because agent progress never
+          // reset the counter — the guard now measures "stuck without
+          // progress", not "total work". A spinning card still caps at 25.
+          sql`${heartbeatRuns.startedAt} > greatest(
+            coalesce((
+              select max(c.created_at) from issue_comments c
+              where c.issue_id = ${input.issueId}
+                and c.author_type = 'user'
+                and c.deleted_at is null
+            ), '-infinity'::timestamptz),
+            coalesce((
+              select max(al.created_at) from activity_log al
+              where al.entity_type = 'issue'
+                and al.entity_id = ${input.issueId}
+                and al.run_id is not null
+                and al.action in ${sql.raw(`(${ISSUE_PROGRESS_ACTIVITY_ACTIONS.map((a) => `'${a}'`).join(", ")})`)}
+            ), '-infinity'::timestamptz)
+          )`,
         ))
         .then((rows) => rows[0] ?? null),
       db
