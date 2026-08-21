@@ -334,7 +334,7 @@ const RATE_CLAIM_PATTERN =
   /(\$\s*[\d,.]+(?:k|m)?\s*\/\s*(day|hour|hr|week|wk|month|mo)\b)|(\brun[- ]rate\b)|(\bburn[- ]rate\b)|(\bper[- ](day|hour|month)\b.{0,20}\$)/i;
 const RATE_CLAIM_WINDOW_PATTERN = /\bwindow\b|\bobservation window\b|\btrailing\b|\bover\s+\d+\s*(day|hour|week|month)s?\b/i;
 const RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN =
-  /\bonly one sample\b|\bsingle sample\b.{0,80}\bbecause\b|\bno other sample(?:s)? (?:exist|available)\b/i;
+  /\b(?:only|just|a )?\s*(?:one|single|1)\s+(?:sample|data ?point)\b.{0,120}?\b(?:because|since|as|given that|due to)\b|\bno other sample(?:s)? (?:exist|available)\b(?:.{0,120}?\b(?:because|since|as|given that|due to)\b)?/i;
 // Two non-adjacent samples: look for two distinct calendar month+year
 // tokens (e.g. "July 2026" and "August 2026"). Dedupe on month+year, not
 // the raw matched substring, so two different *days* within the same month
@@ -342,6 +342,7 @@ const RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN =
 // separated windows -- Greptile flagged this exact bypass.
 const CALENDAR_MONTH_YEAR_TOKEN_PATTERN =
   /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?,?\s+)?(\d{2,4})\b/gi;
+const DOLLAR_FIGURE_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b/i;
 
 function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolean {
   if (typeof title !== "string") return false;
@@ -359,10 +360,22 @@ function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolea
 const CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS = 60;
 
 function distinctCalendarMonthYearCount(text: string): number {
-  const distinct = new Set<string>();
-  const pattern = new RegExp(CALENDAR_MONTH_YEAR_TOKEN_PATTERN.source, "gi");
+  const monthPattern = new RegExp(CALENDAR_MONTH_YEAR_TOKEN_PATTERN.source, "gi");
+  const dollarPattern = new RegExp(DOLLAR_FIGURE_PATTERN.source, "gi");
+  const dollarMatchIndexes: number[] = [];
+  let dollarMatch: RegExpExecArray | null;
+  while ((dollarMatch = dollarPattern.exec(text)) !== null) {
+    dollarMatchIndexes.push(dollarMatch.index);
+  }
+  // Each month can only be backed by a dollar figure that has not already
+  // backed a different month -- otherwise a single dollar figure sitting
+  // between two adjacent month mentions would satisfy both, letting one
+  // real data point masquerade as two separated samples. Greptile flagged
+  // this exact bypass.
+  const usedDollarIndexes = new Set<number>();
+  const monthKeys = new Set<string>();
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
+  while ((match = monthPattern.exec(text)) !== null) {
     const month = match[1]?.toLowerCase();
     const year = match[2];
     if (!month || !year) continue;
@@ -371,11 +384,14 @@ function distinctCalendarMonthYearCount(text: string): number {
       text.length,
       match.index + match[0].length + CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS,
     );
-    const window = text.slice(windowStart, windowEnd);
-    if (!DOLLAR_FIGURE_PATTERN.test(window)) continue;
-    distinct.add(`${month}-${year}`);
+    const backingDollarIndex = dollarMatchIndexes.find(
+      (idx) => idx >= windowStart && idx < windowEnd && !usedDollarIndexes.has(idx),
+    );
+    if (backingDollarIndex === undefined) continue;
+    usedDollarIndexes.add(backingDollarIndex);
+    monthKeys.add(`${month}-${year}`);
   }
-  return distinct.size;
+  return monthKeys.size;
 }
 
 function rateClaimHasAdequateEvidence(text: string | null | undefined): boolean {
@@ -413,7 +429,6 @@ async function assertRateClaimHasAdequateEvidence(
   );
 }
 
-const DOLLAR_FIGURE_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b/i;
 const MONETARY_CLAIM_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b|\bspend\b|\bcost(?:s)?\b|\bburn\b/i;
 const INTERNAL_COSTS_LEDGER_CITATION_PATTERN =
   /\/costs\b|\bpaperclip(?:'s)? (?:internal )?(?:cost|costs) (?:ledger|endpoint|api)\b|\binternal (?:cost|costs) ledger\b/i;
@@ -432,6 +447,17 @@ const VENDOR_BILLING_COMMAND_PATTERN =
 // any real command output ever being pasted. Greptile flagged this exact
 // bypass.
 const VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS = 200;
+// The internal-ledger's own dollar figure is also collected (from a window
+// around the ledger citation) so that a vendor-command output figure which
+// merely *restates* that same number does not count as fresh evidence --
+// Greptile flagged this exact bypass (citing the command, then repeating
+// the unverified internal amount instead of pasting a real, different
+// output value).
+const INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS = 150;
+
+function normalizeDollarFigure(raw: string): string {
+  return raw.replace(/[$,]/g, "").trim().toLowerCase();
+}
 
 function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
@@ -440,17 +466,43 @@ function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | unde
   return true;
 }
 
-function textCitesVendorBillingApi(text: string | null | undefined): boolean {
-  if (typeof text !== "string" || text.length === 0) return false;
-  const pattern = new RegExp(VENDOR_BILLING_COMMAND_PATTERN.source, "gi");
+function internalLedgerDollarAmounts(text: string | null | undefined): string[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const citationPattern = new RegExp(INTERNAL_COSTS_LEDGER_CITATION_PATTERN.source, "gi");
+  const amounts: string[] = [];
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
+  while ((match = citationPattern.exec(text)) !== null) {
+    const windowStart = Math.max(0, match.index - INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS);
+    const windowEnd = Math.min(
+      text.length,
+      match.index + match[0].length + INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS,
+    );
+    const window = text.slice(windowStart, windowEnd);
+    const dollarPattern = new RegExp(DOLLAR_FIGURE_PATTERN.source, "gi");
+    let dollarMatch: RegExpExecArray | null;
+    while ((dollarMatch = dollarPattern.exec(window)) !== null) {
+      amounts.push(normalizeDollarFigure(dollarMatch[0]));
+    }
+  }
+  return amounts;
+}
+
+function vendorOutputDollarAmounts(text: string | null | undefined): string[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const commandPattern = new RegExp(VENDOR_BILLING_COMMAND_PATTERN.source, "gi");
+  const amounts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = commandPattern.exec(text)) !== null) {
     const windowStart = match.index;
     const windowEnd = Math.min(text.length, match.index + match[0].length + VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS);
     const window = text.slice(windowStart, windowEnd);
-    if (DOLLAR_FIGURE_PATTERN.test(window)) return true;
+    const dollarPattern = new RegExp(DOLLAR_FIGURE_PATTERN.source, "gi");
+    let dollarMatch: RegExpExecArray | null;
+    while ((dollarMatch = dollarPattern.exec(window)) !== null) {
+      amounts.push(normalizeDollarFigure(dollarMatch[0]));
+    }
   }
-  return false;
+  return amounts;
 }
 
 /**
@@ -476,7 +528,10 @@ async function assertMonetaryClaimCitesVendorBillingApi(
   const allTexts = [effectiveDescription, ...rows.map((row) => row.body)];
   const citesInternalLedger = allTexts.some((text) => textCitesInternalCostsLedgerForMonetaryClaim(text));
   if (!citesInternalLedger) return;
-  if (allTexts.some((text) => textCitesVendorBillingApi(text))) return;
+  const internalAmounts = new Set(allTexts.flatMap((text) => internalLedgerDollarAmounts(text)));
+  const vendorAmounts = allTexts.flatMap((text) => vendorOutputDollarAmounts(text));
+  const hasGenuineVendorOutput = vendorAmounts.some((amount) => !internalAmounts.has(amount));
+  if (hasGenuineVendorOutput) return;
   throw unprocessable(
     "Cannot mark issue done: this issue cites Paperclip's internal /costs ledger for a monetary/spend claim, which is known to undercount actual spend (AGE-335). Cite the vendor's own billing API (e.g. `gh api /orgs/{org}/settings/billing/usage`) with the command and its pasted output before closing.",
     { code: "done_transition_billing_source_gate", reason: "internal_costs_ledger_cited_for_monetary_claim" },

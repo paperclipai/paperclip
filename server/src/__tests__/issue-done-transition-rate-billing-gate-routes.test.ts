@@ -140,6 +140,18 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
     expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
   });
 
+  it("refuses done when 'only one sample' is asserted with no reason given", async () => {
+    const issueId = await createIssue(
+      `Vendor Y burn is running at $900/day (${randomUUID()})`,
+      "Observation window: trailing 24h. Only one sample was used.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
+  });
+
   it("allows done on the same rate-claim fixture with an explicit single-sample justification", async () => {
     const issueId = await createIssue(
       `Vendor X burn is running at $500/day (${randomUUID()})`,
@@ -156,6 +168,18 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
     const issueId = await createIssue(
       `GitHub Copilot burn is running at $700/day (${randomUUID()})`,
       "Observation window: trailing 30 days. Aug 1, 2026 was one data point and Aug 15, 2026 was another data point within the same month.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
+  });
+
+  it("refuses done when one dollar figure sits between two adjacent months and would back both", async () => {
+    const issueId = await createIssue(
+      `GitHub Copilot burn is running at $800/day (${randomUUID()})`,
+      "Observation window: trailing 60 days. Spend was roughly $800/day across July 2026 and August 2026 combined -- one blended figure, not two separate measured samples.",
     );
 
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
@@ -223,6 +247,19 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
       `Reconcile agent cost overrun (${randomUUID()})`,
       "Per Paperclip's internal /costs ledger, spend this month is $4,200. " +
         "Also ran `gh api /orgs/VibeTechnologies/settings/billing/usage` to double check, but the output was not captured or pasted here yet.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_billing_source_gate" });
+  });
+
+  it("refuses done when the vendor command output merely restates the internal-ledger amount", async () => {
+    const issueId = await createIssue(
+      `Reconcile agent cost overrun (${randomUUID()})`,
+      "Per Paperclip's internal /costs ledger, spend this month is $4,200. " +
+        "Ran `gh api /orgs/VibeTechnologies/settings/billing/usage` to double check -- output confirms $4,200, matches the ledger.",
     );
 
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
