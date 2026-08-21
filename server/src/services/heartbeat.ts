@@ -17210,6 +17210,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         const deferredPayload = parseObject(deferred.payload);
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+        // An owner wake queued for an earlier unblock descriptor must not be
+        // promoted once the descriptor changes: its fingerprint no longer
+        // matches the current intent, and promoting it would strand the
+        // current owner's wake behind a stale run. Mark it superseded so the
+        // loop advances to the current intent.
+        if (readNonEmptyString(deferredContextSeed.wakeReason) === "issue_unblock_requested") {
+          const currentIntent = buildAgentUnblockWakeIntent(issue);
+          const deferredFingerprint =
+            readNonEmptyString(deferredContextSeed.intentFingerprint) ??
+            readNonEmptyString(deferredPayload.intentFingerprint);
+          if (
+            !currentIntent ||
+            currentIntent.ownerAgentId !== deferred.agentId ||
+            !deferredFingerprint ||
+            deferredFingerprint !== currentIntent.intentFingerprint
+          ) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: new Date(),
+                error: "Deferred unblock wake superseded: the owner intent changed",
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, deferred.id));
+            continue;
+          }
+        }
         const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
         const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(tx, {
           companyId: issue.companyId,
