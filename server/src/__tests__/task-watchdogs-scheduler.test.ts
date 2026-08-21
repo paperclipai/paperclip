@@ -937,6 +937,48 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
   });
 
+  it("clears lastReviewedFingerprint when in_review is assigned to the watchdog agent without a board review path", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INREVIEW-AGENT-CLEAR", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        executionState: null,
+        monitorNextCheckAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+
+    const [cleared] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(cleared?.lastReviewedFingerprint).toBeNull();
+    expect(cleared?.lastReviewedStopSnapshot).toBeNull();
+  });
+
   it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);

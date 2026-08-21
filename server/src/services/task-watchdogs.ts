@@ -1261,6 +1261,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
    * is false unless status is done/blocked/in_review, so assignee, execution,
    * monitor, or a pending path on todo/in_progress is the explicit reopen
    * (assigned in_progress) and must still clear.
+   * in_review counts board review only (assigneeUserId, executionState, monitor,
+   * pending interaction/approval). assigneeAgentId is watchdog ownership, not a
+   * completed review path, so in_review assigned to the watchdog agent without
+   * those signals still clears.
    */
   async function clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(
     watchdog: IssueWatchdogRow,
