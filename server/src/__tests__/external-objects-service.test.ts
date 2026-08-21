@@ -410,10 +410,53 @@ describe("GitHub external object provider", () => {
       "https://api.github.com/repos/acme/app/commits/mergecommitsha/check-runs?per_page=100",
       expect.any(Object),
     );
-    expect(fetch).not.toHaveBeenCalledWith(
+    // The resolver also checks the pre-merge head SHA alongside the merge
+    // commit (AGE-569 fix: some CI setups never run checks against the
+    // merge commit at all, so it alone can't be trusted as "no CI signal" ==
+    // "success"). Both are consulted and the worse of the two wins -- here
+    // the merge commit's failure wins regardless.
+    expect(fetch).toHaveBeenCalledWith(
       "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs?per_page=100",
       expect.any(Object),
     );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ merged: true, checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("gates a merged PR on the head SHA's CI when the merge commit has no CI configured at all", async () => {
+    // Regression coverage for the Greptile-flagged gap: a merge commit with
+    // zero check-runs and zero commit statuses used to be read as "nothing
+    // configured, therefore success" in isolation, hiding a failing/pending
+    // head-SHA CI run that never ran against the merge commit.
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/mergecommitsha/check-runs")) return checkRunsResponse([]);
+      if (url.includes("/commits/mergecommitsha/status")) return response({ state: "pending", statuses: [] });
+      if (url.includes("/commits/deadbeef/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "failure" }]);
+      }
+      if (url.includes("/commits/deadbeef/status")) return response({ state: "success" });
+      return response({
+        state: "closed",
+        draft: false,
+        merged: true,
+        merged_at: "2026-08-20T12:00:00Z",
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+        merge_commit_sha: "mergecommitsha",
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
     expect(result).toEqual({
       ok: true,
       snapshot: expect.objectContaining({

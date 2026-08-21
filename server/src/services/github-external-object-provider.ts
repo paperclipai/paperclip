@@ -369,16 +369,16 @@ function worstChecksState(states: Array<ChecksState | null>): ChecksState | null
   return worst;
 }
 
-async function fetchChecksState(input: {
+async function fetchChecksStateForSha(input: {
   fetchImpl: FetchLike;
   headers: Record<string, string>;
   host: string;
   owner: string;
   repo: string;
-  headSha: string | null;
-}): Promise<ChecksState | null> {
-  const { fetchImpl, headers, host, owner, repo, headSha } = input;
-  if (!headSha) return null;
+  sha: string | null;
+}): Promise<{ state: ChecksState | null; hadSignal: boolean; fetchFailed: boolean }> {
+  const { fetchImpl, headers, host, owner, repo, sha: headSha } = input;
+  if (!headSha) return { state: null, hadSignal: false, fetchFailed: false };
   const base = `${gitHubApiBase(host)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
   let checkRunsState: ChecksState | null = null;
@@ -444,18 +444,64 @@ async function fetchChecksState(input: {
   // of the two known signals wins, and an explicit "failure" from either
   // source is trusted even if the other lookup could not be completed.
   const combined = worstChecksState([checkRunsState, statusState]);
-  if (combined === "failure") return "failure";
+  if (combined === "failure") return { state: "failure", hadSignal: true, fetchFailed: false };
 
   // One of the two lookups did not actually complete (network error, non-2xx,
   // unreadable body). We only have a partial picture of this commit's CI
   // state, so we must not report "pending" or "success" as if we had
   // confirmed both signals -- report unknown and let the caller fail closed.
-  if (checkRunsFetchFailed || statusFetchFailed) return null;
+  if (checkRunsFetchFailed || statusFetchFailed) return { state: null, hadSignal: combined != null, fetchFailed: true };
 
-  if (combined) return combined;
+  if (combined) return { state: combined, hadSignal: true, fetchFailed: false };
 
-  // Both endpoints were reached successfully and reported nothing: there is
-  // genuinely no CI configured for this commit, so there is nothing to gate on.
+  // Both endpoints were reached successfully and reported nothing for this
+  // specific commit: there is genuinely no CI configured against it. Callers
+  // that check more than one SHA (e.g. a merged PR's head SHA and its merge
+  // commit) must not treat this in isolation as "nothing to gate on" --
+  // `hadSignal: false` lets them keep looking at the other SHA before
+  // concluding there is no CI at all.
+  return { state: null, hadSignal: false, fetchFailed: false };
+}
+
+// A merged pull request's `merge_commit_sha` is the commit actually reachable
+// from the base branch, so it takes priority once a PR is merged (see the
+// caller's comment). But some CI setups only ever run checks against the PR's
+// pre-merge `head` SHA (e.g. a `pull_request`-triggered workflow) and never
+// against the merge commit at all -- in that case `fetchChecksStateForSha` on
+// the merge commit alone reports "nothing found", which would wrongly read as
+// "success" and hide a red/pending head-SHA CI run. Check every candidate SHA
+// (merge commit first, then head, when they differ) and combine: an explicit
+// failure/pending signal from either wins, and "success" is only reported
+// once at least one of the SHAs actually had CI configured, or once every SHA
+// was reached and confirmed to have none.
+async function fetchChecksState(input: {
+  fetchImpl: FetchLike;
+  headers: Record<string, string>;
+  host: string;
+  owner: string;
+  repo: string;
+  shas: ReadonlyArray<string | null>;
+}): Promise<ChecksState | null> {
+  const { fetchImpl, headers, host, owner, repo, shas } = input;
+  const uniqueShas = [...new Set(shas.filter((sha): sha is string => Boolean(sha)))];
+  if (uniqueShas.length === 0) return null;
+
+  const results = await Promise.all(
+    uniqueShas.map((sha) => fetchChecksStateForSha({ fetchImpl, headers, host, owner, repo, sha })),
+  );
+
+  const worst = worstChecksState(results.map((result) => result.state));
+  if (worst === "failure") return "failure";
+
+  // Any SHA whose lookup did not actually complete leaves this gate with only
+  // a partial picture -- do not report "pending"/"success" as if every SHA
+  // had been confirmed.
+  if (results.some((result) => result.fetchFailed)) return null;
+
+  if (worst) return worst;
+
+  // Every SHA was reached successfully. If none of them had any CI signal at
+  // all, there is genuinely nothing configured to gate on.
   return "success";
 }
 
@@ -592,20 +638,22 @@ export function createGitHubExternalObjectProvider(
         // post-merge-only check against `main`) can report green on that head
         // SHA while the actual merge commit that landed on the base branch was
         // never checked at all, or was checked and failed. Once a PR is
-        // reported merged, gate on its `merge_commit_sha` -- the commit that is
-        // actually reachable from the base branch -- so "merged" cannot be
-        // satisfied by a PR whose landed commit was red. Fall back to head SHA
-        // only if GitHub did not report a merge commit SHA for some reason.
+        // reported merged, gate on its `merge_commit_sha` first -- the commit
+        // that is actually reachable from the base branch. But some CI setups
+        // never run checks against the merge commit at all (only against the
+        // pre-merge head SHA), so also check the head SHA and combine: an
+        // explicit failure/pending signal from either wins over an absent
+        // signal on the other (see fetchChecksState).
         const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
         const mergeCommitSha = asString(body.merge_commit_sha);
-        const checksSha = merged ? (mergeCommitSha ?? headSha) : headSha;
+        const checksShas = merged ? [mergeCommitSha, headSha] : [headSha];
         const checksState = await fetchChecksState({
           fetchImpl,
           headers,
           host: identity.host,
           owner: identity.owner,
           repo: identity.repo,
-          headSha: checksSha,
+          shas: checksShas,
         });
 
         return {

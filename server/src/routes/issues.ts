@@ -406,15 +406,33 @@ async function assertNoBlockingLinkedPullRequest(
     // back to the text-only signal rather than widening the blast radius of
     // an unrelated infra fault to every done transition in the company.
     let mightReferencePullRequest = textMightReferencePullRequest || candidateNewPullRequestRefs.length > 0;
+    let mentionLookupFailed = false;
     if (!mightReferencePullRequest) {
       try {
         mightReferencePullRequest = await issueHasRecordedPullRequestMention(db, companyId, issueId);
       } catch (mentionLookupErr) {
+        mentionLookupFailed = true;
         logger.warn(
           { err: mentionLookupErr, issueId },
-          "done-transition PR gate: failed to check recorded pull-request mentions; falling back to the text-only signal",
+          "done-transition PR gate: failed to check recorded pull-request mentions; cannot confirm this issue has no PR reference",
         );
       }
+    }
+    if (!mightReferencePullRequest && mentionLookupFailed) {
+      // Both `listForIssue` and the recorded-mention lookup failed, and
+      // there is no positive text signal either. A pull request mentioned
+      // only from a comment or document could be hiding behind the failed
+      // mention lookup -- with zero working signal we cannot prove this
+      // issue has no linked pull request, so fail closed instead of
+      // assuming there is none.
+      logger.warn(
+        { err, issueId },
+        "done-transition PR gate: failed to resolve linked external objects and could not confirm the issue has no PR reference; blocking the transition",
+      );
+      throw unprocessable(
+        "Cannot mark issue done: this issue's linked pull-request references could not be verified right now",
+        { code: "done_transition_pr_gate", reason: "unverified", pullRequest: null },
+      );
     }
     if (!mightReferencePullRequest) {
       // The gate itself must not turn an unrelated external-objects
@@ -486,9 +504,16 @@ async function assertNoBlockingLinkedPullRequest(
         const confirmedThisAttempt = new Set(
           refreshResults
             .filter((result) =>
-              result.reason === "resolved" ||
-              (result.object.lastResolvedAt != null &&
-                new Date(result.object.lastResolvedAt) >= gateRefreshStartedAt))
+              // Do not trust `reason === "resolved"` alone: when this call
+              // joins an already in-flight refresh promise (started by a
+              // concurrent request against the same object, in this same
+              // process), that promise can persist `lastResolvedAt` using a
+              // `now` captured by the *original* caller before this gate
+              // began, even though it settles afterwards. Only the
+              // timestamp comparison proves the row reflects state resolved
+              // at or after this gate started; require it unconditionally.
+              result.object.lastResolvedAt != null &&
+              new Date(result.object.lastResolvedAt) >= gateRefreshStartedAt)
             .map((result) => result.object.id),
         );
         remainingObjectIds = remainingObjectIds.filter((id) => !confirmedThisAttempt.has(id));
