@@ -350,12 +350,29 @@ function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolea
   return RATE_CLAIM_PATTERN.test(trimmed);
 }
 
+// A calendar-month mention only counts as a real sample if a dollar figure
+// sits near it (same sentence-ish window, +/-60 chars) -- otherwise an
+// incidental date reference (e.g. "founded in March 2020") next to an
+// unrelated dollar figure elsewhere in the text would falsely count as a
+// measured data point. Greptile flagged the earlier any-two-months check as
+// a bypass for exactly this reason.
+const CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS = 60;
+
 function distinctCalendarMonthYearCount(text: string): number {
   const distinct = new Set<string>();
-  for (const match of text.matchAll(CALENDAR_MONTH_YEAR_TOKEN_PATTERN)) {
+  const pattern = new RegExp(CALENDAR_MONTH_YEAR_TOKEN_PATTERN.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
     const month = match[1]?.toLowerCase();
     const year = match[2];
     if (!month || !year) continue;
+    const windowStart = Math.max(0, match.index - CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS);
+    const windowEnd = Math.min(
+      text.length,
+      match.index + match[0].length + CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS,
+    );
+    const window = text.slice(windowStart, windowEnd);
+    if (!DOLLAR_FIGURE_PATTERN.test(window)) continue;
     distinct.add(`${month}-${year}`);
   }
   return distinct.size;
@@ -396,6 +413,7 @@ async function assertRateClaimHasAdequateEvidence(
   );
 }
 
+const DOLLAR_FIGURE_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b/i;
 const MONETARY_CLAIM_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b|\bspend\b|\bcost(?:s)?\b|\bburn\b/i;
 const INTERNAL_COSTS_LEDGER_CITATION_PATTERN =
   /\/costs\b|\bpaperclip(?:'s)? (?:internal )?(?:cost|costs) (?:ledger|endpoint|api)\b|\binternal (?:cost|costs) ledger\b/i;
@@ -407,7 +425,13 @@ const INTERNAL_COSTS_LEDGER_CITATION_PATTERN =
 // stand-in for "pasted output" in this literal, regex-scoped heuristic).
 const VENDOR_BILLING_COMMAND_PATTERN =
   /\bgh api\b[^\n]{0,80}\bbilling\b|orgs\/[\w.-]+\/settings\/billing(?:\/usage)?/i;
-const DOLLAR_FIGURE_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b/i;
+// The pasted dollar figure must sit near the command mention itself (this
+// window, forward from the end of the match), not merely exist anywhere in
+// the text -- otherwise the internal-ledger's own dollar figure (elsewhere
+// in the same text) could satisfy the "pasted output" requirement without
+// any real command output ever being pasted. Greptile flagged this exact
+// bypass.
+const VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS = 200;
 
 function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
@@ -418,8 +442,15 @@ function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | unde
 
 function textCitesVendorBillingApi(text: string | null | undefined): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
-  if (!VENDOR_BILLING_COMMAND_PATTERN.test(text)) return false;
-  return DOLLAR_FIGURE_PATTERN.test(text);
+  const pattern = new RegExp(VENDOR_BILLING_COMMAND_PATTERN.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const windowStart = match.index;
+    const windowEnd = Math.min(text.length, match.index + match[0].length + VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS);
+    const window = text.slice(windowStart, windowEnd);
+    if (DOLLAR_FIGURE_PATTERN.test(window)) return true;
+  }
+  return false;
 }
 
 /**

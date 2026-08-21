@@ -116,16 +116,28 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
     });
   });
 
-  it("allows done on the same rate-claim fixture once two non-adjacent monthly samples and a window are cited", async () => {
+  it("allows done on the same rate-claim fixture once two non-adjacent monthly samples (each with its own pasted figure) and a window are cited", async () => {
     const issueId = await createIssue(
       `GitHub Copilot burn is running at ~$623/day (${randomUUID()})`,
-      "Observation window: trailing 30 days per month. July 2026 was $21,060.76 total; August 2026 (partial) was tracking to a similar sustained rate -- not a single-sample spike.",
+      "Observation window: trailing 30 days per month. July 2026 spend was $21,060.76. August 2026 spend was $19,300 (~$623/day), consistent with a sustained rate, not a single-sample spike.",
     );
 
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.status).toBe("done");
+  });
+
+  it("refuses done when a second month is mentioned only incidentally, with no pasted figure of its own", async () => {
+    const issueId = await createIssue(
+      `GitHub Copilot burn is running at ~$700/day (${randomUUID()})`,
+      "Observation window: trailing 24h. The org started using Copilot back in March 2026, long before there was any billing dashboard or historical data available at all. Current burn is $700/day as of August 2026 -- only one real measured sample exists.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
   });
 
   it("allows done on the same rate-claim fixture with an explicit single-sample justification", async () => {
@@ -198,6 +210,19 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
     const issueId = await createIssue(
       `Reconcile agent cost overrun (${randomUUID()})`,
       "Per Paperclip's internal /costs ledger, spend this month is $4,200. Confirmed via the billing API.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_billing_source_gate" });
+  });
+
+  it("refuses done when the vendor billing command runs but no dollar figure follows it as output", async () => {
+    const issueId = await createIssue(
+      `Reconcile agent cost overrun (${randomUUID()})`,
+      "Per Paperclip's internal /costs ledger, spend this month is $4,200. " +
+        "Also ran `gh api /orgs/VibeTechnologies/settings/billing/usage` to double check, but the output was not captured or pasted here yet.",
     );
 
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
