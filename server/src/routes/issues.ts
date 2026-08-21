@@ -159,7 +159,7 @@ import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -2762,6 +2762,23 @@ function logIssueListRequest(input: {
       visibilityHint: input.req.header("x-paperclip-tab-visible") ?? null,
     }, "safe authenticated GET observed");
   });
+}
+
+function governedQueueActor(req: Request) {
+  assertBoardOrAgent(req);
+  const actor = getActorInfo(req);
+  if (actor.actorType === "user" && actor.actorSource === "local_implicit") {
+    throw forbidden("Conditional queue dispatch requires an explicitly authenticated principal", {
+      code: "conditional_queue_explicit_authority_required",
+    });
+  }
+  return {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    responsibleUserId: req.actor.type === "agent"
+      ? req.actor.onBehalfOfUserId ?? null
+      : actor.actorId,
+  };
 }
 
 export function issueRoutes(
@@ -10737,6 +10754,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/conditional-queue-claim", validate(conditionalQueueClaimSchema), async (req, res) => {
+    const authority = governedQueueActor(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
@@ -10746,24 +10764,24 @@ export function issueRoutes(
       issueId: existing.id, projectId: existing.projectId, parentIssueId: existing.parentId,
       assigneeAgentId: req.body.targetAgentId, assigneeUserId: null,
     });
-    const claimed = await svc.conditionalQueueClaim({ issueId: id, ...req.body });
+    const claimed = await svc.conditionalQueueClaim({ issueId: id, ...req.body, authority });
     const actor = getActorInfo(req);
     await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
       action: "issue.conditionally_queue_claimed", entityType: "issue", entityId: id, details: { targetAgentId: req.body.targetAgentId, approvalId: req.body.approvalId } });
     res.json(claimed);
   });
 
-  // These endpoints are deliberately board-only: the approval marker and its
-  // resulting dispatch authority must be attributable to an authenticated
-  // board principal, never to an implicit queue-loader caller.
+  // All three operations require an explicit authenticated principal. The
+  // marker records that principal and any named dispatcher; later claim/wake
+  // calls must prove the same authority inside the transaction.
   router.post("/issues/:id/conditional-queue-approval-marker", validate(conditionalQueueApprovalMarkerSchema), async (req, res) => {
-    assertBoard(req);
+    const authority = governedQueueActor(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
     assertCompanyAccess(req, existing.companyId);
     if (req.body.companyId !== existing.companyId) { res.status(409).json({ error: "Issue does not belong to company" }); return; }
-    const marker = await svc.conditionalQueueApprovalMarker({ issueId: id, ...req.body });
+    const marker = await svc.conditionalQueueApprovalMarker({ issueId: id, ...req.body, authority });
     const actor = getActorInfo(req);
     await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
       action: "approval.conditionally_queue_marked", entityType: "approval", entityId: marker.id,
@@ -10772,14 +10790,14 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/conditional-queue-wake-reservation", validate(conditionalQueueWakeReservationSchema), async (req, res) => {
-    assertBoard(req);
+    const authority = governedQueueActor(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
     assertCompanyAccess(req, existing.companyId);
     if (req.body.companyId !== existing.companyId) { res.status(409).json({ error: "Issue does not belong to company" }); return; }
     const actor = getActorInfo(req);
-    const reservation = await svc.conditionalQueueWakeReservation({ issueId: id, ...req.body, requestedByUserId: actor.actorId });
+    const reservation = await svc.conditionalQueueWakeReservation({ issueId: id, ...req.body, authority });
     await logActivity(db, { companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
       action: "issue.conditionally_queue_wake_reserved", entityType: "issue", entityId: id,
       details: { targetAgentId: req.body.targetAgentId, approvalId: req.body.approvalId, idempotencyKey: req.body.idempotencyKey } });

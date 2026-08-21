@@ -30,7 +30,9 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  conditionalQueueApprovalMarkerSchema,
   conditionalQueueClaimSchema,
+  conditionalQueueWakeReservationSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -535,6 +537,10 @@ const responses = {
   },
   conflict: {
     description: "Conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  preconditionFailed: {
+    description: "Precondition failed",
     content: { "application/json": { schema: ErrorSchema } },
   },
   unprocessable: {
@@ -2482,6 +2488,30 @@ registry.registerPath({
     body: jsonBody(conditionalQueueClaimSchema),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 409: r.conflict, 412: r.preconditionFailed },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/conditional-queue-approval-marker",
+  tags: ["issues"],
+  summary: "Conditionally bind an authenticated authority and scope to a queue approval",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(conditionalQueueApprovalMarkerSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 412: r.preconditionFailed },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/conditional-queue-wake-reservation",
+  tags: ["issues"],
+  summary: "Atomically reserve an approved queue wake under the fleet cap",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(conditionalQueueWakeReservationSchema),
+  },
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 412: r.preconditionFailed },
 });
 
 registry.registerPath({
