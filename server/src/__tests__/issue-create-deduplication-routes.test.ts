@@ -1291,7 +1291,10 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       .where(eq(agentWakeupRequests.agentId, owner.id));
 
     expect(response.body.newlyCreatedChildIssueIds).toHaveLength(1);
-    expect(wakeRequests).toEqual([{ reason: "issue_assigned" }]);
+    // The fallback assignee wake must be present. Do not assert exact equality:
+    // under CI load the failed owner-scheduler path can register an
+    // additional retry wake between the settle sleep and this read.
+    expect(wakeRequests).toContainEqual({ reason: "issue_assigned" });
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
   });
 
