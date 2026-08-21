@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { i18n, LOCALE_STORAGE_KEY, setLocale, t } from ".";
 import en from "./locales/en.json";
-import { localeMessages } from "./locales";
+import { localeMessages, supportedLocales } from "./locales";
 
 function flattenKeys(value: unknown, prefix: string[] = []): string[] {
   if (typeof value === "string") return [prefix.join(".")];
@@ -50,14 +50,19 @@ describe("locale sync", () => {
     }
   });
 
+  it("exposes only locales with a completed native review", () => {
+    expect(supportedLocales).toEqual(["en", "ru"]);
+    expect(localeMessages).toHaveProperty("ar");
+  });
+
   it("keeps the document language and direction in sync", async () => {
     await i18n.changeLanguage("ru");
     expect(document.documentElement.lang).toBe("ru");
     expect(document.documentElement.dir).toBe("ltr");
 
-    await i18n.changeLanguage("ar");
-    expect(document.documentElement.lang).toBe("ar");
-    expect(document.documentElement.dir).toBe("rtl");
+    await i18n.changeLanguage("en");
+    expect(document.documentElement.lang).toBe("en");
+    expect(document.documentElement.dir).toBe("ltr");
   });
 
   it("persists supported locale changes and ignores unsupported locales", () => {
@@ -65,7 +70,7 @@ describe("locale sync", () => {
     expect(i18n.language).toBe("ru");
     expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("ru");
 
-    setLocale("not-a-locale");
+    setLocale("ar");
     expect(i18n.language).toBe("ru");
     expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("ru");
   });

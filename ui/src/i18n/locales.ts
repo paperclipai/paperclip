@@ -32,7 +32,9 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
   }
 }
 
-export const supportedLocales = Object.keys(localeMessages);
+// Keep scaffold catalogs registered for parity checks, but expose only locales
+// that have completed a native review. Add a locale here when its catalog is ready.
+export const supportedLocales = [DEFAULT_LOCALE, "ru"];
 
 function expandPluralFallbacks(locale: string, messages: unknown): unknown {
   const pluralCategories = new Intl.PluralRules(locale).resolvedOptions().pluralCategories;
