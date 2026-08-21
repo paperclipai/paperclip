@@ -1938,13 +1938,14 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  monitorNextCheckAt?: Date | null;
 };
 type IssueBlockerAttentionInputNode =
   Pick<
     IssueBlockerAttentionNode,
     "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
   >
-  & { executionRunId?: string | null };
+  & { executionRunId?: string | null; monitorNextCheckAt?: Date | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -2375,6 +2376,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2399,6 +2401,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issues)
         .where(
@@ -2437,6 +2440,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
+          monitorNextCheckAt: row.monitorNextCheckAt,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -2653,7 +2657,11 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
-      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+      const hasScheduledMonitor = Boolean(
+        node.monitorNextCheckAt && node.monitorNextCheckAt.getTime() > Date.now(),
+      );
+      const hasWaitingPath =
+        activeIssueIds.has(node.id) || Boolean(node.assigneeUserId) || hasScheduledMonitor;
       if (hasWaitingPath) {
         return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
       }
