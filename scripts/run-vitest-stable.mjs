@@ -269,6 +269,31 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
+function runMigrationJournalGuard() {
+  // RBR-968 / RBR-927 AC3+AC4. Every embedded-Postgres suite bootstraps
+  // migrations in `beforeAll`. When the migrations folder and
+  // meta/_journal.json disagree, that bootstrap throws — and a throw inside
+  // `beforeAll` makes Vitest report the whole suite as `skipped` rather than
+  // `failed`, i.e. a silent green. Run the journal guard once, before any
+  // suite starts, so the operator sees the offending filename immediately
+  // instead of hunting through skipped suites.
+  console.log("\n[test:run] preflight: migration journal consistency");
+  const result = spawnSync(process.execPath, [path.join(scriptsDir, "check-migration-journal.mjs")], {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    fail(`Failed to run the migration journal guard: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    console.error(
+      "[test:run] Migration journal guard failed. Embedded-Postgres suites would bootstrap-fail in beforeAll and report as `skipped` instead of `failed`, so they are not being started. Fix the journal defect reported above.",
+    );
+    process.exit(result.status ?? 1);
+  }
+}
+
 function runVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
@@ -463,6 +488,8 @@ if (options.dryRun) {
   );
   process.exit(0);
 }
+
+runMigrationJournalGuard();
 
 if (options.mode === generalModeName || options.mode === allModeName) {
   if (options.group) {

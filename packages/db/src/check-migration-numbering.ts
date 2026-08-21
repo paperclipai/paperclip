@@ -1,5 +1,9 @@
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import {
+  checkMigrationJournalConsistency,
+  formatMigrationJournalInconsistencies,
+} from "./migration-journal-consistency.js";
 
 const migrationsDir = fileURLToPath(new URL("./migrations", import.meta.url));
 const journalPath = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
@@ -64,6 +68,15 @@ function ensureJournalMatchesFiles(migrationFiles: string[], journalTags: string
 }
 
 async function main() {
+  // Journal/folder set comparison runs first so an orphaned or missing file is
+  // always reported by filename, even when its name would also trip the
+  // numbering rules below (e.g. a duplicate slot number or a non-4-digit
+  // prefix). The orphan is the root cause; the numbering complaint is noise.
+  const consistency = await checkMigrationJournalConsistency({ migrationsDir, journalPath });
+  if (consistency.inconsistencies.length > 0) {
+    throw new Error(formatMigrationJournalInconsistencies(consistency.inconsistencies));
+  }
+
   const migrationFiles = (await readdir(migrationsDir))
     .filter((entry) => entry.endsWith(".sql"))
     .sort();

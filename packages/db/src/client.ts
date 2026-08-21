@@ -4,6 +4,7 @@ import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+import { assertMigrationJournalConsistency } from "./migration-journal-consistency.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -738,6 +739,13 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
 }
 
 export async function applyPendingMigrations(url: string): Promise<void> {
+  // Fail loudly and early when the migrations folder and meta/_journal.json
+  // disagree. Without this, an orphaned .sql file is skipped by drizzle's
+  // journal-driven migrator yet counted as pending by inspectMigrations, so
+  // bootstrap dies with an unactionable "Failed to bootstrap migrations" that
+  // no repair path can resolve.
+  await assertMigrationJournalConsistency();
+
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 

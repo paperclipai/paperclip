@@ -1,0 +1,26 @@
+{
+  "$comment": [
+    "Known, pre-existing `idx` defects in packages/db/src/migrations/meta/_journal.json.",
+    "The journal-consistency guard treats a duplicate `idx` as a hard error EXCEPT for the",
+    "groups listed here, so the guard can be adopted without first rewriting shipped journal",
+    "history. Any NEW duplicate — including a third entry joining a baselined group — still",
+    "fails the build.",
+    "",
+    "Run the guard with --strict to ignore this baseline entirely and see every defect,",
+    "including the ones recorded below.",
+    "",
+    "This file is a ratchet, not a permanent excuse: when a defect is fixed, its entry must be",
+    "removed. The guard reports a stale baseline entry (one that no longer matches the journal)",
+    "as a hard error, so this file cannot silently rot.",
+    "",
+    "Do not add entries here to unblock your own change. If your change introduces a duplicate",
+    "`idx`, fix the journal instead."
+  ],
+  "duplicateIdx": [
+    {
+      "idx": 178,
+      "tags": ["0177_activity_log_responsible_user", "0178_summary_slots"],
+      "reason": "Pre-existing on origin/master: two journal entries share idx 178, so journal-ordered migration application is ambiguous between these two tags. Discovered while building the guard (RBR-968); fixing the journal history itself is deliberately out of scope for that issue."
+    }
+  ]
+}
