@@ -489,7 +489,7 @@ export async function startServer(): Promise<StartedServer> {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
           typeof actualDataDir === "string" &&
-          resolve(actualDataDir) === resolve(dataDir)
+          canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir)
         ) {
           port = configuredPort;
           adoptedExistingServer = true;
@@ -503,6 +503,22 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
       } catch (err) {
+        // An unreadable lock file plus an unidentifiable server is the one
+        // combination we must never resolve by starting. The lock says something
+        // claimed this directory, and a postmaster replaying WAL can miss the
+        // probe deadline, so "did not answer in time" is not evidence of a free
+        // directory. Refuse while the port is held; only an idle port proves the
+        // lock file is leftover garbage rather than a live cluster.
+        if (lockStatus.status === "indeterminate" && (await detectPort(configuredPort)) !== configuredPort) {
+          throw new Error(
+            `Embedded PostgreSQL data directory ${dataDir} holds an unusable ${"postmaster.pid"} ` +
+              `(${lockStatus.reason}), and something on port ${configuredPort} did not identify itself within ` +
+              `${EMBEDDED_POSTGRES_PROBE_TIMEOUT_MS}ms. Refusing to start a second postmaster over possibly-live ` +
+              `data. Stop whatever is using port ${configuredPort}; if no PostgreSQL is running for this ` +
+              `directory, delete its postmaster.pid and retry.`,
+            { cause: err },
+          );
+        }
         logger.info(
           { err },
           `No PostgreSQL server reachable on port ${configuredPort}; starting the embedded cluster`,
