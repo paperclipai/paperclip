@@ -32,13 +32,56 @@ Important rules:
 - do not derive versions from semver bump types
 - do not create canary changelog files
 
+## Channel Process — Source Commit and File Location
+
+Stables promote a **soaked beta**, so the changelog describes the beta's
+source commit, not the tip of `master`:
+
+- The release **source** is the commit the newest `beta/v<beta-version>`
+  tag points at (`{beta-src}` below). Resolve it with:
+
+  ```bash
+  git fetch origin --tags
+  npm view paperclipai dist-tags   # the beta dist-tag names the version
+  git rev-parse 'beta/v{beta-version}^{commit}'
+  ```
+
+- Commits on `master` after `{beta-src}` ship in the **next** release.
+  Never include them; they are input for a "what's next" section, not the
+  changelog.
+- During the soak, the file lives at `releases/beta/v{beta-version}.md`
+  on the branch `release-notes/v{beta-version}` (PR to `master`). The
+  release workflow pushes that branch with a generated skeleton when the
+  beta publishes; work on it and rewrite the skeleton in place. If the
+  branch does not exist (a beta cut before the automation), create it
+  from `origin/master` and seed the skeleton:
+
+  ```bash
+  ./scripts/draft-stable-notes.sh {beta-version}
+  ```
+
+- The PR must merge to `master` **before** the stable is dispatched: the
+  stable preflight reads the file from `master` and fails without it.
+- Never create `releases/vYYYY.MDD.P.md` yourself on this path — after
+  the stable ships, the workflow opens a canonicalization PR that renames
+  the beta-keyed file to it.
+- **Fix path exception** (patch releases from a `candidate/release-*`
+  branch): there the notes *do* go directly on the candidate branch as
+  `releases/vYYYY.MDD.P.md`, committed alongside the cherry-picked fixes.
+
 ## Step 0 — Idempotency Check
 
-Before generating anything, check whether the file already exists:
+Before generating anything, check whether the changelog already exists:
 
 ```bash
-ls releases/vYYYY.MDD.P.md 2>/dev/null
+ls releases/beta/v{beta-version}.md 2>/dev/null   # soak-window home
+ls releases/vYYYY.MDD.P.md 2>/dev/null            # canonicalized / fix path
+git ls-remote origin 'refs/heads/release-notes/v{beta-version}'
 ```
+
+A `release-notes/v{beta-version}` branch holding only the generated
+skeleton is the normal starting state, not a conflict — rewrite it in
+place.
 
 If it exists:
 
@@ -49,12 +92,16 @@ If it exists:
 
 ## Step 1 — Determine the Stable Range
 
-Find the last stable tag:
+Find the last stable tag and the beta source commit:
 
 ```bash
 git tag --list 'v*' --sort=-version:refname | head -1
-git log v{last}..HEAD --oneline --no-merges
+beta_src="$(git rev-parse 'beta/v{beta-version}^{commit}')"
+git log v{last}..${beta_src} --oneline --no-merges
 ```
+
+The changelog range is always `v{last}..{beta-src}` — never `..HEAD` and
+never `..origin/master`.
 
 The stable version comes from one of:
 
@@ -76,8 +123,8 @@ Collect release data from:
 Useful commands:
 
 ```bash
-git log v{last}..HEAD --oneline --no-merges
-git log v{last}..HEAD --format="%H %s" --no-merges
+git log v{last}..{beta-src} --oneline --no-merges
+git log v{last}..{beta-src} --format="%H %s" --no-merges
 ls .changeset/*.md | grep -v README.md
 gh pr list --state merged --search "merged:>={last-tag-date}" --json number,title,body,labels
 ```
@@ -94,10 +141,10 @@ Look for:
 Key commands:
 
 ```bash
-git diff --name-only v{last}..HEAD -- packages/db/src/migrations/
-git diff v{last}..HEAD -- packages/db/src/schema/
-git diff v{last}..HEAD -- server/src/routes/ server/src/api/
-git log v{last}..HEAD --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
+git diff --name-only v{last}..{beta-src} -- packages/db/src/migrations/
+git diff v{last}..{beta-src} -- packages/db/src/schema/
+git diff v{last}..{beta-src} -- server/src/routes/ server/src/api/
+git log v{last}..{beta-src} --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
 ```
 
 If breaking changes are detected, flag them prominently — they must appear in the
@@ -121,6 +168,14 @@ Guidelines:
 - write from the user perspective
 - keep highlights short and concrete
 - spell out upgrade actions for breaking changes
+- **describe deltas, not repeats**: read the previous stable's notes
+  (`releases/v<last-stable>.md`) before writing. When they already
+  introduced a feature, this release's entry covers only what changed —
+  a default flip, a hardening, a completion — phrased against the prior
+  release ("last release introduced X; this release makes it the
+  default"), never re-describing the feature as if it debuted. A theme
+  that headlined the previous release does not headline again for
+  follow-through work; demote it to Improvements.
 
 ### Inline PR and contributor attribution
 
@@ -142,6 +197,14 @@ Rules:
 - Core maintainer commits that don't have an external PR can omit the parenthetical.
 
 ## Step 5 — Write the File
+
+The **file path** is the beta-keyed one from the Channel Process section
+(`releases/beta/v{beta-version}.md`), but the **content** is titled with
+the planned stable version. Resolve it with
+`./scripts/release.sh stable --date {planned-promotion-date} --print-version`
+(promotion is normally the beta publish date plus the 3-day soak). If the
+promotion date slips, the version re-resolves at dispatch — the beta-keyed
+filename makes that harmless; refresh the title when it happens.
 
 The opening line of the changelog must be an H1 of the format `# Paperclip {version}`
 (no braces), e.g. `# Paperclip v2026.618.0`. Always include the `Paperclip ` prefix and
@@ -177,14 +240,18 @@ The `Contributors` section should always be included. List every person who auth
 commits in the release range, @-mentioning them by their **GitHub username** (not their
 real name or email). To find GitHub usernames:
 
-1. Extract usernames from merge commit messages: `git log v{last}..HEAD --oneline --merges` — the branch prefix (e.g. `from username/branch`) gives the GitHub username.
+1. Extract usernames from merge commit messages: `git log v{last}..{beta-src} --oneline --merges` — the branch prefix (e.g. `from username/branch`) gives the GitHub username.
 2. For noreply emails like `user@users.noreply.github.com`, the username is the part before `@`.
 3. For contributors whose username is ambiguous, check `gh api users/{guess}` or the PR page.
 
 **Never expose contributor email addresses.** Use `@username` only.
 
 Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list.
-Exclude Paperclip founders from the list (e.g. `cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`)
+Exclude specific folks from the list — the Contributors section credits
+community contributors only. The canonical exclusion list (keep it here;
+the Discord skill defers to it):
+`cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`,
+`nguyenm7`, `nickyleach`, `tonio-alucema`
 
 List contributors in alphabetical order by GitHub username (case-insensitive).
 

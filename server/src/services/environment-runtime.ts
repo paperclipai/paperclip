@@ -7,10 +7,17 @@ import type {
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
+  InstanceExperimentalSettings,
   IssueExecutionWorkspaceSettings,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
+  SandboxProviderCapabilities,
 } from "@paperclipai/shared";
+import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
+import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type {
+  CommandManagedDuplexChannel,
+} from "@paperclipai/adapter-utils/command-managed-runtime";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
@@ -26,10 +33,12 @@ import {
   type StartupSpanContext,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import {
   collectEnvironmentSecretRefs,
   parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
+  resolveSandboxCleanupConfigSecrets,
   stripSandboxProviderEnvelope,
 } from "./environment-config.js";
 import {
@@ -48,17 +57,262 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { ExecuteLogSink, PluginWorkerManager } from "./plugin-worker-manager.js";
+import type {
+  ExecuteLogSink,
+  PluginWorkerManager,
+  DuplexChannelHostSession,
+  DuplexChannelOpenInput as WorkerManagerDuplexChannelOpenInput,
+} from "./plugin-worker-manager.js";
 import {
+  REUSABLE_LEASE_WORKER_METHODS,
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
   resolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderDriverById,
   resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
 } from "./plugin-environment-driver.js";
 import { collectSecretRefPaths } from "./json-schema-secret-refs.js";
 import { buildWorkspaceRealizationRecordFromDriverInput } from "./workspace-realization.js";
+import {
+  createSandboxOrphanCleanupSpool,
+  type DeferredOrphanCleanupRecord,
+  type SandboxOrphanCleanupSpool,
+} from "./sandbox-orphan-cleanup-spool.js";
+import { logger } from "../middleware/logger.js";
+
+// The constant error kind for the durable orphan-cleanup-write-failed log. The
+// log never reads the caught exception, because the exception can carry a
+// credential in its name, code, message, cause, or stack. So the log records
+// this constant and the plain provider identifiers only.
+const SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND = "sandbox_orphan_cleanup_write_failed";
+
+// The fixed non-secret refusal a duplex channel open returns when the lease does
+// not grant the opt-in `duplexCommandStream` capability. The service resolves the
+// exact lease capability snapshot and throws this before it reaches any driver.
+const DUPLEX_CHANNEL_CAPABILITY_DENIED =
+  "Sandbox lease does not grant the duplex command stream capability.";
+
+// ---------------------------------------------------------------------------
+// Sandbox capability contract — one normalizer for both branches
+// ---------------------------------------------------------------------------
+
+export const SANDBOX_CAPABILITY_KEYS = [
+  "reusableLeases",
+  "nativeSyncIn",
+  "nativeSyncOut",
+  "persistentProcessSessions",
+  "independentControlCommands",
+  "incrementalSessionOutput",
+  "concurrentSyncOperations",
+  "duplexCommandStream",
+] as const;
+
+export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
+
+/**
+ * Opt-in capability keys. Most capabilities are a worker property: an absent
+ * declaration defers to the verified baseline and allows the capability. An
+ * opt-in capability is a behavioral guarantee that only some providers make, so
+ * an absent declaration denies it. A generic one-shot provider must not get an
+ * opt-in capability just because its worker verifies a shared verb such as
+ * `environmentExecute`. Only a provider that declares the key `true` (and still
+ * verifies the prerequisites and passes narrowing) gets the capability.
+ */
+const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Set([
+  "incrementalSessionOutput",
+  "concurrentSyncOperations",
+  "duplexCommandStream",
+]);
+
+/**
+ * Verified prerequisite mapping: the worker methods each capability requires.
+ *
+ * Each capability maps to a list of requirement groups. A group holds one or
+ * more verbs; the group is met when the runtime verified AT LEAST ONE verb in
+ * it. A capability verifies only when EVERY group is met.
+ *
+ * The verbs are the worker method names from the worker discovery list (the
+ * plugin worker reports them from `handleInitialize`). A built-in provider maps
+ * its own methods to the same verb names through
+ * {@link builtinSandboxProviderVerifiedMethods}, so both branches share this
+ * mapping and the one normalizer below.
+ *
+ * The mapping was audited against the worker discovery list and the runtime
+ * execution guards:
+ * - `nativeSyncIn`/`nativeSyncOut` require the matching sync verb; the native
+ *   sync guard checks both verbs before it routes a lease to the native hook.
+ * - `reusableLeases` requires `environmentResumeLease` (reattach),
+ *   `environmentReleaseLease` (end-of-run release), and `environmentDestroyLease`
+ *   (stale-lease teardown). All three run on the reuse path: the runtime resumes
+ *   or releases the lease, and it destroys the stale lease when a resume fails
+ *   before it acquires a fresh lease.
+ * - `persistentProcessSessions` and `independentControlCommands` require
+ *   `environmentExecute`; both run commands through it.
+ * - `incrementalSessionOutput` requires `environmentExecute` too, because the
+ *   provider tails the session log through it. The verified verb is necessary
+ *   but not sufficient: this key is opt-in, so the declaration is the real gate
+ *   (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
+ * - `concurrentSyncOperations` requires BOTH sync verbs, because parallel
+ *   bidirectional transfer runs an inbound and an outbound transfer at the same
+ *   time. The two verbs are separate required groups, so a provider that
+ *   verifies only one direction cannot get the capability. The verbs are
+ *   necessary but not sufficient: this key is opt-in, so the declaration is the
+ *   real gate (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
+ * - `duplexCommandStream` requires `duplexChannelOpen`, the worker verb that
+ *   opens the persistent duplex channel. The verified verb is necessary but not
+ *   sufficient: this key is opt-in, so the declaration is the real gate. A
+ *   provider that does not implement the duplex open verb resolves `false` and
+ *   keeps the file bridge.
+ */
+const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, readonly (readonly string[])[]> = {
+  // Reusable leases require ALL reuse verbs. Each verb is its own required
+  // group, so every one must be verified. The list function that publishes
+  // provider-level reusable support checks the same verbs; both read from
+  // `REUSABLE_LEASE_WORKER_METHODS`, so the runtime guard and the published
+  // value cannot drift.
+  reusableLeases: REUSABLE_LEASE_WORKER_METHODS.map((method) => [method]),
+  nativeSyncIn: [["environmentSyncIn"]],
+  nativeSyncOut: [["environmentSyncOut"]],
+  persistentProcessSessions: [["environmentExecute"]],
+  independentControlCommands: [["environmentExecute"]],
+  incrementalSessionOutput: [["environmentExecute"]],
+  concurrentSyncOperations: [["environmentSyncIn"], ["environmentSyncOut"]],
+  duplexCommandStream: [["duplexChannelOpen"]],
+};
+
+function capabilityIsVerified(
+  key: SandboxCapabilityKey,
+  verifiedMethods: ReadonlySet<string>,
+): boolean {
+  return SANDBOX_CAPABILITY_PREREQUISITE_METHODS[key].every((group) =>
+    group.some((verb) => verifiedMethods.has(verb)),
+  );
+}
+
+/**
+ * Map a built-in sandbox provider's own methods to the worker verb names the
+ * prerequisite mapping uses, so the built-in branch and the plug-in branch feed
+ * the SAME normalizer. A built-in provider has no native sync hooks, so it never
+ * verifies a sync verb. It verifies `environmentExecute` when it implements
+ * `execute`, and the reuse verbs only when it declares `supportsReusableLeases`.
+ * A built-in reusable provider destroys its own leases in-process, so it
+ * verifies `environmentDestroyLease` with the two reuse verbs.
+ */
+export function builtinSandboxProviderVerifiedMethods(
+  provider: { supportsReusableLeases?: boolean; execute?: unknown } | null | undefined,
+): string[] {
+  if (!provider) return [];
+  const methods: string[] = [];
+  if (typeof provider.execute === "function") {
+    methods.push("environmentExecute");
+  }
+  if (provider.supportsReusableLeases === true) {
+    methods.push(
+      "environmentResumeLease",
+      "environmentReleaseLease",
+      "environmentDestroyLease",
+    );
+  }
+  return methods;
+}
+
+/**
+ * The one normalizer for the sandbox capability contract. It resolves the
+ * effective capability as verified ∩ declared ∩ narrowing.
+ *
+ * - `verifiedMethods` is the runtime's verified worker verb list (the plug-in
+ *   worker's `supportedMethods`, or a built-in provider mapped through
+ *   {@link builtinSandboxProviderVerifiedMethods}). A missing or empty list
+ *   verifies nothing, so every capability resolves `false` (fail closed).
+ * - `declared` is the provider's declaration. An absent flag defers to the
+ *   verified discovery baseline; it never grants a capability. A present flag
+ *   can only remove a verified capability, never add one.
+ * - `narrowing` is the per-target restriction from the config or lease. An
+ *   absent key applies no restriction; a `false` value removes the capability.
+ *
+ * A declaration never grants a capability the runtime did not verify, so a
+ * declared capability whose worker lacks a prerequisite verb resolves `false`.
+ */
+export function resolveEffectiveSandboxCapabilities(input: {
+  verifiedMethods?: readonly string[] | null;
+  declared?: Partial<SandboxProviderCapabilities> | null;
+  narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
+}): EffectiveSandboxCapabilities {
+  const verifiedMethods = new Set(input.verifiedMethods ?? []);
+  const declared = input.declared ?? {};
+  const narrowing = input.narrowing ?? {};
+
+  const resolve = (key: SandboxCapabilityKey): boolean => {
+    const verified = capabilityIsVerified(key, verifiedMethods);
+    // An absent declaration defers to the verified baseline for a worker-property
+    // capability (true = no extra restriction), but denies an opt-in capability
+    // (false). A present declaration can only narrow.
+    const declaredDefault = SANDBOX_CAPABILITY_OPT_IN_KEYS.has(key) ? false : true;
+    const declaredAllows = declared[key] ?? declaredDefault;
+    // An absent narrowing applies no restriction.
+    const narrowingAllows = narrowing[key] ?? true;
+    return verified && declaredAllows && narrowingAllows;
+  };
+
+  return {
+    reusableLeases: resolve("reusableLeases"),
+    nativeSyncIn: resolve("nativeSyncIn"),
+    nativeSyncOut: resolve("nativeSyncOut"),
+    persistentProcessSessions: resolve("persistentProcessSessions"),
+    independentControlCommands: resolve("independentControlCommands"),
+    incrementalSessionOutput: resolve("incrementalSessionOutput"),
+    concurrentSyncOperations: resolve("concurrentSyncOperations"),
+    duplexCommandStream: resolve("duplexCommandStream"),
+  };
+}
+
+/**
+ * Build the per-target narrowing for a sandbox lease. Narrowing removes a
+ * capability that the provider verified and declared but that this specific
+ * lease or config cannot use. Each source is grounded in existing runtime
+ * behavior:
+ * - `reusableLeases` follows this lease's resolved policy (an ephemeral lease
+ *   never reuses).
+ * - a Kubernetes Job lease disables native sync (mirrors the native sync guard,
+ *   which falls back for a `job` backend or a `nativeFileSyncUnsupported` lease).
+ * - `configResolutionFailed` marks that the runtime could not resolve the
+ *   provider config. A provider whose config cannot be resolved is untrusted, so
+ *   the runtime fails closed and narrows `persistentProcessSessions`,
+ *   `incrementalSessionOutput`, and `duplexCommandStream` to false. An empty
+ *   config alone does not fail closed; only a resolution error does.
+ */
+export function buildSandboxCapabilityNarrowing(input: {
+  leasePolicy?: EnvironmentLease["leasePolicy"] | null;
+  leaseMetadata?: Record<string, unknown> | null;
+  configResolutionFailed?: boolean;
+}): Partial<Record<SandboxCapabilityKey, boolean>> {
+  const narrowing: Partial<Record<SandboxCapabilityKey, boolean>> = {};
+  const metadata = input.leaseMetadata ?? {};
+
+  narrowing.reusableLeases = input.leasePolicy === "reuse_by_environment";
+
+  if (metadata.backend === "job" || metadata.nativeFileSyncUnsupported === true) {
+    narrowing.nativeSyncIn = false;
+    narrowing.nativeSyncOut = false;
+  }
+
+  if (input.configResolutionFailed === true) {
+    // The runtime could not resolve the provider config, so it fails closed and
+    // denies persistent process sessions, incremental session output, and the
+    // duplex command stream. The session-output streaming gate reads
+    // `incrementalSessionOutput`, so it must narrow with the persistent-session
+    // gate to keep the fail-closed behavior. The duplex command stream opens a
+    // host-owned bidirectional channel, so an untrusted provider must not keep
+    // it either.
+    narrowing.persistentProcessSessions = false;
+    narrowing.incrementalSessionOutput = false;
+    narrowing.duplexCommandStream = false;
+  }
+
+  return narrowing;
+}
 
 export function buildEnvironmentLeaseContext(input: {
   persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
@@ -67,6 +321,29 @@ export function buildEnvironmentLeaseContext(input: {
     executionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
     executionWorkspaceMode: input.persistedExecutionWorkspace?.mode ?? null,
   };
+}
+
+/**
+ * The per-run duplex bridge input. The host resolves it for each new run before
+ * it selects the sandbox callback bridge transport. When `enableDuplexBridge` is
+ * false the host keeps the file bridge with no manifest change and no redeploy.
+ * The transport selection reads this input in a later phase; this phase only
+ * delivers the setting and the per-run read.
+ */
+export interface ResolvedSandboxDuplexBridgeInput {
+  /** True only when the instance opts in to the sandbox duplex command stream. */
+  enableDuplexBridge: boolean;
+}
+
+/**
+ * Map the experimental instance setting `enableSandboxDuplexBridge` into the
+ * per-run duplex bridge input. The setting is the kill switch. It defaults off,
+ * so an absent or false setting keeps the file bridge.
+ */
+export function resolveSandboxDuplexBridgeInput(
+  experimental: Pick<InstanceExperimentalSettings, "enableSandboxDuplexBridge">,
+): ResolvedSandboxDuplexBridgeInput {
+  return { enableDuplexBridge: experimental.enableSandboxDuplexBridge === true };
 }
 
 function stripSecretRefValuesFromPluginLeaseMetadata(input: {
@@ -145,6 +422,26 @@ export interface EnvironmentDriverAcquireInput {
    * of the base image, matching what real agent runs do.
    */
   applyCustomImageTemplate?: boolean;
+  /**
+   * The latest time the acquired lease may stay active. A caller with an
+   * independent deadline (for example the setup-token login session) sets it,
+   * so the driver bounds the persisted lease expiry to this time. The driver
+   * records the earlier of this time and the provider expiry. Null or undefined
+   * keeps the provider expiry only, so all other callers keep the current
+   * behavior.
+   */
+  requestedExpiresAt?: Date | null;
+  /**
+   * Re-check the environment company binding inside the lease insert
+   * transaction. The login acquire paths set this so a managed reconciliation
+   * that binds the sandbox to another company between the route guard and this
+   * acquire cannot let the login run in a foreign-company sandbox. The lease
+   * insert then rejects a foreign-company environment with the 403
+   * `environment_company_mismatch` and holds no lease. An unbound
+   * (instance-global) environment stays open. Other callers keep the current
+   * behavior.
+   */
+  assertCompanyBinding?: boolean;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -225,6 +522,15 @@ export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput 
   operations: PluginSyncOperation[];
 }
 
+export interface EnvironmentDriverOpenDuplexChannelInput extends EnvironmentDriverLeaseInput {
+  /**
+   * The command argument vector the sandbox runs as the duplex channel child
+   * process. Element 0 is the program. The worker runs the vector with no
+   * shell, so a shell metacharacter in an element cannot inject a command.
+   */
+  command: readonly string[];
+}
+
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
@@ -241,8 +547,89 @@ export interface EnvironmentRuntimeDriver {
    */
   syncIn?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
   syncOut?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  /**
+   * Optional persistent duplex channel. Present only for a plugin-backed sandbox
+   * driver whose lease grants the `duplexCommandStream` capability. The driver
+   * opens the host-owned duplex route on the plugin worker and adapts it to the
+   * cross-layer {@link CommandManagedDuplexChannel}. Other drivers omit it.
+   */
+  openDuplexChannel?(
+    input: EnvironmentDriverOpenDuplexChannelInput,
+  ): Promise<CommandManagedDuplexChannel>;
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
+  /**
+   * Resolve the read-only effective sandbox capability snapshot for a lease.
+   * Only the sandbox driver implements it; other drivers omit it.
+   */
+  effectiveSandboxCapabilities?(input: EnvironmentDriverLeaseInput): Promise<EffectiveSandboxCapabilities>;
+  /**
+   * Retry the provider teardown for an orphan sandbox that an earlier acquire
+   * provisioned but could not tear down. The pending-cleanup lease row carries
+   * the provider, the provider lease id, and the immutable config metadata, so
+   * the retry resolves the teardown from the row alone. It never reads the
+   * current environment provider, so a provider change or an environment delete
+   * cannot strand the teardown. `environment` is null when a delete already
+   * removed the environment row. The method throws when the teardown fails, so
+   * the cleanup sweep keeps the row for a later retry.
+   */
+  retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<void>;
+  /**
+   * Report whether the provider worker can run an orphan teardown now. A plugin
+   * sandbox provider worker can be briefly down during its own restart window.
+   * A teardown in that window throws, and the cleanup sweep would count that
+   * throw against the finite retry cap. So the sweep probes this method before
+   * it claims a retry attempt, and skips the lease when the worker is not ready.
+   * A later sweep retries after the worker recovers. The method reports `true`
+   * for every persistent condition (a built-in provider, a missing plugin, or an
+   * absent worker manager), so the teardown still runs, throws, and counts
+   * toward the cap. It reports `false` only for the transient worker-down window.
+   */
+  isPendingCleanupWorkerReady?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<boolean>;
+  /**
+   * Flush the in-process buffer of orphan pending-cleanup records that every
+   * synchronous database write could not land. The acquire buffers an orphan
+   * here when the database is down after a failed teardown, so no durable row
+   * exists yet. The cleanup sweep calls this method each tick. The method
+   * re-inserts each buffered record. A record whose write now succeeds leaves the
+   * buffer and becomes a normal `pending_cleanup` row that the sweep tears down.
+   * A record whose write still fails stays in the buffer for a later flush. The
+   * method reports how many records it recovered and how many still wait.
+   */
+  flushDeferredOrphanCleanups?(): Promise<{ recovered: number; pending: number }>;
+}
+
+/**
+ * The acquire provisioned a remote sandbox, the lease insert rejected it, the
+ * compensating teardown failed, and every retry of the durable pending-cleanup
+ * write also failed. A live sandbox now has no lease row and no cleanup record,
+ * so no sweep can find it. The acquire throws this error so the failure stays visible
+ * and never resolves to a clean rejection. The `cause` field holds the original
+ * lease insert rejection. The `cleanupWriteError` field holds the write failure.
+ */
+export class SandboxOrphanCleanupWriteError extends Error {
+  readonly provider: string;
+  readonly providerLeaseId: string | null;
+  readonly cleanupWriteError: unknown;
+
+  constructor(input: {
+    provider: string;
+    providerLeaseId: string | null;
+    cause: unknown;
+    cleanupWriteError: unknown;
+  }) {
+    super(
+      `Sandbox provider "${input.provider}" leaked lease ` +
+        `"${input.providerLeaseId ?? "unknown"}": the acquire could not tear it down ` +
+        "and could not record a durable pending-cleanup row. The live sandbox has no " +
+        "durable cleanup state and needs a manual teardown.",
+      { cause: input.cause },
+    );
+    this.name = "SandboxOrphanCleanupWriteError";
+    this.provider = input.provider;
+    this.providerLeaseId = input.providerLeaseId;
+    this.cleanupWriteError = input.cleanupWriteError;
+  }
 }
 
 export interface EnvironmentRuntimeLeaseRecord {
@@ -254,13 +641,32 @@ export interface EnvironmentRuntimeLeaseRecord {
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
 
+// The durable pending-cleanup write is the only automated way to find a leaked
+// sandbox. A single insert can lose to a transient database fault (a dropped
+// connection, a lock timeout, a serialization conflict). So the acquire retries
+// the write a few times with a short backoff before it gives up. A later
+// attempt can still land the durable row that a sweep finds.
+const DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_ATTEMPTS = 3;
+const DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_BACKOFF_MS = 100;
+
+// A prolonged database outage after a failed teardown can buffer many orphan
+// records in-process. The bound stops that buffer from growing without limit. A
+// full buffer keeps the error log as the last durable handle for a new orphan.
+const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getLeaseDriverKey(lease: Pick<EnvironmentLease, "metadata">, environment: Pick<Environment, "driver">): string {
+function getLeaseDriverKey(
+  lease: Pick<EnvironmentLease, "metadata">,
+  environment: Pick<Environment, "driver"> | null,
+): string {
   const leaseDriver = typeof lease.metadata?.driver === "string" ? lease.metadata.driver : null;
-  return leaseDriver ?? environment.driver;
+  // An orphan `pending_cleanup` row whose environment a delete removed keeps its
+  // driver in the metadata, so the sweep still finds the sandbox driver. Fall
+  // back to "sandbox" because only sandbox leases record orphan cleanup.
+  return leaseDriver ?? environment?.driver ?? "sandbox";
 }
 
 function toEnvironmentLeaseSnapshot(row: typeof environmentLeases.$inferSelect): EnvironmentLease {
@@ -657,18 +1063,369 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   };
 }
 
+/**
+ * Adapt the worker manager's duplex host session to the cross-layer channel. The
+ * two shapes differ in the exit and stop members: the host session resolves the
+ * exit one time from `wait()`, so the channel bridges it to a one-time `onExit`
+ * listener; `kill()` maps to `stop()`. The `write`, `onData`, and `close`
+ * members map one to one.
+ */
+function adaptDuplexChannelHostSession(
+  session: DuplexChannelHostSession,
+): CommandManagedDuplexChannel {
+  return {
+    write(data: string): void {
+      session.write(data);
+    },
+    onData(listener: (chunk: string) => void): void {
+      session.onData(listener);
+    },
+    onExit(listener: (exit: { exitCode: number | null }) => void): void {
+      // `wait()` resolves one time with the exit and never rejects, so a single
+      // `then` bridges it to the one-time exit listener.
+      void session.wait().then((exit) => {
+        listener(exit);
+      });
+    },
+    stop(): void {
+      session.kill();
+    },
+    close(): Promise<void> {
+      return session.close();
+    },
+  };
+}
+
 function createSandboxEnvironmentDriver(
   db: Db,
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pendingCleanupWriteAttempts?: number;
+    pendingCleanupWriteBackoffMs?: number;
+    deferredOrphanCleanupBufferLimit?: number;
+    orphanCleanupSpool?: SandboxOrphanCleanupSpool;
+    orphanCleanupSpoolDir?: string;
   } = {},
 ): EnvironmentRuntimeDriver {
   const pluginWorkerManager = options.pluginWorkerManager;
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
+  // The retry count is at least one attempt, so a zero or negative override
+  // never skips the durable write. The backoff is at least zero milliseconds.
+  const pendingCleanupWriteAttempts = Math.max(
+    1,
+    options.pendingCleanupWriteAttempts ?? DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_ATTEMPTS,
+  );
+  const pendingCleanupWriteBackoffMs = Math.max(
+    0,
+    options.pendingCleanupWriteBackoffMs ?? DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_BACKOFF_MS,
+  );
+  // The buffer holds at least one orphan, so a zero or negative override never
+  // drops every buffered record.
+  const deferredOrphanCleanupBufferLimit = Math.max(
+    1,
+    options.deferredOrphanCleanupBufferLimit ?? DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT,
+  );
   const environmentsSvc = environmentService(db);
+
+  // A live sandbox whose teardown failed needs a durable `pending_cleanup` row,
+  // so a sweep can find and release it. When every synchronous write attempt
+  // fails, the database is down but the process still runs. So the driver keeps
+  // the orphan record in this in-process buffer, and a later cleanup sweep
+  // flushes it back to the database. The buffer closes the common window where
+  // the database recovers after the synchronous attempts but while the process
+  // still runs. The `pending_cleanup` failure reason matches the synchronous
+  // write, so a flushed row and a synchronous row are indistinguishable to the
+  // sweep.
+  const deferredOrphanCleanups: DeferredOrphanCleanupRecord[] = [];
+  const DEFERRED_ORPHAN_CLEANUP_FAILURE_REASON = "acquire_rejected_teardown_failed";
+
+  // The in-process buffer alone loses an orphan on a restart. So the driver also
+  // persists each buffered orphan to this durable local spool. The spool keeps
+  // the record on the local disk, next to the other durable server state, so a
+  // restart still finds it. The first flush after a restart loads the spool back
+  // into the buffer, so the sweep re-inserts the durable row. The spool holds no
+  // secret value: it persists the same sanitized metadata the database row
+  // holds, so a restart-recovered record still authorizes the teardown but never
+  // exposes a credential. Only a crash during the outage before the durable
+  // spool write lands loses the record; the error log stays the last handle for
+  // that narrow case.
+  const orphanCleanupSpool =
+    options.orphanCleanupSpool ?? createSandboxOrphanCleanupSpool(options.orphanCleanupSpoolDir);
+
+  // Add one orphan record to the in-process buffer. Report `false` only when the
+  // buffer is full, so the caller keeps the error log as the last durable handle.
+  const enqueueDeferredOrphanCleanup = (record: DeferredOrphanCleanupRecord): boolean => {
+    // Dedup by the provider lease id, so a repeated failure for the same orphan
+    // never buffers it twice. Each acquire mints a unique provider lease id, so
+    // two distinct orphans never collide. Skip the dedup for a null lease id,
+    // because a null value carries no identity.
+    const alreadyBuffered =
+      record.providerLeaseId !== null &&
+      deferredOrphanCleanups.some((entry) => entry.providerLeaseId === record.providerLeaseId);
+    if (alreadyBuffered) return true;
+    if (deferredOrphanCleanups.length >= deferredOrphanCleanupBufferLimit) return false;
+    deferredOrphanCleanups.push(record);
+    return true;
+  };
+
+  // Load the durable spool into the in-process buffer exactly once. The first
+  // flush after a restart runs this load, so the records a previous process
+  // could not land re-enter the flush path. A later flush sees the resolved
+  // promise and never reloads, so a record this process already buffered never
+  // doubles. The load runs before the flush splices the buffer, so a
+  // restart-recovered record flushes on the same tick.
+  let spoolLoadPromise: Promise<void> | null = null;
+  const ensureSpoolLoaded = (): Promise<void> => {
+    if (!spoolLoadPromise) {
+      spoolLoadPromise = (async () => {
+        const persisted = await orphanCleanupSpool.load();
+        for (const record of persisted) {
+          enqueueDeferredOrphanCleanup(record);
+        }
+      })();
+    }
+    return spoolLoadPromise;
+  };
+
+  const flushDeferredOrphanCleanups = async (): Promise<{ recovered: number; pending: number }> => {
+    // Load the durable spool into the buffer first, so a restart-recovered record
+    // flushes on this tick. The load runs once, then a resolved promise returns.
+    await ensureSpoolLoaded();
+    if (deferredOrphanCleanups.length === 0) {
+      return { recovered: 0, pending: 0 };
+    }
+    // Take the whole batch synchronously before the first await, so a second
+    // concurrent flush sees an empty buffer and never re-inserts the same record.
+    const batch = deferredOrphanCleanups.splice(0, deferredOrphanCleanups.length);
+    let recovered = 0;
+    for (const record of batch) {
+      try {
+        await environmentsSvc.insertPendingCleanupLease({
+          companyId: record.companyId,
+          environmentId: record.environmentId,
+          executionWorkspaceId: record.executionWorkspaceId,
+          issueId: record.issueId,
+          heartbeatRunId: record.heartbeatRunId,
+          provider: record.provider,
+          providerLeaseId: record.providerLeaseId,
+          metadata: record.metadata,
+          failureReason: DEFERRED_ORPHAN_CLEANUP_FAILURE_REASON,
+        });
+        // The durable row exists now, so the sweep finds and releases the orphan.
+        // Drop the spooled copy only after the row lands. A crash between the two
+        // leaves the spooled copy for a later flush, which re-inserts a duplicate
+        // the idempotent teardown handles. This order never loses the orphan.
+        await orphanCleanupSpool.remove(record);
+        recovered += 1;
+      } catch {
+        // The database is still down. Re-queue the record for a later flush,
+        // unless the buffer filled again. The identifiers carry no secret; the
+        // caught write exception never enters the log, because it can hold a
+        // credential in its message, code, cause, or stack.
+        const requeued = enqueueDeferredOrphanCleanup(record);
+        logger.warn(
+          {
+            errorKind: SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND,
+            provider: record.provider,
+            providerLeaseId: record.providerLeaseId,
+            companyId: record.companyId,
+            environmentId: record.environmentId,
+            requeued,
+          },
+          requeued
+            ? "deferred sandbox orphan cleanup flush failed; kept the orphan buffered for a later flush"
+            : "deferred sandbox orphan cleanup flush failed and the in-process buffer is full; live sandbox needs a manual teardown",
+        );
+      }
+    }
+    return { recovered, pending: deferredOrphanCleanups.length };
+  };
+
+  // Build the safe diagnostic fields for an orphan record. The provider
+  // identifiers are the only fields any diagnostic log emits, and they carry no
+  // secret. A caught write exception never enters a log: it can carry a
+  // credential in its name, code, message, cause, or stack.
+  const orphanDiagnosticFields = (record: DeferredOrphanCleanupRecord) => ({
+    errorKind: SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND,
+    provider: record.provider,
+    providerLeaseId: record.providerLeaseId,
+    companyId: record.companyId,
+    environmentId: record.environmentId,
+    executionWorkspaceId: record.executionWorkspaceId,
+    issueId: record.issueId,
+    heartbeatRunId: record.heartbeatRunId,
+  });
+
+  // Try to write the durable `pending_cleanup` row for an orphan sandbox, with a
+  // few retries. Report the new lease id on success, or a null lease id and the
+  // last write error on total failure. This function never buffers, never logs
+  // at error level, and never throws. The caller decides whether a total failure
+  // is fatal, because a later successful teardown removes the orphan and needs
+  // no durable row.
+  //
+  // The row carries the provider lease id and the same resolution metadata a
+  // normal lease holds, so a later cleanup sweep finds and releases the orphan.
+  // One atomic insert writes the row directly in the terminal `pending_cleanup`
+  // state, and the insert skips the company-binding assertion, so it records the
+  // orphan even for a foreign-bound environment. A transient database fault (a
+  // dropped connection, a lock timeout, a serialization conflict) can reject one
+  // insert but clear on the next, so the write retries a few times with a short
+  // backoff.
+  const tryWriteDurablePendingCleanup = async (
+    record: DeferredOrphanCleanupRecord,
+  ): Promise<{ leaseId: string | null; lastError: unknown }> => {
+    const diagnosticFields = orphanDiagnosticFields(record);
+    let lastCleanupWriteError: unknown;
+    for (let attempt = 1; attempt <= pendingCleanupWriteAttempts; attempt += 1) {
+      try {
+        const lease = await environmentsSvc.insertPendingCleanupLease({
+          companyId: record.companyId,
+          environmentId: record.environmentId,
+          executionWorkspaceId: record.executionWorkspaceId,
+          issueId: record.issueId,
+          heartbeatRunId: record.heartbeatRunId,
+          provider: record.provider,
+          providerLeaseId: record.providerLeaseId,
+          metadata: record.metadata,
+          failureReason: DEFERRED_ORPHAN_CLEANUP_FAILURE_REASON,
+        });
+        // The durable row exists now, so a sweep can find and release the orphan.
+        return { leaseId: lease.id, lastError: undefined };
+      } catch (cleanupWriteError) {
+        lastCleanupWriteError = cleanupWriteError;
+        if (attempt < pendingCleanupWriteAttempts) {
+          // The write failed, but attempts remain. Log the retry at warn level
+          // and back off, then try again. A later attempt can still land the
+          // durable row.
+          logger.warn(
+            { ...diagnosticFields, attempt, maxAttempts: pendingCleanupWriteAttempts },
+            "sandbox orphan cleanup write failed; retrying the durable pending-cleanup write",
+          );
+          await delay(pendingCleanupWriteBackoffMs * attempt);
+        }
+      }
+    }
+    return { leaseId: null, lastError: lastCleanupWriteError };
+  };
+
+  // Release the durable `pending_cleanup` row after a successful inline teardown.
+  // The teardown removed the orphan sandbox, so the row is no longer needed. The
+  // release moves the row to the terminal `expired` state with a `success`
+  // cleanup status, the same state the sweep records for a successful teardown.
+  //
+  // The release is best-effort. If it fails, the row stays `pending_cleanup`, so
+  // a later sweep runs the idempotent teardown on the already-gone sandbox and
+  // releases the row itself. A failed release never loses or leaks the orphan.
+  const releaseCleanedUpOrphanRow = async (
+    leaseId: string,
+    diagnosticFields: Record<string, unknown>,
+  ): Promise<void> => {
+    try {
+      await environmentsSvc.releaseLease(leaseId, "expired", {
+        cleanupStatus: "success",
+        failureReason: "acquire_rejected_teardown_succeeded",
+      });
+    } catch {
+      // The caught release exception never enters a log: it can carry a
+      // credential in its name, code, message, cause, or stack.
+      logger.warn(
+        diagnosticFields,
+        "could not release the pending-cleanup row after a successful orphan teardown; a later sweep reconciles the released row",
+      );
+    }
+  };
+
+  // Neither the durable write nor the inline teardown worked, so the orphan
+  // sandbox is live with no durable row. Persist the orphan to the durable spool
+  // and buffer it in-process, so a later cleanup-sweep flush lands the durable
+  // row. The spool survives a restart, so the flush recovers the orphan even
+  // after a crash. Then log the plain provider identifiers at error level, so an
+  // operator keeps a handle to tear the sandbox down by hand. Only a crash before
+  // the spool write lands loses the record, so the error log is the last handle
+  // for that narrow case. Throw `SandboxOrphanCleanupWriteError`, which the
+  // caller propagates. The error keeps the original insert rejection as its
+  // `cause`, so the real reason the acquire failed stays visible in the error
+  // chain.
+  const escalateUnwrittenOrphan = async (
+    record: DeferredOrphanCleanupRecord,
+    cause: unknown,
+    cleanupWriteError: unknown,
+  ): Promise<never> => {
+    const persisted = await orphanCleanupSpool.append(record);
+    const buffered = enqueueDeferredOrphanCleanup(record);
+    logger.error(
+      {
+        ...orphanDiagnosticFields(record),
+        persisted,
+        buffered,
+        deferredBufferSize: deferredOrphanCleanups.length,
+      },
+      persisted
+        ? "sandbox orphan cleanup write failed; persisted the orphan to the durable spool for a later cleanup-sweep flush"
+        : buffered
+          ? "sandbox orphan cleanup write failed and the durable spool write failed; buffered the orphan in-process only for a later cleanup-sweep flush"
+          : "sandbox orphan cleanup write failed and neither the durable spool nor the in-process buffer kept the orphan; live sandbox needs a manual teardown",
+    );
+    throw new SandboxOrphanCleanupWriteError({
+      provider: record.provider,
+      providerLeaseId: record.providerLeaseId,
+      cause,
+      cleanupWriteError,
+    });
+  };
+
+  // Clean up an orphan sandbox after the conditional lease insert rejected it.
+  // The acquire provisioned a remote sandbox, then the insert rejected (a
+  // foreign-company binding), so no lease row tracks the live sandbox. This
+  // handler records the durable `pending_cleanup` row FIRST, before the inline
+  // teardown, then tears the sandbox down.
+  //
+  // The write goes first on purpose. The conditional insert just returned a
+  // definitive rejection, so the database is reachable at this instant. An
+  // inline teardown can run long, and the database can drop during it. So a
+  // write after the teardown can fail and leave the orphan only in memory, which
+  // a restart loses. With the write first, the durable row lands while the
+  // database is proven up, so a crash after it still leaves a row that a sweep
+  // finds and releases.
+  //
+  // The teardown then runs. On success the orphan is gone, so the handler
+  // releases the durable row. On a failed teardown the row stays for the sweep.
+  // If the durable write itself failed and the teardown also failed, the handler
+  // buffers the orphan and throws `SandboxOrphanCleanupWriteError`. A successful
+  // teardown after a failed write leaves no orphan, so it needs no error.
+  const cleanUpRejectedOrphanSandbox = async (input: {
+    record: DeferredOrphanCleanupRecord;
+    cause: unknown;
+    canTeardown: boolean;
+    teardown: () => Promise<void>;
+  }): Promise<void> => {
+    const durable = await tryWriteDurablePendingCleanup(input.record);
+    let teardownFailed = !input.canTeardown;
+    if (!teardownFailed) {
+      try {
+        await input.teardown();
+      } catch {
+        teardownFailed = true;
+      }
+    }
+    if (!teardownFailed) {
+      // The teardown removed the orphan, so drop the durable row if we wrote one.
+      if (durable.leaseId !== null) {
+        await releaseCleanedUpOrphanRow(durable.leaseId, orphanDiagnosticFields(input.record));
+      }
+      return;
+    }
+    // The teardown failed, so the orphan sandbox is still live.
+    if (durable.leaseId !== null) {
+      // The durable row already tracks the orphan, so a sweep finds and releases
+      // it. The caller rethrows the original insert rejection.
+      return;
+    }
+    await escalateUnwrittenOrphan(input.record, input.cause, durable.lastError);
+  };
 
   // The run-time exec parent context, held per lease id. A plugin sandbox
   // provider can open a persistent session on the first command and delete it
@@ -742,7 +1499,7 @@ function createSandboxEnvironmentDriver(
   }
 
   async function resolvePluginSandboxRuntimeConfig(input: {
-    environment: Environment;
+    environment: Pick<Environment, "id" | "driver" | "config">;
     lease: EnvironmentLease;
     provider: string;
   }): Promise<Record<string, unknown>> {
@@ -754,7 +1511,7 @@ function createSandboxEnvironmentDriver(
         config: sandboxConfigForLeaseMetadata(metadataConfig),
       });
       if (parsed.driver === "sandbox") {
-        return parsed.config as unknown as Record<string, unknown>;
+        return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
       }
     }
 
@@ -766,7 +1523,7 @@ function createSandboxEnvironmentDriver(
           input.environment,
         );
         if (parsed.driver === "sandbox" && parsed.config.provider === input.provider) {
-          return parsed.config as unknown as Record<string, unknown>;
+          return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
         }
       } catch {
         // Lease metadata below is intentionally kept sufficient for cleanup
@@ -776,7 +1533,7 @@ function createSandboxEnvironmentDriver(
 
     return {
       provider: input.provider,
-      ...sanitizePluginSandboxConfigFromLeaseMetadata(input.lease.metadata),
+      ...dropInternalPluginSandboxConfigKeys(input.lease.metadata),
     };
   }
 
@@ -873,7 +1630,24 @@ function createSandboxEnvironmentDriver(
         const workerConfig = stripSandboxProviderEnvelope(parsed.config);
         const storedConfig = storedParsed.config;
         const providerConfigForLease = sandboxConfigForLeaseMetadata(storedConfig);
-        const supportsReusableLeases = pluginProvider.resolved.driver.supportsReusableLeases === true;
+        // Require the reusable-lease capability AND a worker that verifies the
+        // reuse methods. The provider must first opt in through the declaration:
+        // the nested `sandboxCapabilities.reusableLeases` wins over the legacy
+        // `supportsReusableLeases` flag. The worker must also verify
+        // `environmentResumeLease`, `environmentReleaseLease`, and
+        // `environmentDestroyLease` (the reuse prerequisite verbs) before the
+        // runtime resumes, releases, or tears down a reusable lease. A provider
+        // that declares `reusableLeases` true but whose worker does not verify
+        // all three methods fails closed and uses an ephemeral lease, so the
+        // runtime never dispatches a resume, a release, or a destroy the worker
+        // cannot serve, and it never strands a stale lease it cannot destroy.
+        const declaredReusableLeases =
+          resolveDeclaredSandboxCapabilities(pluginProvider.resolved.driver).reusableLeases === true;
+        const pluginVerifiedMethods = new Set(
+          pluginWorkerManager.getWorker(pluginProvider.resolved.plugin.id)?.supportedMethods ?? [],
+        );
+        const supportsReusableLeases =
+          declaredReusableLeases && capabilityIsVerified("reusableLeases", pluginVerifiedMethods);
         const leaseFingerprint =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
@@ -955,33 +1729,48 @@ function createSandboxEnvironmentDriver(
 
         let providerLease: PluginEnvironmentLease | null = null;
         if (reusableLease?.providerLeaseId) {
-          try {
-            const resumed = await pluginWorkerManager.call(
-                pluginProvider.resolved.plugin.id,
-                "environmentResumeLease",
-                {
-                  driverKey: parsed.config.provider,
-                  companyId: input.companyId,
-                  environmentId: input.environment.id,
-                  issueId: input.issueId,
-                  config: workerConfig,
-                  providerLeaseId: reusableLease.providerLeaseId,
-                  leaseMetadata: reusableLease.metadata ?? undefined,
-                },
-                resolvePluginSandboxRpcTimeoutMs(workerConfig),
-              );
-            providerLease =
-              typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
-                ? resumed
-                : null;
-          } catch {
-            providerLease = null;
+          // The `supportsReusableLeases` check above reads a snapshot of the
+          // worker methods. The runtime then does asynchronous database work
+          // (list, fingerprint, obsolete-lease cleanup) before this dispatch. A
+          // worker restart in that window can drop `environmentResumeLease`
+          // while the snapshot still marks the method verified. Re-check the
+          // live worker here and fail closed when the method is absent: skip the
+          // resume, destroy the stale reusable lease, and acquire a fresh lease
+          // below. The runtime never dispatches a resume the live worker cannot
+          // serve.
+          const workerVerifiesResume = pluginWorkerVerifiesLifecycleMethod(
+            pluginProvider.resolved.plugin.id,
+            "environmentResumeLease",
+          );
+          if (workerVerifiesResume) {
+            try {
+              const resumed = await pluginWorkerManager.call(
+                  pluginProvider.resolved.plugin.id,
+                  "environmentResumeLease",
+                  {
+                    driverKey: parsed.config.provider,
+                    companyId: input.companyId,
+                    environmentId: input.environment.id,
+                    issueId: input.issueId,
+                    config: workerConfig,
+                    providerLeaseId: reusableLease.providerLeaseId,
+                    leaseMetadata: reusableLease.metadata ?? undefined,
+                  },
+                  resolvePluginSandboxRpcTimeoutMs(workerConfig),
+                );
+              providerLease =
+                typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
+                  ? resumed
+                  : null;
+            } catch {
+              providerLease = null;
+            }
           }
           if (!providerLease) {
             await destroyReusableSandboxLease({
               environment: input.environment,
               lease: reusableLease,
-              failureReason: "resume_failed",
+              failureReason: workerVerifiesResume ? "resume_failed" : "resume_capability_lost",
             });
           }
         }
@@ -1009,6 +1798,11 @@ function createSandboxEnvironmentDriver(
             // environment's default adapter image (a pi agent then runs in the
             // opencode image and the harness binary is missing at exec time).
             adapterType: input.adapterType ?? undefined,
+            // Forward a caller deadline so the provider configures a provider-side
+            // expiry at or before it and returns the real provider expiry.
+            ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
+              ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
+              : {}),
           },
           resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
@@ -1037,28 +1831,83 @@ function createSandboxEnvironmentDriver(
             })
           : null;
 
-        return await environmentsSvc.acquireLease({
-          companyId: input.companyId,
-          environmentId: input.environment.id,
-          executionWorkspaceId: input.executionWorkspaceId,
-          issueId: input.issueId,
-          heartbeatRunId: input.heartbeatRunId,
-          leasePolicy: resolvedLeasePolicy,
-          provider: parsed.config.provider,
-          providerLeaseId: acquiredLease.providerLeaseId,
-          expiresAt: acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
-          metadata: {
-            ...(input.agentId ? { agentId: input.agentId } : {}),
-            driver: input.environment.driver,
-            executionWorkspaceMode: input.executionWorkspaceMode,
-            pluginId: pluginProvider.resolved.plugin.id,
-            pluginKey: pluginProvider.resolved.plugin.pluginKey,
-            sandboxProviderPlugin: true,
-            ...sandboxConfigForLeaseMetadata(storedConfig),
-            ...sanitizedProviderMetadata,
-            ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-          },
-        });
+        const pluginLeaseMetadata = {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+          driver: input.environment.driver,
+          executionWorkspaceMode: input.executionWorkspaceMode,
+          pluginId: pluginProvider.resolved.plugin.id,
+          pluginKey: pluginProvider.resolved.plugin.pluginKey,
+          sandboxProviderPlugin: true,
+          ...sandboxConfigForLeaseMetadata(storedConfig),
+          ...sanitizedProviderMetadata,
+          ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+        };
+        try {
+          return await environmentsSvc.acquireLease({
+            companyId: input.companyId,
+            environmentId: input.environment.id,
+            executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
+            heartbeatRunId: input.heartbeatRunId,
+            assertCompanyBinding: input.assertCompanyBinding,
+            leasePolicy: resolvedLeasePolicy,
+            provider: parsed.config.provider,
+            providerLeaseId: acquiredLease.providerLeaseId,
+            expiresAt: providerAttestedLeaseExpiry(
+              input.requestedExpiresAt,
+              acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
+            ),
+            metadata: pluginLeaseMetadata,
+          });
+        } catch (error) {
+          // The conditional lease insert rejected, so no lease row exists. A
+          // managed reconciliation can bind the environment to another company
+          // between the route guard and this insert, so the insert fails closed
+          // with `environment_company_mismatch`. This call already provisioned the
+          // remote plugin sandbox above, so tear it down now. Without this step
+          // the rejected insert leaks a live sandbox that no lease row tracks. The
+          // Claude login runs on a plugin-backed sandbox, so this path is the one
+          // the login uses. Do not tear down a reused sandbox that an earlier
+          // lease still owns.
+          if (!reusableLease || acquiredLease.providerLeaseId !== reusableLease.providerLeaseId) {
+            // Record the durable pending-cleanup row before the teardown, then
+            // tear the sandbox down. On a successful teardown the handler releases
+            // the row. If the durable write and the teardown both fail, the
+            // handler throws a `SandboxOrphanCleanupWriteError` that carries the
+            // original rejection as its cause.
+            await cleanUpRejectedOrphanSandbox({
+              record: {
+                companyId: input.companyId,
+                environmentId: input.environment.id,
+                executionWorkspaceId: input.executionWorkspaceId ?? null,
+                issueId: input.issueId ?? null,
+                heartbeatRunId: input.heartbeatRunId ?? null,
+                provider: parsed.config.provider,
+                providerLeaseId: acquiredLease.providerLeaseId,
+                metadata: pluginLeaseMetadata,
+              },
+              cause: error,
+              canTeardown: pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id),
+              teardown: async () => {
+                await pluginWorkerManager.call(
+                  pluginProvider.resolved.plugin.id,
+                  "environmentDestroyLease",
+                  {
+                    driverKey: parsed.config.provider,
+                    companyId: input.companyId,
+                    environmentId: input.environment.id,
+                    issueId: input.issueId,
+                    config: workerConfig,
+                    providerLeaseId: acquiredLease.providerLeaseId,
+                    leaseMetadata: acquiredLease.metadata ?? undefined,
+                  },
+                  resolvePluginSandboxRpcTimeoutMs(workerConfig),
+                );
+              },
+            });
+          }
+          throw error;
+        }
       }
 
       // Built-in sandbox provider path. Same guard as the plugin-backed path:
@@ -1067,7 +1916,12 @@ function createSandboxEnvironmentDriver(
       // heartbeat run that shares it. Filter to reusable policies and statuses
       // so non-reusable, cleanup-pending, or terminal rows can never be matched.
       const builtinSandboxProvider = getBuiltinSandboxProvider(parsed.config.provider);
-      const supportsReusableLeases = builtinSandboxProvider?.supportsReusableLeases === true;
+      // Resolve the DECLARED reusable-lease capability through the same contract
+      // as the plugin path, so the nested capability wins over the legacy flag.
+      const supportsReusableLeases =
+        resolveDeclaredSandboxCapabilities({
+          supportsReusableLeases: builtinSandboxProvider?.supportsReusableLeases,
+        }).reusableLeases === true;
       const providerConfigForLease = sandboxConfigForLeaseMetadata(parsed.config);
       const leaseFingerprint =
         supportsReusableLeases &&
@@ -1146,6 +2000,9 @@ function createSandboxEnvironmentDriver(
           agentId: input.agentId,
           executionWorkspaceId: input.executionWorkspaceId,
           reusableProviderLeaseId,
+          // Forward a caller deadline so the provider configures a provider-side
+          // expiry at or before it and returns the real provider expiry.
+          requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt),
         });
       } catch (error) {
         if (reusableLease) {
@@ -1184,23 +2041,67 @@ function createSandboxEnvironmentDriver(
           })
         : null;
 
-      return await environmentsSvc.acquireLease({
-        companyId: input.companyId,
-        environmentId: input.environment.id,
-        executionWorkspaceId: input.executionWorkspaceId,
-        issueId: input.issueId,
-        heartbeatRunId: input.heartbeatRunId,
-        leasePolicy: resolvedLeasePolicy,
-        provider: parsed.config.provider,
-        providerLeaseId: providerLease.providerLeaseId,
-        metadata: {
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-          driver: input.environment.driver,
-          executionWorkspaceMode: input.executionWorkspaceMode,
-          ...providerLease.metadata,
-          ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-        },
-      });
+      const builtinLeaseMetadata = {
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        driver: input.environment.driver,
+        executionWorkspaceMode: input.executionWorkspaceMode,
+        ...providerLease.metadata,
+        ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+      };
+      try {
+        return await environmentsSvc.acquireLease({
+          companyId: input.companyId,
+          environmentId: input.environment.id,
+          executionWorkspaceId: input.executionWorkspaceId,
+          issueId: input.issueId,
+          heartbeatRunId: input.heartbeatRunId,
+          assertCompanyBinding: input.assertCompanyBinding,
+          leasePolicy: resolvedLeasePolicy,
+          provider: parsed.config.provider,
+          providerLeaseId: providerLease.providerLeaseId,
+          expiresAt: providerAttestedLeaseExpiry(
+            input.requestedExpiresAt,
+            providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
+          ),
+          metadata: builtinLeaseMetadata,
+        });
+      } catch (error) {
+        // The conditional lease insert rejected, so no lease row exists. A managed
+        // reconciliation can bind the environment to another company between the
+        // route guard and this insert, so the insert fails closed with
+        // `environment_company_mismatch`. This call already provisioned the remote
+        // sandbox above, so release it now. Without this teardown the rejected
+        // insert leaks a live sandbox that no lease row tracks. Do not tear down a
+        // reused sandbox that an earlier lease still owns.
+        if (!reusableLease || providerLease.providerLeaseId !== reusableLease.providerLeaseId) {
+          // Record the durable pending-cleanup row before the teardown, then
+          // release the remote sandbox. On a successful teardown the handler
+          // releases the row. If the durable write and the teardown both fail,
+          // the handler throws a `SandboxOrphanCleanupWriteError` that carries the
+          // original rejection as its cause.
+          await cleanUpRejectedOrphanSandbox({
+            record: {
+              companyId: input.companyId,
+              environmentId: input.environment.id,
+              executionWorkspaceId: input.executionWorkspaceId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+              provider: parsed.config.provider,
+              providerLeaseId: providerLease.providerLeaseId,
+              metadata: builtinLeaseMetadata,
+            },
+            cause: error,
+            canTeardown: true,
+            teardown: async () => {
+              await destroySandboxProviderLease({
+                config: parsed.config,
+                providerLeaseId: providerLease.providerLeaseId,
+              });
+            },
+          });
+        }
+        throw error;
+      }
     },
 
     async releaseRunLease(input) {
@@ -1256,6 +2157,140 @@ function createSandboxEnvironmentDriver(
         cleanupStatus,
       });
     },
+
+    async retryPendingSandboxTeardown(input) {
+      // Resolve the teardown from the immutable orphan lease row, not from the
+      // current environment. The row keeps the provider, the provider lease id,
+      // and the sandbox config in its metadata. A provider change re-points the
+      // environment, and an environment delete removes it, but neither must
+      // strand this teardown. So the retry reads the recorded provider and the
+      // recorded config, and never the current environment provider.
+      const recordedProvider =
+        input.lease.provider ??
+        (typeof input.lease.metadata?.provider === "string" ? input.lease.metadata.provider : null);
+      if (!recordedProvider) {
+        throw new Error(`Pending-cleanup lease "${input.lease.id}" has no recorded provider for teardown.`);
+      }
+
+      // Build the config from the lease metadata under the orphan's company
+      // scope, so the retry resolves the same connection secrets the failed
+      // acquire used. The recorded config is the sole source of truth here: a
+      // delete removed the environment, and a provider change re-points it, so
+      // the retry never reads the current environment config.
+      const metadataConfig = sandboxConfigFromLeaseMetadataLoose(input.lease);
+      if (!metadataConfig || metadataConfig.provider !== recordedProvider) {
+        throw new Error(
+          `Pending-cleanup lease "${input.lease.id}" has no recorded config for provider "${recordedProvider}".`,
+        );
+      }
+
+      // Plugin-backed provider path. The Claude login runs on a plugin-backed
+      // sandbox, so this path tears down the login orphan.
+      if (!isBuiltinSandboxProvider(recordedProvider)) {
+        if (!pluginWorkerManager) {
+          throw new Error(
+            `Sandbox provider "${recordedProvider}" needs a plugin worker manager for cleanup, but none is available.`,
+          );
+        }
+        const pluginProvider = await resolveSandboxProviderPlugin({ provider: recordedProvider });
+        if (pluginProvider.state !== "running") {
+          throw new Error(
+            `Sandbox provider plugin for "${recordedProvider}" is ${pluginProvider.state}, so the cleanup teardown cannot run yet.`,
+          );
+        }
+        // Resolve the recorded secret refs through the durable orphan record,
+        // not the environment binding. A delete removed the binding, or a
+        // provider change replaced it, so environment-bound resolution would
+        // reject the recorded API-key ref and strand the teardown forever.
+        const config = await resolveSandboxCleanupConfigSecrets(
+          db,
+          input.lease.companyId,
+          metadataConfig,
+          { issueId: input.lease.issueId, heartbeatRunId: input.lease.heartbeatRunId },
+        );
+        const workerConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
+        await pluginWorkerManager.call(
+          pluginProvider.resolved.plugin.id,
+          "environmentDestroyLease",
+          {
+            driverKey: recordedProvider,
+            companyId: input.lease.companyId,
+            // The provider teardown keys on the provider lease id. The
+            // environment id is only context, and it is empty when a delete
+            // removed the environment before this orphan was recorded.
+            environmentId: input.lease.environmentId ?? input.environment?.id ?? "",
+            issueId: input.lease.issueId,
+            config: workerConfig,
+            providerLeaseId: input.lease.providerLeaseId,
+            leaseMetadata: input.lease.metadata ?? undefined,
+          },
+          resolvePluginSandboxRpcTimeoutMs(workerConfig),
+        );
+        return;
+      }
+
+      // Built-in provider path. Resolve the recorded config secrets through the
+      // durable orphan record, not the environment binding, for the same reason
+      // as the plugin path above. The teardown targets the recorded provider,
+      // never the current environment provider.
+      const cleanupConfig = await resolveSandboxCleanupConfigSecrets(
+        db,
+        input.lease.companyId,
+        metadataConfig,
+        { issueId: input.lease.issueId, heartbeatRunId: input.lease.heartbeatRunId },
+      );
+      await destroySandboxProviderLease({
+        config: cleanupConfig,
+        providerLeaseId: input.lease.providerLeaseId,
+      });
+    },
+
+    async isPendingCleanupWorkerReady(input) {
+      // Resolve the recorded provider the same way `retryPendingSandboxTeardown`
+      // does, so the probe reads the same target the teardown uses.
+      const recordedProvider =
+        input.lease.provider ??
+        (typeof input.lease.metadata?.provider === "string" ? input.lease.metadata.provider : null);
+      // A missing provider is a permanent misconfiguration. Report ready, so the
+      // teardown runs, throws, and counts toward the cap.
+      if (!recordedProvider) return true;
+      // A built-in provider has no plugin worker, so it is always ready.
+      if (isBuiltinSandboxProvider(recordedProvider)) return true;
+      // No worker manager is a permanent condition here. Report ready, so the
+      // teardown runs, throws its own "no worker manager" error, and counts
+      // toward the cap.
+      if (!pluginWorkerManager) return true;
+      // Resolve the installed plugin without a wait. A plugin reload or a plugin
+      // reinstall can remove the plugin row for a short window, so a missing
+      // plugin is a transient condition, not a permanent one. Report not ready,
+      // so the sweep skips the lease without a claim, and a later sweep retries
+      // after the plugin returns. A teardown while the plugin is missing only
+      // throws and burns a finite attempt, so a long reload could exhaust the
+      // retries and strand the sandbox. A permanent uninstall also cannot tear
+      // the sandbox down, because there is no worker to call, so the preserved
+      // pending_cleanup row still holds the durable cleanup state for later.
+      const installed = await resolvePluginSandboxProviderDriverByKey({
+        db,
+        driverKey: recordedProvider,
+        workerManager: pluginWorkerManager,
+        requireRunning: false,
+      });
+      if (!installed) return false;
+      // The plugin is installed but not ready yet. A plugin reload or a plugin
+      // reinstall moves the plugin through this state, so it is a transient
+      // window, not a permanent condition. Report not ready, so the sweep skips
+      // the lease without a claim, and a later sweep retries after the plugin
+      // becomes ready. A teardown here only throws "is not_ready" and burns a
+      // finite attempt, so a long reload could exhaust the retries and strand the
+      // sandbox.
+      if (installed.plugin.status !== "ready") return false;
+      // The plugin is installed and ready, so gate on the live worker. A running
+      // worker is ready. A down worker is the transient restart window, so report
+      // not ready and let a later sweep retry after the worker recovers.
+      return pluginWorkerManager.isRunning(installed.plugin.id);
+    },
+
+    flushDeferredOrphanCleanups,
 
     async realizeWorkspace(input) {
       // Resolve the realized cwd and any provider metadata first, then build ONE
@@ -1437,6 +2472,116 @@ function createSandboxEnvironmentDriver(
       return await callPluginEnvironmentSync("environmentSyncOut", input);
     },
 
+    async openDuplexChannel(input) {
+      // Plugin-backed sandbox providers only: open the host-owned duplex route on
+      // the plugin worker. The lease scope mirrors the sandbox execute path — the
+      // provider driver key, the company, the environment, and the provider lease
+      // id — so the route binds to the same worker session the runner streams.
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
+        throw new Error("Sandbox driver does not support duplex channels for this lease.");
+      }
+      const pluginId = readString(input.lease.metadata?.pluginId);
+      const providerKey = readString(input.lease.metadata?.provider);
+      const providerLeaseId = readString(input.lease.providerLeaseId);
+      if (!pluginId || !providerKey || !providerLeaseId) {
+        throw new Error(
+          "Sandbox duplex channel needs a plugin id, a provider key, and a provider lease id on the lease.",
+        );
+      }
+      const worker = pluginWorkerManager.getWorker(pluginId);
+      if (!worker) {
+        throw new Error(`Plugin worker "${pluginId}" is not running for the duplex channel.`);
+      }
+      const managerInput: WorkerManagerDuplexChannelOpenInput = {
+        driverKey: providerKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        providerLeaseId,
+        command: input.command,
+      };
+      const session = await worker.openDuplexChannel(managerInput);
+      return adaptDuplexChannelHostSession(session);
+    },
+
+    async effectiveSandboxCapabilities(input) {
+      const metadata = input.lease.metadata ?? {};
+      const providerKey =
+        readString(metadata.provider) ??
+        (input.environment.driver === "sandbox"
+          ? readString((parseEnvironmentDriverConfig(input.environment).config as SandboxEnvironmentConfig).provider)
+          : null);
+      if (!providerKey) {
+        return resolveEffectiveSandboxCapabilities({ verifiedMethods: [], declared: null, narrowing: null });
+      }
+
+      let declared: SandboxProviderCapabilities | null = null;
+      let verifiedMethods: readonly string[] = [];
+      let configResolutionFailed = false;
+
+      if (metadata.sandboxProviderPlugin) {
+        const pluginId = readString(metadata.pluginId);
+        // Read the declaration from the exact plugin that acquired the lease,
+        // not the first installed plugin with this driver key. A driver key is
+        // only unique inside one manifest, so two plugins can share it. The
+        // by-key resolver could intersect this lease's verified methods with a
+        // different plugin's declaration. This resolver fails closed: it returns
+        // null when the pinned plugin id is absent, or when that exact plugin no
+        // longer declares this provider key with the `sandbox_provider` kind.
+        const resolvedDriver = pluginId
+          ? await resolvePluginSandboxProviderDriverById({
+              db,
+              pluginId,
+              driverKey: providerKey,
+            })
+          : null;
+        if (!pluginId || !resolvedDriver) {
+          // Exact-plugin identity failure. The lease pins a plugin id, but the
+          // id is missing, that plugin is absent, or it no longer declares this
+          // provider key. Fail closed: resolve every effective capability to
+          // false, no matter what methods a stale or running worker still
+          // advertises. Do not read the worker methods here; passing them would
+          // let an identity-less lease keep a verified baseline. This differs
+          // from a valid plugin whose manifest merely omits
+          // `sandboxCapabilities`: that case keeps `declared` null below and
+          // defers to verified worker discovery.
+          return resolveEffectiveSandboxCapabilities({
+            verifiedMethods: [],
+            declared: null,
+            narrowing: null,
+          });
+        }
+        verifiedMethods = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
+        declared = resolveDeclaredSandboxCapabilities(resolvedDriver.driver);
+        try {
+          // Resolve the provider config to confirm it is readable. A provider
+          // whose config cannot be resolved is untrusted, so a resolution error
+          // fails closed on persistent process sessions below. The resolved
+          // value itself is no longer read for the narrowing decision.
+          await resolvePluginSandboxRuntimeConfig({
+            environment: input.environment,
+            lease: input.lease,
+            provider: providerKey,
+          });
+        } catch {
+          configResolutionFailed = true;
+        }
+      } else {
+        const builtin = getBuiltinSandboxProvider(providerKey);
+        verifiedMethods = builtinSandboxProviderVerifiedMethods(builtin);
+        declared = resolveDeclaredSandboxCapabilities({
+          supportsReusableLeases: builtin?.supportsReusableLeases,
+        });
+      }
+
+      const narrowing = buildSandboxCapabilityNarrowing({
+        leasePolicy: input.lease.leasePolicy,
+        leaseMetadata: metadata,
+        configResolutionFailed,
+      });
+
+      return resolveEffectiveSandboxCapabilities({ verifiedMethods, declared, narrowing });
+    },
+
     async destroyRunLease(input) {
       return await destroyReusableSandboxLease({
         environment: input.environment,
@@ -1446,6 +2591,21 @@ function createSandboxEnvironmentDriver(
     },
   };
 
+  /**
+   * Verify that the live plugin worker still advertises a reusable-lease
+   * lifecycle method before the runtime dispatches that RPC. The worker reports
+   * `supportedMethods` from its discovery list on every start. A worker restart
+   * can drop a lifecycle method a reusable lease was created under. The runtime
+   * must not dispatch a lifecycle RPC the live worker does not advertise. It
+   * fails closed when the worker is absent or the method is stale, so a lease
+   * that a worker can no longer clean up goes to the cleanup reaper instead of
+   * a doomed RPC.
+   */
+  function pluginWorkerVerifiesLifecycleMethod(pluginId: string, method: string): boolean {
+    const advertised = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
+    return advertised.includes(method);
+  }
+
   async function releasePluginBackedSandboxLease(
     input: EnvironmentDriverReleaseInput,
   ): Promise<EnvironmentLease | null> {
@@ -1454,7 +2614,12 @@ function createSandboxEnvironmentDriver(
     const providerKey = readString(metadata.provider);
 
     let cleanupStatus: "success" | "failed" = "success";
-    if (pluginId && providerKey && pluginWorkerManager?.isRunning(pluginId)) {
+    if (
+      pluginId &&
+      providerKey &&
+      pluginWorkerManager?.isRunning(pluginId) &&
+      pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentReleaseLease")
+    ) {
       try {
         const config = await resolvePluginSandboxRuntimeConfig({
           environment: input.environment,
@@ -1479,12 +2644,26 @@ function createSandboxEnvironmentDriver(
       cleanupStatus = "failed";
     }
 
-    const releaseStatus =
-      input.lease.leasePolicy === "retain_on_failure" && input.status === "failed"
-        ? ("retained" as const)
+    // A failed release verification leaves the provider resource active. The
+    // cleanup reaper retries only `pending_cleanup` leases, so route a failed
+    // release into that retry flow. A `retain_on_failure` lease keeps the
+    // resource on purpose for reuse, so it stays `retained` and never enters the
+    // reaper, which would destroy the resource the retain policy wants to keep.
+    const retained =
+      input.lease.leasePolicy === "retain_on_failure" && input.status === "failed";
+    const releaseStatus = retained
+      ? ("retained" as const)
+      : cleanupStatus === "failed"
+        ? ("pending_cleanup" as const)
         : input.status;
+    const failureReason =
+      input.status === "failed"
+        ? "adapter_or_run_failure"
+        : cleanupStatus === "failed"
+          ? "release_cleanup_failed"
+          : undefined;
     return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
-      failureReason: input.status === "failed" ? "adapter_or_run_failure" : undefined,
+      failureReason,
       cleanupStatus,
     });
   }
@@ -1501,7 +2680,12 @@ function createSandboxEnvironmentDriver(
       if (metadata.sandboxProviderPlugin) {
         const pluginId = readString(metadata.pluginId);
         const providerKey = readString(metadata.provider);
-        if (!pluginId || !providerKey || !pluginWorkerManager?.isRunning(pluginId)) {
+        if (
+          !pluginId ||
+          !providerKey ||
+          !pluginWorkerManager?.isRunning(pluginId) ||
+          !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentDestroyLease")
+        ) {
           cleanupStatus = "failed";
         } else {
           const config = await resolvePluginSandboxRuntimeConfig({
@@ -1560,6 +2744,44 @@ function parseExpiresAt(value: string | null | undefined): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * Resolves the persisted lease expiry for a caller-requested deadline. It records
+ * ONLY a provider-attested expiry as evidence of provider enforcement. It never
+ * synthesizes the requested deadline onto the lease row: a database-only expiry
+ * does not stop a remote sandbox after a server crash, so it must not stand in for
+ * a provider-side bound. It returns the real provider expiry when the caller sets
+ * a deadline (the caller then verifies the expiry bounds the deadline and fails
+ * closed when it does not). It returns null when the caller sets a deadline and the
+ * provider grants no expiry. It returns the provider expiry unchanged when the
+ * caller requests no deadline, so all other callers keep the current behavior. It
+ * ignores an invalid requested deadline.
+ */
+function providerAttestedLeaseExpiry(
+  requestedExpiresAt: Date | null | undefined,
+  providerExpiresAt: Date | null | undefined,
+): Date | null | undefined {
+  const requested =
+    requestedExpiresAt instanceof Date && !Number.isNaN(requestedExpiresAt.getTime())
+      ? requestedExpiresAt
+      : null;
+  if (!requested) return providerExpiresAt;
+  return providerExpiresAt ?? null;
+}
+
+/**
+ * Converts a caller-requested deadline to the ISO 8601 string a provider acquire
+ * RPC carries. It returns undefined for an absent or invalid deadline, so a
+ * generic caller without a deadline sends no requested expiry and keeps the
+ * current provider behavior.
+ */
+function requestedExpiresAtParam(
+  requestedExpiresAt: Date | null | undefined,
+): string | undefined {
+  return requestedExpiresAt instanceof Date && !Number.isNaN(requestedExpiresAt.getTime())
+    ? requestedExpiresAt.toISOString()
+    : undefined;
+}
+
 function pluginDriverProviderKey(config: PluginEnvironmentConfig): string {
   return `${config.pluginKey}:${config.driverKey}`;
 }
@@ -1568,21 +2790,32 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+// Keys the runtime stores in the lease metadata that are not part of the
+// provider driver config. Some are host-internal control fields. `remoteCwd` is
+// a per-lease runtime value. The host reads `remoteCwd` from the lease metadata
+// directly, so the worker never needs it as config. Drop every key here before
+// the runtime sends a config to a lifecycle RPC.
 const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "driver",
   "executionWorkspaceMode",
   "pluginId",
   "pluginKey",
   "providerMetadata",
+  "remoteCwd",
   "shellCommand",
   "sandboxProviderPlugin",
 ]);
 
-function sanitizePluginSandboxConfigFromLeaseMetadata(
-  metadata: Record<string, unknown> | null | undefined,
+// Drop the host-internal and per-lease runtime keys from a sandbox config
+// record. The runtime stores these keys in the lease metadata and in some
+// resolved configs, but the plugin worker must receive only the provider driver
+// config. Use this on every config the runtime sends to a lifecycle RPC, so no
+// host-internal field reaches the worker.
+function dropInternalPluginSandboxConfigKeys(
+  config: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(metadata ?? {})) {
+  for (const [key, value] of Object.entries(config ?? {})) {
     if (INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS.has(key)) continue;
     sanitized[key] = value;
   }
@@ -1708,6 +2941,11 @@ function createPluginEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
         executionWorkspaceSettings: input.executionWorkspaceSettings,
+        // Forward a caller deadline so the provider configures a provider-side
+        // expiry at or before it and returns the real provider expiry.
+        ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
+          ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
+          : {}),
       } as PluginEnvironmentAcquireLeaseParams);
 
       return await environmentsSvc.acquireLease({
@@ -1719,7 +2957,7 @@ function createPluginEnvironmentDriver(
         leasePolicy: "ephemeral",
         provider: `plugin:${parsed.config.pluginKey}:${parsed.config.driverKey}`,
         providerLeaseId: providerLease.providerLeaseId,
-        expiresAt: parseExpiresAt(providerLease.expiresAt),
+        expiresAt: providerAttestedLeaseExpiry(input.requestedExpiresAt, parseExpiresAt(providerLease.expiresAt)),
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
@@ -1870,6 +3108,11 @@ export function environmentRuntimeService(
     pluginWorkerManager?: PluginWorkerManager;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pendingCleanupWriteAttempts?: number;
+    pendingCleanupWriteBackoffMs?: number;
+    deferredOrphanCleanupBufferLimit?: number;
+    orphanCleanupSpool?: SandboxOrphanCleanupSpool;
+    orphanCleanupSpoolDir?: string;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -1882,6 +3125,11 @@ export function environmentRuntimeService(
       pluginWorkerManager: options.pluginWorkerManager,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
+      pendingCleanupWriteAttempts: options.pendingCleanupWriteAttempts,
+      pendingCleanupWriteBackoffMs: options.pendingCleanupWriteBackoffMs,
+      deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,
+      orphanCleanupSpool: options.orphanCleanupSpool,
+      orphanCleanupSpoolDir: options.orphanCleanupSpoolDir,
     }),
     ...(options.pluginWorkerManager
       ? [createPluginEnvironmentDriver(db, options.pluginWorkerManager)]
@@ -1919,6 +3167,17 @@ export function environmentRuntimeService(
   return {
     getDriver,
 
+    /**
+     * Read the sandbox duplex bridge kill switch for a new run. The host calls it
+     * per run before it selects the callback bridge transport. It reads the
+     * experimental instance setting `enableSandboxDuplexBridge` and maps it into
+     * the resolved bridge input. The default-off setting keeps the file bridge.
+     */
+    async readSandboxDuplexBridgeInput(): Promise<ResolvedSandboxDuplexBridgeInput> {
+      const experimental = await instanceSettingsService(db).getExperimental();
+      return resolveSandboxDuplexBridgeInput(experimental);
+    },
+
     async acquireRunLease(input: {
       companyId: string;
       environment: Environment;
@@ -1936,6 +3195,18 @@ export function environmentRuntimeService(
        * lease uses the operator-prepared custom image.
        */
       applyCustomImageTemplate?: boolean;
+      /**
+       * The latest time the acquired lease may stay active. The driver bounds
+       * the persisted lease expiry to this time. Null or undefined keeps the
+       * provider expiry only.
+       */
+      requestedExpiresAt?: Date | null;
+      /**
+       * Re-check the environment company binding inside the lease insert
+       * transaction. The login acquire paths set this to reject a foreign-company
+       * environment with the 403 `environment_company_mismatch`.
+       */
+      assertCompanyBinding?: boolean;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
@@ -1956,6 +3227,8 @@ export function environmentRuntimeService(
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
+        requestedExpiresAt: input.requestedExpiresAt ?? null,
+        assertCompanyBinding: input.assertCompanyBinding,
       });
 
       return {
@@ -1968,6 +3241,7 @@ export function environmentRuntimeService(
     async releaseRunLeases(
       heartbeatRunId: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
+      onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -1982,34 +3256,96 @@ export function environmentRuntimeService(
         return [];
       }
 
+      // Release each lease in its own try/catch. One driver error must not stop
+      // the release of the later leases. The caller records each lease-specific
+      // error through `onLeaseReleaseError` for its log path. Keep the order
+      // serial.
       const released: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
-        const environment = await environmentsSvc.getById(leaseRow.environmentId);
-        if (!environment) continue;
+        try {
+          const environment = leaseRow.environmentId
+            ? await environmentsSvc.getById(leaseRow.environmentId)
+            : null;
+          if (!environment) continue;
 
-        const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
-        const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
-        const lease = driver
-          ? await driver.releaseRunLease({
-              environment,
-              lease: leaseSnapshot,
-              status,
-            })
-          : await environmentsSvc.releaseLease(leaseRow.id, status);
-        if (!lease) continue;
+          const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
+          const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+          const lease = driver
+            ? await driver.releaseRunLease({
+                environment,
+                lease: leaseSnapshot,
+                status,
+              })
+            : await environmentsSvc.releaseLease(leaseRow.id, status);
+          if (!lease) continue;
 
-        released.push({
-          environment,
-          lease,
-          leaseContext: {
-            executionWorkspaceId: lease.executionWorkspaceId,
-            executionWorkspaceMode:
-              (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
-          },
-        });
+          released.push({
+            environment,
+            lease,
+            leaseContext: {
+              executionWorkspaceId: lease.executionWorkspaceId,
+              executionWorkspaceMode:
+                (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
+            },
+          });
+        } catch (error) {
+          onLeaseReleaseError?.(leaseRow.id, error);
+        }
       }
 
       return released;
+    },
+
+    // Tear an orphan ephemeral sandbox down from its recorded provider config.
+    // A failed acquire records the orphan as a `pending_cleanup` lease. The row
+    // keeps the provider, the provider lease id, and the sandbox config, so this
+    // teardown runs without the environment row and accepts a null environment.
+    // The teardown resolves the recorded secret refs through the durable orphan
+    // record, so a deleted or foreign-bound environment never strands it. The
+    // caller owns the lease release; this dispatcher only runs the provider
+    // teardown and throws when the driver teardown throws.
+    async retryPendingSandboxTeardown(input: {
+      environment: Environment | null;
+      lease: EnvironmentLease;
+    }): Promise<void> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.retryPendingSandboxTeardown) {
+        throw new Error(
+          `Environment driver "${driver.driver}" does not support orphan sandbox teardown.`,
+        );
+      }
+      await driver.retryPendingSandboxTeardown(input);
+    },
+
+    // Report whether the provider worker can run an orphan teardown now. The
+    // cleanup sweep calls this before it claims a finite retry attempt, so a
+    // briefly-down plugin worker never burns an attempt. This dispatcher never
+    // throws: an unregistered driver, or a driver with no probe, reports ready,
+    // so the teardown still runs and its own failure counts toward the cap.
+    async isPendingCleanupWorkerReady(input: {
+      environment: Environment | null;
+      lease: EnvironmentLease;
+    }): Promise<boolean> {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver?.isPendingCleanupWorkerReady) return true;
+      return driver.isPendingCleanupWorkerReady(input);
+    },
+
+    // Flush the in-process orphan-cleanup buffers of every driver that keeps one.
+    // The cleanup sweep calls this each tick, so a buffered orphan lands a durable
+    // `pending_cleanup` row once the database recovers, and the same sweep tears
+    // it down. The dispatcher sums the recovered and pending counts across all
+    // drivers. A driver with no buffer contributes nothing.
+    async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
+      let recovered = 0;
+      let pending = 0;
+      for (const driver of drivers.values()) {
+        if (!driver.flushDeferredOrphanCleanups) continue;
+        const result = await driver.flushDeferredOrphanCleanups();
+        recovered += result.recovered;
+        pending += result.pending;
+      }
+      return { recovered, pending };
     },
 
     async destroyReusableSandboxLeases(input: {
@@ -2038,7 +3374,9 @@ export function environmentRuntimeService(
 
       const destroyed: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
-        const environment = await environmentsSvc.getById(leaseRow.environmentId);
+        const environment = leaseRow.environmentId
+          ? await environmentsSvc.getById(leaseRow.environmentId)
+          : null;
         if (!environment) continue;
         const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
         const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
@@ -2105,6 +3443,13 @@ export function environmentRuntimeService(
       return driver?.supportsSync?.(input) ?? false;
     },
 
+    async effectiveSandboxCapabilities(
+      input: EnvironmentDriverLeaseInput,
+    ): Promise<EffectiveSandboxCapabilities | null> {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      return (await driver?.effectiveSandboxCapabilities?.(input)) ?? null;
+    },
+
     async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.syncIn) {
@@ -2119,6 +3464,27 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
       }
       return await driver.syncOut(input);
+    },
+
+    async openDuplexChannel(
+      input: EnvironmentDriverOpenDuplexChannelInput,
+    ): Promise<CommandManagedDuplexChannel> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.openDuplexChannel) {
+        throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);
+      }
+      // Centralize the duplex channel authorization here. Resolve the exact lease
+      // capability snapshot and refuse unless the effective snapshot grants the
+      // opt-in `duplexCommandStream` capability. This gate runs before the driver
+      // call, so an unauthorized lease never reaches the worker. The
+      // execution-target member gate stays as defense in depth. A driver that
+      // cannot resolve the snapshot fails closed with the fixed refusal.
+      const effective =
+        (await driver.effectiveSandboxCapabilities?.(input)) ?? null;
+      if (effective?.duplexCommandStream !== true) {
+        throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
+      }
+      return await driver.openDuplexChannel(input);
     },
   };
 }

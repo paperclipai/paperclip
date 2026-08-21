@@ -232,34 +232,65 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 export type ExecutionWorkspaceEnvironmentSource =
   | "agent"
   | "instance"
-  | "default";
+  | "default"
+  | "managed";
 
 export type ExecutionWorkspaceEnvironmentResolution = {
   environmentId: string;
   source: ExecutionWorkspaceEnvironmentSource;
 };
 
+export class ManagedSandboxUnavailableError extends Error {
+  constructor() {
+    super(
+      "This instance runs agents only in its platform-managed sandbox environment " +
+        "(managed sandbox only), but no active managed sandbox environment exists — " +
+        "its provider plugin may be unavailable. Refusing to fall back to local execution.",
+    );
+    this.name = "ManagedSandboxUnavailableError";
+  }
+}
+
 export function resolveExecutionWorkspaceEnvironmentId(input: {
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
+  /**
+   * Managed-sandbox-only policy (`enableManagedSandboxOnly`): any selection
+   * that lands on the local environment is redirected to the managed
+   * sandbox environment instead, and with no managed environment available
+   * the resolution fails closed — never local. Non-local selections (ssh,
+   * user-created sandboxes) are untouched: the policy hides local, it does
+   * not forbid other environments.
+   */
+  managedSandboxOnly?: boolean;
+  managedSandboxEnvironmentId?: string | null;
 }): ExecutionWorkspaceEnvironmentResolution {
-  if (input.agentDefaultEnvironmentId) {
+  const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
+    if (input.agentDefaultEnvironmentId) {
+      return {
+        environmentId: input.agentDefaultEnvironmentId,
+        source: "agent",
+      };
+    }
+    if (input.instanceDefaultEnvironmentId) {
+      return {
+        environmentId: input.instanceDefaultEnvironmentId,
+        source: "instance",
+      };
+    }
     return {
-      environmentId: input.agentDefaultEnvironmentId,
-      source: "agent",
+      environmentId: input.localDefaultEnvironmentId,
+      source: "default",
     };
+  })();
+  if (input.managedSandboxOnly !== true || resolved.environmentId !== input.localDefaultEnvironmentId) {
+    return resolved;
   }
-  if (input.instanceDefaultEnvironmentId) {
-    return {
-      environmentId: input.instanceDefaultEnvironmentId,
-      source: "instance",
-    };
+  if (!input.managedSandboxEnvironmentId) {
+    throw new ManagedSandboxUnavailableError();
   }
-  return {
-    environmentId: input.localDefaultEnvironmentId,
-    source: "default",
-  };
+  return { environmentId: input.managedSandboxEnvironmentId, source: "managed" };
 }
 
 export function defaultIssueExecutionWorkspaceSettingsForProject(

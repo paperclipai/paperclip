@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
+import { channelsCommand } from "./commands/channels.js";
 import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
@@ -129,6 +130,14 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(envCommand);
+
+program
+  .command("channels")
+  .description("Show the release channels and which one this install follows")
+  .option("--json", "Machine-readable output")
+  .action(async (opts) => {
+    await channelsCommand(opts);
+  });
 
 program
   .command("configure")

@@ -222,6 +222,12 @@ export const portabilityIssueManifestEntrySchema = z.object({
   workProducts: z.array(portabilityIssueWorkProductManifestEntrySchema).default([]),
   monitor: portabilityIssueMonitorManifestEntrySchema.nullable().default(null),
   attachments: z.array(portabilityIssueAttachmentManifestEntrySchema).default([]),
+  parentSlug: z.string().min(1).nullable().optional(),
+  createdAt: z.string().datetime().nullable().optional(),
+  updatedAt: z.string().datetime().nullable().optional(),
+  startedAt: z.string().datetime().nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  cancelledAt: z.string().datetime().nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 

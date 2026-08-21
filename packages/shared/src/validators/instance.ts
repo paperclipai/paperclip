@@ -40,13 +40,14 @@ export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
+  enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableApps: z.boolean().default(false),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
-  enableTaskChatRedesign: z.boolean().default(false),
+  enableClassicTaskInterface: z.boolean().default(false),
   enableTaskWatchdogs: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
@@ -65,6 +66,10 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableOwnerInstanceAdmin: z.boolean().default(false),
+  // Kill switch for the sandbox duplex command-stream bridge. Default off. When
+  // off the host keeps the file bridge for every run with no manifest change and
+  // no redeploy. The host reads this per run before it selects the transport.
+  enableSandboxDuplexBridge: z.boolean().default(false),
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),

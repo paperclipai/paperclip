@@ -239,6 +239,136 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .then((rows) => rows[0]!);
   }
 
+  it("clears transient routine run failures when execution issues resume", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const runId = randomUUID();
+    const executionIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: runId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: runId,
+      companyId,
+      routineId: routine.id,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-07-16T12:00:00.000Z"),
+      linkedIssueId: executionIssue.id,
+    });
+
+    await svc.syncRunStatusForIssue(executionIssue.id);
+    const [failedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureReason: "Execution issue moved to blocked",
+      triggerPayload: {
+        transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
+        },
+      },
+    });
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, executionIssue.id));
+    await svc.syncRunStatusForIssue(executionIssue.id);
+
+    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "issue_created",
+      failureReason: null,
+      completedAt: null,
+      triggerPayload: {
+        transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
+          clearedAt: expect.any(String),
+        },
+      },
+    });
+
+    const clearedAt = (run?.triggerPayload as { transientFailure?: { clearedAt?: string } } | null)
+      ?.transientFailure?.clearedAt;
+    expect(clearedAt).toEqual(expect.any(String));
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, executionIssue.id));
+    await svc.syncRunStatusForIssue(executionIssue.id);
+
+    const [completedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(completedRun).toMatchObject({
+      status: "completed",
+      failureReason: null,
+      triggerPayload: {
+        transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
+          clearedAt,
+        },
+      },
+    });
+    expect(completedRun?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("moves transient routine run failures into completion context", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const runId = randomUUID();
+    const executionIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: runId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: runId,
+      companyId,
+      routineId: routine.id,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-07-16T12:00:00.000Z"),
+      linkedIssueId: executionIssue.id,
+      triggerPayload: { input: "preserved" },
+    });
+
+    await svc.syncRunStatusForIssue(executionIssue.id);
+    const [failedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureReason: "Execution issue moved to blocked",
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, executionIssue.id));
+    await svc.syncRunStatusForIssue(executionIssue.id);
+
+    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "completed",
+      failureReason: null,
+      triggerPayload: {
+        input: "preserved",
+        transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
+          reason: "Execution issue moved to blocked",
+        },
+      },
+    });
+    expect(run?.completedAt).toBeInstanceOf(Date);
+    expect(run?.triggerPayload).toMatchObject({
+      transientFailure: { clearedAt: expect.any(String) },
+    });
+  });
+
   it("filters listed routines by project", async () => {
     const { companyId, agentId, projectId, routine, svc } = await seedFixture();
     const otherProjectId = randomUUID();
@@ -610,6 +740,72 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.projectId).toBeNull();
     expect(routine.assigneeAgentId).toBeNull();
     expect(routine.status).toBe("paused");
+  });
+
+  it("serializes routine detail with assignee identity but without protected agent configuration", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    const sentinelSecret = "routine-assignee-secret-sentinel";
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          env: {
+            ROUTINE_ASSIGNEE_SECRET: { type: "plain", value: sentinelSecret },
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: {
+              adapterConfig: {
+                env: {
+                  ROUTINE_ASSIGNEE_RUNTIME_SECRET: { type: "plain", value: sentinelSecret },
+                },
+              },
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "Daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    const detail = await svc.getDetail(routine.id);
+
+    expect(detail).toMatchObject({
+      id: routine.id,
+      companyId,
+      title: "ascii frog",
+      assignee: {
+        id: agentId,
+        name: "CodexCoder",
+        role: "engineer",
+        title: null,
+        urlKey: "codexcoder",
+      },
+      triggers: [{
+        id: trigger.id,
+        kind: "schedule",
+        label: "Daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }],
+    });
+    expect(detail?.assignee).toEqual({
+      id: agentId,
+      name: "CodexCoder",
+      role: "engineer",
+      title: null,
+      urlKey: "codexcoder",
+    });
+
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain(sentinelSecret);
+    expect(serialized).not.toContain("adapterConfig");
+    expect(serialized).not.toContain("runtimeConfig");
   });
 
   it("creates revision 1 on routine create and appends revisions for real updates only", async () => {
@@ -1944,6 +2140,124 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
+  });
+
+  it("rejects an HMAC webhook replay inside the accepted timestamp window", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "acceptance" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      source: "webhook",
+      status: "issue_created",
+    });
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).rejects.toThrow(
+      "Webhook replay detected",
+    );
+
+    const runs = await db
+      .select({ id: routineRuns.id })
+      .from(routineRuns)
+      .where(eq(routineRuns.triggerId, trigger.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("serializes concurrent HMAC webhook replays", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "concurrent" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    const results = await Promise.allSettled([
+      svc.firePublicTrigger(trigger.publicId!, request),
+      svc.firePublicTrigger(trigger.publicId!, request),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected" });
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      message: "Webhook replay detected",
+    });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(1);
+  });
+
+  it("rejects an HMAC webhook replay when automatic execution is suppressed", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { routine, svc } = await seedFixture({ runtimeEnv });
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "suppressed" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      status: "skipped",
+      failureReason: "worktree_execution_cutoff",
+    });
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).rejects.toThrow(
+      "Webhook replay detected",
+    );
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(1);
   });
 
   it("uses the configured provider for generated webhook trigger secrets", async () => {

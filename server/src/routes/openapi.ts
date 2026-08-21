@@ -112,6 +112,7 @@ import {
   environmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageTemplateSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
+  relinkEnvironmentCustomImageTemplateSchema,
   updateEnvironmentSchema,
   probeEnvironmentConfigSchema,
   startEnvironmentCustomImageSetupSessionSchema,
@@ -188,6 +189,8 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  workspaceFileAvailabilityRequestSchema,
+  workspaceFileAvailabilityResponseSchema,
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
   // Tool access
@@ -222,7 +225,18 @@ import {
   importMcpJsonSchema,
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
+  startClaudeSetupTokenSessionRequestSchema,
+  submitBrowserCodeRequestSchema,
+  claudeSetupTokenSessionResponseSchema,
+  claudeSetupTokenSessionPromptSchema,
+  claudeSetupTokenSessionOwnerResponseSchema,
+  claudeSetupTokenCompletionResponseSchema,
+  claudeOAuthTokenStatusResponseSchema,
 } from "@paperclipai/shared";
+import {
+  COMPANY_IMPORT_TRANSFERS_API_PATH,
+  companyImportTransferDeclarationSchema,
+} from "@paperclipai/shared/company-import-transfer";
 
 type JsonSchema = Record<string, unknown>;
 type OpenApiResponse = Record<string, unknown>;
@@ -379,6 +393,10 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
     }
     const jsonSchema: JsonSchema = { type: "object", properties };
     if (required.length > 0) jsonSchema.required = required;
+    // A `.strict()` Zod object forbids an unknown key. Publish that constraint
+    // as `additionalProperties: false`, so a client, a gateway, or a handler
+    // that treats the contract as authoritative rejects an extra property too.
+    if (unwrapped._def.unknownKeys === "strict") jsonSchema.additionalProperties = false;
     return jsonSchema;
   }
 
@@ -581,6 +599,13 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
 
+// The start route reads the body directly, so document the accepted fields
+// here. A sandbox environment is required. The time-to-live is optional.
+const startAdapterLoginSessionSchema = z.object({
+  environmentId: z.string().min(1),
+  ttlSeconds: z.number().optional(),
+});
+
 const environmentCustomImageCompanyQuerySchema = z.object({
   companyId: z.string().optional(),
 }).strict();
@@ -609,6 +634,11 @@ const environmentCustomImageSetupSessionFinishResultSchema =
 const environmentCustomImageTemplateRollbackResultSchema = z.object({
   activeTemplate: environmentCustomImageTemplateSchema,
   supersededTemplate: environmentCustomImageTemplateSchema,
+}).strict();
+
+const environmentCustomImageTemplateRelinkResultSchema = z.object({
+  template: environmentCustomImageTemplateSchema,
+  classification: z.enum(["knob_only", "boot_source_drift", "unclassified"]),
 }).strict();
 
 const workTimelineQuerySchema = z.object({
@@ -780,6 +810,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
+  "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
   "DELETE /api/board-api-keys/{keyId}",
@@ -812,6 +843,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "POST /api/issues/{issueId}/file-resources/availability",
   "GET /api/issues/{issueId}/file-resources/content",
   "GET /api/issues/{issueId}/file-resources/list",
   "GET /api/issues/{issueId}/file-resources/resolve",
@@ -912,6 +944,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/approvals/{id}/comments",
   "POST /api/companies/{companyId}/assets/images",
   "POST /api/companies/{companyId}/logo",
+  "POST /api/companies/{companyId}/onboarding-seed",
   "POST /api/cli-auth/challenges",
   "POST /api/board-api-keys",
   "POST /api/companies",
@@ -1672,6 +1705,7 @@ registry.registerPath({
 
 const AgentSecretListResponseSchema = z.object({
   secrets: z.array(z.object({
+    secretRef: z.string().uuid(),
     key: z.string(),
     name: z.string(),
     description: z.string().nullable(),
@@ -1694,12 +1728,24 @@ const createAgentSecretProposalSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("binding"),
     secretId: z.string().uuid().optional(),
+    sourceConfigPath: z.string().min(1).optional(),
     secretProposalId: z.string().uuid().optional(),
     targetAgentId: z.string().uuid().optional(),
     configPath: z.string().min(1),
     justification: z.string().min(1),
   }),
-]);
+]).superRefine((value, ctx) => {
+  if (
+    value.kind === "binding"
+    && [value.secretId, value.sourceConfigPath, value.secretProposalId]
+      .filter((reference) => Boolean(reference)).length !== 1
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide exactly one of secretId, sourceConfigPath, or secretProposalId",
+    });
+  }
+});
 
 const approveSecretProposalSchema = z.object({
   cascade: z.boolean().optional(),
@@ -2096,6 +2142,46 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
+  tags: ["adapters"],
+  summary: "Start a company-scoped adapter device login",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+    body: jsonBody(startAdapterLoginSessionSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}",
+  tags: ["adapters"],
+  summary: "Read an adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string(), sessionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}/cancel",
+  tags: ["adapters"],
+  summary: "Cancel an adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string(), sessionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -2485,6 +2571,28 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{issueId}/file-resources/availability",
+  tags: ["issues"],
+  summary: "Check whether issue workspace files can be opened",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    body: {
+      required: true,
+      content: { "application/json": { schema: workspaceFileAvailabilityRequestSchema } },
+    },
+  },
+  responses: {
+    200: r.ok(workspaceFileAvailabilityResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{issueId}/file-resources/list",
   tags: ["issues"],
@@ -2853,6 +2961,15 @@ registry.registerPath({
   summary: "List secret providers",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/secrets/catalog",
+  tags: ["secrets"],
+  summary: "List secret metadata (id, name, key, status) — accessible to agents",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -4412,6 +4529,133 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// Company-and-environment Claude setup-token login session routes. The owner
+// user starts one session for one adapter in one environment. The scope carries
+// no agent id, so a hire flow with no agent still starts one session. The owner
+// reads the login prompt, submits the browser code from the browser, and reads
+// the completion claim. The prompt, code, and completion responses require a
+// confidential transport; the guard returns 403 when the transport is not
+// confidential. No response carries a token; the completion returns the
+// non-secret `storedSessionId` claim.
+//
+// The stored-token status read returns only the secret id and the latest version
+// of the owner value; it returns no token. The server derives the owner from the
+// authenticated actor. A missing or a foreign value returns the same fixed 404,
+// so the read discloses no existence distinction. The response is `no-store`.
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/claude-oauth-token-status",
+  tags: ["companies"],
+  summary: "Read the stored Claude OAuth token status for the authenticated owner",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(claudeOAuthTokenStatusResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions",
+  tags: ["companies"],
+  summary: "Start a company-and-environment Claude setup-token login session",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(startClaudeSetupTokenSessionRequestSchema),
+  },
+  responses: {
+    201: r.ok(claudeSetupTokenSessionOwnerResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}",
+  tags: ["companies"],
+  summary: "Read the status of a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(claudeSetupTokenSessionResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt",
+  tags: ["companies"],
+  summary: "Read the login prompt for a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(claudeSetupTokenSessionPromptSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/code",
+  tags: ["companies"],
+  summary: "Submit the browser code for a Claude setup-token login session",
+  request: {
+    params: z.object({ companyId: z.string(), sessionId: z.string() }),
+    body: jsonBody(submitBrowserCodeRequestSchema),
+  },
+  responses: {
+    200: r.ok(claudeSetupTokenSessionResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/completion",
+  tags: ["companies"],
+  summary: "Read the completion claim of a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(claudeSetupTokenCompletionResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel",
+  tags: ["companies"],
+  summary: "Cancel a Claude setup-token login session",
+  // The 404 is reserved for the pre-scope non-member gate. The company-access
+  // gate runs before the cancel logic and returns a fixed 404 for a non-member.
+  // Cancel itself is idempotent and stays uniform: a same-company owner-scoped
+  // missing, terminal, or foreign session id all return 200. So the route never
+  // confirms a session exists for the owner.
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
 // ─── Issue interactions & tree ───────────────────────────────────────────────
 
 registry.registerPath({
@@ -4428,6 +4672,8 @@ registry.registerPath({
   path: "/api/issues/{id}/interactions",
   tags: ["issues"],
   summary: "Create an issue thread interaction",
+  description:
+    "Resolver policy defaults to canonical `anyone` for every interaction kind. `not_creator` and `human_only` are opt-in restrictions; deprecated `board_or_agents` and `board_only` inputs are accepted as compatibility aliases.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueThreadInteractionSchema),
@@ -4623,6 +4869,15 @@ registry.registerPath({
   summary: "Upload company logo",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/onboarding-seed",
+  tags: ["companies"],
+  summary: "Apply the onboarding seed Paperclip Cloud collected at signup",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -5077,6 +5332,36 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/execution-workspaces/{id}/login-handoff",
+  tags: ["execution-workspaces"],
+  summary: "Issue a single-use workspace login handoff",
+  description:
+    "Mints a short-lived, single-use ticket the isolated workspace exchanges for its own "
+    + "instance-scoped session, so opening a managed workspace does not depend on a cloned "
+    + "password. Board actors only. The response `url` must be navigated to, not stored: the "
+    + "workspace answers it with a redirect so the ticket never enters browser history. A refusal "
+    + "carries a machine `reason` and, where the control plane probed it, the workspace's own "
+    + "readiness.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        next: z.string().optional().describe("Same-origin path to land on; anything else collapses to `/`."),
+      }),
+    ),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    501: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/execution-workspaces/{id}/runtime-services/{action}",
   tags: ["execution-workspaces"],
   summary: "Control a runtime service in a workspace",
@@ -5334,6 +5619,26 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environments/{environmentId}/custom-image-template/relink",
+  tags: ["environments"],
+  summary: "Relink a detached environment customImage template to the current config",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: environmentCustomImageCompanyQuerySchema,
+    body: jsonBody(relinkEnvironmentCustomImageTemplateSchema),
+  },
+  responses: {
+    200: r.ok(environmentCustomImageTemplateRelinkResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
   },
 });
 
@@ -5917,6 +6222,123 @@ registry.registerPath({
     400: r.badRequest,
     401: r.unauthorized,
     409: { description: "An async import job is already running for this actor" },
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: COMPANY_IMPORT_TRANSFERS_API_PATH,
+  tags: ["companies"],
+  summary: "Declare a chunked company import transfer",
+  description:
+    "Declares the caller's existing company package .zip as content-addressed byte-range parts " +
+    "(whole-file plus per-part sha256). Re-declaring the same zip resumes the prior transfer " +
+    "with its uploaded parts intact; the response carries the transfer id and the part indexes " +
+    "still missing.",
+  request: { body: jsonBody(companyImportTransferDeclarationSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "put",
+  path: `${COMPANY_IMPORT_TRANSFERS_API_PATH}/{transferId}/parts/{partIndex}`,
+  tags: ["companies"],
+  summary: "Upload one declared part of a company import transfer",
+  description:
+    "Raw part bytes as the request body. The upload is verified against the declared byte size " +
+    "and sha256 before it is spooled; re-uploading an already completed part is a no-op success. " +
+    "Uploading against a transfer the abandoned-spool sweep has expired returns 410 — the client " +
+    "re-creates the transfer.",
+  request: {
+    params: z.object({ transferId: z.string(), partIndex: z.string() }),
+    body: {
+      content: {
+        "application/octet-stream": {
+          schema: { type: "string", format: "binary", description: "The raw part bytes." },
+        },
+      },
+      required: true as const,
+    },
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    409: { description: "The transfer has already been applied" },
+    410: { description: "The transfer expired and its spooled parts were deleted" },
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: `${COMPANY_IMPORT_TRANSFERS_API_PATH}/{transferId}`,
+  tags: ["companies"],
+  summary: "Get company import transfer progress",
+  description:
+    "Resume polling for a chunked import transfer: the transfer status plus which declared " +
+    "parts are completed and which are still missing.",
+  request: { params: z.object({ transferId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: `${COMPANY_IMPORT_TRANSFERS_API_PATH}/{transferId}/preview`,
+  tags: ["companies"],
+  summary: "Preview a completed company import transfer",
+  description:
+    "Runs the import preview against the assembled spool without consuming the transfer: the " +
+    "ledger run stays open and the parts stay spooled, so the subsequent apply reuses them " +
+    "instead of re-uploading. The JSON body carries the same fields as the multipart preview " +
+    "route's `meta` field (include, target, collisionStrategy, ...).",
+  request: {
+    params: z.object({ transferId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema.omit({ source: true })),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: {
+      description:
+        "Parts are still missing, an apply is in progress, or the transfer was already applied",
+    },
+    410: { description: "The transfer expired and its spooled parts were deleted" },
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: `${COMPANY_IMPORT_TRANSFERS_API_PATH}/{transferId}/apply`,
+  tags: ["companies"],
+  summary: "Apply a completed company import transfer",
+  description:
+    "Assembles the spooled parts back into the original zip, verifies the whole file against " +
+    "the declared hash fail-closed, and runs it through the same import pipeline as the " +
+    "single-shot upload — including the async import job machinery via the proxy-safe " +
+    "`?async=1` query parameter. The JSON body carries the same import fields as the multipart " +
+    "route's `meta` field (include, target, collisionStrategy, ...). Overlapping applies of " +
+    "the same transfer are serialized: exactly one proceeds, the rest get 409.",
+  request: {
+    params: z.object({ transferId: z.string() }),
+    query: z.object({ async: z.enum(["1"]).optional() }),
+    body: jsonBody(companyPortabilityImportSchema.omit({ source: true })),
+  },
+  responses: {
+    200: r.ok(),
+    202: { description: "Async import job accepted" },
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: {
+      description:
+        "Parts are still missing, an apply is already in progress, or the transfer was already applied",
+    },
+    410: { description: "The transfer expired and its spooled parts were deleted" },
     422: r.unprocessable,
   },
 });

@@ -14,9 +14,11 @@ import {
   createSuccessResponse,
   isJsonRpcRequest,
   isJsonRpcResponse,
+  isJsonRpcNotification,
   parseMessage,
   PLUGIN_RPC_ERROR_CODES,
   serializeMessage,
+  type JsonRpcNotification,
   type JsonRpcResponse,
   type PluginInvocationContext,
 } from "../src/protocol.js";
@@ -753,5 +755,341 @@ describe("worker execute.log emitter", () => {
     expect(records).toEqual([
       { params: { stream: "stdout", chunk: "kept" }, invocationId: "invocation-a" },
     ]);
+  });
+});
+
+describe("worker setup-token pseudo-terminal dispatch", () => {
+  it("dispatches open, input, stop, and close, and streams output and exit as notifications", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const notifications: JsonRpcNotification[] = [];
+    let nextRequestId = 1;
+
+    // The fake session the opener returns. The test drives its output and exit.
+    let emitOutput: ((chunk: string) => void) | null = null;
+    let resolveWait: ((value: { exitCode: number | null }) => void) | null = null;
+    const inputs: string[] = [];
+    let killed = 0;
+    let closed = 0;
+
+    // The worker emits output and exit through `ctx.setupTokenPty`, bound to the
+    // worker session id. The test drives them through the captured emitters.
+    const controllablePlugin = definePlugin({
+      async setup(ctx) {
+        emitOutput = (chunk: string) => ctx.setupTokenPty.output("ws-1", chunk);
+        resolveWait = (value) => ctx.setupTokenPty.exit("ws-1", value.exitCode);
+      },
+      async onSetupTokenPtyOpen(params) {
+        // The open carries the host route id and the fixed command. The worker
+        // returns a worker session id for the output binding only.
+        expect(params.hostRouteId).toBe("route-1");
+        expect(params.command).toBe("claude setup-token");
+        expect(params.providerLeaseId).toBe("lease-1");
+        return { workerSessionId: "ws-1" };
+      },
+      async onSetupTokenPtyInput(params) {
+        inputs.push(params.data);
+      },
+      async onSetupTokenPtyStop() {
+        killed += 1;
+      },
+      async onSetupTokenPtyClose(params) {
+        // The close keys on the host route id and returns a bound acknowledgement.
+        closed += 1;
+        return { hostRouteId: params.hostRouteId };
+      },
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin: controllablePlugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (isJsonRpcNotification(message)) {
+        notifications.push(message as JsonRpcNotification);
+      }
+    });
+
+    try {
+      await expect(
+        callWorker("initialize", {
+          manifest: {
+            id: "paperclip.setup-token-pty",
+            apiVersion: 1,
+            version: "1.0.0",
+            displayName: "Setup Token PTY Test",
+            description: "Test plugin",
+            author: "Paperclip",
+            categories: ["automation"],
+            capabilities: [],
+            entrypoints: {},
+          },
+          config: {},
+          databaseNamespace: null,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        supportedMethods: expect.arrayContaining([
+          "setupTokenPtyOpen",
+          "setupTokenPtyInput",
+          "setupTokenPtyStop",
+          "setupTokenPtyClose",
+        ]),
+      });
+
+      await expect(
+        callWorker("setupTokenPtyOpen", {
+          hostRouteId: "route-1",
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: "lease-1",
+          command: "claude setup-token",
+        }),
+      ).resolves.toEqual({ workerSessionId: "ws-1" });
+
+      // The worker streams output as a notification bound to the worker session id.
+      emitOutput?.("prompt output");
+      await callWorker("setupTokenPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
+      await callWorker("setupTokenPtyStop", { workerSessionId: "ws-1" });
+      resolveWait?.({ exitCode: 0 });
+      await expect(
+        callWorker("setupTokenPtyClose", { hostRouteId: "route-1" }),
+      ).resolves.toEqual({ hostRouteId: "route-1" });
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(inputs).toEqual(["browser-code"]);
+      expect(killed).toBe(1);
+      expect(closed).toBe(1);
+      const outputNotes = notifications.filter(
+        (note) => note.method === "setupTokenPty.output",
+      );
+      expect(outputNotes.map((note) => note.params)).toEqual([
+        { workerSessionId: "ws-1", chunk: "prompt output" },
+      ]);
+      const exitNotes = notifications.filter(
+        (note) => note.method === "setupTokenPty.exit",
+      );
+      expect(exitNotes.map((note) => note.params)).toEqual([
+        { workerSessionId: "ws-1", exitCode: 0 },
+      ]);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+    }
+  });
+});
+
+describe("worker duplex channel dispatch", () => {
+  it("dispatches open, write, stop, and close, and reports the duplex methods", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    const writes: string[] = [];
+    let stopped = 0;
+    let closed = 0;
+
+    // The plugin declares the four duplex channel handlers. The open returns a
+    // worker session id. The close keys on the host route id and returns a bound
+    // acknowledgement.
+    const controllablePlugin = definePlugin({
+      async setup() {},
+      async onDuplexChannelOpen(params) {
+        expect(params.hostRouteId).toBe("route-1");
+        expect(params.command).toEqual(["paperclip-bridge"]);
+        expect(params.providerLeaseId).toBe("lease-1");
+        return { workerSessionId: "ws-1" };
+      },
+      async onDuplexChannelWrite(params) {
+        writes.push(params.data);
+      },
+      async onDuplexChannelStop() {
+        stopped += 1;
+      },
+      async onDuplexChannelClose(params) {
+        closed += 1;
+        return { hostRouteId: params.hostRouteId };
+      },
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin: controllablePlugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      }
+    });
+
+    try {
+      await expect(
+        callWorker("initialize", {
+          manifest: {
+            id: "paperclip.duplex-channel",
+            apiVersion: 1,
+            version: "1.0.0",
+            displayName: "Duplex Channel Test",
+            description: "Test plugin",
+            author: "Paperclip",
+            categories: ["automation"],
+            capabilities: [],
+            entrypoints: {},
+          },
+          config: {},
+          databaseNamespace: null,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        supportedMethods: expect.arrayContaining([
+          "duplexChannelOpen",
+          "duplexChannelWrite",
+          "duplexChannelStop",
+          "duplexChannelClose",
+        ]),
+      });
+
+      await expect(
+        callWorker("duplexChannelOpen", {
+          hostRouteId: "route-1",
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: "lease-1",
+          command: ["paperclip-bridge"],
+        }),
+      ).resolves.toEqual({ workerSessionId: "ws-1" });
+
+      await callWorker("duplexChannelWrite", { workerSessionId: "ws-1", data: "payload" });
+      await callWorker("duplexChannelStop", { workerSessionId: "ws-1" });
+      await expect(
+        callWorker("duplexChannelClose", { hostRouteId: "route-1" }),
+      ).resolves.toEqual({ hostRouteId: "route-1" });
+
+      expect(writes).toEqual(["payload"]);
+      expect(stopped).toBe(1);
+      expect(closed).toBe(1);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+    }
+  });
+
+  it("reports no duplex methods when the plugin declares no duplex handlers", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    // A plugin with no duplex handlers advertises no duplex method. The Phase 1
+    // capability `duplexCommandStream` still resolves false for this provider,
+    // because the prerequisite verb `duplexChannelOpen` is absent.
+    const barePlugin = definePlugin({
+      async setup() {},
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin: barePlugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      }
+    });
+
+    try {
+      const result = (await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.bare",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Bare Test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: [],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      })) as { supportedMethods: string[] };
+
+      expect(result.supportedMethods).not.toContain("duplexChannelOpen");
+      expect(result.supportedMethods).not.toContain("duplexChannelWrite");
+      expect(result.supportedMethods).not.toContain("duplexChannelStop");
+      expect(result.supportedMethods).not.toContain("duplexChannelClose");
+    } finally {
+      worker.stop();
+      hostReadline.close();
+    }
   });
 });

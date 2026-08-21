@@ -136,6 +136,19 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   });
 }
 
+/**
+ * Stop later callers from joining the in-flight GET for `path`.
+ *
+ * Coalescing keys on the path alone, so a GET issued under one account's session
+ * can be joined by a caller that runs after the account changed — and handed the
+ * previous account's response. Detaching leaves that request to settle for the
+ * callers that asked for it, and makes the next call issue a fresh one. It does
+ * not abort, because those callers still want what they asked for.
+ */
+export function detachInflightGet(path: string): void {
+  inflightGets.delete(path);
+}
+
 /** Test-only: number of in-flight coalesced GET keys. */
 export function __inflightGetCount(): number {
   return inflightGets.size;
@@ -165,6 +178,14 @@ export const api = {
     }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
+  /** Raw binary upload (e.g. one chunked import-transfer part); the body travels as-is. */
+  putRaw: <T>(path: string, body: Blob, options?: RequestOptions) =>
+    request<T>(path, {
+      method: "PUT",
+      body,
+      signal: options?.signal,
+      headers: { "Content-Type": "application/octet-stream", ...(options?.headers ?? {}) },
+    }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
   delete: <T>(path: string, bodyOrOptions?: unknown, options?: RequestOptions) => {

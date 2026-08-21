@@ -279,6 +279,59 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
   return container;
 }
 
+const projectFolderResult: FolderListResult = {
+  kind: "skill",
+  allCount: 1,
+  unfiledCount: 0,
+  folders: [
+    {
+      id: "projects-root",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: null,
+      name: "Projects",
+      slug: "projects",
+      systemKey: "projects",
+      path: "projects",
+      depth: 1,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+    {
+      id: "project-folder",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: "projects-root",
+      name: "Acme",
+      slug: "acme",
+      systemKey: "project:project-1",
+      path: "projects/acme",
+      depth: 2,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+  ],
+};
+
+function projectFolderGridProps() {
+  return {
+    folderResult: projectFolderResult,
+    onFolderSelect: vi.fn(),
+    onCreateFolder: vi.fn(),
+    onCreateFolderIn: vi.fn(),
+    onRenameFolder: vi.fn(),
+    onEditFolder: vi.fn(),
+    onMoveFolder: vi.fn(),
+    onDeleteFolder: vi.fn(),
+  } satisfies Partial<ComponentProps<typeof DiscoveryGrid>>;
+}
+
 function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) => button.textContent?.trim() === name);
 }
@@ -339,6 +392,55 @@ describe("DiscoveryGrid Studio entry points", () => {
     await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
 
     expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps folder creation in the compact rail control", async () => {
+    const props = projectFolderGridProps();
+    const node = await renderDiscoveryGrid(props);
+    const compactCreateButton = node.querySelector<HTMLButtonElement>('button[title="New folder"]');
+
+    expect(buttonsNamed(node, "New folder")).toHaveLength(0);
+    expect(compactCreateButton).not.toBeNull();
+
+    await click(compactCreateButton!);
+
+    expect(props.onCreateFolderIn).toHaveBeenCalledWith(null);
+    expect(props.onCreateFolder).not.toHaveBeenCalled();
+  });
+
+  it("keeps folder creation available when no folder rail exists", async () => {
+    const onCreateFolder = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderResult: { ...projectFolderResult, folders: [] },
+      onCreateFolder,
+    });
+    const createButton = buttonsNamed(node, "New folder")[0] as HTMLButtonElement;
+
+    expect(createButton).toBeDefined();
+
+    await click(createButton);
+
+    expect(onCreateFolder).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes only the project represented by the active project folder", async () => {
+    const onScan = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderSelection: "project-folder",
+      onScan,
+    });
+    const refreshButton = node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh Acme project skills"]',
+    );
+
+    expect(refreshButton).not.toBeNull();
+
+    await click(refreshButton!);
+
+    expect(onScan).toHaveBeenCalledOnce();
+    expect(onScan).toHaveBeenCalledWith("project-1");
   });
 
   it("does not open a skill when keyboard-activating its actions button", async () => {

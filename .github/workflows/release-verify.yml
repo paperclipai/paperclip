@@ -64,8 +64,16 @@ jobs:
             group_label: server (3/3)
             shard_index: 2
             shard_count: 3
+          # Keep parity with pr.yml: workspaces-a is split with Vitest's
+          # native --shard because the ui project dominates the lane.
           - group: general-workspaces-a
-            group_label: workspaces-a
+            group_label: workspaces-a (1/2)
+            shard_index: 0
+            shard_count: 2
+          - group: general-workspaces-a
+            group_label: workspaces-a (2/2)
+            shard_index: 1
+            shard_count: 2
           - group: general-workspaces-b
             group_label: workspaces-b
 

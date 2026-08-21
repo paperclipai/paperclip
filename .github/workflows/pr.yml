@@ -174,8 +174,20 @@ jobs:
             group_label: server (5/5)
             shard_index: 4
             shard_count: 5
+          # workspaces-a was the slowest check in the fully-green PR run
+          # 31371439296 (2026-08-10) at 319s, with the ui project's single
+          # vitest invocation accounting for ~224s and the paperclipai CLI
+          # ~37s. Two shards use Vitest's native --shard on each project's
+          # file list (ui: 439 files, cli: 54), bringing each job to roughly
+          # half the suite time (~130s + setup) without a duration manifest.
           - group: general-workspaces-a
-            group_label: workspaces-a
+            group_label: workspaces-a (1/2)
+            shard_index: 0
+            shard_count: 2
+          - group: general-workspaces-a
+            group_label: workspaces-a (2/2)
+            shard_index: 1
+            shard_count: 2
           - group: general-workspaces-b
             group_label: workspaces-b
 
@@ -275,9 +287,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # A successful PR run on 2026-08-04 (30876682788) spent 256s in
-          # serialized shard 2/4, making its 305s job the run's slowest check.
-          # Five shards reduce the measured 739s suite total to about 148s per
+          # A successful PR run on 2026-08-17 (32012408876) spent 291s in
+          # serialized shard 1/5 while its siblings ran 170-201s: round-robin
+          # clustered the heavy suites on one runner. Shards are now balanced
+          # by recorded duration (scripts/serialized-shard-durations.json),
+          # which levels the measured 968s suite total to about 194s per
           # runner before setup overhead.
           - shard_index: 0
             shard_count: 5

@@ -155,6 +155,26 @@ export const pluginEnvironmentTemplateConfigBindingSchema = z.object({
   }
 });
 
+// The nested sandbox capability declaration is `.strict()` so an unknown
+// capability key is a validation error, not a silently dropped field. The outer
+// driver schema below is also `.strict()`, so a typo in a top-level capability
+// name cannot pass either.
+export const sandboxProviderCapabilitiesSchema = z.object({
+  reusableLeases: z.boolean().optional(),
+  nativeSyncIn: z.boolean().optional(),
+  nativeSyncOut: z.boolean().optional(),
+  persistentProcessSessions: z.boolean().optional(),
+  independentControlCommands: z.boolean().optional(),
+  incrementalSessionOutput: z.boolean().optional(),
+  concurrentSyncOperations: z.boolean().optional(),
+  duplexCommandStream: z.boolean().optional(),
+}).strict();
+
+export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCapabilitiesSchema>;
+
+// The driver declaration schema is `.strict()` so an unknown top-level key is a
+// validation error, not a silently dropped field. A misspelled capability name
+// (for example `supportsLoginPTY`) fails validation instead of dropping.
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
@@ -164,6 +184,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   supportsReusableLeases: z.boolean().optional(),
+  sandboxCapabilities: sandboxProviderCapabilitiesSchema.optional(),
   supportsInteractiveSetup: z.boolean().optional(),
   interactiveSetupConnectionTypes: z.array(z.string().min(1).max(100)).max(10).optional(),
   supportsTemplateCapture: z.boolean().optional(),
@@ -171,7 +192,38 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   templateConfigBinding: pluginEnvironmentTemplateConfigBindingSchema.optional(),
   templateIdentityPaths: z.array(z.string().min(1).max(200)).max(20).optional(),
   supportsTemplateDelete: z.boolean().optional(),
+  // The neutral transport capability: does the provider host an interactive
+  // login on a real pseudo-terminal? Validate a literal boolean only.
+  supportsLoginPty: z.boolean().optional(),
+  // Deprecated alias for `supportsLoginPty`. It exists only so an external
+  // plugin manifest that declares the old name still loads. Validate a literal
+  // boolean only. The transform below canonicalizes it onto `supportsLoginPty`
+  // and drops it, so every downstream reader reads only the canonical field.
+  supportsSetupTokenLogin: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
+}).strict().superRefine((driver, ctx) => {
+  // Reject a manifest that carries both the alias and the canonical field with
+  // different values. Matching values pass. A single field passes.
+  if (
+    driver.supportsLoginPty !== undefined
+    && driver.supportsSetupTokenLogin !== undefined
+    && driver.supportsLoginPty !== driver.supportsSetupTokenLogin
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "supportsSetupTokenLogin is a deprecated alias for supportsLoginPty; the two flags must not carry different values",
+      path: ["supportsLoginPty"],
+    });
+  }
+}).transform((driver) => {
+  // Canonicalize before any authorization or projection reads the value. The
+  // canonical field wins; the alias fills it in when only the alias is present.
+  // Drop the alias so every downstream reader reads only `supportsLoginPty`. An
+  // undefined value is omitted on JSON serialization, so a driver that declares
+  // neither field carries no login flag.
+  const { supportsSetupTokenLogin, ...rest } = driver;
+  return { ...rest, supportsLoginPty: rest.supportsLoginPty ?? supportsSetupTokenLogin };
 });
 
 export type PluginEnvironmentDriverDeclarationInput = z.infer<

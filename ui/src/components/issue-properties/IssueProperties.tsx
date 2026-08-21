@@ -14,8 +14,11 @@ import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
+import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
@@ -90,6 +93,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { issueReviewPolicyBadge } from "../../lib/review-policy";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
 import { Badge } from "@/components/ui/badge";
@@ -144,6 +148,13 @@ interface IssuePropertiesProps {
   onRetryExternalObjects?: () => void;
   onCheckMonitorNow?: () => void;
   checkingMonitorNow?: boolean;
+  documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
+}
+
+export interface IssuePropertiesDocumentDeepLink {
+  requestId: number;
+  tab: "plans" | "artifacts";
+  documentKey: string;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -162,8 +173,10 @@ export function IssueProperties({
   onRetryExternalObjects,
   onCheckMonitorNow,
   checkingMonitorNow = false,
+  documentDeepLink,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const { data: experimentalSettings } = useQuery({
@@ -171,45 +184,80 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
-  // Task Chat Redesign: gate the Properties | Plans | Artifacts tab shell. Flag
-  // OFF renders today's stacked sections verbatim (no Tabs wrapper). This pane
-  // is always task-scoped, so the flag alone is a sufficient gate.
-  const taskChatRedesignEnabled = experimentalSettings?.enableTaskChatRedesign === true;
-  // When hosted by the redesigned PropertiesPanel, the tab strip portals into
+  // Classic Task Interface: gate the Properties | Plans | Artifacts tab shell.
+  // Flag ON renders the legacy stacked sections verbatim (no Tabs wrapper);
+  // flag OFF — including while settings load — renders the chat-style tab
+  // shell. This pane is always task-scoped, so the flag alone is a sufficient
+  // gate.
+  const taskChatShellEnabled = experimentalSettings?.enableClassicTaskInterface !== true;
+  // When hosted by the resizable PropertiesPanel, the tab strip portals into
   // the pane's header bar (left of the window controls). The slot only exists
   // once the panel has committed, hence the effect; inline hosts (mobile sheet)
   // keep the tab strip in place.
   const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    if (!taskChatRedesignEnabled || inline) {
+    if (!taskChatShellEnabled || inline) {
       setPaneHeaderSlot(null);
       return;
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
-  }, [taskChatRedesignEnabled, inline]);
+  }, [taskChatShellEnabled, inline]);
   // Plan earns a tab as soon as an issue is in planning mode, even before the
   // plan document arrives. This keeps an expected plan surface visible and
   // lets its diagnostic empty state explain what is missing.
   // Same query keys as the tab bodies, so these share their cached fetches.
   const { data: paneTabPlanDocument } = useIssuePlanDocument(
-    taskChatRedesignEnabled ? issue.id : null,
+    taskChatShellEnabled ? issue.id : null,
   );
   const { data: paneTabAcceptedPlans } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
     queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
-    enabled: taskChatRedesignEnabled,
+    enabled: taskChatShellEnabled,
   });
   const { data: paneTabAttachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
-    enabled: taskChatRedesignEnabled,
+    enabled: taskChatShellEnabled,
   });
+  const { data: paneTabWorkProducts } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issue.id),
+    queryFn: () => issuesApi.listWorkProducts(issue.id),
+    enabled: taskChatShellEnabled,
+  });
+  const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
   const hasPlanTab =
     Boolean(paneTabPlanDocument)
     || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || (paneTabDocuments?.length ?? 0) > 0
     || issue.workMode === "planning";
-  const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
+  // Artifacts covers the same three sources the tab body composes: work
+  // products, documents (redundant with the Plan tab, intentionally), and
+  // agent-created attachments. User comment uploads stay thread-only and
+  // no longer summon the tab.
+  const hasArtifactsTab =
+    (paneTabWorkProducts?.length ?? 0) > 0
+    || (paneTabDocuments?.length ?? 0) > 0
+    || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState("properties");
+  // Once a plan document exists, surface it: switch the pane to the Plan tab so
+  // the write-up is exposed alongside the plan-approval card, instead of leaving
+  // the user on Properties. Only auto-switch until the user picks a tab by hand —
+  // after that their choice wins. Ref-guarded so it fires once per mount.
+  const paneTabUserChosenRef = useRef(false);
+  const handlePaneTabChange = useCallback((value: string) => {
+    paneTabUserChosenRef.current = true;
+    setPaneTab(value);
+  }, []);
+  useEffect(() => {
+    if (hasPlanTab && !paneTabUserChosenRef.current) {
+      setPaneTab("plans");
+    }
+  }, [hasPlanTab]);
+  useEffect(() => {
+    if (!documentDeepLink) return;
+    paneTabUserChosenRef.current = true;
+    setPaneTab(documentDeepLink.tab);
+  }, [documentDeepLink]);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -253,6 +301,7 @@ export function IssueProperties({
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
+  const normalizedParentSearch = parentSearch.trim();
 
   useEffect(() => {
     setBlockedByExpanded(false);
@@ -313,6 +362,17 @@ export function IssueProperties({
       limit: ISSUE_BLOCKER_SEARCH_LIMIT,
     }),
     enabled: !!companyId && blockedByOpen && normalizedBlockedBySearch.length > 0,
+  });
+
+  const { data: searchedParentIssues, isFetching: isFetchingSearchedParentIssues } = useQuery({
+    queryKey: companyId
+      ? queryKeys.issues.search(companyId, normalizedParentSearch, undefined, ISSUE_BLOCKER_SEARCH_LIMIT)
+      : ["issues", "blocker-search", normalizedParentSearch, ISSUE_BLOCKER_SEARCH_LIMIT],
+    queryFn: () => issuesApi.list(companyId!, {
+      q: normalizedParentSearch,
+      limit: ISSUE_BLOCKER_SEARCH_LIMIT,
+    }),
+    enabled: !!companyId && parentOpen && normalizedParentSearch.length > 0,
   });
 
   const createLabel = useMutation({
@@ -802,6 +862,10 @@ export function IssueProperties({
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm truncate min-w-0" title={approverLabel}>{approverLabel}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
+  // PAP-16506 P4: who may give the `in_review` verdict. Only an agent sets this,
+  // and only the two opt-in constraints are worth a row — the default (`null` ≡
+  // "anyone can approve") is what every issue already does, so it shows nothing.
+  const reviewPolicyBadge = issueReviewPolicyBadge(issue.reviewPolicy);
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
       return issue.executionState.currentStageType;
@@ -1864,22 +1928,22 @@ export function IssueProperties({
       <ArrowUpRight className="h-3 w-3" />
     </Link>
   ) : undefined;
-  const parentOptions = (allIssues ?? [])
+  const parentSearchActive = normalizedParentSearch.length > 0;
+  // When the user types, search on the server. The default list caps at 500 rows
+  // and sorts priority-first, so a medium-priority or low-priority match past that
+  // cap never enters the client list. A server query with `q` still finds it.
+  const parentSourceIssues = parentSearchActive ? searchedParentIssues : allIssues;
+  const parentOptions = (parentSourceIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
-    .filter((candidate) => {
-      if (!parentSearch.trim()) return true;
-      const query = parentSearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
       return aLabel.localeCompare(bLabel);
     });
+  const parentOptionsLoading = parentOpen && (
+    parentSearchActive ? isFetchingSearchedParentIssues : isFetchingIssuePickerIssues
+  );
   const parentContent = (
     <>
       <input
@@ -1921,6 +1985,11 @@ export function IssueProperties({
             </span>
           </button>
         ))}
+        {parentOptionsLoading ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
+        ) : parentOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
+        ) : null}
       </div>
     </>
   );
@@ -2128,7 +2197,12 @@ export function IssueProperties({
           <div>
             <PropertyRow label="Blocked by" wrap>
               {visibleBlockedByRelations.map((relation) => (
-                <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+                <RemovableIssueReferencePill
+                  key={relation.id}
+                  issue={relation}
+                  onRemove={removeBlockedBy}
+                  isMobile={isMobile}
+                />
               ))}
               <ExpandRelationListButton
                 hiddenCount={hiddenBlockedByCount}
@@ -2146,7 +2220,12 @@ export function IssueProperties({
         ) : (
           <PropertyRow label="Blocked by" wrap>
             {visibleBlockedByRelations.map((relation) => (
-              <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+              <RemovableIssueReferencePill
+                key={relation.id}
+                issue={relation}
+                onRemove={removeBlockedBy}
+                isMobile={isMobile}
+              />
             ))}
             <ExpandRelationListButton
               hiddenCount={hiddenBlockedByCount}
@@ -2187,30 +2266,35 @@ export function IssueProperties({
           )}
         </PropertyRow>
 
-        <PropertyRow label="Sub-tasks" wrap>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {childIssues.length > 0
-              ? visibleChildIssues.map((child) => (
-                <IssueReferencePill key={child.id} issue={child} />
-              ))
-              : null}
-            <ExpandRelationListButton
-              hiddenCount={hiddenChildIssueCount}
-              expanded={subTasksExpanded}
-              onClick={() => setSubTasksExpanded((expanded) => !expanded)}
-            />
-            {onAddSubIssue ? (
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-                onClick={onAddSubIssue}
-              >
-                <Plus className="h-3 w-3" />
-                Add sub-task
-              </button>
-            ) : null}
-          </div>
-        </PropertyRow>
+        {/* Chat shell promotes sub-tasks to their own pane tab (the full tree),
+            so the slim pill row here would duplicate that home (PAP-496). Keep
+            the pill row only for the classic center-column layout. */}
+        {taskChatShellEnabled ? null : (
+          <PropertyRow label="Sub-tasks" wrap>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {childIssues.length > 0
+                ? visibleChildIssues.map((child) => (
+                  <IssueReferencePill key={child.id} issue={child} />
+                ))
+                : null}
+              <ExpandRelationListButton
+                hiddenCount={hiddenChildIssueCount}
+                expanded={subTasksExpanded}
+                onClick={() => setSubTasksExpanded((expanded) => !expanded)}
+              />
+              {onAddSubIssue ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  onClick={onAddSubIssue}
+                >
+                  <Plus className="h-3 w-3" />
+                  Add sub-task
+                </button>
+              ) : null}
+            </div>
+          </PropertyRow>
+        )}
 
         {relatedTasks.length > 0 ? (
           <PropertyRow label="Related tasks" wrap>
@@ -2236,6 +2320,16 @@ export function IssueProperties({
       </PropertySection>
 
       <PropertySection title="Execution">
+        {/* Read-only: agents set the policy, the board does not. */}
+        {reviewPolicyBadge ? (
+          <PropertyRow label="Approvals">
+            <PropertyChip title={reviewPolicyBadge.description}>
+              <reviewPolicyBadge.Icon className="shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 truncate">{reviewPolicyBadge.label}</span>
+            </PropertyChip>
+          </PropertyRow>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Reviewers"
@@ -2496,10 +2590,10 @@ export function IssueProperties({
     </div>
   );
 
-  // Flag OFF (or non-redesign hosts): today's stacked pane, byte-for-byte.
-  if (!taskChatRedesignEnabled) return propertiesBody;
+  // Classic Task Interface ON: the legacy stacked pane, byte-for-byte.
+  if (!taskChatShellEnabled) return propertiesBody;
 
-  // Flag ON with nothing to switch between: no tab strip — the header bar
+  // Chat-style with nothing to switch between: no tab strip — the header bar
   // shows a plain title and the pane body is just the properties stack.
   if (!hasPlanTab && !hasArtifactsTab) {
     return (
@@ -2519,7 +2613,8 @@ export function IssueProperties({
   // Fall back to Properties if the selected tab's content went away (or the
   // selection was made on another issue).
   const activePaneTab =
-    (paneTab === "plans" && !hasPlanTab) || (paneTab === "artifacts" && !hasArtifactsTab)
+    (paneTab === "plans" && !hasPlanTab)
+    || (paneTab === "artifacts" && !hasArtifactsTab)
       ? "properties"
       : paneTab;
   // In the pane header the strip stretches to the bar's full height and the
@@ -2552,7 +2647,7 @@ export function IssueProperties({
     </TabsList>
   );
   return (
-    <Tabs value={activePaneTab} onValueChange={setPaneTab} className="flex min-h-0 flex-col gap-3">
+    <Tabs value={activePaneTab} onValueChange={handlePaneTabChange} className="flex min-h-0 flex-col gap-3">
       {paneHeaderSlot
         ? createPortal(
             // Portals keep React context but break the DOM tree the Tailwind
@@ -2573,7 +2668,10 @@ export function IssueProperties({
       ) : null}
       {hasArtifactsTab ? (
         <TabsContent value="artifacts">
-          <IssuePropertiesArtifactsTab issue={issue} />
+          <IssuePropertiesArtifactsTab
+            issue={issue}
+            documentDeepLink={documentDeepLink?.tab === "artifacts" ? documentDeepLink : null}
+          />
         </TabsContent>
       ) : null}
     </Tabs>
