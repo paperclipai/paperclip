@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateAgentInvokability,
+  isRecoveryOwnerCandidateEligible,
   listInvalidOrgChainDescendantIds,
   type AgentOrgRow,
 } from "../services/agent-invokability.ts";
@@ -16,6 +17,20 @@ function agent(partial: Partial<AgentOrgRow> & Pick<AgentOrgRow, "id">): AgentOr
 }
 
 describe("agent invokability", () => {
+  it("excludes shell handlers except for shell-owned routine execution recovery", () => {
+    const shellHandler = { adapterType: "paperclip_shell_handler" };
+    expect(isRecoveryOwnerCandidateEligible(shellHandler, { originKind: "manual" })).toBe(false);
+    expect(isRecoveryOwnerCandidateEligible(shellHandler, {
+      originKind: "routine_execution",
+      assigneeAdapterType: "codex_local",
+    })).toBe(false);
+    expect(isRecoveryOwnerCandidateEligible(shellHandler, {
+      originKind: "routine_execution",
+      assigneeAdapterType: "paperclip_shell_handler",
+    })).toBe(true);
+    expect(isRecoveryOwnerCandidateEligible({ adapterType: "codex_local" }, { originKind: "manual" })).toBe(true);
+  });
+
   it("blocks active descendants under a terminated manager as invalid-org-chain", () => {
     const rows = [
       agent({ id: "ceo", status: "terminated" }),

@@ -288,6 +288,67 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("routes a non-routine silent-run review past an invokable shell-handler Compiler", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const shellHandlerId = randomUUID();
+    await db.insert(agents).values({
+      id: shellHandlerId,
+      companyId,
+      name: "BenchmarkOps-Compiler",
+      role: "engineer",
+      status: "idle",
+      adapterType: "paperclip_shell_handler",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.assigneeAgentId).toBe(managerId);
+    expect(evaluation?.assigneeAgentId).not.toBe(shellHandlerId);
+  });
+
+  it("allows a shell-handler Compiler for shell-owned routine silent-run recovery", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      sourceOriginKind: "routine_execution",
+    });
+    const shellHandlerId = randomUUID();
+    await db.insert(agents).values({
+      id: shellHandlerId,
+      companyId,
+      name: "BenchmarkOps-Compiler",
+      role: "engineer",
+      status: "idle",
+      adapterType: "paperclip_shell_handler",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ adapterType: "paperclip_shell_handler" }).where(eq(agents.id, coderId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.assigneeAgentId).toBe(shellHandlerId);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";

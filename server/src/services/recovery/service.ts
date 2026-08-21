@@ -60,7 +60,10 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import {
+  evaluateAgentInvokabilityFromDb,
+  isRecoveryOwnerCandidateEligible,
+} from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -709,31 +712,6 @@ function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): Succes
     handoffAttempt,
     maxHandoffAttempts,
   };
-}
-
-function canRouteSourceRecoveryToShellHandler(
-  issue: Pick<typeof issues.$inferSelect, "originKind">,
-  sourceAssigneeAdapterType?: string | null,
-) {
-  // 2026-08-16 storm RCA: routine ORIGIN alone is not shell-routability. The stalled
-  // TSBC dailies were routine-origin but assigned to model lanes — their recovery is
-  // diagnosis/judgment, and the shell-handler that got them (BenchmarkOps) could only
-  // no-op continuation-loop at ~8/min. A shell handler may own recovery only when the
-  // stalled work itself belongs to a shell handler (recovering script work with scripts).
-  return (
-    issue.originKind === "routine_execution" &&
-    sourceAssigneeAdapterType === "paperclip_shell_handler"
-  );
-}
-
-function canOwnSourceScopedRecovery(
-  issue: Pick<typeof issues.$inferSelect, "originKind">,
-  candidate: Pick<typeof agents.$inferSelect, "adapterType"> | null | undefined,
-  sourceAssigneeAdapterType?: string | null,
-) {
-  if (!candidate) return false;
-  if (candidate.adapterType !== "paperclip_shell_handler") return true;
-  return canRouteSourceRecoveryToShellHandler(issue, sourceAssigneeAdapterType);
 }
 
 function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
@@ -2393,6 +2371,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const candidateIds: string[] = [];
     const excluded = new Set(input.excludeAgentIds ?? []);
+    const sourceAssignee = input.sourceIssue?.assigneeAgentId
+      ? await getAgent(input.sourceIssue.assigneeAgentId)
+      : input.runningAgent;
+    const recoverySource = {
+      originKind: input.sourceIssue?.originKind,
+      assigneeAdapterType: sourceAssignee?.adapterType ?? input.runningAgent.adapterType,
+    };
     // Cheap-lane first: a silent-run review is a cheap triage, not leadership
     // work. Route it to the company's deterministic shell-handler Compiler /
     // Fallback-Compiler so the CEO/CTO is not paged on every silent run. The
@@ -2419,6 +2404,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (excluded.has(agentId)) continue;
       const candidate = await getAgent(agentId);
       if (!candidate || candidate.companyId !== input.run.companyId) continue;
+      if (!isRecoveryOwnerCandidateEligible(candidate, recoverySource)) continue;
       const budgetBlock = await budgets.getInvocationBlock(input.run.companyId, candidate.id, {
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
@@ -2817,25 +2803,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const escalateToLeadership =
       reviewCycle >= RECOVERY_REVIEW_ESCALATION_THRESHOLD && !alreadyEscalated;
     const cheapReviewerId = await resolveCheapRecoveryReviewerAgentId(db, input.run.companyId);
-    const leadershipOwnerId = await resolveStaleRunOwnerAgentId({
+    // Both the normal and escalation ladders pass through the same adapter-aware
+    // predicate. Generic invokability deliberately permits shell handlers for
+    // routine dispatch, but a silent-run review is judgment work unless the
+    // source itself is shell-owned routine execution. Do not assign cheapReviewerId
+    // directly — that bypasses isRecoveryOwnerCandidateEligible.
+    const ownerAgentId = await resolveStaleRunOwnerAgentId({
       run: input.run,
       runningAgent,
       sourceIssue,
+      excludeAgentIds: escalateToLeadership && cheapReviewerId ? [cheapReviewerId] : [],
     });
-    // Cheap reviewer for early cycles; leadership chain once escalation fires.
-    // (resolveStaleRunOwnerAgentId already prepends the cheap reviewer, so when
-    //  escalating we skip it and take the next leadership candidate.)
-    let ownerAgentId: string | null;
-    if (escalateToLeadership) {
-      ownerAgentId = await resolveStaleRunOwnerAgentId({
-        run: input.run,
-        runningAgent,
-        sourceIssue,
-        excludeAgentIds: cheapReviewerId ? [cheapReviewerId] : [],
-      });
-    } else {
-      ownerAgentId = cheapReviewerId ?? leadershipOwnerId;
-    }
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
       runningAgent,
@@ -3253,13 +3231,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
-  function resolveStrandedRecoveryRouting(input: {
+  async function resolveStrandedRecoveryRouting(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
   }) {
     const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId ?? null;
+    const sourceAssignee = input.issue.assigneeAgentId
+      ? await getAgent(input.issue.assigneeAgentId)
+      : null;
+    const originalAgent = originalAgentId ? await getAgent(originalAgentId) : null;
     return {
-      returnOwnerAgentId: originalAgentId,
+      returnOwnerAgentId: isRecoveryOwnerCandidateEligible(originalAgent, {
+        originKind: input.issue.originKind,
+        assigneeAdapterType: sourceAssignee?.adapterType ?? null,
+      }) ? originalAgentId : null,
     };
   }
 
@@ -3500,7 +3485,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     closeEvidenceMeasurement?: CloseEvidenceMeasurement | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
-    const routing = resolveStrandedRecoveryRouting({
+    const routing = await resolveStrandedRecoveryRouting({
       issue: input.issue,
       latestRun: input.latestRun,
     });

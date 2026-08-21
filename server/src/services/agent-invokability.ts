@@ -33,6 +33,28 @@ export type AgentInvokability =
       invalidOrgChain: boolean;
     };
 
+export type RecoveryOwnerCandidate = Pick<typeof agents.$inferSelect, "adapterType"> | null | undefined;
+
+export type RecoveryOwnerSource = {
+  originKind: string | null | undefined;
+  assigneeAdapterType?: string | null;
+};
+
+/**
+ * Shell handlers are invokable for deterministic work, but cannot own a
+ * judgment/recovery card. The sole exception is recovering routine work that
+ * is itself assigned to a shell handler.
+ */
+export function isRecoveryOwnerCandidateEligible(
+  candidate: RecoveryOwnerCandidate,
+  source: RecoveryOwnerSource,
+) {
+  if (!candidate) return false;
+  if (candidate.adapterType !== "paperclip_shell_handler") return true;
+  return source.originKind === "routine_execution" &&
+    source.assigneeAdapterType === "paperclip_shell_handler";
+}
+
 export const DIRECT_NON_INVOKABLE_STATUSES = new Set<AgentStatus>([
   "paused",
   "terminated",
