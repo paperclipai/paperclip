@@ -11,7 +11,24 @@ export {
   migratePostgresIfEmpty,
   type MigrationBootstrapResult,
   type Db,
+  isPostgresStartingUpError,
+  isPostgresConnectionUnavailableError,
+  isPostgresNotReadyError,
+  waitForPostgresReady,
+  type WaitForPostgresReadyOptions,
 } from "./client.js";
+export {
+  POSTMASTER_LOCK_FILE_NAME,
+  postmasterLockFilePath,
+  readPostmasterLockFile,
+  probeProcessLiveness,
+  inspectPostmasterLock,
+  removeStalePostmasterLock,
+  type PostmasterLockFile,
+  type PostmasterLockStatus,
+  type ProcessLiveness,
+  type RemoveStalePostmasterLockResult,
+} from "./embedded-postgres-lock.js";
 export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
