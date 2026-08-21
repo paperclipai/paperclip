@@ -13848,7 +13848,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const billingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
     const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
-    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
       inputTokens,
@@ -13875,26 +13874,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .where(eq(agentRuntimeState.agentId, agent.id));
 
-    if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db, budgetHooks);
-      await costs.createEvent(agent.companyId, {
-        heartbeatRunId: run.id,
-        agentId: agent.id,
-        issueId: ledgerScope.issueId,
-        projectId: ledgerScope.projectId,
-        billingCode: ledgerScope.billingCode,
-        provider,
-        biller,
-        billingType,
-        costStatus,
-        model: result.model ?? "unknown",
-        inputTokens,
-        cachedInputTokens,
-        outputTokens,
-        costCents: additionalCostCents,
-        occurredAt: new Date(),
-      });
-    }
+    // Always emit a cost_events row per finalized run -- even when there is no
+    // billed cost and no token usage -- so run_count budget policies (and any
+    // other `count(distinct heartbeat_run_id)` aggregate over cost_events) see
+    // every run. Skipping the insert for zero-usage runs made those runs
+    // invisible to run_count enforcement (a hard-stop policy would under-count
+    // and never trip against a stream of no-op/zero-usage runs).
+    const costs = costService(db, budgetHooks);
+    await costs.createEvent(agent.companyId, {
+      heartbeatRunId: run.id,
+      agentId: agent.id,
+      issueId: ledgerScope.issueId,
+      projectId: ledgerScope.projectId,
+      billingCode: ledgerScope.billingCode,
+      provider,
+      biller,
+      billingType,
+      costStatus,
+      model: result.model ?? "unknown",
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      costCents: additionalCostCents,
+      occurredAt: new Date(),
+    });
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
@@ -19473,6 +19476,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     terminalizeRunOnLeaseRelease,
 
     releaseEnvironmentLeasesForRun,
+
+    updateRuntimeState,
 
     sweepStaleIssueLocks,
 

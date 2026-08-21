@@ -74,7 +74,7 @@ export function BudgetPolicyCard({
   variant = "card",
 }: {
   summary: BudgetPolicySummary;
-  onSave?: (amountCents: number) => void;
+  onSave?: (amount: number, metric: BudgetMetric) => void;
   isSaving?: boolean;
   compact?: boolean;
   variant?: "card" | "plain";
@@ -186,7 +186,7 @@ export function BudgetPolicyCard({
       </div>
       <Button
         onClick={() => {
-          if (typeof parsedDraft === "number" && onSave) onSave(parsedDraft);
+          if (typeof parsedDraft === "number" && onSave) onSave(parsedDraft, summary.metric);
         }}
         disabled={!canSave || isSaving || parsedDraft === null}
       >

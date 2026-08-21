@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  BudgetMetric,
   BudgetPolicySummary,
   CostByAgentModel,
   CostByBiller,
@@ -212,12 +213,14 @@ export function Costs() {
       scopeType: BudgetPolicySummary["scopeType"];
       scopeId: string;
       amount: number;
+      metric: BudgetMetric;
       windowKind: BudgetPolicySummary["windowKind"];
     }) =>
       budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
         scopeId: input.scopeId,
         amount: input.amount,
+        metric: input.metric,
         windowKind: input.windowKind,
       }),
     onSuccess: invalidateBudgetViews,
@@ -923,11 +926,12 @@ export function Costs() {
                             key={summary.policyId}
                             summary={summary}
                             isSaving={policyMutation.isPending}
-                            onSave={(amount) =>
+                            onSave={(amount, metric) =>
                               policyMutation.mutate({
                                 scopeType: summary.scopeType,
                                 scopeId: summary.scopeId,
                                 amount,
+                                metric,
                                 windowKind: summary.windowKind,
                               })}
                           />
