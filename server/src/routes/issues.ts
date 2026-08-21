@@ -457,28 +457,43 @@ async function assertNoBlockingLinkedPullRequest(
     // it. If the refresh itself fails, fall back to the last-known snapshot
     // rather than failing the whole transition, but mark every requested
     // object as unconfirmed so a stale "pass" cannot slip through.
+    const gateRefreshStartedAt = new Date();
+    // Bounded retry budget for the case where a *concurrent* refresh (another
+    // request, a background poller, or another server instance) holds the
+    // per-object refresh lease when this gate asks for a forced refresh.
+    // "refresh_in_progress"/"refresh_superseded" alone is not proof the
+    // returned row reflects the PR's *current* GitHub state -- a cached
+    // snapshot can be up to the full TTL window old and could predate a real
+    // state change (e.g. CI turning red) that the lease holder is racing to
+    // capture. Re-attempt the forced refresh a few times with a short delay
+    // so a routine, fast-completing concurrent refresh has a chance to land
+    // and produce a resolve timestamped at or after this gate started, which
+    // is the only thing that proves the row is not stale leftover data from
+    // before this PATCH began. If the lease is still held after the budget is
+    // exhausted, fail closed (unconfirmed) rather than trust an unconfirmed
+    // cached value.
+    const maxConfirmationAttempts = 5;
+    const retryDelayMs = 120;
+    let remainingObjectIds = [...linkedPullRequestObjectIds];
     try {
-      const refreshResults = await externalObjectsSvc.refreshIssueObjects(issueId, {
-        companyId,
-        objectIds: linkedPullRequestObjectIds,
-        force: true,
-      });
-      // A concurrent refresh of the same object (another request, a
-      // background poller, or another server instance) reports
-      // "refresh_in_progress" or "refresh_superseded" instead of "resolved",
-      // but it still returns the latest DB row for that object. If that row's
-      // *current* liveness is "fresh" -- i.e. some resolve completed within
-      // its TTL window, whether this call's or a concurrent one's -- treat it
-      // as confirmed rather than rejecting a merged-and-green PR purely
-      // because of refresh contention.
-      const confirmedIds = new Set(
-        refreshResults
-          .filter((result) => result.reason === "resolved" || result.object.liveness === "fresh")
-          .map((result) => result.object.id),
-      );
-      for (const objectId of linkedPullRequestObjectIds) {
-        if (!confirmedIds.has(objectId)) unconfirmedObjectIds.add(objectId);
+      for (let attempt = 0; attempt < maxConfirmationAttempts && remainingObjectIds.length > 0; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        const refreshResults = await externalObjectsSvc.refreshIssueObjects(issueId, {
+          companyId,
+          objectIds: remainingObjectIds,
+          force: true,
+        });
+        const confirmedThisAttempt = new Set(
+          refreshResults
+            .filter((result) =>
+              result.reason === "resolved" ||
+              (result.object.lastResolvedAt != null &&
+                new Date(result.object.lastResolvedAt) >= gateRefreshStartedAt))
+            .map((result) => result.object.id),
+        );
+        remainingObjectIds = remainingObjectIds.filter((id) => !confirmedThisAttempt.has(id));
       }
+      for (const objectId of remainingObjectIds) unconfirmedObjectIds.add(objectId);
       groups = await externalObjectsSvc.listForIssue(issueId);
     } catch (err) {
       logger.warn(

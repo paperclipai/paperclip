@@ -311,7 +311,7 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
     });
   });
 
-  it("allows done for a merged+green PR when the forced refresh loses a concurrent-refresh race (AGE-626 Greptile finding)", async () => {
+  it("allows done for a merged+green PR when a concurrent refresher stamps a fresh resolve while still holding the lease (AGE-626 Greptile finding)", async () => {
     stubGitHubFetch();
     const issueId = await createIssueWithPr(107, {
       state: "closed",
@@ -320,14 +320,55 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
       checkRuns: [{ status: "completed", conclusion: "success" }],
     });
 
-    // Simulate a concurrent refresh already in flight (another request, a
-    // background poller, or another server instance holding the lease) at
-    // the moment the done PATCH tries to force-refresh this same object.
-    // claimObjectRefresh will fail to acquire the lease and the resolver
-    // returns { reason: "refresh_in_progress" } -- but the row it reads back
-    // is still the merged+green snapshot resolved moments ago by
-    // createIssueWithPr's own refresh call, i.e. genuinely fresh. The gate
-    // must not reject this as "unverified" purely because of that race.
+    // Simulate a concurrent refresh in flight (another request, a background
+    // poller, or another server instance) that holds the lease for this
+    // object through the entire done PATCH: every one of this gate's own
+    // force-refresh attempts sees `refresh_in_progress`/`refresh_superseded`,
+    // never `resolved`. But the concurrent holder has *already* stamped a
+    // fresh `lastResolvedAt` at/after this gate's own start -- i.e. it
+    // already captured the PR's current (still merged+green) state during
+    // this very request, it just hasn't released the lease yet. The gate
+    // must trust that timestamp rather than requiring `reason === "resolved"`
+    // from its own attempt, which is what the prior fix incorrectly required
+    // implicitly by trusting any TTL-"fresh" row regardless of *when* it was
+    // last resolved. Deterministic: no real-time race, no flaky timer.
+    await db
+      .update(externalObjects)
+      .set({ refreshStartedAt: new Date() })
+      .where(eq(externalObjects.companyId, companyId));
+    // Set the recorded resolve timestamp comfortably ahead of "now" so it is
+    // guaranteed to be at/after the moment the PATCH handler captures its own
+    // gate-start timestamp a few milliseconds from now, without depending on
+    // real wall-clock race timing (no flaky timer needed).
+    await db
+      .update(externalObjects)
+      .set({ lastResolvedAt: new Date(Date.now() + 60_000) })
+      .where(eq(externalObjects.companyId, companyId));
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+  });
+
+  it("refuses done as unverified when the cached resolve predates this gate's own start, even while the lease is held (AGE-626 Greptile follow-up)", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(1070, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-concurrent-1070",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Simulate another instance holding the refresh lease for this object's
+    // entire done-transition gate, and its only recorded resolve is the one
+    // from `createIssueWithPr` -- strictly *before* this gate starts. Merely
+    // being within the object's TTL ("liveness === fresh") must not be enough
+    // to pass here: that cached merged+green snapshot could predate a real
+    // state change (e.g. CI turning red) the lease holder is still in the
+    // middle of capturing, so the gate must fail closed as "unverified"
+    // rather than trust a snapshot it cannot prove is current as of this
+    // request.
     await db
       .update(externalObjects)
       .set({ refreshStartedAt: new Date() })
@@ -335,8 +376,12 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
 
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.status).toBe("done");
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#1070");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "unverified",
+    });
   });
 
   it("gates done when the pull request is referenced only from a comment, not the description", async () => {
