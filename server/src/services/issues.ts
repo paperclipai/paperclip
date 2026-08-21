@@ -8231,6 +8231,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, id),
+            isNull(issues.deletedAt),
             inArray(issues.status, expectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,

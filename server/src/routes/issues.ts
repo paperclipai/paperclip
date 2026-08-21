@@ -2899,6 +2899,88 @@ export function issueRoutes(
       });
   }
 
+  // Deleting an issue that is the last unresolved blocker for an assigned
+  // dependent must fire the same issue_blockers_resolved wake the update route
+  // fires when a blocker transitions to "done" — otherwise the now-unblocked
+  // dependent's assignee stays asleep until some unrelated event re-evaluates
+  // readiness. See AGE-770.
+  async function emitBlockerResolvedWakeupsOnDelete(
+    resolvedBlockerIssue: { id: string; companyId: string },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    try {
+      const dependents = await svc.listWakeableBlockedDependents(resolvedBlockerIssue.id);
+      for (const dependent of dependents) {
+        const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: dependent.id,
+          blockerIssueIds: dependent.blockerIssueIds,
+        });
+        const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
+          companyId: resolvedBlockerIssue.companyId,
+          dependentIssueId: dependent.id,
+          blockerIssueIds: dependent.blockerIssueIds,
+        }).catch((err) => {
+          logger.warn(
+            { err, issueId: dependent.id, idempotencyKey },
+            "failed to check existing dependency wake before issue delete wake",
+          );
+          return null;
+        });
+        if (existingWake) continue;
+
+        const wakeRun = await heartbeat.wakeup(dependent.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: {
+            issueId: dependent.id,
+            resolvedBlockerIssueId: resolvedBlockerIssue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            mutation: "blocker_deleted",
+          },
+          idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: dependent.id,
+            taskId: dependent.id,
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+            source: "issue.blocker_deleted",
+            resolvedBlockerIssueId: resolvedBlockerIssue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: dependent.id }, "failed to enqueue dependency-resolved wake after issue delete");
+          return null;
+        });
+
+        await logActivity(db, {
+          companyId: resolvedBlockerIssue.companyId,
+          actorType: "system",
+          actorId: "issue_delete",
+          agentId: dependent.assigneeAgentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.blockers_resolved_wake_emitted",
+          entityType: "issue",
+          entityId: dependent.id,
+          details: {
+            source: "issue.blocker_deleted",
+            wakeupRunId: wakeRun?.id ?? null,
+            resolvedBlockerIssueId: resolvedBlockerIssue.id,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: dependent.id }, "failed to log blockers_resolved wake emission after delete");
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        { err, issueId: resolvedBlockerIssue.id },
+        "failed to evaluate dependents for blocker-resolved wake after issue delete",
+      );
+    }
+  }
+
   async function sourceTrustForActorWrite(
     issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
     actor: ReturnType<typeof getActorInfo>,
@@ -10956,6 +11038,7 @@ export function issueRoutes(
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
+    void emitBlockerResolvedWakeupsOnDelete(issue, actor);
     res.json(issue);
   });
 
