@@ -2432,11 +2432,14 @@ type IssueListPreparedResponse =
       body: CompactIssue[];
       etag: string;
       cacheControl: string;
+      noWakePathScanTruncated?: boolean;
+      noWakePathNextOffset?: number;
     }
   | {
       kind: "full";
       body: unknown[];
       noWakePathScanTruncated?: boolean;
+      noWakePathNextOffset?: number;
     };
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
@@ -6110,6 +6113,7 @@ export function issueRoutes(
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
         const noWakePathScanTruncated = Boolean((rawResult as unknown as { noWakePathScanTruncated?: boolean }).noWakePathScanTruncated);
+        const noWakePathNextOffset = (rawResult as unknown as { noWakePathNextOffset?: number }).noWakePathNextOffset;
         const result = await actorCanReadCompanyScope(req, companyId)
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
@@ -6143,6 +6147,8 @@ export function issueRoutes(
             body: compactResult,
             etag: compactIssueListEtag(compactResult),
             cacheControl: "private, must-revalidate",
+            noWakePathScanTruncated,
+            noWakePathNextOffset,
           };
         }
         const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -6165,6 +6171,7 @@ export function issueRoutes(
         return {
           kind: "full",
           noWakePathScanTruncated,
+          noWakePathNextOffset,
           body: result.map((issue) => ({
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
@@ -6199,6 +6206,12 @@ export function issueRoutes(
     if (coordinated.response.kind === "compact") {
       res.setHeader("Cache-Control", coordinated.response.cacheControl);
       res.setHeader("ETag", coordinated.response.etag);
+      if (coordinated.response.noWakePathScanTruncated) {
+        res.setHeader("X-Paperclip-No-Wake-Path-Scan-Truncated", "true");
+        if (coordinated.response.noWakePathNextOffset !== undefined) {
+          res.setHeader("X-Paperclip-No-Wake-Path-Next-Offset", String(coordinated.response.noWakePathNextOffset));
+        }
+      }
       const etagMatched = requestMatchesEtag(req.header("if-none-match"), coordinated.response.etag);
       logIssueListRequest({
         req,
@@ -6232,6 +6245,9 @@ export function issueRoutes(
     });
     if (coordinated.response.noWakePathScanTruncated) {
       res.setHeader("X-Paperclip-No-Wake-Path-Scan-Truncated", "true");
+      if (coordinated.response.noWakePathNextOffset !== undefined) {
+        res.setHeader("X-Paperclip-No-Wake-Path-Next-Offset", String(coordinated.response.noWakePathNextOffset));
+      }
     }
     res.json(coordinated.response.body);
   });

@@ -339,4 +339,55 @@ describeEmbeddedPostgres("issue list monitorStatus + noWakePath (AGE-924)", () =
       .expect(200);
     expect(pastEndRes.body).toEqual([]);
   });
+
+  it("a window with more matches than the requested limit exposes X-Paperclip-No-Wake-Path-Next-Offset pointing exactly past the last returned match (Greptile follow-up on PR #11911)", async () => {
+    // Greptile flagged: if a scanned window holds more matches than `limit`,
+    // the surplus must not be silently dropped, and the caller must not have
+    // to guess a fixed jump size (which can both repeat and skip rows). The
+    // response must carry the exact raw-row offset to resume from.
+    const company = await seedCompanyWithBoardAccess(ctx.db, "No wake path surplus matches in one window");
+    const companyId = company.companyId;
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    const thirdId = randomUUID();
+    await ctx.db.insert(issues).values([
+      { id: firstId, companyId, title: "Todo, unassigned, first", status: "todo", priority: "medium" },
+      { id: secondId, companyId, title: "Todo, unassigned, second", status: "todo", priority: "medium" },
+      { id: thirdId, companyId, title: "Todo, unassigned, third", status: "todo", priority: "medium" },
+    ]);
+
+    const page1 = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true&limit=1`)
+      .expect(200);
+    expect(page1.body).toHaveLength(1);
+    expect(page1.headers["x-paperclip-no-wake-path-scan-truncated"]).toBe("true");
+    const nextOffset = Number(page1.headers["x-paperclip-no-wake-path-next-offset"]);
+    expect(Number.isInteger(nextOffset)).toBe(true);
+    expect(nextOffset).toBeGreaterThan(0);
+
+    // Resuming from the returned cursor must reach the remaining matches,
+    // with no gap and no repeat of the first page's result.
+    const page2 = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true&offset=${nextOffset}`)
+      .expect(200);
+    const page2Ids = (page2.body as Array<{ id: string }>).map((row) => row.id);
+    expect(page2Ids).toHaveLength(2);
+    expect(page2Ids).not.toContain(page1.body[0].id);
+  });
+
+  it("compact view also surfaces the truncation header (Greptile follow-up on PR #11911: compact responses previously dropped it)", async () => {
+    const company = await seedCompanyWithBoardAccess(ctx.db, "No wake path compact truncation");
+    const companyId = company.companyId;
+    await ctx.db.insert(issues).values([
+      { id: randomUUID(), companyId, title: "Todo, unassigned, first", status: "todo", priority: "medium" },
+      { id: randomUUID(), companyId, title: "Todo, unassigned, second", status: "todo", priority: "medium" },
+    ]);
+
+    const res = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true&limit=1&view=compact`)
+      .expect(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.headers["x-paperclip-no-wake-path-scan-truncated"]).toBe("true");
+    expect(Number.isInteger(Number(res.headers["x-paperclip-no-wake-path-next-offset"]))).toBe(true);
+  });
 });

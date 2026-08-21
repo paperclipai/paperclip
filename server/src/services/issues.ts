@@ -5882,11 +5882,12 @@ export function issueService(db: Db) {
         monitorAttemptCount: number | null;
         blockedBy?: IssueRelationIssueSummary[];
       }>(mapped: T[]): (T & { monitorStatus: ReturnType<typeof deriveFlatMonitorStatus> })[] => {
-        const withMonitorStatus = mapped.map((row) => ({
+        const withMonitorStatus = mapped.map((row, rawIndex) => ({
           ...row,
           monitorStatus: deriveFlatMonitorStatus(row),
+          __noWakePathRawIndex: rawIndex,
         }));
-        if (!noWakePath) return withMonitorStatus;
+        if (!noWakePath) return withMonitorStatus.map(({ __noWakePathRawIndex, ...row }) => row) as unknown as (T & { monitorStatus: ReturnType<typeof deriveFlatMonitorStatus> })[];
         const filtered = withMonitorStatus.filter((row) => classifyNoWakePath({
           status: row.status,
           assigneeAgentId: row.assigneeAgentId,
@@ -5898,9 +5899,25 @@ export function issueService(db: Db) {
           hasActiveRun: row.activeRun !== null || noWakePathLiveIssueIds.has(row.id),
           assigneeAgentStatus: row.assigneeAgentId ? noWakePathAgentStatusById.get(row.assigneeAgentId) ?? null : null,
         }) !== null);
-        const page = filtered.slice(0, limit === undefined ? undefined : limit);
-        if (noWakePathScanTruncated) {
+        const page = filtered.slice(0, limit === undefined ? undefined : limit)
+          .map(({ __noWakePathRawIndex, ...row }) => row) as unknown as (T & { monitorStatus: ReturnType<typeof deriveFlatMonitorStatus> })[];
+        // A window can contain more matches than `limit` (surplus matches
+        // beyond the returned page), independent of whether the raw scan hit
+        // the cap. Either case means the caller must not assume completeness.
+        // The precise continuation point is the raw row index right after the
+        // last *returned* match — NOT a fixed jump by the scan cap, which would
+        // skip any surplus matches left in this window past `limit` (Greptile
+        // review on AGE-924 PR #11911: a fixed-cap jump silently dropped
+        // matches whenever a window held more hits than the page size).
+        const hasSurplusMatchesInWindow = filtered.length > (limit ?? filtered.length);
+        const truncated = noWakePathScanTruncated || hasSurplusMatchesInWindow;
+        if (truncated) {
+          const lastReturnedRawIndex = filtered.length > 0 && limit !== undefined && limit > 0
+            ? filtered[Math.min(limit, filtered.length) - 1].__noWakePathRawIndex
+            : -1;
+          const nextOffset = lastReturnedRawIndex >= 0 ? offset + lastReturnedRawIndex + 1 : offset + rows.length;
           Object.defineProperty(page, "noWakePathScanTruncated", { value: true, enumerable: false });
+          Object.defineProperty(page, "noWakePathNextOffset", { value: nextOffset, enumerable: false });
         }
         return page;
       };
