@@ -3056,15 +3056,29 @@ export function issueRoutes(
     ) {
       return issue;
     }
-    let deliveryError: unknown = null;
-    const reconciled = await db.transaction(async (tx) => {
+    // Phase A — reconcile under the blocked-owner lock WITHOUT enqueuing:
+    // the wake enqueue can synchronously claim the queued run, and the claim
+    // transaction takes this same advisory lock plus the agent-row locks, so
+    // holding them across the enqueue would deadlock. Decide inside the lock
+    // whether a new delivery is needed, release everything, enqueue outside,
+    // then stamp the marker in a second short transaction.
+    type DeliveryDecision =
+      | { kind: "return"; issue: T }
+      | {
+          kind: "deliver";
+          needsEnqueue: boolean;
+          current: typeof issueRows.$inferSelect;
+          descriptor: NonNullable<(typeof issueRows.$inferSelect)["unblockDescriptor"]>;
+          blockedTransitionAt: Date;
+        };
+    const decision = await db.transaction(async (tx): Promise<DeliveryDecision> => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issue.id}`}))`);
       const current = await tx
         .select()
         .from(issueRows)
         .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId)))
         .then((rows) => rows[0] ?? null);
-      if (!current) return issue;
+      if (!current) return { kind: "return", issue };
       const descriptor = current.unblockDescriptor;
       if (
         current.status !== "blocked" ||
@@ -3073,11 +3087,10 @@ export function issueRoutes(
         descriptor.owner === "board" ||
         !("agentId" in descriptor.owner)
       ) {
-        return current as T;
+        return { kind: "return", issue: current as T };
       }
-
       const intent = buildAgentUnblockWakeIntent(current);
-      if (!intent) return current as T;
+      if (!intent) return { kind: "return", issue: current as T };
       const findAcceptedWake = () => tx
         .select({
           requestedAt: agentWakeupRequests.requestedAt,
@@ -3101,32 +3114,77 @@ export function issueRoutes(
         .orderBy(desc(agentWakeupRequests.requestedAt))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-
-      let acceptedWake = await findAcceptedWake();
-      if (!acceptedWake) {
-        // The owner was authorized against the reporting line at create time,
-        // but that hierarchy can change before delivery. Reauthorize the
-        // persisted owner under the same lock as the wake enqueue: a former
-        // manager who is no longer the creator's ancestor must not receive
-        // the unblock wake. A failed reauthorization leaves the marker null
-        // so a later PATCH or replay can retry once the hierarchy is repaired.
-        if (!(await isPersistedBlockedOwnerStillAuthorized(tx, current))) {
-          return current as T;
-        }
-        // Owner eligibility may legitimately change after the issue transaction commits.
-        // Heartbeat admission is the authoritative delivery check: a rejected/suppressed
-        // wake leaves the marker null so an idempotent replay or later PATCH can retry.
-        try {
-          await deliverAgentUnblockNotification({
-            issue: { ...current, blockedOwnerNotifiedAt: null },
-            wakeup: enqueueBlockedOwnerWakeup,
-            markNotified: async () => undefined,
-          });
-        } catch (err) {
-          deliveryError = err;
-        }
-        acceptedWake = await findAcceptedWake();
+      const acceptedWake = await findAcceptedWake();
+      if (acceptedWake) {
+        // An accepted wake already covers this intent; skip the enqueue and
+        // go straight to stamping the marker from it in Phase C.
+        return {
+          kind: "deliver",
+          needsEnqueue: false,
+          current,
+          descriptor,
+          blockedTransitionAt: current.blockedTransitionAt,
+        };
       }
+      // The owner was authorized against the reporting line at create time,
+      // but that hierarchy can change before delivery. Reauthorize the
+      // persisted owner under the same lock: a former manager who is no
+      // longer the creator's ancestor must not receive the unblock wake.
+      // A failed reauthorization leaves the marker null so a later PATCH
+      // or replay can retry once the hierarchy is repaired.
+      if (!(await isPersistedBlockedOwnerStillAuthorized(tx, current))) {
+        return { kind: "return", issue: current as T };
+      }
+      return { kind: "deliver", needsEnqueue: true, current, descriptor, blockedTransitionAt: current.blockedTransitionAt };
+    });
+    if (decision.kind === "return") return decision.issue;
+
+    // Phase B — enqueue outside any lock. Heartbeat admission is the
+    // authoritative delivery check: a rejected/suppressed wake leaves the
+    // marker null so an idempotent replay or later PATCH can retry.
+    const { current, descriptor } = decision;
+    const intent = buildAgentUnblockWakeIntent(current)!;
+    let deliveryError: unknown = null;
+    if (decision.needsEnqueue) {
+      try {
+        await deliverAgentUnblockNotification({
+          issue: { ...current, blockedOwnerNotifiedAt: null },
+          wakeup: enqueueBlockedOwnerWakeup,
+          markNotified: async () => undefined,
+        });
+      } catch (err) {
+        deliveryError = err;
+      }
+    }
+
+    // Phase C — stamp the marker from the accepted wake (or clear a stale
+    // marker), again under the blocked-owner lock.
+    const blockedTransitionAt = decision.blockedTransitionAt;
+    const reconciled = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issue.id}`}))`);
+      const acceptedWake = await tx
+        .select({
+          requestedAt: agentWakeupRequests.requestedAt,
+          status: agentWakeupRequests.status,
+        })
+        .from(agentWakeupRequests)
+        .leftJoin(heartbeatRuns, eq(agentWakeupRequests.runId, heartbeatRuns.id))
+        .where(and(
+          eq(agentWakeupRequests.companyId, current.companyId),
+          eq(agentWakeupRequests.agentId, intent.ownerAgentId),
+          eq(agentWakeupRequests.idempotencyKey, intent.idempotencyKey),
+          sql`${agentWakeupRequests.payload} ->> 'intentFingerprint' = ${intent.intentFingerprint}`,
+          or(
+            inArray(agentWakeupRequests.status, ACCEPTED_BLOCKED_OWNER_WAKE_STATUSES),
+            and(
+              eq(agentWakeupRequests.status, "coalesced"),
+              inArray(heartbeatRuns.status, ["queued", "running", "succeeded"]),
+            ),
+          ),
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
       if (!acceptedWake) {
         if (!current.blockedOwnerNotifiedAt) return current;
         const [cleared] = await tx
@@ -3136,7 +3194,7 @@ export function issueRoutes(
             eq(issueRows.id, current.id),
             eq(issueRows.companyId, current.companyId),
             eq(issueRows.status, "blocked"),
-            eq(issueRows.blockedTransitionAt, current.blockedTransitionAt),
+            eq(issueRows.blockedTransitionAt, blockedTransitionAt),
             sql`${issueRows.unblockDescriptor} = ${JSON.stringify(descriptor)}::jsonb`,
           ))
           .returning();
@@ -3151,7 +3209,7 @@ export function issueRoutes(
           eq(issueRows.id, current.id),
           eq(issueRows.companyId, current.companyId),
           eq(issueRows.status, "blocked"),
-          eq(issueRows.blockedTransitionAt, current.blockedTransitionAt),
+          eq(issueRows.blockedTransitionAt, blockedTransitionAt),
           sql`${issueRows.unblockDescriptor} = ${descriptorJson}::jsonb`,
         ))
         .returning();
