@@ -762,7 +762,7 @@ bootstrap credentials in Paperclip secrets.
 
 Per-company provider vaults (multiple vault instances per provider, default
 vault selection, coming-soon GCP/Vault) can be configured from the board UI under
-`Company Settings → Secrets → Provider vaults` or through the provider-config CLI
+`Organization Settings → Secrets → Provider vaults` or through the provider-config CLI
 commands above. See the
 [secrets deploy guide](../docs/deploy/secrets.md#provider-vaults) and
 [API reference](../docs/api/secrets.md#provider-vaults) for the contract.

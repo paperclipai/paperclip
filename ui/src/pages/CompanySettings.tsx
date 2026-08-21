@@ -428,7 +428,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive organization "${selectedCompany.name}"? It will be hidden from the sidebar.`
                 );
                 if (!confirmed) return;
                 const nextCompanyId =

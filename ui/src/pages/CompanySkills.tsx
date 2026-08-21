@@ -5161,7 +5161,7 @@ export function CompanySkills() {
           <DialogHeader>
             <DialogTitle>Remove skill</DialogTitle>
             <DialogDescription>
-              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
+              Remove this skill from the organization library. If any agents still use it, removal will be blocked until it is detached.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
