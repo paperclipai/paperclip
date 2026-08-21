@@ -201,11 +201,11 @@ describe("Daytona sandbox provider plugin", () => {
     mockCreate.mockResolvedValue(sandbox);
 
     // Capture the data and the exit the worker forwards through `ctx.duplexChannel`.
-    const dataChunks: Array<{ workerSessionId: string; chunk: string }> = [];
+    const dataChunks: Array<{ hostRouteId: string; workerSessionId: string; chunk: string }> = [];
     const restore = __setDaytonaPluginContextForTest({
       duplexChannel: {
-        data: (workerSessionId: string, chunk: string) =>
-          dataChunks.push({ workerSessionId, chunk }),
+        data: (hostRouteId: string, workerSessionId: string, chunk: string) =>
+          dataChunks.push({ hostRouteId, workerSessionId, chunk }),
         exit: () => {},
       },
     } as unknown as PluginContext);
@@ -231,6 +231,8 @@ describe("Daytona sandbox provider plugin", () => {
         command: ["node", "/paperclip/gateway.mjs"],
       });
       expect(open?.workerSessionId).toMatch(/^duplex-/);
+      // The open reply echoes the host route id, so the host binds the exact pair.
+      expect(open?.hostRouteId).toBe("route-1");
       const workerSessionId = open?.workerSessionId ?? "";
 
       // The launch wrapper sets raw mode with echo off and redirects diagnostics.
@@ -239,20 +241,39 @@ describe("Daytona sandbox provider plugin", () => {
       expect(inputs[0]).toContain("exec 'node' '/paperclip/gateway.mjs'");
       expect(inputs[0]).toMatch(/2>'\/tmp\/paperclip-duplex-.+\.log'/);
 
-      // A host write reaches the process on the same channel.
+      // A host write on the exact pair reaches the process on the same channel.
       await plugin.definition.onDuplexChannelWrite?.({
+        hostRouteId: "route-1",
         workerSessionId,
         data: '{"version":1,"type":"heartbeat"}\n',
       });
       expect(inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
 
-      // Process output reaches the host as a data notification bound to the
-      // worker session id.
+      // A write whose pair does not match the bound entry applies no bytes. The
+      // worker acts only on the exact live pair.
+      const inputsBeforeForeign = inputs.length;
+      await plugin.definition.onDuplexChannelWrite?.({
+        hostRouteId: "route-foreign",
+        workerSessionId,
+        data: "foreign\n",
+      });
+      expect(inputs.length).toBe(inputsBeforeForeign);
+      // A stop whose pair does not match the bound entry stops nothing.
+      const killedBeforeForeign = killed;
+      await plugin.definition.onDuplexChannelStop?.({
+        hostRouteId: "route-foreign",
+        workerSessionId,
+      });
+      expect(killed).toBe(killedBeforeForeign);
+
+      // Process output reaches the host as a data notification bound to the exact
+      // pair, so it echoes the host route id and the worker session id.
       (ptyOnData as ((data: Uint8Array) => void) | null)?.(
         new TextEncoder().encode('{"version":1,"type":"ready","address":"127.0.0.1:1"}\n'),
       );
       expect(dataChunks).toEqual([
         {
+          hostRouteId: "route-1",
           workerSessionId,
           chunk: '{"version":1,"type":"ready","address":"127.0.0.1:1"}\n',
         },
@@ -274,6 +295,7 @@ describe("Daytona sandbox provider plugin", () => {
       // process.
       const inputsBefore = inputs.length;
       await plugin.definition.onDuplexChannelWrite?.({
+        hostRouteId: "route-1",
         workerSessionId,
         data: "late\n",
       });

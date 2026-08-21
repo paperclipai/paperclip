@@ -212,6 +212,18 @@ const DUPLEX_CHANNEL_ROUTE_BUSY = "DUPLEX_CHANNEL_ROUTE_BUSY";
 /** The fixed non-secret error a failed duplex channel open returns. */
 const DUPLEX_CHANNEL_OPEN_FAILED = "DUPLEX_CHANNEL_OPEN_FAILED";
 
+// The process-scoped monotonic route-generation source. The host mints one
+// strictly increasing, non-reusable `hostRouteId` on each duplex channel open,
+// across every worker in the process. A retired generation never returns, so a
+// late frame for a closed pair never collides with a new open. The host owns the
+// value; no worker field sets it.
+let duplexHostRouteIdSequence = 0;
+/** Mint the next monotonic, non-reusable host route identifier for a duplex channel open. */
+function nextDuplexHostRouteId(): string {
+  duplexHostRouteIdSequence += 1;
+  return `duplex-route-${duplexHostRouteIdSequence}`;
+}
+
 /** Minimum time between two dropped-`execute.log` debug records. The router
  * rate-limits the record so a flood of dropped chunks writes at most one line
  * per window with a running count. */
@@ -1496,17 +1508,31 @@ export function createPluginWorkerHandle(
 
   // Close the worker channel by the host route identifier and verify the bound
   // acknowledgement. Return true only when the worker returns an acknowledgement
-  // that carries the exact host route identifier. An absent, malformed,
-  // mismatched, or timed-out acknowledgement returns false, so the caller fails
-  // closed.
-  async function closeDuplexChannelTerminal(hostRouteId: string): Promise<boolean> {
+  // for the exact pair. Before a session binds, the acknowledgement carries the
+  // host route identifier only, so a lost open reply still permits a route-only
+  // close. After a session binds, the acknowledgement must echo both the host
+  // route identifier and the bound worker session identifier. An absent,
+  // malformed, mismatched, or timed-out acknowledgement returns false, so the
+  // caller fails closed.
+  async function closeDuplexChannelTerminal(
+    hostRouteId: string,
+    boundWorkerSessionId: string | null,
+  ): Promise<boolean> {
     try {
       const ack = await callInternal(
         "duplexChannelClose",
         { hostRouteId },
         duplexChannelCloseTimeoutMs,
       );
-      return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
+      if (!isRecord(ack) || readNonEmptyString(ack.hostRouteId) !== hostRouteId) {
+        return false;
+      }
+      if (boundWorkerSessionId !== null) {
+        // A bound close: the acknowledgement must echo the exact worker session
+        // identifier. A missing or a mismatched identifier is invalid.
+        return readNonEmptyString(ack.workerSessionId) === boundWorkerSessionId;
+      }
+      return true;
     } catch {
       return false;
     }
@@ -1535,7 +1561,7 @@ export function createPluginWorkerHandle(
     // A terminalized route reports a null exit code, which the caller treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeDuplexChannelTerminal(route.hostRouteId);
+    const confirmed = await closeDuplexChannelTerminal(route.hostRouteId, route.workerSessionId);
     if (duplexChannelRoute === route) duplexChannelRoute = null;
     if (!confirmed) {
       // The worker did not acknowledge the close, so the host cannot prove the
@@ -1588,16 +1614,19 @@ export function createPluginWorkerHandle(
     const route = duplexChannelRoute;
     if (!route || route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
+    const hostRouteId = readNonEmptyString(params.hostRouteId);
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     const chunk = params.chunk;
     if (
+      !hostRouteId ||
+      hostRouteId !== route.hostRouteId ||
       !workerSessionId ||
       workerSessionId !== route.workerSessionId ||
       typeof chunk !== "string" ||
       chunk.length === 0
     ) {
-      // A late, unknown, malformed, or mismatched frame. Drop it and count one
-      // protocol error.
+      // A late, unknown, malformed, or mismatched frame, or a frame that does not
+      // match the exact live pair. Drop it and count one protocol error.
       recordDuplexChannelProtocolError(route);
       return;
     }
@@ -1640,8 +1669,18 @@ export function createPluginWorkerHandle(
     const route = duplexChannelRoute;
     if (!route || route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
+    const hostRouteId = readNonEmptyString(params.hostRouteId);
     const workerSessionId = readNonEmptyString(params.workerSessionId);
-    if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
+    // Resolve only on the exact live pair. A frame that does not match both the
+    // host route id and the worker session id reaches no wait.
+    if (
+      !hostRouteId ||
+      hostRouteId !== route.hostRouteId ||
+      !workerSessionId ||
+      workerSessionId !== route.workerSessionId
+    ) {
+      return;
+    }
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
     settleRouteWait(route, { exitCode });
   }
@@ -1674,7 +1713,7 @@ export function createPluginWorkerHandle(
       // second open with one fixed non-secret error before it reaches the worker.
       throw new Error(DUPLEX_CHANNEL_ROUTE_BUSY);
     }
-    const hostRouteId = randomUUID();
+    const hostRouteId = nextDuplexHostRouteId();
     let settleWait: (value: { exitCode: number | null }) => void = () => {};
     const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
       settleWait = resolve;
@@ -1718,9 +1757,16 @@ export function createPluginWorkerHandle(
     }
 
     const workerSessionId = readBindableWorkerSessionId(route, openResult);
-    if (!workerSessionId) {
-      // A malformed reply, or a route that already left `opening`. A late or a
-      // duplicate reply never binds, revives, or reopens a route.
+    // Verify the worker echoed the exact host route id the open request carried.
+    // A reply with a missing or a mismatched host route id never binds, so the
+    // host binds only a reply that proves the worker holds the exact pair.
+    const echoedHostRouteId = isRecord(openResult)
+      ? readNonEmptyString(openResult.hostRouteId)
+      : null;
+    if (!workerSessionId || echoedHostRouteId !== hostRouteId) {
+      // A malformed reply, a mismatched host route id, or a route that already
+      // left `opening`. A late or a duplicate reply never binds, revives, or
+      // reopens a route.
       await terminalizeDuplexChannelRoute(route);
       throw new Error(DUPLEX_CHANNEL_OPEN_FAILED);
     }
@@ -1777,7 +1823,11 @@ export function createPluginWorkerHandle(
           void terminalizeDuplexChannelRoute(route);
           return;
         }
-        sendBoundedRequest("duplexChannelWrite", { workerSessionId: sid, data });
+        sendBoundedRequest("duplexChannelWrite", {
+          hostRouteId: route.hostRouteId,
+          workerSessionId: sid,
+          data,
+        });
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;
@@ -1785,7 +1835,7 @@ export function createPluginWorkerHandle(
       kill(): void {
         const sid = route.workerSessionId;
         if (!sid) return;
-        sendBoundedRequest("duplexChannelStop", { workerSessionId: sid });
+        sendBoundedRequest("duplexChannelStop", { hostRouteId: route.hostRouteId, workerSessionId: sid });
       },
       async close(): Promise<void> {
         await terminalizeDuplexChannelRoute(route);

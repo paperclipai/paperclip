@@ -2823,43 +2823,49 @@ const plugin = definePlugin({
     daytonaDuplexChannelByRoute.set(params.hostRouteId, entry);
     daytonaDuplexChannelBySession.set(workerSessionId, entry);
     // Register the data listener before the first write, so no early data chunk is
-    // lost. The client stamps the worker session id, so the host binds the data to
-    // the open route.
+    // lost. The client echoes the host route id and the worker session id, so the
+    // host routes the data to the exact live pair.
     session.onData((chunk) => {
-      pluginContext?.duplexChannel.data(workerSessionId, chunk);
+      pluginContext?.duplexChannel.data(entry.hostRouteId, workerSessionId, chunk);
     });
     // Forward the child exit one time. The host resolves the open route on it.
     void session.wait().then(
-      (result) => pluginContext?.duplexChannel.exit(workerSessionId, result.exitCode),
-      () => pluginContext?.duplexChannel.exit(workerSessionId, null),
+      (result) => pluginContext?.duplexChannel.exit(entry.hostRouteId, workerSessionId, result.exitCode),
+      () => pluginContext?.duplexChannel.exit(entry.hostRouteId, workerSessionId, null),
     );
-    return { workerSessionId };
+    // Echo the host route id on the reply, so the host binds the exact pair.
+    return { hostRouteId: params.hostRouteId, workerSessionId };
   },
 
-  // Write host input to an open duplex channel, keyed by the worker session id.
-  // Drop the input for an unknown session.
+  // Write host input to an open duplex channel. Act only on the exact live pair.
+  // A write whose pair does not match the bound entry applies no bytes.
   async onDuplexChannelWrite(params) {
     const entry = daytonaDuplexChannelBySession.get(params.workerSessionId);
-    if (!entry) return;
+    if (!entry || entry.hostRouteId !== params.hostRouteId) return;
     entry.session.write(params.data);
   },
 
-  // Stop an open duplex channel child, keyed by the worker session id.
+  // Stop an open duplex channel child. Act only on the exact live pair. A stop
+  // whose pair does not match the bound entry stops nothing.
   async onDuplexChannelStop(params) {
     const entry = daytonaDuplexChannelBySession.get(params.workerSessionId);
-    if (!entry) return;
+    if (!entry || entry.hostRouteId !== params.hostRouteId) return;
     entry.session.kill();
   },
 
-  // Close an open duplex channel by the host route id and acknowledge the close
-  // with the same identifier. The close is idempotent: it returns the
-  // acknowledgement even when the entry is already gone, so the host confirms the
-  // channel is closed. The worker never keys the close on the worker session id.
+  // Close an open duplex channel by the host route id and acknowledge the close.
+  // The host route id is the authoritative close key, so a pre-bind close with a
+  // lost open reply still closes the channel. On a bound close the acknowledgement
+  // echoes the worker session id too, so the host verifies the exact pair. The
+  // close is idempotent: it returns the acknowledgement even when the entry is
+  // already gone, so the host confirms the channel is closed.
   async onDuplexChannelClose(params) {
     const entry = daytonaDuplexChannelByRoute.get(params.hostRouteId);
     if (entry) {
+      const boundWorkerSessionId = entry.workerSessionId;
       forgetDaytonaDuplexChannel(entry);
       await entry.session.close().catch(() => undefined);
+      return { hostRouteId: params.hostRouteId, workerSessionId: boundWorkerSessionId };
     }
     return { hostRouteId: params.hostRouteId };
   },
