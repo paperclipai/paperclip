@@ -42,6 +42,8 @@ import {
   resolveWorktreeReseedSource,
   resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
+  resolveGitWorktreeCreatePlan,
+  prepareWorktreeStartPoint,
   resolvePnpmInstallInvocation,
   resolveCurrentWorktreeEndpoint,
   resolveWorktreeSeedMigrationRevision,
@@ -398,6 +400,111 @@ describe("worktree helpers", () => {
       }),
     ).toEqual(["worktree", "add", "-b", "my-worktree", "/tmp/my-worktree", "origin/main"]);
   });
+
+  it("plans branch-first worktree creation so git never runs the -b code path for new branches", () => {
+    expect(
+      resolveGitWorktreeCreatePlan({ branchName: "wt", targetPath: "/tmp/wt", branchExists: false }),
+    ).toEqual({
+      branchArgs: ["branch", "wt", "HEAD"],
+      addArgs: ["worktree", "add", "/tmp/wt", "wt"],
+    });
+    expect(
+      resolveGitWorktreeCreatePlan({ branchName: "wt", targetPath: "/tmp/wt", branchExists: false, startPoint: "origin/main" }),
+    ).toEqual({
+      branchArgs: ["branch", "wt", "origin/main"],
+      addArgs: ["worktree", "add", "/tmp/wt", "wt"],
+    });
+    expect(
+      resolveGitWorktreeCreatePlan({ branchName: "wt", targetPath: "/tmp/wt", branchExists: true }),
+    ).toEqual({ addArgs: ["worktree", "add", "/tmp/wt", "wt"] });
+    // An explicit start point on an existing branch still has to be rejected by
+    // git, but via `git branch` rather than the `-b` code path.
+    expect(
+      resolveGitWorktreeCreatePlan({ branchName: "wt", targetPath: "/tmp/wt", branchExists: true, startPoint: "origin/main" }),
+    ).toEqual({
+      branchArgs: ["branch", "wt", "origin/main"],
+      addArgs: ["worktree", "add", "/tmp/wt", "wt"],
+    });
+  });
+
+  it("fetches a start point only when its prefix names a configured remote", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-start-point-"));
+    const repo = path.join(root, "repo");
+    const remote = path.join(root, "remote.git");
+    fs.mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8").trim();
+    try {
+      execFileSync("git", ["init", "-q", "--bare", remote], { stdio: "ignore" });
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "init");
+      const headSha = git("rev-parse", "HEAD");
+      git("branch", "feature/local-only");
+      git("remote", "add", "origin", remote);
+      git("push", "-q", "origin", "main");
+      // Drop the remote-tracking ref so `origin/main` only resolves after a fetch.
+      git("update-ref", "-d", "refs/remotes/origin/main");
+      git("checkout", "-q", "--detach", headSha);
+
+      // Local refs must resolve without any fetch. Pre-fix these were split on
+      // "/" and their first segment fetched as a remote, so `HEAD` died with
+      // `fatal: 'HEAD' does not appear to be a git repository`.
+      for (const localRef of ["HEAD", "main", "feature/local-only", headSha]) {
+        expect(() => prepareWorktreeStartPoint(repo, localRef)).not.toThrow();
+      }
+      expect(fs.existsSync(path.join(repo, ".git", "refs", "remotes", "origin", "main"))).toBe(false);
+
+      // Remote refs keep the documented fetch-then-resolve behaviour.
+      expect(() => prepareWorktreeStartPoint(repo, "origin/main")).not.toThrow();
+      expect(git("rev-parse", "origin/main")).toBe(headSha);
+
+      expect(() => prepareWorktreeStartPoint(repo, "does-not-exist")).toThrow(
+        /not a known local revision/,
+      );
+      expect(() => prepareWorktreeStartPoint(repo, "origin/does-not-exist")).toThrow(
+        /does not exist on remote "origin" after fetch/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("worktree:make rejects an unknown start point before creating any branch, directory, or worktree", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-start-point-partial-"));
+    const repo = path.join(root, "repo");
+    const home = path.join(root, "home");
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8").trim();
+    const previousCwd = process.cwd();
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "init");
+      process.chdir(repo);
+
+      await expect(
+        worktreeMakeCommand("fai-9971-bad", { startPoint: "does-not-exist", seed: false } as never),
+      ).rejects.toThrow(/not a known local revision/);
+
+      expect(fs.existsSync(resolveWorktreeMakeTargetPath("fai-9971-bad"))).toBe(false);
+      expect(git("worktree", "list", "--porcelain")).not.toContain("fai-9971-bad");
+      expect(git("branch", "--list", "paperclip-fai-9971-bad")).toBe("");
+    } finally {
+      process.chdir(previousCwd);
+      homedirSpy.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("rewrites auth URLs only when they already include a port", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");

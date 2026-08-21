@@ -537,6 +537,76 @@ function localBranchExists(cwd: string, branchName: string): boolean {
   }
 }
 
+function listGitRemotes(cwd: string): string[] {
+  try {
+    return execFileSync("git", ["remote"], { cwd, stdio: ["ignore", "pipe", "ignore"] })
+      .toString("utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function gitRevisionExists(cwd: string, revision: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`], {
+      cwd,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Classify a `--start-point` value. Only refs whose first path segment names a
+ * configured remote (e.g. `origin/main`) are fetched; everything else (`HEAD`,
+ * `main`, `feature/x`, a SHA, `v1.2.3`) is a local revision and is never fetched.
+ */
+function classifyWorktreeStartPoint(
+  startPoint: string,
+  remotes: readonly string[],
+): { kind: "remote"; remote: string } | { kind: "local" } {
+  const slashIndex = startPoint.indexOf("/");
+  if (slashIndex > 0) {
+    const candidate = startPoint.slice(0, slashIndex);
+    if (remotes.includes(candidate)) return { kind: "remote", remote: candidate };
+  }
+  return { kind: "local" };
+}
+
+/**
+ * Resolve an explicit `--start-point` to a commit, fetching first only when the
+ * ref is prefixed with a configured remote. Throws if the ref does not resolve,
+ * so callers can reject a bad start point before creating any branch,
+ * directory, or worktree entry.
+ */
+export function prepareWorktreeStartPoint(cwd: string, startPoint: string): void {
+  const classified = classifyWorktreeStartPoint(startPoint, listGitRemotes(cwd));
+  if (classified.kind === "remote") {
+    try {
+      execFileSync("git", ["fetch", classified.remote], {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      throw new Error(
+        `Failed to fetch from remote "${classified.remote}": ${extractExecSyncErrorMessage(error) ?? String(error)}`,
+      );
+    }
+  }
+  if (gitRevisionExists(cwd, startPoint)) return;
+  throw new Error(
+    classified.kind === "remote"
+      ? `Start point "${startPoint}" does not exist on remote "${classified.remote}" after fetch.`
+      : `Start point "${startPoint}" is not a known local revision (branch, tag, commit, or HEAD). `
+        + `Use a remote ref such as "origin/main", or an existing local ref.`,
+  );
+}
+
 export function resolveGitWorktreeAddArgs(input: {
   branchName: string;
   targetPath: string;
@@ -548,6 +618,32 @@ export function resolveGitWorktreeAddArgs(input: {
   }
   const commitish = input.startPoint ?? "HEAD";
   return ["worktree", "add", "-b", input.branchName, input.targetPath, commitish];
+}
+
+/**
+ * Two-step worktree creation plan for `worktree:make`.
+ *
+ * `git worktree add -b <branch> ...` spawns an internal branch-creation step that
+ * fails with `fatal: '$GIT_DIR' too big` on git-for-windows when the common git
+ * dir is deeply nested (observed at 198 chars). Creating the branch first and
+ * then adding the worktree on the existing branch avoids that code path and
+ * behaves identically on other platforms.
+ */
+export function resolveGitWorktreeCreatePlan(input: {
+  branchName: string;
+  targetPath: string;
+  branchExists: boolean;
+  startPoint?: string;
+}): { branchArgs?: string[]; addArgs: string[] } {
+  if (input.branchExists && !input.startPoint) {
+    return { addArgs: ["worktree", "add", input.targetPath, input.branchName] };
+  }
+  // With an explicit start point and an existing branch, `git branch` refuses to
+  // clobber the branch — the same rejection `worktree add -b` produced before.
+  return {
+    branchArgs: ["branch", input.branchName, input.startPoint ?? "HEAD"],
+    addArgs: ["worktree", "add", input.targetPath, input.branchName],
+  };
 }
 
 function readPidFilePort(postmasterPidFile: string): number | null {
@@ -2672,38 +2768,47 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
     throw new Error(`Target path already exists: ${targetPath}`);
   }
 
-  mkdirSync(path.dirname(targetPath), { recursive: true });
+  // Validate the start point before any filesystem or git mutation so a bad
+  // ref leaves no partial state behind.
   if (startPoint) {
-    const [remote] = startPoint.split("/", 1);
-    try {
-      execFileSync("git", ["fetch", remote], {
-        cwd: sourceCwd,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (error) {
-      throw new Error(
-        `Failed to fetch from remote "${remote}": ${extractExecSyncErrorMessage(error) ?? String(error)}`,
-      );
-    }
+    prepareWorktreeStartPoint(sourceCwd, startPoint);
   }
 
-  const worktreeArgs = resolveGitWorktreeAddArgs({
+  mkdirSync(path.dirname(targetPath), { recursive: true });
+
+  const plan = resolveGitWorktreeCreatePlan({
     branchName: name,
     targetPath,
-    branchExists: !startPoint && localBranchExists(sourceCwd, name),
+    branchExists: localBranchExists(sourceCwd, name),
     startPoint,
   });
 
   const spinner = p.spinner();
   spinner.start(`Creating git worktree at ${targetPath}...`);
+  let createdBranch = false;
   try {
-    execFileSync("git", worktreeArgs, {
+    if (plan.branchArgs) {
+      execFileSync("git", plan.branchArgs, {
+        cwd: sourceCwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      createdBranch = true;
+    }
+    execFileSync("git", plan.addArgs, {
       cwd: sourceCwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
     spinner.stop(`Created git worktree at ${targetPath}.`);
   } catch (error) {
     spinner.stop(pc.red("Failed to create git worktree."));
+    if (createdBranch) {
+      // Roll back the branch we just created so a failed add leaves no partial state.
+      try {
+        execFileSync("git", ["branch", "-D", name], { cwd: sourceCwd, stdio: "ignore" });
+      } catch {
+        // best effort
+      }
+    }
     throw new Error(extractExecSyncErrorMessage(error) ?? String(error));
   }
 
@@ -4479,7 +4584,7 @@ export function registerWorktreeCommands(program: Command): void {
     .command("worktree:make")
     .description("Create ~/NAME as a git worktree, then initialize an isolated Paperclip instance inside it")
     .argument("<name>", "Worktree name — auto-prefixed with paperclip- if needed (created at ~/paperclip-NAME)")
-    .option("--start-point <ref>", "Remote ref to base the new branch on (env: PAPERCLIP_WORKTREE_START_POINT)")
+    .option("--start-point <ref>", "Ref to base the new branch on: a remote ref like origin/main (fetched first) or a local ref such as HEAD, a branch, tag, or commit (env: PAPERCLIP_WORKTREE_START_POINT)")
     .option("--instance <id>", "Explicit isolated instance id")
     .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
