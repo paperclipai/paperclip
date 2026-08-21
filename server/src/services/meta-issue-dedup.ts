@@ -83,6 +83,31 @@ export async function findReusableMetaIssue(
     }
   }
 
+  // 2026-08-22 ISSUE-SCOPED UNBLOCK REUSE: Unblock titles embed the lane's
+  // free-prose blocker text, so exact-title reuse below never matched a
+  // reworded blocker — 59 Unblock cards minted in one day for what were
+  // largely the same stuck issues (the intake-vs-close ledger's #2 factory,
+  // same failure shape as the guard-courier ref-drift). Policy: ONE open
+  // Unblock card per source issue, ever — a new blocker statement lands on
+  // the existing card, not a sibling. Title identity still governs the other
+  // meta classes.
+  if (/^Unblock:/.test(input.title) && input.originId) {
+    const openForIssue = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.originId, input.originId),
+        visibleIssueCondition(),
+        ...(input.excludeIssueId ? [ne(issues.id, input.excludeIssueId)] : []),
+        inArray(issues.status, [...REUSABLE_META_ISSUE_STATUSES]),
+      ))
+      .orderBy(desc(issues.createdAt))
+      .limit(5)
+      .then((rows) => rows.find((r) => /^Unblock:/.test(r.title)) ?? null);
+    if (openForIssue) return { outcome: "reuse_open", issue: openForIssue };
+  }
+
   const identity = [
     eq(issues.companyId, input.companyId),
     eq(issues.title, input.title),
