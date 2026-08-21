@@ -397,6 +397,34 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("drains a buffered valid chunk to a listener that binds after the byte cap ends the route", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          // "€" is three bytes in UTF-8. The first chunk is 3 bytes (≤ 4), so the
+          // host counts and buffers it. The second chunk brings the total to 6
+          // bytes (> 4), so the host ends the route.
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      // Wait so both data frames arrive and the route ends on the byte cap before
+      // a listener binds. The first chunk is a valid buffered frame. The host must
+      // keep it, so the late listener drains it. This proves the host does not
+      // drop a buffered valid chunk when the route ends before a listener binds.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      expect(chunks).toEqual(["€"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("ends the active route when the lifetime timer expires", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxDurationMs: 100 },
