@@ -61,6 +61,17 @@ export interface IssueLivenessWaitingPathInput {
   issueId: string;
   status: string;
   createdAt?: Date | string | null;
+  /**
+   * Only populated for `pendingInteractions` entries. When set alongside a
+   * non-"human_only" `resolverPolicy`, the card is agent-addressed and its
+   * usefulness as "someone is on this" coverage decays with age (AGE-906):
+   * an agent that never wakes to act on it leaves the issue stuck forever
+   * with `classifyIssueReviewPaths` reporting a live review path that in
+   * fact isn't. `approval`/`recovery` entries never set these fields and are
+   * unaffected.
+   */
+  addresseeAgentId?: string | null;
+  resolverPolicy?: string | null;
 }
 
 export type IssueReviewPathFactKind =
@@ -191,6 +202,31 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
+/**
+ * How long a pending, agent-addressed issue-thread interaction still counts
+ * as "someone is on this" review coverage (AGE-906). `human_only`
+ * ("board_only") cards are never addressed to a possibly-non-responding
+ * agent, so they are exempt from this window and always count. Sized like
+ * the other multi-hour recovery windows in this service (see
+ * ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS in ./service.ts).
+ */
+export const PENDING_AGENT_INTERACTION_COVERAGE_STALE_AFTER_MS = 4 * 60 * 60 * 1000;
+
+const CANONICAL_HUMAN_ONLY_RESOLVER_POLICIES = new Set(["human_only", "board_only"]);
+
+function isAgentAddressedInteractionStale(
+  entry: IssueLivenessWaitingPathInput,
+  nowMs: number,
+): boolean {
+  if (!entry.addresseeAgentId) return false;
+  if (entry.resolverPolicy != null && CANONICAL_HUMAN_ONLY_RESOLVER_POLICIES.has(entry.resolverPolicy)) return false;
+  const createdAtMs = readDateMs(entry.createdAt);
+  // No createdAt on an agent-addressed row is unexpected; fail safe by
+  // treating it as stale rather than granting indefinite coverage.
+  if (createdAtMs === null) return true;
+  return nowMs - createdAtMs > PENDING_AGENT_INTERACTION_COVERAGE_STALE_AFTER_MS;
+}
+
 export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
   const nowMs = typeof now === "number" ? now : readDateMs(now) ?? Date.now();
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
@@ -281,6 +317,7 @@ export function classifyIssueReviewPaths(
   ) => {
     for (const entry of entries) {
       if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
+      if (kind === "interaction" && isAgentAddressedInteractionStale(entry, nowMs)) continue;
       paths.push({
         kind,
         ref: entry.id ?? null,
