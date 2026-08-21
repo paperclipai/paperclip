@@ -68,6 +68,23 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(async () => []),
 }));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async (agentId: string) => ({
+    id: agentId,
+    companyId: "company-1",
+    role: "engineer",
+    permissions: null,
+  })),
+  resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
+    ambiguous: false,
+    agent: {
+      id: reference,
+      companyId: "company-1",
+      status: "idle",
+      orgChainHealth: { status: "healthy" },
+    },
+  })),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -75,22 +92,7 @@ function registerModuleMocks() {
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
     accessService: () => mockAccessService,
-    agentService: () => ({
-      getById: vi.fn(async (agentId: string) => ({
-        id: agentId,
-        companyId: "company-1",
-        permissions: null,
-      })),
-      resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
-        ambiguous: false,
-        agent: {
-          id: reference,
-          companyId: "company-1",
-          status: "idle",
-          orgChainHealth: { status: "healthy" },
-        },
-      })),
-    }),
+    agentService: () => mockAgentService,
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),
@@ -199,6 +201,21 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: "engineer",
+      permissions: null,
+    }));
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
+      ambiguous: false,
+      agent: {
+        id: reference,
+        companyId: "company-1",
+        status: "idle",
+        orgChainHealth: { status: "healthy" },
+      },
+    }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
@@ -325,6 +342,330 @@ describe("issue execution policy routes", () => {
       missing: "review_path",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent-authored in_review transition that hands the issue to a reviewer-role agent", async () => {
+    const reviewerId = "44444444-4444-4444-8444-444444444444";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Reviewer handoff",
+      executionPolicy: null,
+      executionState: null,
+      monitorNextCheckAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: agentId === reviewerId ? "reviewer" : "engineer",
+      status: "active",
+      permissions: null,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    // Reassignment itself needs issue:assign; this test is about the review path, not that grant.
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: reviewerId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    // A fallback monitor is attached server-side so an unanswered review cannot die silently.
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(patch.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect((patch.monitorNextCheckAt as Date).getTime()).toBeGreaterThan(Date.now());
+    // The wake must explain itself: a monitor with no notes reads as an unexplained tick.
+    expect(patch.monitorScheduledBy).toBe("board");
+    expect(String(patch.monitorNotes)).toContain("reviewer agent");
+  });
+
+  it("replaces an already-expired monitor with the reviewer fallback instead of trusting it", async () => {
+    const reviewerId = "44444444-4444-4444-8444-444444444444";
+    const expiredAt = new Date(Date.now() - 60 * 60 * 1000);
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Reviewer handoff over a dead monitor",
+      executionPolicy: null,
+      executionState: null,
+      // An expired monitor will never fire again — it is not a timeout, so it must not
+      // suppress the fallback the reviewer path promises.
+      monitorNextCheckAt: expiredAt,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: agentId === reviewerId ? "reviewer" : "engineer",
+      status: "active",
+      permissions: null,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: reviewerId });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(patch.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect((patch.monitorNextCheckAt as Date).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("keeps a caller-supplied future monitor on a reviewer handoff instead of overwriting it", async () => {
+    const reviewerId = "44444444-4444-4444-8444-444444444444";
+    const requestedAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1012",
+      title: "Reviewer handoff with an explicit monitor",
+      executionPolicy: null,
+      executionState: null,
+      monitorNextCheckAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: agentId === reviewerId ? "reviewer" : "engineer",
+      status: "active",
+      permissions: null,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        assigneeAgentId: reviewerId,
+        // The documented LUN-4497 disposition carries the monitor as an ISO string here.
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: requestedAt.toISOString(),
+            scheduledBy: "assignee",
+            recoveryPolicy: "wake_owner",
+            notes: "review Otto - relancer si pas de verdict",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    // The fallback exists to cover a missing timeout, not to shorten one the caller chose.
+    expect((patch.monitorNextCheckAt as Date).getTime()).toBe(requestedAt.getTime());
+    expect(patch.monitorScheduledBy).toBe("assignee");
+  });
+
+  it("rejects an agent-authored in_review transition handed to a paused reviewer agent", async () => {
+    const reviewerId = "44444444-4444-4444-8444-444444444444";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1014",
+      title: "Paused reviewer handoff",
+      executionPolicy: null,
+      executionState: null,
+      monitorNextCheckAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    // A reviewer that cannot be invoked owns nothing — the issue would be a dead letter.
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: agentId === reviewerId ? "reviewer" : "engineer",
+      status: agentId === reviewerId ? "paused" : "active",
+      permissions: null,
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: reviewerId });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent-authored in_review transition handed to a non-reviewer agent", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Non-reviewer handoff",
+      executionPolicy: null,
+      executionState: null,
+      monitorNextCheckAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: "55555555-5555-4555-8555-555555555555" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "invalid_issue_disposition", missing: "review_path" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent that assigns itself as its own reviewer", async () => {
+    const actorId = "33333333-3333-4333-8333-333333333333";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: actorId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1012",
+      title: "Self review",
+      executionPolicy: null,
+      executionState: null,
+      monitorNextCheckAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    // Even if the actor itself carried the reviewer role, reviewing your own work is not a review path.
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: "reviewer",
+      permissions: null,
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: actorId,
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: actorId });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "invalid_issue_disposition", missing: "review_path" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a PATCH that uses the silently-ignored assigneeId key", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1013",
+      title: "Typo handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeId: "44444444-4444-4444-8444-444444444444" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toMatchObject({ code: "unknown_field", field: "assigneeId" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects the ignored assigneeId key inside a plan-decomposition child payload", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1015",
+      title: "Decomposition typo",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/accepted-plan-decompositions")
+      .send({
+        acceptedPlanRevisionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        children: [{ title: "Child", assigneeId: "44444444-4444-4444-8444-444444444444" }],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toMatchObject({ code: "unknown_field", field: "children[0].assigneeId" });
   });
 
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {

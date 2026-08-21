@@ -57,9 +57,17 @@ export const AGENT_ROLES = [
   "qa",
   "devops",
   "researcher",
+  "reviewer",
   "general",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
+
+/**
+ * Roles that may own an issue sitting in `in_review`. An agent-authored move to
+ * `in_review` is accepted when the assignee is one of these — a reviewer agent is
+ * a real next-action owner, any other agent is just a parking spot.
+ */
+export const AGENT_REVIEWER_ROLES: readonly AgentRole[] = ["reviewer"];
 
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   ceo: "CEO",
@@ -73,6 +81,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   qa: "QA",
   devops: "DevOps",
   researcher: "Researcher",
+  reviewer: "Reviewer",
   general: "General",
 };
 
