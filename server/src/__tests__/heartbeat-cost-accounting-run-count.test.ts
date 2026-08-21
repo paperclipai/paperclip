@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agentRuntimeState,
   agents,
   budgetPolicies,
   companies,
   costEvents,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
 import {
@@ -19,7 +22,8 @@ import {
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
-import { heartbeatService } from "../services/heartbeat.ts";
+import { ensureRunAccountedForCounting, heartbeatService } from "../services/heartbeat.ts";
+import { recoveryService } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -169,3 +173,124 @@ describeEmbeddedPostgres("run_count budget metric counts zero-usage heartbeat ru
     expect(policy).toMatchObject({ observedAmount: 2 });
   });
 });
+
+// Regression coverage for a second Greptile-flagged gap on PR #11842: a run
+// that never reaches `updateRuntimeState` at all -- because it was
+// terminalized by the recovery backstop (server/src/services/recovery/service.ts
+// `terminalizeOrphanedRunningRun`, invoked from `sweepStaleIssueLocks`) -- used
+// to leave no cost_events row behind, so run_count silently missed it too.
+// Fixed by threading an `onRunTerminalized` hook through `recoveryService` that
+// calls the shared `ensureRunAccountedForCounting` helper right after the
+// backstop commits a terminal status. This test drives the real
+// `sweepStaleIssueLocks` production function (with the hook wired the same way
+// `heartbeatService` wires it) against a "running" run whose owning issue is
+// already "done", and asserts the run_count budget aggregate counts it.
+describeEmbeddedPostgres(
+  "run_count budget metric counts runs terminalized by the recovery backstop",
+  () => {
+    let db!: ReturnType<typeof createDb>;
+    let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+    beforeAll(async () => {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-count-recovery-backstop-");
+      db = createDb(tempDb.connectionString);
+    }, 20_000);
+
+    afterEach(async () => {
+      await db.delete(budgetPolicies);
+      await db.delete(costEvents);
+      await db.delete(activityLog);
+      await db.delete(issues);
+      await db.delete(heartbeatRunEvents);
+      await db.delete(heartbeatRuns);
+      await db.delete(agentRuntimeState);
+      await db.delete(agents);
+      await db.delete(companies);
+    });
+
+    afterAll(async () => {
+      await tempDb?.cleanup();
+    });
+
+    it("counts a run left 'running' after its issue reached 'done', once the backstop sweep terminalizes it", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      const issueId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Backstop Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "running",
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Ship the thing",
+        status: "done",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "R1-1",
+        executionRunId: runId,
+      });
+
+      // No cost_events row exists yet for this run: it never went through
+      // updateRuntimeState. Without the fix, sweepStaleIssueLocks terminalizes
+      // heartbeat_runs.status but run_count still observes 0 for this run.
+      const preSweepRows = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+      expect(preSweepRows).toHaveLength(0);
+
+      const recovery = recoveryService(db, {
+        enqueueWakeup: async () => null,
+        onRunTerminalized: (terminalizedRun) =>
+          ensureRunAccountedForCounting(db, {}, terminalizedRun.companyId, terminalizedRun.agentId, terminalizedRun),
+      });
+
+      const sweepResult = await recovery.sweepStaleIssueLocks();
+      expect(sweepResult.terminalizedRunIds).toContain(runId);
+
+      const [terminalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(terminalRun?.status).toBe("succeeded");
+
+      const postSweepRows = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+      expect(postSweepRows).toHaveLength(1);
+
+      const budgets = budgetService(db);
+      await db.insert(budgetPolicies).values({
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "run_count",
+        windowKind: "lifetime",
+        amount: 5,
+        warnPercent: 50,
+        hardStopEnabled: false,
+        notifyEnabled: true,
+        isActive: true,
+      });
+
+      const overview = await budgets.overview(companyId);
+      const policy = overview.policies.find((p) => p.metric === "run_count");
+      expect(policy).toMatchObject({ observedAmount: 1 });
+    });
+  },
+);
