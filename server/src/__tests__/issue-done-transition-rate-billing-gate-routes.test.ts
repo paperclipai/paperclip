@@ -152,6 +152,18 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
     expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
   });
 
+  it("refuses done when 'no other sample exists' is asserted with no reason, even alongside a date", async () => {
+    const issueId = await createIssue(
+      `Vendor Z burn is running at $950/day (${randomUUID()})`,
+      "Observation window: trailing 24h. No other sample exists as of August 2026.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_rate_claim_gate" });
+  });
+
   it("allows done on the same rate-claim fixture with an explicit single-sample justification", async () => {
     const issueId = await createIssue(
       `Vendor X burn is running at $500/day (${randomUUID()})`,
@@ -260,6 +272,19 @@ describeEmbeddedPostgres("done transition rate-claim and billing-source gates (A
       `Reconcile agent cost overrun (${randomUUID()})`,
       "Per Paperclip's internal /costs ledger, spend this month is $4,200. " +
         "Ran `gh api /orgs/VibeTechnologies/settings/billing/usage` to double check -- output confirms $4,200, matches the ledger.",
+    );
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "done_transition_billing_source_gate" });
+  });
+
+  it("refuses done when the vendor output restates the internal-ledger amount in a different notation ($4.2k vs $4,200)", async () => {
+    const issueId = await createIssue(
+      `Reconcile agent cost overrun (${randomUUID()})`,
+      "Per Paperclip's internal /costs ledger, spend this month is $4,200. " +
+        "Ran `gh api /orgs/VibeTechnologies/settings/billing/usage` to double check -- output confirms $4.2k, matches the ledger.",
     );
 
     const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });

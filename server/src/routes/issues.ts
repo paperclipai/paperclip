@@ -334,7 +334,7 @@ const RATE_CLAIM_PATTERN =
   /(\$\s*[\d,.]+(?:k|m)?\s*\/\s*(day|hour|hr|week|wk|month|mo)\b)|(\brun[- ]rate\b)|(\bburn[- ]rate\b)|(\bper[- ](day|hour|month)\b.{0,20}\$)/i;
 const RATE_CLAIM_WINDOW_PATTERN = /\bwindow\b|\bobservation window\b|\btrailing\b|\bover\s+\d+\s*(day|hour|week|month)s?\b/i;
 const RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN =
-  /\b(?:only|just|a )?\s*(?:one|single|1)\s+(?:sample|data ?point)\b.{0,120}?\b(?:because|since|as|given that|due to)\b|\bno other sample(?:s)? (?:exist|available)\b(?:.{0,120}?\b(?:because|since|as|given that|due to)\b)?/i;
+  /\b(?:only|just|a )?\s*(?:one|single|1)\s+(?:sample|data ?point)\b.{0,120}?\b(?:because|since|as|given that|due to)\b|\bno other sample(?:s)? (?:exist|available)\b.{0,120}?\b(?:because|since|as|given that|due to)\b/i;
 // Two non-adjacent samples: look for two distinct calendar month+year
 // tokens (e.g. "July 2026" and "August 2026"). Dedupe on month+year, not
 // the raw matched substring, so two different *days* within the same month
@@ -456,7 +456,17 @@ const VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS = 200;
 const INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS = 150;
 
 function normalizeDollarFigure(raw: string): string {
-  return raw.replace(/[$,]/g, "").trim().toLowerCase();
+  const stripped = raw.replace(/[$,]/g, "").trim().toLowerCase();
+  const suffixMatch = stripped.match(/^([\d.]+)\s*(k|m)$/);
+  const numeric = suffixMatch
+    ? Number.parseFloat(suffixMatch[1]) * (suffixMatch[2] === "k" ? 1_000 : 1_000_000)
+    : Number.parseFloat(stripped);
+  // Compare by numeric value, not raw string, so equivalent representations
+  // of the same amount ($4,200 vs $4.2k) are recognized as the same figure
+  // instead of passing as if they were two independent data points --
+  // Greptile flagged this exact bypass.
+  if (Number.isNaN(numeric)) return stripped;
+  return numeric.toFixed(2);
 }
 
 function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | undefined): boolean {
