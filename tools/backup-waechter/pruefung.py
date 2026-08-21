@@ -11,12 +11,13 @@ import re
 from datetime import datetime, timedelta
 from typing import List, NamedTuple, Optional
 
-# Die Datenbank wird täglich um 02:30 gesichert. 30 Stunden lassen einen
-# verspäteten Lauf durch, schlagen aber an, sobald eine Nacht ausfällt.
-DB_GRENZE_H = 30
-# Der Vault geht nur sonntags 03:30 raus — 9 Tage decken einen verschobenen
-# Lauf ab, ohne einen ausgefallenen Sonntag zu verschlucken.
-VAULT_GRENZE_TAGE = 9
+
+class Pruefling(NamedTuple):
+    """Eine zu überwachende Sicherung."""
+    name: str
+    stand: Optional[datetime]   # None = nicht ermittelbar
+    grenze: timedelta           # ab hier gilt sie als überfällig
+    quelle: str                 # woher der Stand kommt, für die Fehlermeldung
 
 
 class Befund(NamedTuple):
@@ -32,63 +33,55 @@ def _alter_text(delta: timedelta) -> str:
     return f"{delta.days} Tage"
 
 
-def _pruefe(name: str, stand: Optional[datetime], jetzt: datetime,
-            grenze: timedelta, quelle: str):
-    """(problem_oder_None, berichtszeile) für eine einzelne Sicherung."""
-    if stand is None:
-        return (f"{name}: Stand unbekannt — {quelle} nicht abfragbar.",
-                f"{name}: KEINE Angabe (Quelle nicht erreichbar)")
+def bewerte(jetzt: datetime, prueflinge) -> Befund:
+    """Urteil über beliebig viele Sicherungen.
 
-    # Negatives Alter durch Uhrzeitversatz zwischen Mac und NAS nicht als
-    # „uralt" oder gar als Fehler auslegen.
-    alter = max(jetzt - stand, timedelta(0))
-    zeile = (f"{name}: {stand:%Y-%m-%d %H:%M} "
-             f"(vor {_alter_text(alter)})")
-    if alter > grenze:
-        return (f"{name}: letzte Sicherung ist {_alter_text(alter)} alt "
-                f"(Grenze {_alter_text(grenze)}).", zeile)
-    return (None, zeile)
-
-
-def bewerte(jetzt: datetime,
-            db_stand: Optional[datetime],
-            vault_stand: Optional[datetime],
-            db_grenze_h: int = DB_GRENZE_H,
-            vault_grenze_tage: int = VAULT_GRENZE_TAGE) -> Befund:
-    """Urteil über beide Sicherungen.
-
-    `None` als Stand bedeutet „nicht ermittelbar" und gilt IMMER als Problem —
+    `stand is None` bedeutet „nicht ermittelbar" und gilt IMMER als Problem —
     niemals als „alles gut". Ein Wächter, der bei fehlender Auskunft schweigt,
     ist schlimmer als keiner: er erzeugt Vertrauen, das nichts trägt.
     Dieselbe Regel wie `None` statt `0` in pricing.py.
+
+    Eine leere Liste ist ebenfalls kein Gesundheitszeugnis: wenn gar nichts
+    geprüft wurde, ist auch nichts bestätigt.
     """
-    probleme = []
-    zeilen = []
-    for problem, zeile in (
-        _pruefe("Datenbank (NAS)", db_stand, jetzt,
-                timedelta(hours=db_grenze_h), "NAS"),
-        _pruefe("Vault (Nextcloud)", vault_stand, jetzt,
-                timedelta(days=vault_grenze_tage), "restic"),
-    ):
-        zeilen.append(zeile)
-        if problem:
-            probleme.append(problem)
+    prueflinge = list(prueflinge)
+    if not prueflinge:
+        return Befund(ok=False,
+                      probleme=["Es wurde keine einzige Sicherung geprüft."],
+                      zeilen=[])
+
+    probleme, zeilen = [], []
+    for pr in prueflinge:
+        if pr.stand is None:
+            zeilen.append(f"{pr.name}: KEINE Angabe ({pr.quelle} nicht erreichbar)")
+            probleme.append(f"{pr.name}: Stand unbekannt — "
+                            f"{pr.quelle} nicht abfragbar.")
+            continue
+        # Negatives Alter durch Uhrzeitversatz zwischen Mac und NAS nicht als
+        # „uralt" oder gar als Fehler auslegen.
+        alter = max(jetzt - pr.stand, timedelta(0))
+        zeilen.append(f"{pr.name}: {pr.stand:%Y-%m-%d %H:%M} "
+                      f"(vor {_alter_text(alter)})")
+        if alter > pr.grenze:
+            probleme.append(f"{pr.name}: letzte Sicherung ist "
+                            f"{_alter_text(alter)} alt "
+                            f"(Grenze {_alter_text(pr.grenze)}).")
     return Befund(ok=not probleme, probleme=probleme, zeilen=zeilen)
 
 
 def neuester_snapshot(snapshots, tag: str) -> Optional[datetime]:
-    """Zeitpunkt des jüngsten Snapshots mit diesem Tag, oder None.
+    """Zeitpunkt des jüngsten Snapshots mit diesem Schlagwort, oder None.
 
-    Nach TAG filtern statt einfach den jüngsten zu nehmen — und das ist keine
-    Feinheit: `restic snapshots --latest 1` liefert den jüngsten Snapshot
-    **pro Gruppe** (Host + Pfade), nicht einen insgesamt. Im Repo liegt neben
-    dem Vault-Backup noch ein `setup-test`-Snapshot vom 24.05.2026; wer das
-    erste Listenelement nimmt, meldet das Vault-Backup als 89 Tage alt
-    (genau so passiert am 21.08.2026).
+    Nach SCHLAGWORT filtern statt einfach den jüngsten zu nehmen — und das ist
+    keine Feinheit: `restic snapshots --latest 1` liefert den jüngsten Snapshot
+    **pro Gruppe** (Host + Pfade), nicht einen insgesamt. Im Repo lag neben dem
+    Vault-Backup ein `setup-test`-Snapshot vom 24.05.2026; wer das erste
+    Listenelement nimmt, meldet das Vault-Backup als 89 Tage alt (genau so
+    passiert am 21.08.2026).
 
-    „Jüngster von allen" wäre ebenfalls falsch: käme später ein zweites
-    Backup ins selbe Repo, verdeckte dessen frischer Snapshot ein längst
-    totes Vault-Backup.
+    Seit an diesem Tag auch Datenbank und Claude-Code-Ordner im SELBEN Repo
+    liegen, wiegt das schwerer: „jüngster von allen" würde ein totes
+    Vault-Backup hinter einem frischen claude-code-Snapshot verstecken.
     """
     passende = []
     for s in snapshots:

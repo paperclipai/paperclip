@@ -1,0 +1,63 @@
+# Was NICHT nach Nextcloud gesichert wird.
+#
+# Grundsatz: alles raus, was sich aus dem Gesicherten wieder herstellen laesst.
+# node_modules entsteht aus den Lockfiles, venv aus requirements.txt, dist aus
+# dem Quelltext. Das sind 8 GB von 15 — und genau die Sorte Daten, die
+# deduplizieren schlecht und aendern sich staendig.
+#
+# Was BLEIBT und bleiben muss: die .git-Verzeichnisse. Dort steckt die
+# Historie, und viele Ordner unter "Claude Code MAC" sind entweder gar keine
+# Repos oder haben kein Remote — fuer die ist diese Sicherung die einzige.
+#
+# Format: restic --exclude-file. Ein Muster ohne "/" trifft auf jeder Ebene.
+
+# --- Aus Paketverwaltung wiederherstellbar ---
+node_modules
+.pnpm-store
+.yarn/cache
+bower_components
+
+# --- Python ---
+venv
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# --- Bauergebnisse ---
+dist
+build
+.next
+.nuxt
+.turbo
+.parcel-cache
+.astro
+target/debug
+target/release
+
+# --- Betriebssystem und Editor ---
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+Thumbs.db
+
+# --- Laufzeit- und Zwischenstaende ---
+*.log
+.cache
+.temp
+tmp/
+coverage
+.nyc_output
+
+# --- Grosse Binaerdateien, die anderswo herkommen ---
+*.dmg
+*.iso
+*.safetensors
+*.gguf
+*.bin.incomplete
+*.incomplete

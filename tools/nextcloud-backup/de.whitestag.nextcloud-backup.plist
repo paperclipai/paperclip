@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.whitestag.nextcloud-backup</string>
+
+    <!-- Einstieg ueber node, NICHT bash: sonst scheitert der Zugriff auf
+         CloudStorage/SynologyDrive still an TCC. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/nextcloud-backup/run-nextcloud-backup.js</string>
+    </array>
+
+    <!-- 05:00: nach der NAS-Sicherung (02:30) und mit Abstand zum
+         Vault-Backup (sonntags 03:30), das dasselbe Repo sperrt. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>5</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/nextcloud-backup.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/nextcloud-backup.launchd.log</string>
+
+    <key>RunAtLoad</key><false/>
+</dict>
+</plist>

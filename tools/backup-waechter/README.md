@@ -10,14 +10,21 @@ schon Dienste wochenlang unbemerkt tot gewesen.
 
 ## Was geprüft wird
 
-| Sicherung | Quelle | Grenze |
-|---|---|---|
-| Datenbank | jüngste `paperclip-*.dump` auf der NAS (mtime) | **30 Stunden** |
-| Vault | jüngster restic-Snapshot mit Tag `obsidian-vault` in der Nextcloud | **9 Tage** |
+| Sicherung | Quelle | Läuft | Grenze |
+|---|---|---|---|
+| Datenbank (NAS) | jüngste `paperclip-*.dump` (mtime) | tägl. 02:30 | **30 Stunden** |
+| Datenbank (Nextcloud) | restic-Snapshot, Schlagwort `paperclip-db` | tägl. 05:00 | **30 Stunden** |
+| Claude-Code-Ordner | restic-Snapshot, Schlagwort `claude-code` | tägl. 05:00 | **30 Stunden** |
+| Vault (Nextcloud) | restic-Snapshot, Schlagwort `obsidian-vault` | So 03:30 | **9 Tage** |
 
 30 Stunden lassen einen verspäteten Lauf durch, schlagen aber an, sobald eine
 Nacht ausfällt. Der Vault geht nur sonntags raus, deshalb die großzügigere
 Grenze.
+
+Seit dem 21.08.2026 liegen alle drei Nextcloud-Datensätze im **selben** Repo,
+getrennt durch Schlagworte. Deshalb wird der Stand je Schlagwort ermittelt und
+nicht als „jüngster Snapshot" — sonst verdeckte ein frischer
+`claude-code`-Snapshot ein längst totes Vault-Backup.
 
 Geprüft wird die **mtime**, nicht das Datum im Dateinamen: gefragt ist, wann
 zuletzt tatsächlich geschrieben wurde. Ein Name lässt sich vergeben, ohne dass

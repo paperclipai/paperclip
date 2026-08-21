@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Wächter über die Sicherungen: Datenbank (NAS) und Vault (Nextcloud).
+"""Wächter über alle Sicherungen: NAS und Hetzner/Nextcloud.
 
 Deckt die Lücke, die eine Fehlermail im Backup-Skript nicht schließen kann:
 den Fall, dass ein Job GAR NICHT MEHR läuft. Ein Skript, das nie startet,
 schickt auch keine Fehlermeldung.
 
-WICHTIG: Nicht direkt per launchd starten. macOS verweigert einem launchd-Job
-aus zsh/bash/python den Zugriff auf SMB-Freigaben (TCC). Der Einstieg läuft
-über `run-waechter.js` unter node, das die Berechtigung hat und sie an
-Kindprozesse vererbt.
+Überwacht:
+  1. Datenbank auf der NAS          (täglich 02:30)  — Grenze 30 h
+  2. Datenbank in der Nextcloud     (täglich 05:00)  — Grenze 30 h
+  3. Claude-Code-Ordner, Nextcloud  (täglich 05:00)  — Grenze 30 h
+  4. Vault in der Nextcloud         (sonntags 03:30) — Grenze 9 Tage
 
-Usage: waechter.py [--kein-versand] [--heartbeat-erzwingen]
+WICHTIG: Nicht direkt per launchd starten. macOS verweigert einem launchd-Job
+aus zsh/bash/python den Zugriff auf SMB-Freigaben und CloudStorage (TCC).
+Der Einstieg läuft über `run-waechter.js` unter node.
+
+Usage: waechter.py [--kein-versand] [--heartbeat-erzwingen] [--nas <pfad>]
 """
 import json
 import os
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 
 import pruefung
 
@@ -25,8 +30,19 @@ NAS = "/Volumes/WHITESTAG-ARCHIV/Backup Mac Studio M4 Max/paperclip-db"
 RESTIC = "/opt/homebrew/bin/restic"
 RESTIC_REPO = "rclone:hetzner-nc:Backups/MacStudio-WHITESTAG/restic-mac-studio"
 RESTIC_PASS = os.path.expanduser("~/.restic/repo.pass")
-# Tag, den backup-vault.sh seinen Snapshots gibt — danach wird ausgewaehlt.
-VAULT_TAG = "obsidian-vault"
+
+# Schlagworte, unter denen die Sicherungen im gemeinsamen Repo liegen.
+TAG_VAULT = "obsidian-vault"
+TAG_DB = "paperclip-db"
+TAG_CODE = "claude-code"
+
+STD = timedelta(hours=1)
+TAG = timedelta(days=1)
+# 30 h lassen einen verspäteten Lauf durch, schlagen aber an, sobald eine
+# Nacht ausfällt. Der Vault läuft nur sonntags, daher 9 Tage.
+GRENZE_TAEGLICH = 30 * STD
+GRENZE_VAULT = 9 * TAG
+
 LOG = os.path.expanduser("~/.paperclip/logs/backup-waechter.log")
 STATUS = os.path.expanduser("~/.paperclip/logs/backup-waechter-last.json")
 
@@ -69,19 +85,20 @@ def db_stand(ordner=None):
     return datetime.fromtimestamp(os.path.getmtime(juengste)), len(dumps)
 
 
-def vault_stand():
-    """Zeitpunkt des jüngsten restic-Snapshots in der Nextcloud, oder None."""
+def snapshots():
+    """Alle restic-Snapshots, oder None wenn das Repo nicht abfragbar ist.
+
+    ALLE holen, nicht `--latest 1`: das liefert den jüngsten pro Gruppe
+    (Host+Pfad). Die Auswahl je Schlagwort trifft `pruefung`.
+    """
     umgebung = dict(os.environ)
     umgebung["RESTIC_REPOSITORY"] = RESTIC_REPO
     umgebung["RESTIC_PASSWORD_FILE"] = RESTIC_PASS
     umgebung["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin"
-    # ALLE Snapshots holen, nicht `--latest 1`: das liefert den jüngsten
-    # PRO GRUPPE (Host+Pfad), und im Repo liegt neben dem Vault-Backup noch
-    # ein `setup-test`-Snapshot vom 24.05. Die Auswahl trifft `pruefung`.
     try:
         r = subprocess.run([RESTIC, "snapshots", "--json"],
                            capture_output=True, text=True, env=umgebung,
-                           timeout=300)
+                           timeout=600)
     except (OSError, subprocess.TimeoutExpired) as exc:
         log(f"restic nicht abfragbar: {exc}")
         return None
@@ -89,15 +106,10 @@ def vault_stand():
         log(f"restic rc={r.returncode}: {r.stderr.strip()[:200]}")
         return None
     try:
-        snaps = json.loads(r.stdout)
+        return json.loads(r.stdout)
     except ValueError as exc:
         log(f"restic-Ausgabe unlesbar: {exc}")
         return None
-    stand = pruefung.neuester_snapshot(snaps, VAULT_TAG)
-    if stand is None:
-        log(f"Kein Snapshot mit Tag '{VAULT_TAG}' im Repo "
-            f"({len(snaps)} Snapshots insgesamt).")
-    return stand
 
 
 def sende(betreff, html, text):
@@ -148,16 +160,31 @@ def baue_html(befund, anzahl, alarm):
 def main():
     versand = "--kein-versand" not in sys.argv
     erzwinge = "--heartbeat-erzwingen" in sys.argv
-    # Überschreibbarer Pfad, damit der Alarmfall geprüft werden kann, ohne
-    # die echte Sicherung anzufassen.
     ordner = None
     if "--nas" in sys.argv:
         ordner = sys.argv[sys.argv.index("--nas") + 1]
     jetzt = datetime.now()
 
-    stand_db, anzahl = db_stand(ordner)
-    stand_vault = vault_stand()
-    befund = pruefung.bewerte(jetzt, stand_db, stand_vault)
+    stand_nas, anzahl = db_stand(ordner)
+    snaps = snapshots()
+
+    def aus_repo(tag):
+        """None, wenn das Repo gar nicht abfragbar war — nicht etwa 'kein
+        Snapshot vorhanden'. Beides führt zum Alarm, aber die Meldung soll
+        stimmen."""
+        return None if snaps is None else pruefung.neuester_snapshot(snaps, tag)
+
+    prueflinge = [
+        pruefung.Pruefling("Datenbank (NAS)", stand_nas,
+                           GRENZE_TAEGLICH, "NAS"),
+        pruefung.Pruefling("Datenbank (Nextcloud)", aus_repo(TAG_DB),
+                           GRENZE_TAEGLICH, "restic"),
+        pruefung.Pruefling("Claude-Code-Ordner (Nextcloud)", aus_repo(TAG_CODE),
+                           GRENZE_TAEGLICH, "restic"),
+        pruefung.Pruefling("Vault (Nextcloud)", aus_repo(TAG_VAULT),
+                           GRENZE_VAULT, "restic"),
+    ]
+    befund = pruefung.bewerte(jetzt, prueflinge)
 
     for zeile in befund.zeilen:
         log(zeile)
@@ -166,7 +193,7 @@ def main():
         json.dump({"stand": "ok" if befund.ok else "problem",
                    "zeit": jetzt.isoformat(timespec="seconds"),
                    "probleme": befund.probleme,
-                   "sicherungen": anzahl}, fh, ensure_ascii=False)
+                   "sicherungen_nas": anzahl}, fh, ensure_ascii=False)
 
     if not befund.ok:
         log("PROBLEM: " + " | ".join(befund.probleme))
