@@ -8257,6 +8257,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          deletedAt: issues.deletedAt,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -8359,13 +8360,17 @@ export function issueService(db: Db) {
         }
       }
 
-      // If this run already owns it and it's in_progress, return it (no self-409)
+      // If this run already owns it and it's in_progress, return it (no self-409).
+      // Re-check deleted_at here too: a delete can land between the earlier
+      // `current` read and this branch, and this path returns the row as-is
+      // without an UPDATE guard to catch it (AGE-770).
       if (
+        !current.deletedAt &&
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+        const row = await db.select().from(issues).where(and(eq(issues.id, id), isNull(issues.deletedAt))).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
