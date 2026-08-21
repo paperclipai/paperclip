@@ -2627,6 +2627,10 @@ async function listIssueBlockerAttentionMap(
     : [];
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
 
+  // Captured once so every node classified within this call sees the same
+  // deadline snapshot. Without this, a monitor could expire mid-traversal and
+  // make sibling/ancestor nodes disagree on covered/stalled for the same run.
+  const classificationReferenceNow = Date.now();
   type PathClassification = {
     covered: boolean;
     stalled: boolean;
@@ -2658,7 +2662,7 @@ async function listIssueBlockerAttentionMap(
     }
     if (node.status === "in_review") {
       const hasScheduledMonitor = Boolean(
-        node.monitorNextCheckAt && node.monitorNextCheckAt.getTime() > Date.now(),
+        node.monitorNextCheckAt && node.monitorNextCheckAt.getTime() > classificationReferenceNow,
       );
       const hasWaitingPath =
         activeIssueIds.has(node.id) || Boolean(node.assigneeUserId) || hasScheduledMonitor;
