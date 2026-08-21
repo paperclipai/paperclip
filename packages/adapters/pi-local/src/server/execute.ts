@@ -39,6 +39,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  sanitizeInheritedPaperclipEnv,
   renderTemplate,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
@@ -48,6 +49,10 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
+import {
+  collectTranscriptSecretValues,
+  redactTranscriptValue,
+} from "./transcript-redaction-extension.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -130,6 +135,46 @@ async function buildPiSkillsDir(config: Record<string, unknown>): Promise<string
     await fs.symlink(entry.source, path.join(target, entry.runtimeName));
   }
   return target;
+}
+
+async function buildPiTranscriptRedactionExtension(): Promise<{
+  dir: string;
+  fileName: string;
+  filePath: string;
+}> {
+  const sourceCandidates = [
+    path.join(__moduleDir, "transcript-redaction-extension.js"),
+    path.join(__moduleDir, "transcript-redaction-extension.ts"),
+  ];
+  let sourcePath: string | null = null;
+  for (const candidate of sourceCandidates) {
+    try {
+      await fs.access(candidate);
+      sourcePath = candidate;
+      break;
+    } catch {
+      // Try the source-tree fallback when running through tsx.
+    }
+  }
+  if (!sourcePath) throw new Error("Pi transcript redaction extension is missing");
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-extension-"));
+  const fileName = path.basename(sourcePath);
+  const filePath = path.join(dir, fileName);
+  await fs.copyFile(sourcePath, filePath);
+  return { dir, fileName, filePath };
+}
+
+function resolveTranscriptSecretEnvKeys(context: Record<string, unknown>): string[] {
+  const secrets = parseObject(context.paperclipSecrets);
+  const manifest = Array.isArray(secrets.manifest) ? secrets.manifest : [];
+  const keys = new Set<string>(["PAPERCLIP_API_KEY"]);
+  for (const rawEntry of manifest) {
+    const entry = parseObject(rawEntry);
+    const envKey = asString(entry.envKey, "").trim();
+    if (envKey) keys.add(envKey);
+  }
+  return [...keys];
 }
 
 function resolvePiBiller(env: Record<string, string>, provider: string | null): string {
@@ -317,6 +362,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  env.PAPERCLIP_TRANSCRIPT_SECRET_ENV_KEYS = JSON.stringify(
+    resolveTranscriptSecretEnvKeys(context),
+  );
   // Materialize custom Pi providers (PAPERCLIP_PI_PROVIDERS) into a managed
   // PI_CODING_AGENT_DIR before runtimeEnv is computed, so both local validation
   // and the spawned Pi process resolve models against the managed models.json.
@@ -336,7 +384,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const skillBinDirs = piSkillEntries
       .filter((entry) => injectedSkillKeys.has(entry.key) && entry.source.length > 0)
       .map((entry) => path.join(entry.source, "bin"));
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...env });
+    const mergedEnv = ensurePathInEnv({
+      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...env,
+    });
     const pathKey =
       typeof mergedEnv.Path === "string" && mergedEnv.Path.length > 0 && !mergedEnv.PATH
         ? "Path"
@@ -399,6 +450,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let remoteRuntimeRootDir: string | null = null;
     let localSkillsDir: string | null = null;
     let remoteSkillsDir: string | null = null;
+    let remoteExtensionFile: string | null = null;
+    const localExtension = await buildPiTranscriptRedactionExtension();
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTargetIsRemote) {
@@ -423,6 +476,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               key: "skills",
               localDir: localSkillsDir,
               followSymlinks: true,
+            },
+            {
+              key: "extensions",
+              localDir: localExtension.dir,
             },
             ...(localAgentConfigDir
               ? [{
@@ -453,6 +510,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
         remoteSkillsDir = preparedRemoteRuntime.assetDirs.skills ?? null;
+        const remoteExtensionDir = preparedRemoteRuntime.assetDirs.extensions;
+        remoteExtensionFile = remoteExtensionDir
+          ? path.posix.join(remoteExtensionDir, localExtension.fileName)
+          : null;
         if (localAgentConfigDir && preparedRemoteRuntime.assetDirs.agentConfig) {
           env.PI_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
         }
@@ -460,6 +521,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await Promise.allSettled([
           restoreRemoteWorkspace?.(),
           localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+          fs.rm(localExtension.dir, { recursive: true, force: true }).catch(() => undefined),
         ]);
         throw error;
       }
@@ -479,7 +541,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         Object.assign(env, paperclipBridge.env);
         loggedEnv = buildInvocationEnvForLogs(env, {
           runtimeEnv: Object.fromEntries(
-            Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+            Object.entries(ensurePathInEnv({
+              ...sanitizeInheritedPaperclipEnv(process.env),
+              ...env,
+            })).filter(
               (entry): entry is [string, string] => typeof entry[1] === "string",
             ),
           ),
@@ -657,6 +722,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--tools", "read,bash,edit,write,grep,find,ls");
       args.push("--session", sessionFile);
       args.push("--skill", remoteSkillsDir ?? PI_AGENT_SKILLS_DIR);
+      args.push("--extension", remoteExtensionFile ?? localExtension.filePath);
 
       if (extraArgs.length > 0) args.push(...extraArgs);
 
@@ -736,6 +802,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
+      const secretValues = collectTranscriptSecretValues(
+        executionTargetIsRemote ? env : runtimeEnv,
+      );
+      const redactResultValue = <T>(value: T): T => redactTranscriptValue(value, secretValues);
+
       if (attempt.proc.timedOut) {
         return {
           exitCode: attempt.proc.exitCode,
@@ -772,7 +843,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorMessage:
+          (effectiveExitCode ?? 0) === 0 ? null : redactResultValue(fallbackErrorMessage),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -786,11 +858,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         model: model,
         billingType: "unknown",
         costUsd: attempt.parsed.usage.costUsd,
-        resultJson: {
+        resultJson: redactResultValue({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
-        },
-        summary: attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
+        }),
+        summary: redactResultValue(
+          attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
+        ),
         clearSession: Boolean(clearSessionOnMissingSession),
       };
     };
@@ -839,6 +913,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         paperclipBridge?.stop(),
         restoreRemoteWorkspace?.(),
         localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        fs.rm(localExtension.dir, { recursive: true, force: true }).catch(() => undefined),
       ]);
     }
   } finally {

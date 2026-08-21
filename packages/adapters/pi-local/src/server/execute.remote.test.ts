@@ -179,10 +179,13 @@ describe("pi remote execution", () => {
     });
     expect(String(result.sessionId)).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/sessions/`);
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
-    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`,
       followSymlinks: true,
+    }));
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/pi/extensions`,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
@@ -195,6 +198,10 @@ describe("pi remote execution", () => {
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("--skill");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`);
+    expect(call?.[2]).toContain("--extension");
+    expect(call?.[2]).toContain(
+      `${managedRemoteWorkspace}/.paperclip-runtime/pi/extensions/transcript-redaction-extension.ts`,
+    );
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {

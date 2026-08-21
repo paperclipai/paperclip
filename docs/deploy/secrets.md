@@ -27,6 +27,31 @@ you bind to an agent as exposed to that agent. Limit blast radius with bindings
 provider supports them, and rotation when an agent transcript or downstream
 system might have captured a value.
 
+### Rotate A Leaked Agent JWT Signing Secret
+
+Treat a transcript containing `PAPERCLIP_AGENT_JWT_SECRET` as a signing-key
+compromise. An attacker with this value can mint agent run tokens; deleting the
+transcript alone does not revoke that capability.
+
+1. Stop or drain agent runs. Rotation invalidates every outstanding local-agent
+   JWT, so in-flight agents can lose API access.
+2. Generate a new high-entropy value, for example with
+   `openssl rand -base64 48`.
+3. Replace `PAPERCLIP_AGENT_JWT_SECRET` in the deployment secret store or in the
+   instance `.env` beside `config.json`. Never paste the old or new value into
+   an issue, command output, transcript, or activity record.
+4. Restart every Paperclip server process using that instance and verify
+   `paperclipai doctor` plus a controlled agent wake.
+5. Remove or access-restrict affected transcript and log copies after retaining
+   only the value-free incident evidence required by policy.
+
+Rotation takes effect on restart and makes tokens signed with the old key fail
+verification. If `BETTER_AUTH_SECRET` is unset, authenticated deployments also
+use `PAPERCLIP_AGENT_JWT_SECRET` as the board-session secret; expect existing
+board sessions to require authentication again. Configure a separate
+`BETTER_AUTH_SECRET` if agent-token and board-session rotations need independent
+lifecycles.
+
 ## Using Secrets In Runs
 
 Creating a company secret does not automatically create an environment variable.

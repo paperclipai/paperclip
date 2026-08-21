@@ -2530,8 +2530,66 @@ function redactInlineBase64ImageData(chunk: string) {
   );
 }
 
-export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
-  const normalized = redactSensitiveText(redactInlineBase64ImageData(chunk));
+function normalizeLiteralSecretValues(secretValues: Iterable<string>): string[] {
+  return [...new Set(secretValues)]
+    .filter((value) => value.length >= 4)
+    .sort((left, right) => right.length - left.length);
+}
+
+function redactLiteralSecretValues(chunk: string, secretValues: Iterable<string>): string {
+  let redacted = chunk;
+  for (const value of normalizeLiteralSecretValues(secretValues)) {
+    redacted = redacted.split(value).join("***REDACTED***");
+  }
+  return redacted;
+}
+
+function redactRunSecretValue<T>(value: T, secretValues: Iterable<string>): T {
+  const normalizedSecretValues = normalizeLiteralSecretValues(secretValues);
+  const redactValue = (entry: unknown): unknown => {
+    if (typeof entry === "string") {
+      return redactSensitiveText(redactLiteralSecretValues(entry, normalizedSecretValues));
+    }
+    if (Array.isArray(entry)) return entry.map(redactValue);
+    if (!entry || typeof entry !== "object") return entry;
+    const prototype = Object.getPrototypeOf(entry);
+    if (prototype !== Object.prototype && prototype !== null) return entry;
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, nested]) => [key, redactValue(nested)]),
+    );
+  };
+  return redactValue(value) as T;
+}
+
+export function redactAdapterExecutionResultSecrets(
+  result: AdapterExecutionResult,
+  secretValues: Iterable<string>,
+): AdapterExecutionResult {
+  return {
+    ...result,
+    ...(result.errorMessage === undefined
+      ? {}
+      : { errorMessage: redactRunSecretValue(result.errorMessage, secretValues) }),
+    ...(result.errorMeta === undefined
+      ? {}
+      : { errorMeta: redactRunSecretValue(result.errorMeta, secretValues) }),
+    ...(result.resultJson === undefined
+      ? {}
+      : { resultJson: redactRunSecretValue(result.resultJson, secretValues) }),
+    ...(result.summary === undefined
+      ? {}
+      : { summary: redactRunSecretValue(result.summary, secretValues) }),
+  };
+}
+
+export function compactRunLogChunk(
+  chunk: string,
+  maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS,
+  literalSecretValues: Iterable<string> = [],
+) {
+  const normalized = redactSensitiveText(
+    redactLiteralSecretValues(redactInlineBase64ImageData(chunk), literalSecretValues),
+  );
   if (normalized.length <= maxChars) return normalized;
 
   const headChars = Math.max(0, Math.floor(maxChars * 0.6));
@@ -14045,6 +14103,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    const literalRunSecretValues = new Set<string>();
+    for (const value of [
+      process.env.PAPERCLIP_API_KEY,
+      process.env.PAPERCLIP_AGENT_JWT_SECRET,
+      process.env.BETTER_AUTH_SECRET,
+    ]) {
+      if (typeof value === "string") literalRunSecretValues.add(value);
+    }
 
     try {
     const agent = await getAgent(run.agentId);
@@ -14702,6 +14768,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const initiallyResolvedRuntimeEnv = parseObject(runtimeConfig.env);
+    for (const key of secretKeys) {
+      const value = initiallyResolvedRuntimeEnv[key];
+      if (typeof value === "string") literalRunSecretValues.add(value);
+    }
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
@@ -15639,9 +15710,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const resolvedRuntimeEnv = parseObject(runtimeConfig.env);
+      for (const key of secretKeys) {
+        const value = resolvedRuntimeEnv[key];
+        if (typeof value === "string") literalRunSecretValues.add(value);
+      }
+      let authToken: string | null = null;
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
+          MAX_PERSISTED_LOG_CHUNK_CHARS,
+          literalRunSecretValues,
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -15834,7 +15913,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueRef?.workMode === "skill_test"
           ? { kind: "skill_test" as const, issueId: issueRef.id }
           : { kind: "standard" as const };
-      const authToken = adapter.supportsLocalAgentJwt
+      authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(
           agent.id,
           agent.companyId,
@@ -15844,6 +15923,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           localAgentJwtScope,
         )
         : null;
+      if (authToken) literalRunSecretValues.add(authToken);
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
           {
@@ -16088,6 +16168,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           authToken: authToken ?? undefined,
         });
+        adapterResult = redactAdapterExecutionResultSecrets(
+          adapterResult,
+          literalRunSecretValues,
+        );
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -16527,9 +16611,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       );
     } catch (err) {
-      const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
-        await getCurrentUserRedactionOptions(),
+      const message = redactRunSecretValue(
+        redactCurrentUserText(
+          err instanceof Error ? err.message : "Unknown adapter failure",
+          await getCurrentUserRedactionOptions(),
+        ),
+        literalRunSecretValues,
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
@@ -16565,7 +16652,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+          resultJson: redactRunSecretValue(
+            workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+            literalRunSecretValues,
+          ),
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -16668,9 +16758,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } else {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = redactCurrentUserText(
-            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
-            await getCurrentUserRedactionOptions(),
+          const message = redactRunSecretValue(
+            redactCurrentUserText(
+              outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+              await getCurrentUserRedactionOptions(),
+            ),
+            literalRunSecretValues,
           );
           // A missing secret/env binding is a known pre-dispatch configuration gap,
           // not an opaque setup crash. Surface it with its own errorCode so the
@@ -16694,8 +16787,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
-                resultJson:
+                resultJson: redactRunSecretValue(
                   workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
+                  literalRunSecretValues,
+                ),
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));

@@ -46,6 +46,37 @@ process.exit(0);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeInvocationDumpPiCommand(commandPath: string, dumpPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+if (process.argv.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("google    gemini-3-flash-preview");
+  process.exit(0);
+}
+fs.writeFileSync(${JSON.stringify(dumpPath)}, JSON.stringify({ env: process.env, argv: process.argv.slice(2) }));
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "turn_start" }));
+console.log(JSON.stringify({
+  type: "tool_execution_update",
+  toolCallId: "tool-env",
+  toolName: "bash",
+  partialResult: {
+    content: "GRANTED_VALUE=" + process.env.GRANTED_VALUE + "\\nPAPERCLIP_API_KEY=" + process.env.PAPERCLIP_API_KEY,
+  },
+}));
+console.log(JSON.stringify({
+  type: "turn_end",
+  message: { role: "assistant", content: "done " + process.env.GRANTED_VALUE, usage: {} },
+  toolResults: [],
+}));
+console.log(JSON.stringify({ type: "agent_end", messages: [] }));
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 describe("pi_local execute", () => {
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-execute-"));
@@ -89,6 +120,86 @@ describe("pi_local execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps host signing secrets out of Pi and installs transcript redaction", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-redaction-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    const dumpPath = path.join(root, "invocation.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeInvocationDumpPiCommand(commandPath, dumpPath);
+
+    const previousHome = process.env.HOME;
+    const previousSigningSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousBetterAuthSecret = process.env.BETTER_AUTH_SECRET;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "canary-host-signing-secret";
+    process.env.BETTER_AUTH_SECRET = "canary-better-auth-signing-secret";
+
+    try {
+      const result = await execute({
+        runId: "run-pi-redaction",
+        agent: {
+          id: "agent-redaction",
+          companyId: "company-redaction",
+          name: "Pi Agent",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "google/gemini-3-flash-preview",
+          promptTemplate: "Keep working.",
+          env: { GRANTED_VALUE: "canary-granted-value" },
+        },
+        context: {
+          paperclipSecrets: {
+            manifest: [{ envKey: "GRANTED_VALUE" }],
+          },
+        },
+        authToken: "canary-run-api-token",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(dumpPath, "utf8")) as {
+        env: Record<string, string>;
+        argv: string[];
+      };
+      expect(capture.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+      expect(capture.env.BETTER_AUTH_SECRET).toBeUndefined();
+      expect(capture.env.PAPERCLIP_API_KEY).toBe("canary-run-api-token");
+      const persistedResult = JSON.stringify({
+        resultJson: result.resultJson,
+        errorMessage: result.errorMessage,
+        summary: result.summary,
+      });
+      expect(persistedResult).toContain("***REDACTED***");
+      expect(persistedResult).not.toContain("canary-run-api-token");
+      expect(persistedResult).not.toContain("canary-granted-value");
+      expect(JSON.parse(capture.env.PAPERCLIP_TRANSCRIPT_SECRET_ENV_KEYS)).toEqual([
+        "PAPERCLIP_API_KEY",
+        "GRANTED_VALUE",
+      ]);
+      const extensionIndex = capture.argv.indexOf("--extension");
+      expect(extensionIndex).toBeGreaterThanOrEqual(0);
+      expect(capture.argv[extensionIndex + 1]).toMatch(/transcript-redaction-extension\.(?:js|ts)$/);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousSigningSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSigningSecret;
+      if (previousBetterAuthSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = previousBetterAuthSecret;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
