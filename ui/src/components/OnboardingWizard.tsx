@@ -828,7 +828,11 @@ function OnboardingWizardInner({
     setQ2("");
     setQ3("");
     setQ4("");
-    setAgentName("Chief of staff");
+    // Both cleared, matching the mount defaults: a reset that left a name
+    // behind without its role would put the walker back on a step whose CTA
+    // is disabled, next to a name nobody chose.
+    setAgentName("");
+    setAgentRole("");
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
