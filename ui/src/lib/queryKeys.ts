@@ -1,8 +1,105 @@
 export const queryKeys = {
   companies: {
+    /**
+     * Prefix for everything company-shaped. Matches the list, details and stats
+     * below, so an `invalidateQueries` against it still reaches all of them.
+     * Not a cache entry of its own — the list lives under `list()`.
+     */
     all: ["companies"] as const,
+    /**
+     * The company list, scoped to the account it was fetched for. Which
+     * companies you belong to is an answer about *you*, and a single shared
+     * entry made it look like an answer about the app: for 30 seconds after an
+     * account change the previous account's list was served to anyone who
+     * asked. A different account is a different entry, so there is nothing to
+     * mistake. `null` is the signed-out/local_trusted key.
+     */
+    list: (userId: string | null) => ["companies", "list", userId ?? "anonymous"] as const,
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
+    exportFidelity: (companyId: string) => ["companies", companyId, "export-fidelity"] as const,
+  },
+  apps: {
+    gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
+    attention: (companyId: string) => ["apps", companyId, "attention"] as const,
+  },
+  tools: {
+    applications: (companyId: string) => ["tools", companyId, "applications"] as const,
+    connections: (companyId: string) => ["tools", companyId, "connections"] as const,
+    connection: (connectionId: string) => ["tools", "connection", connectionId] as const,
+    connectionInstalls: (connectionId: string) =>
+      ["tools", "connection", connectionId, "installs"] as const,
+    catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
+    connectionActivity: (connectionId: string) =>
+      ["tools", "connection", connectionId, "activity"] as const,
+    testAgents: (connectionId: string) =>
+      ["tools", "connection", connectionId, "test-agents"] as const,
+    testCallStatus: (connectionId: string, actionRequestId: string) =>
+      ["tools", "connection", connectionId, "test-calls", actionRequestId] as const,
+    actionRequests: (companyId: string, status: string) =>
+      ["tools", companyId, "action-requests", status] as const,
+    gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
+    profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
+    profileNewTools: (profileId: string) => ["tools", "profiles", profileId, "new-tools"] as const,
+    effectiveProfilesForAgent: (companyId: string, agentId: string) =>
+      ["tools", companyId, "profiles", "effective", "agent", agentId] as const,
+    stdioTemplates: (companyId: string) => ["tools", companyId, "stdio-templates"] as const,
+    runtimeSlots: (companyId: string) => ["tools", companyId, "runtime-slots"] as const,
+    runtimeHealth: (companyId: string) => ["tools", companyId, "runtime-health"] as const,
+    runDecisions: (companyId: string, runId: string) => ["tools", companyId, "runs", runId, "decisions"] as const,
+    liveRuntimeSlots: (companyId: string) => ["tools", companyId, "runtime-slots", "live"] as const,
+    policies: (companyId: string) => ["tools", companyId, "policies"] as const,
+    trustRules: (companyId: string) => ["tools", companyId, "trust-rules"] as const,
+    audit: (companyId: string, limit: number) => ["tools", companyId, "audit", limit] as const,
+    activity: (
+      companyId: string,
+      filters: { app?: string; agent?: string; outcome?: string; window?: string; search?: string },
+    ) =>
+      [
+        "tools",
+        companyId,
+        "activity",
+        filters.app ?? "__all",
+        filters.agent ?? "__all",
+        filters.outcome ?? "__all",
+        filters.window ?? "24h",
+        filters.search ?? "",
+      ] as const,
+  },
+  audit: {
+    agentActions: (
+      companyId: string,
+      filters: {
+        actorScope?: "agents" | "all" | null;
+        agentId?: string | null;
+        responsibleUserId?: string | null;
+        runId?: string | null;
+        entityType?: string | null;
+        action?: string | null;
+        from?: string | null;
+        to?: string | null;
+        actorType?: string | null;
+      },
+    ) =>
+      [
+        "audit",
+        companyId,
+        "agent-actions",
+        filters.actorScope ?? "agents",
+        filters.agentId ?? "__all",
+        filters.responsibleUserId ?? "__all",
+        filters.runId ?? "__all",
+        filters.entityType ?? "__all",
+        filters.action ?? "__all",
+        filters.actorType ?? "__all",
+        filters.from ?? "",
+        filters.to ?? "",
+      ] as const,
+  },
+  smokeLab: {
+    services: (companyId: string) => ["smoke-lab", companyId, "services"] as const,
+    runs: (companyId: string) => ["smoke-lab", companyId, "runs"] as const,
+    run: (companyId: string, runId: string) => ["smoke-lab", companyId, "runs", runId] as const,
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
@@ -59,6 +156,20 @@ export const queryKeys = {
   },
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,
+  },
+  summarySlots: {
+    detail: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
+      ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null] as const,
+    revisions: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
+      ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null, "revisions"] as const,
+  },
+  statusCards: {
+    list: (companyId: string, archived: boolean) =>
+      ["status-cards", companyId, archived ? "archived" : "active"] as const,
+    detail: (id: string) => ["status-cards", "detail", id] as const,
+    updates: (id: string) => ["status-cards", "detail", id, "updates"] as const,
+    summaryRevisions: (id: string) => ["status-cards", "detail", id, "summary-revisions"] as const,
+    dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -130,6 +241,13 @@ export const queryKeys = {
       query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
     ) =>
       ["issues", "file-resources", issueId, "content", query] as const,
+    /**
+     * Batched availability preflight. `refKeys` are the deduplicated,
+     * lexicographically sorted reference keys in the request so identical
+     * batches share one cache entry.
+     */
+    fileResourceAvailability: (issueId: string, refKeys: readonly string[]) =>
+      ["issues", "file-resources", issueId, "availability", refKeys] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
@@ -140,6 +258,9 @@ export const queryKeys = {
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
     documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
       ["routines", "document-annotations", routineId, key, status] as const,
+  },
+  folders: {
+    list: (companyId: string, kind: string) => ["folders", companyId, kind] as const,
   },
   pipelines: {
     list: (companyId: string) => ["pipelines", companyId] as const,
@@ -182,7 +303,9 @@ export const queryKeys = {
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
-    list: (companyId: string) => ["projects", companyId] as const,
+    all: (companyId: string) => ["projects", companyId] as const,
+    list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
+      ["projects", companyId, { includeArchived: opts.includeArchived === true }] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
   },
   cases: {
@@ -249,6 +372,9 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  inboxAgentPolicy: {
+    mine: (companyId: string) => ["inbox-agent-policy", companyId, "me"] as const,
+  },
   sidebarPreferences: {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>
@@ -263,8 +389,10 @@ export const queryKeys = {
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
-  cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
+  cloud: {
+    stacks: ["cloud", "stacks"] as const,
+  },
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
@@ -275,6 +403,8 @@ export const queryKeys = {
     userDefinitionCoverage: (companyId: string, definitionId: string) =>
       ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
     myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
+    proposals: (companyId: string, status: string = "pending") =>
+      ["secret-proposals", companyId, status] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
@@ -282,6 +412,20 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
+  decisions: {
+    list: (companyId: string, status?: string) =>
+      ["decisions", companyId, status ?? "__all-statuses__"] as const,
+    detail: (id: string) => ["decisions", "detail", id] as const,
+    forTargetIssue: (companyId: string, issueId: string) =>
+      ["decisions", companyId, "target", issueId] as const,
+  },
+  decisionQueues: {
+    list: (companyId: string) => ["decision-queues", companyId] as const,
+    items: (companyId: string, key: string) => ["decision-queues", companyId, "items", key] as const,
+    seedRules: (companyId: string) => ["decision-queues", companyId, "seed-rules"] as const,
+    triage: (companyId: string, sourceKind: string, sourceId: string) =>
+      ["decision-triage", companyId, sourceKind, sourceId] as const,
+  },
   workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,
@@ -322,7 +466,7 @@ export const queryKeys = {
     detail: (pluginId: string) => ["plugins", pluginId] as const,
     health: (pluginId: string) => ["plugins", pluginId, "health"] as const,
     uiContributions: ["plugins", "ui-contributions"] as const,
-    config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
+    config: (pluginId: string, companyId: string) => ["plugins", pluginId, "companies", companyId, "config"] as const,
     localFolders: (pluginId: string, companyId: string) =>
       ["plugins", pluginId, "companies", companyId, "local-folders"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,

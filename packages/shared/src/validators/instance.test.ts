@@ -24,6 +24,29 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableGoalsSidebarLink).toBe(false);
   });
 
+  it("defaults the sandbox duplex bridge kill switch off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableSandboxDuplexBridge).toBe(false);
+  });
+
+  it("accepts an explicit sandbox duplex bridge kill switch value", () => {
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: true })
+        .enableSandboxDuplexBridge,
+    ).toBe(true);
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: false })
+        .enableSandboxDuplexBridge,
+    ).toBe(false);
+  });
+
+  it("accepts the sandbox duplex bridge kill switch in a patch", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: true }),
+    ).toEqual({ enableSandboxDuplexBridge: true });
+  });
+
   it("defaults worktree run execution off", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
@@ -48,6 +71,18 @@ describe("instance experimental settings validators", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
     expect(settings.enableBuiltInAgents).toBe(false);
+  });
+
+  it("defaults beta skills off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableBetaSkills).toBe(false);
+  });
+
+  it("defaults apps off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableApps).toBe(false);
   });
 
   it("accepts worktree run execution patches", () => {
@@ -115,6 +150,16 @@ describe("instance experimental settings validators", () => {
       }),
     ).toEqual({
       enableBuiltInAgents: true,
+    });
+  });
+
+  it("accepts apps patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableApps: true,
+      }),
+    ).toEqual({
+      enableApps: true,
     });
   });
 });

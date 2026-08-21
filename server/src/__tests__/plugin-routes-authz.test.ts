@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -18,6 +18,11 @@ const mockLifecycle = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 
+const mockSecretService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  syncSecretRefsForTarget: vi.fn(),
+}));
+
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
@@ -28,6 +33,10 @@ vi.mock("../services/plugin-lifecycle.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(),
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
 }));
 
 vi.mock("../services/live-events.js", () => ({
@@ -102,6 +111,7 @@ const agentA = "44444444-4444-4444-8444-444444444444";
 const runA = "55555555-5555-4555-8555-555555555555";
 const projectA = "66666666-6666-4666-8666-666666666666";
 const pluginId = "11111111-1111-4111-8111-111111111111";
+const secretId = "77777777-7777-4777-8777-777777777777";
 
 function boardActor(overrides: Record<string, unknown> = {}) {
   return {
@@ -308,8 +318,45 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+  it("allows instance admins to save company-scoped secret refs and sync plugin bindings", async () => {
     readyPlugin();
+    const configJson = {
+      apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
+    };
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyA, status: "active" });
+    mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
+    mockRegistry.upsertConfig.mockResolvedValue({ id: "config-1", pluginId, companyId: companyA, configJson });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({ companyId: companyA, configJson });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.getById).toHaveBeenCalledWith(secretId);
+    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      companyA,
+      { targetType: "plugin", targetId: pluginId },
+      [expect.objectContaining({ secretId, configPath: "apiKeyRef", versionSelector: "latest" })],
+      { replaceAll: true },
+    );
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, companyA, {
+      companyId: companyA,
+      configJson,
+    });
+  }, 20_000);
+
+  it("rejects plugin config saves that reference another company's secret before syncing bindings", async () => {
+    readyPlugin();
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyB, status: "active" });
+    mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
 
     const { app } = await createApp({
       type: "board",
@@ -322,13 +369,15 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app)
       .post(`/api/plugins/${pluginId}/config`)
       .send({
+        companyId: companyA,
         configJson: {
-          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+          apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
         },
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/outside the selected company/i);
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 
@@ -1053,4 +1102,56 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(403);
     expect(executeTool).not.toHaveBeenCalled();
   });
+});
+
+describe.sequential("operator-hidden plugin management floor", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.plugins";
+  });
+  afterEach(() => {
+    delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+  });
+
+  const instanceAdmin = () => boardActor({ isInstanceAdmin: true, userId: "instance-admin" });
+
+  it("floors plugin lifecycle and config writes for instance admins", async () => {
+    const { app, loader } = await createApp(instanceAdmin());
+    readyPlugin();
+
+    const attempts: Array<[string, request.Test]> = [
+      ["install", request(app).post("/api/plugins/install").send({ packageName: "@paperclipai/plugin-modal" })],
+      ["uninstall", request(app).delete(`/api/plugins/${pluginId}`)],
+      ["enable", request(app).post(`/api/plugins/${pluginId}/enable`)],
+      ["disable", request(app).post(`/api/plugins/${pluginId}/disable`).send({})],
+      ["upgrade", request(app).post(`/api/plugins/${pluginId}/upgrade`).send({})],
+      ["config", request(app).post(`/api/plugins/${pluginId}/config`).send({ config: {} })],
+      ["config test", request(app).post(`/api/plugins/${pluginId}/config/test`).send({ config: {} })],
+      [
+        "local folder",
+        request(app)
+          .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/data`)
+          .send({ path: "/tmp/folder" }),
+      ],
+    ];
+    for (const [name, attempt] of attempts) {
+      const res = await attempt;
+      expect(res.status, `${name}: ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.details, name).toMatchObject({ code: "settings_operator_managed" });
+    }
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+    expect(mockLifecycle.enable).not.toHaveBeenCalled();
+    expect(mockLifecycle.disable).not.toHaveBeenCalled();
+    expect(mockLifecycle.upgrade).not.toHaveBeenCalled();
+    expect(mockLifecycle.unload).not.toHaveBeenCalled();
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  });
+
+  it("keeps plugin reads open while the surface is hidden", async () => {
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get("/api/plugins/examples");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  }, 20_000);
 });

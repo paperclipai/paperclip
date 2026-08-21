@@ -2,19 +2,57 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
+  asBoolean,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+// The legacy login-prompt markers. The Claude CLI prints these words when it
+// asks the user to log in. The detector matches them against any probe output
+// line, which includes the raw stdout and stderr. This scope is pre-existing.
+const CLAUDE_LOGIN_PROMPT_RE =
+  /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+
+// The token-failure markers. An assistant or model event can print these same
+// words as ordinary prose, so the detector matches them only against the parsed
+// terminal result fields of a failed run. See detectClaudeLoginRequired.
+const CLAUDE_AUTH_TOKEN_FAILURE_RE =
+  /(?:authentication[_\s-](?:failed|error)|failed\s+to\s+authenticate|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access)\s+token|(?:bearer|oauth|access)\s+token[\s\S]{0,40}(?:is\s+)?(?:invalid|expired|revoked))/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+const CLAUDE_MODEL_NOT_FOUND_RE =
+  /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+
+/**
+ * Sum the per-model usage ledger from a Claude CLI result event. The result
+ * event's top-level `usage` reflects only the main-loop message chain, so it
+ * undercounts output tokens whenever subagents or sidechains ran; `modelUsage`
+ * is the CLI's authoritative per-model accounting (it is what backs /cost).
+ * Cache-creation tokens are billed prompt tokens, so they count as input.
+ */
+export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null {
+  const byModel = parseObject(modelUsage);
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
+  let sawEntry = false;
+  for (const value of Object.values(byModel)) {
+    const entry = parseObject(value);
+    if (Object.keys(entry).length === 0) continue;
+    sawEntry = true;
+    inputTokens += asNumber(entry.inputTokens, 0) + asNumber(entry.cacheCreationInputTokens, 0);
+    outputTokens += asNumber(entry.outputTokens, 0);
+    cachedInputTokens += asNumber(entry.cacheReadInputTokens, 0);
+  }
+  if (!sawEntry) return null;
+  return { inputTokens, outputTokens, cachedInputTokens };
+}
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -62,13 +100,15 @@ export function parseClaudeStreamJson(stdout: string) {
       model,
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
+      usageBasis: null as "per_run" | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };
   }
 
+  const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
   const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = {
+  const usage: UsageSummary = modelUsageTotals ?? {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
@@ -82,6 +122,9 @@ export function parseClaudeStreamJson(stdout: string) {
     model,
     costUsd,
     usage,
+    // modelUsage covers exactly this CLI invocation, so mark it per-run to
+    // keep the server from applying its session-cumulative delta heuristic.
+    usageBasis: "per_run" as const,
     summary,
     resultJson: finalResult,
   };
@@ -131,21 +174,63 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
+// Collect the parsed terminal result fields that carry an auth failure. The
+// CLI writes the token-failure text to the result event, so the detector reads
+// the result string, the top-level error field, and the errors array. It never
+// reads the raw stdout, so an assistant event cannot inject a token marker.
+function collectClaudeTerminalText(parsed: Record<string, unknown>): string {
+  return [
+    asString(parsed.result, ""),
+    asString(parsed.error, ""),
+    ...extractClaudeErrorMessages(parsed),
+  ]
+    .map((field) => field.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Report whether the parsed terminal result marks the run as an auth failure.
+// The token-failure markers apply only to a failed run. A successful probe
+// whose answer text repeats an auth phrase does not classify as login required.
+function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): boolean {
+  if (asBoolean(parsed.is_error, false)) return true;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype.startsWith("error")) return true;
+  const status =
+    asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0);
+  if (status === 401 || status === 403) return true;
+  if (asString(parsed.error, "").trim()) return true;
+  return extractClaudeErrorMessages(parsed).length > 0;
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const parsed = input.parsed ?? null;
+  const resultText = asString(parsed?.result, "").trim();
+
+  // The legacy login-prompt markers keep their broad scope. They match against
+  // every output line, which includes the parsed result, the parsed errors, and
+  // the raw stdout and stderr.
+  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  // The token-failure markers match only against the parsed terminal fields of
+  // a failed run. The raw stdout is untrusted, so a model that prints a token
+  // phrase, or a successful run that repeats one, does not flip the classifier.
+  const tokenFailure =
+    parsed !== null &&
+    claudeResultIndicatesAuthFailure(parsed) &&
+    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
+
   return {
-    requiresLogin,
+    requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
 }
@@ -164,6 +249,23 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   if (subtype) parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
+}
+
+export function isClaudeModelNotFoundError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  const messages = [
+    input.errorMessage ?? "",
+    input.stdout ?? "",
+    input.stderr ?? "",
+    parsed ? asString(parsed.result, "") : "",
+    ...(parsed ? extractClaudeErrorMessages(parsed) : []),
+  ];
+  return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
 }
 
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {

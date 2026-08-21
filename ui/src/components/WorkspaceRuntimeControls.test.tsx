@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
+  buildWorkspaceServiceControlEntries,
+  resolveWorkspaceServiceControlRequests,
   WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
@@ -45,6 +47,7 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     stoppedAt: overrides.stoppedAt ?? null,
     stopPolicy: overrides.stopPolicy ?? null,
     healthStatus: overrides.healthStatus ?? "unknown",
+    exposure: overrides.exposure ?? null,
     configIndex: overrides.configIndex ?? null,
     createdAt: overrides.createdAt ?? new Date("2026-04-12T00:00:00.000Z"),
     updatedAt: overrides.updatedAt ?? new Date("2026-04-12T00:00:00.000Z"),
@@ -421,6 +424,61 @@ describe("WorkspaceRuntimeControls", () => {
     act(() => root.unmount());
   });
 
+  it.each([
+    ["failed", "external HTTPS health probe did not validate", "HTTPS unavailable", "Check the Tailscale broker and node HTTPS configuration."],
+    ["cleanup_pending", "host broker cleanup confirmation timed out", "HTTPS cleanup pending", "Restart the host broker before reusing this port."],
+  ] as const)(
+    "shows %s exposure state, last error, and remediation on service cards",
+    (state, lastError, label, remediation) => {
+      const sections = buildWorkspaceRuntimeControlSections({
+        runtimeConfig: {
+          commands: [
+            { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+          ],
+        },
+        runtimeServices: [
+          createRuntimeService({
+            id: "service-web",
+            serviceName: "web",
+            status: "stopped",
+            exposure: {
+              provider: "tailscale_https",
+              state,
+              publicUrl: null,
+              hostname: "paperclip-dev.tail29c1aa.ts.net",
+              listeners: [{ purpose: "app", publicPort: 42002, targetPort: 42002 }],
+              brokerRef: "service-web",
+              lastError,
+              updatedAt: "2026-08-12T00:00:00.000Z",
+            },
+          }),
+        ],
+        canStartServices: true,
+      });
+
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <WorkspaceRuntimeControls
+            sections={sections}
+            onAction={vi.fn()}
+          />,
+        );
+      });
+
+      const alert = container.querySelector('[role="alert"]');
+      const summary = alert?.firstElementChild;
+      expect(alert?.classList.contains("text-destructive")).toBe(true);
+      expect(summary?.classList.contains("line-clamp-3")).toBe(true);
+      expect(summary?.getAttribute("title")).toBe(lastError);
+      expect(alert?.textContent).toContain(label);
+      expect(alert?.textContent).toContain(lastError);
+      expect(alert?.textContent).toContain(remediation);
+
+      act(() => root.unmount());
+    },
+  );
+
   it("can render square plain surfaces for embedded configuration pages", () => {
     const sections = buildWorkspaceRuntimeControlSections({
       runtimeConfig: {
@@ -485,5 +543,281 @@ describe("WorkspaceRuntimeControls", () => {
     expect(Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim())).toEqual(["Start"]);
 
     act(() => root.unmount());
+  });
+});
+
+describe("buildWorkspaceServiceControlEntries", () => {
+  const sections = () => buildWorkspaceRuntimeControlSections({
+    runtimeConfig: {
+      commands: [
+        { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        { id: "db-migrate", name: "db:migrate", kind: "job", command: "pnpm db:migrate" },
+      ],
+    },
+    runtimeServices: [
+      createRuntimeService({
+        id: "service-web",
+        serviceName: "web",
+        status: "running",
+        url: "http://localhost:3100",
+        port: 3100,
+        healthStatus: "healthy",
+      }),
+    ],
+    canStartServices: true,
+    canRunJobs: true,
+  });
+
+  it("maps service items to control bar entries and excludes jobs", () => {
+    const entries = buildWorkspaceServiceControlEntries({ sections: sections() });
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        name: "web",
+        state: "running",
+        url: "http://localhost:3100",
+        port: 3100,
+        healthStatus: "healthy",
+        failureDetail: null,
+      }),
+    ]);
+  });
+
+  it("overlays transitional states from the pending mutation", () => {
+    const built = sections();
+    const entries = buildWorkspaceServiceControlEntries({
+      sections: built,
+      isPending: true,
+      pendingRequest: {
+        action: "stop",
+        workspaceCommandId: built.services[0].workspaceCommandId ?? null,
+        runtimeServiceId: built.services[0].runtimeServiceId ?? null,
+        serviceIndex: built.services[0].serviceIndex ?? null,
+      },
+    });
+
+    expect(entries[0].state).toBe("stopping");
+  });
+
+  it("overlays every service targeted by a bulk mutation", () => {
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+          { id: "api", name: "api", kind: "service", command: "pnpm api" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+        createRuntimeService({
+          id: "service-api",
+          serviceName: "api",
+          status: "running",
+          command: "pnpm api",
+        }),
+      ],
+      canStartServices: true,
+    });
+    const pendingRequests = resolveWorkspaceServiceControlRequests(built, "stop", null);
+
+    const entries = buildWorkspaceServiceControlEntries({ sections: built, pendingRequests });
+
+    expect(entries.map((entry) => entry.state)).toEqual(["stopping", "stopping"]);
+  });
+
+  it("maps a provisioning runtime service to the provisioning control state", () => {
+    const provisioning = createRuntimeService({
+      id: "service-web",
+      serviceName: "web",
+      status: "provisioning",
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [provisioning],
+      canStartServices: true,
+    });
+
+    expect(built.services[0]).toMatchObject({ statusLabel: "provisioning", runtimeServiceId: "service-web" });
+
+    const entries = buildWorkspaceServiceControlEntries({ sections: built, runtimeServices: [provisioning] });
+    expect(entries[0].state).toBe("provisioning");
+  });
+
+  it("surfaces a provisioning stale runtime service in otherServices", () => {
+    const provisioning = createRuntimeService({
+      id: "service-web",
+      serviceName: "web",
+      status: "provisioning",
+      command: "pnpm dev",
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" }],
+      },
+      runtimeServices: [provisioning],
+      canStartServices: true,
+    });
+
+    expect(built.otherServices).toEqual([
+      expect.objectContaining({ title: "web", statusLabel: "provisioning", runtimeServiceId: "service-web" }),
+    ]);
+  });
+
+  it("builds a failure detail line from the stopped runtime service", () => {
+    const failed = createRuntimeService({
+      id: "service-web",
+      serviceName: "web",
+      status: "failed",
+      stoppedAt: new Date(Date.now() - 60_000),
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [failed],
+      canStartServices: true,
+    });
+    const entries = buildWorkspaceServiceControlEntries({
+      sections: built,
+      runtimeServices: [failed],
+    });
+
+    expect(entries[0].state).toBe("failed");
+    expect(entries[0].failureDetail).toMatch(/^Service failed · /);
+  });
+
+  it("surfaces HTTPS failure independently while the backend remains running", () => {
+    const running = createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42000,
+      url: null,
+      exposure: {
+        provider: "tailscale_https",
+        state: "failed",
+        publicUrl: null,
+        hostname: "runner.tail123.ts.net",
+        listeners: [{ purpose: "app", publicPort: 42000, targetPort: 42000 }],
+        brokerRef: "service-1",
+        lastError: "cli_error",
+        updatedAt: "2026-08-11T00:00:00.000Z",
+      },
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [running],
+      canStartServices: true,
+    });
+    const [entry] = buildWorkspaceServiceControlEntries({ sections: built, runtimeServices: [running] });
+
+    expect(entry.state).toBe("running");
+    expect(entry.exposureState).toBe("failed");
+    expect(entry.exposureDetail).toMatch(/^HTTPS unavailable/);
+    expect(entry.exposureDetail).not.toContain("cli_error");
+  });
+
+  it("carries the verified HTTPS URL into the launch entry, and no HTTP fallback while pending", () => {
+    // PAP-17158: the workspace/project/issue launch links are rendered from these
+    // entries, so the tailnet HTTPS URL has to survive the mapping intact — and a
+    // service whose exposure is not yet verified must offer no URL at all rather
+    // than the loopback backend it is really listening on.
+    const httpsUrl = "https://paperclip-dev.tail29c1aa.ts.net:42010";
+    const buildEntry = (service: ReturnType<typeof createRuntimeService>) => {
+      const sections = buildWorkspaceRuntimeControlSections({
+        runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+        runtimeServices: [service],
+        canStartServices: true,
+      });
+      return buildWorkspaceServiceControlEntries({ sections, runtimeServices: [service] })[0];
+    };
+
+    const ready = buildEntry(createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42_010,
+      url: httpsUrl,
+      exposure: {
+        provider: "tailscale_https",
+        state: "ready",
+        publicUrl: httpsUrl,
+        hostname: "paperclip-dev.tail29c1aa.ts.net",
+        listeners: [
+          { purpose: "app", publicPort: 42_010, targetPort: 42_010 },
+          { purpose: "vite_hmr", publicPort: 52_010, targetPort: 52_010 },
+        ],
+        brokerRef: "service-1",
+        lastError: null,
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    }));
+    expect(ready.state).toBe("running");
+    expect(ready.url).toBe(httpsUrl);
+    expect(ready.exposureState).toBe("ready");
+    // A ready exposure reports plainly and never as a remediation prompt.
+    expect(ready.exposureDetail).toBe("HTTPS ready");
+    expect(ready.exposureDetail).not.toMatch(/unavailable|cleanup|Check the/i);
+
+    const pending = buildEntry(createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42_020,
+      url: null,
+      exposure: {
+        provider: "tailscale_https",
+        state: "pending",
+        publicUrl: null,
+        hostname: "paperclip-dev.tail29c1aa.ts.net",
+        listeners: [],
+        brokerRef: null,
+        lastError: null,
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    }));
+    expect(pending.url ?? null).toBeNull();
+    expect(pending.exposureDetail).toBe("Provisioning HTTPS…");
+    expect(JSON.stringify(pending)).not.toContain("http://");
+  });
+});
+
+describe("resolveWorkspaceServiceControlRequests", () => {
+  const mixedSections = () => buildWorkspaceRuntimeControlSections({
+    runtimeConfig: {
+      commands: [
+        { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        { id: "api", name: "api", kind: "service", command: "pnpm api" },
+      ],
+    },
+    runtimeServices: [
+      createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+    ],
+    canStartServices: true,
+  });
+
+  it("targets a single service by key", () => {
+    const built = mixedSections();
+    const requests = resolveWorkspaceServiceControlRequests(built, "stop", built.services[0].key);
+
+    expect(requests).toEqual([
+      expect.objectContaining({ action: "stop", workspaceCommandId: "web", runtimeServiceId: "service-web" }),
+    ]);
+  });
+
+  it("stops only active services for the aggregate stop", () => {
+    const requests = resolveWorkspaceServiceControlRequests(mixedSections(), "stop", null);
+
+    expect(requests).toEqual([expect.objectContaining({ action: "stop", workspaceCommandId: "web" })]);
+  });
+
+  it("starts only inactive services for the aggregate start", () => {
+    const requests = resolveWorkspaceServiceControlRequests(mixedSections(), "start", null);
+
+    expect(requests).toEqual([expect.objectContaining({ action: "start", workspaceCommandId: "api" })]);
+  });
+
+  it("restarts active services and starts stopped ones for the aggregate restart", () => {
+    const requests = resolveWorkspaceServiceControlRequests(mixedSections(), "restart", null);
+
+    expect(requests).toEqual([
+      expect.objectContaining({ action: "restart", workspaceCommandId: "web" }),
+      expect.objectContaining({ action: "start", workspaceCommandId: "api" }),
+    ]);
   });
 });

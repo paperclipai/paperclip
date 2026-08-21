@@ -64,6 +64,16 @@ function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback 
   return sanitized || fallback;
 }
 
+/**
+ * Resolve the managed checkout directory for one project:
+ * `<instanceRoot>/projects/<companyId>/<projectId>/<repoName|_default>`.
+ *
+ * Per-project directory isolation invariant: the `projectId` is a distinct path segment, so two
+ * different projects always resolve to sibling directories under `<companyId>/`. One project's
+ * directory can never nest inside, or be a path prefix of, another project's directory. A run that
+ * materializes several referenced projects can therefore place each in its own directory without
+ * collision. See the "distinct, non-nested managed dirs" test in `heartbeat-project-env.test.ts`.
+ */
 export function resolveManagedProjectWorkspaceDir(input: {
   companyId: string;
   projectId: string;

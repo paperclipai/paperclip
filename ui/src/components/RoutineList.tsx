@@ -64,6 +64,10 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   disableToggle = false,
   hideArchiveAction = false,
   divider = true,
+  selected = false,
+  selectMode = false,
+  extraMenuItems,
+  onSelectChange,
   onRunNow,
   onToggleEnabled,
   onToggleArchived,
@@ -83,6 +87,10 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   hideArchiveAction?: boolean;
   /** Render a bottom divider between consecutive rows. Off when the group is its own card. */
   divider?: boolean;
+  selected?: boolean;
+  selectMode?: boolean;
+  extraMenuItems?: ReactNode;
+  onSelectChange?: (routine: TRoutine, selected: boolean) => void;
   onRunNow: (routine: TRoutine) => void;
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
@@ -102,6 +110,23 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
         divider ? " border-b border-border last:border-b-0" : ""
       }`}
     >
+      {selectMode ? (
+        <div
+          className="flex items-start pt-0.5 sm:pt-1"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-border"
+            checked={selected}
+            aria-label={`Select ${routine.title}`}
+            onChange={(event) => onSelectChange?.(routine, event.target.checked)}
+          />
+        </div>
+      ) : null}
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{routine.title}</span>
@@ -178,6 +203,12 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             >
               {runningRoutineId === routine.id ? "Running..." : "Run now"}
             </DropdownMenuItem>
+            {extraMenuItems ? (
+              <>
+                <DropdownMenuSeparator />
+                {extraMenuItems}
+              </>
+            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onToggleEnabled(routine, enabled)}

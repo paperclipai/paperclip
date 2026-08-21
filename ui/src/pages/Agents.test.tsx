@@ -193,6 +193,7 @@ const environmentCapabilities: EnvironmentCapabilities = {
       interactiveSetupConnectionTypes: [],
       supportsTemplateCapture: false,
       supportsTemplateDelete: false,
+      supportsLoginPty: false,
       displayName: "Fake",
       source: "builtin",
     },
@@ -206,6 +207,7 @@ const environmentCapabilities: EnvironmentCapabilities = {
       interactiveSetupConnectionTypes: ["ssh"],
       supportsTemplateCapture: true,
       supportsTemplateDelete: true,
+      supportsLoginPty: true,
       displayName: "Daytona",
       source: "plugin",
     },
@@ -243,7 +245,6 @@ function makeInstanceSettings({
       enableTaskWatchdogs: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents,
       autoRestartDevServerWhenIdle: false,
@@ -885,6 +886,7 @@ describe("Agents", () => {
     expect(container.textContent).toContain("Built-in");
     expect(container.textContent).toContain("Briefs Agent");
     expect(container.textContent).not.toContain("Regular Agent");
+    expect(container.querySelector('[title="Ships with Paperclip"]')).toBeNull();
     expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 

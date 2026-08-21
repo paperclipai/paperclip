@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  claudeModelUsageTotals,
+  parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -8,6 +10,7 @@ import {
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  isClaudeModelNotFoundError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
@@ -29,6 +32,137 @@ describe("detectClaudeLoginRequired", () => {
         stderr: "Invalid API key",
       }).requiresLogin,
     ).toBe(false);
+  });
+
+  it("classifies an invalid or expired OAuth bearer token as login required", () => {
+    // Grounded on the real Claude CLI output for CLAUDE_CODE_OAUTH_TOKEN=invalid:
+    // the result event carries a 401 authentication failure and an "Invalid
+    // bearer token" message. This is an auth failure, not a probe that could not
+    // run, so the detector must classify it as login required.
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      api_error_status: 401,
+      error: "authentication_failed",
+      result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"Failed to authenticate. API Error: 401 Invalid bearer token"}]},"error":"authentication_failed"}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not route an invalid token to the transient or quota classifiers", () => {
+    // An auth failure must win over the transient and quota lanes, so a run
+    // surfaces login required instead of a retry.
+    const input = {
+      parsed: {
+        is_error: true,
+        result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+      },
+      stdout: "",
+      stderr: "",
+    };
+    expect(isClaudeTransientUpstreamError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(false);
+  });
+
+  it("classifies an expired or revoked token in the parsed result as login required", () => {
+    // The result event marks the run as a failure and reports an expired token.
+    // This is a token failure, so the detector classifies it as login required.
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      result: "Failed to authenticate. Your OAuth access token is expired.",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not classify a successful probe whose assistant text repeats a token phrase", () => {
+    // A healthy run can print an auth phrase in its answer text. The parsed
+    // result is a success, so the token-failure markers must not fire on the raw
+    // stdout assistant event.
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "hello",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"The phrase authentication_failed means an invalid bearer token."}]}}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not classify a success whose result text repeats a token phrase", () => {
+    // The model's own answer repeats a token phrase, so the phrase lands in the
+    // parsed result. The run is a success, so the failure gate keeps it healthy.
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "Sure. An invalid bearer token means authentication_failed.",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("keeps a transient failure with an assistant token phrase on the transient lane", () => {
+    // The run fails on a 503 transient error. The token phrase appears only in
+    // the raw stdout assistant event, not the parsed result, so the run stays
+    // transient and never classifies as login required.
+    const input = {
+      parsed: {
+        is_error: true,
+        subtype: "error_during_execution",
+        result: "API Error: 503 service unavailable",
+      },
+      stdout:
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"authentication_failed: the bearer token is invalid"}]}}',
+      stderr: "",
+    };
+    expect(detectClaudeLoginRequired(input).requiresLogin).toBe(false);
+    expect(isClaudeTransientUpstreamError(input)).toBe(true);
+  });
+
+  it("does not treat a bare token phrase in raw stdout with no parsed result as login required", () => {
+    // Untrusted stdout alone must not satisfy a token-failure marker. Only the
+    // parsed terminal result fields of a failed run can trip the token markers.
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "authentication_failed while the assistant called a tool",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeModelNotFoundError", () => {
+  it("detects model resolution failures from structured and fallback output", () => {
+    expect(isClaudeModelNotFoundError({
+      parsed: {
+        result: "API Error: 404 model not found: claude-haiku-4-6",
+      },
+    })).toBe(true);
+    expect(isClaudeModelNotFoundError({
+      stderr: "Unknown model claude-haiku-4-6",
+    })).toBe(true);
+  });
+
+  it("does not classify unrelated provider failures as model resolution errors", () => {
+    expect(isClaudeModelNotFoundError({
+      errorMessage: "API Error: 503 service unavailable",
+    })).toBe(false);
   });
 });
 
@@ -343,5 +477,81 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("claudeModelUsageTotals", () => {
+  it("sums per-model usage across models and counts cache writes as input", () => {
+    const totals = claudeModelUsageTotals({
+      "claude-fable-5": {
+        inputTokens: 100,
+        outputTokens: 70_000,
+        cacheReadInputTokens: 250_000,
+        cacheCreationInputTokens: 4_000,
+        costUSD: 1.2,
+      },
+      "claude-haiku-4-5": {
+        inputTokens: 50,
+        outputTokens: 7_000,
+        cacheReadInputTokens: 10_000,
+        cacheCreationInputTokens: 500,
+        costUSD: 0.05,
+      },
+    });
+    expect(totals).toEqual({
+      inputTokens: 4_650,
+      outputTokens: 77_000,
+      cachedInputTokens: 260_000,
+    });
+  });
+
+  it("returns null for missing or empty modelUsage", () => {
+    expect(claudeModelUsageTotals(undefined)).toBeNull();
+    expect(claudeModelUsageTotals({})).toBeNull();
+  });
+});
+
+describe("parseClaudeStreamJson usage extraction", () => {
+  const resultEvent = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "sess-1",
+      result: "done",
+      total_cost_usd: 1.25,
+      usage: { input_tokens: 10, output_tokens: 1_800, cache_read_input_tokens: 20 },
+      ...extra,
+    });
+
+  it("prefers modelUsage totals over the main-loop usage block and marks them per-run", () => {
+    const parsed = parseClaudeStreamJson(
+      `${resultEvent({
+        modelUsage: {
+          "claude-fable-5": {
+            inputTokens: 90,
+            outputTokens: 77_000,
+            cacheReadInputTokens: 300_000,
+            cacheCreationInputTokens: 2_000,
+          },
+        },
+      })}\n`,
+    );
+    expect(parsed.usage).toEqual({
+      inputTokens: 2_090,
+      outputTokens: 77_000,
+      cachedInputTokens: 300_000,
+    });
+    expect(parsed.usageBasis).toBe("per_run");
+    expect(parsed.costUsd).toBeCloseTo(1.25);
+  });
+
+  it("falls back to the result usage block when modelUsage is absent", () => {
+    const parsed = parseClaudeStreamJson(`${resultEvent({})}\n`);
+    expect(parsed.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 1_800,
+      cachedInputTokens: 20,
+    });
+    expect(parsed.usageBasis).toBe("per_run");
   });
 });

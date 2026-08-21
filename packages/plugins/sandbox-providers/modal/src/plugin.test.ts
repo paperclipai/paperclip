@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import manifest from "./manifest.js";
+
 const { MockNotFoundError, MockTimeoutError, MockSandboxTimeoutError } = vi.hoisted(() => {
   class MockNotFoundError extends Error {}
   class MockTimeoutError extends Error {}
@@ -541,7 +543,7 @@ describe("Modal sandbox provider plugin", () => {
     });
   });
 
-  it("executes commands with a login-shell wrapper that injects env after profile sourcing", async () => {
+  it("executes commands with a non-login-shell wrapper that injects env after profile sourcing", async () => {
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) =>
         makeFakeProcess({
@@ -568,9 +570,12 @@ describe("Modal sandbox provider plugin", () => {
     expect(sandbox.execCalls).toHaveLength(1);
     const call = sandbox.execCalls[0]!;
     expect(call.argv[0]).toBe("sh");
-    expect(call.argv[1]).toBe("-lc");
+    expect(call.argv[1]).toBe("-c");
     const script = call.argv[2]!;
     expect(script).toMatch(/\/etc\/profile/);
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(script).not.toMatch(/nvm\.sh/);
+    expect(script).not.toMatch(/NVM_DIR/);
     expect(script).toMatch(/cd '\/srv\/work'/);
     expect(script).toMatch(/&& exec env FOO='bar' 'printf' 'hello'$/);
     expect(call.params).toMatchObject({
@@ -699,5 +704,27 @@ describe("Modal sandbox provider plugin", () => {
       stdout: "",
       stderr: "No provider lease ID available for execution.",
     });
+  });
+});
+
+describe("modal manifest form defaults", () => {
+  const configSchema = (
+    manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { format?: string; default?: unknown }>;
+    }
+  );
+  const properties = configSchema.properties ?? {};
+
+  it("pre-fills the required app name and image so the form works out of the box", () => {
+    expect(properties.appName?.default).toBe("paperclip");
+    expect(properties.image?.default).toBe("node:22");
+  });
+
+  it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {
+    for (const prop of Object.values(properties)) {
+      if (prop.format === "secret-ref") {
+        expect(prop.default).toBeUndefined();
+      }
+    }
   });
 });

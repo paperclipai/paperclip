@@ -197,13 +197,24 @@ process.stdout.write(`${stableSlot}.${max + 1}`);
 NODE
 }
 
-next_canary_version() {
-  local stable_version="$1"
-  shift
+require_prerelease_channel() {
+  case "$1" in
+    canary|nightly|beta) ;;
+    *) release_fail "unknown prerelease channel: $1" ;;
+  esac
+}
 
-  node - "$stable_version" "$@" <<'NODE'
-const stable = process.argv[2];
-const packageNames = process.argv.slice(3);
+next_prerelease_version() {
+  local channel="$1"
+  local stable_version="$2"
+  shift 2
+
+  require_prerelease_channel "$channel"
+
+  node - "$channel" "$stable_version" "$@" <<'NODE'
+const channel = process.argv[2];
+const stable = process.argv[3];
+const packageNames = process.argv.slice(4);
 const { execSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 
@@ -218,7 +229,7 @@ if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
   }
 }
 
-const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-canary\\.(\\d+)$`);
+const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-${channel}\\.(\\d+)$`);
 let max = -1;
 
 for (const packageName of packageNames) {
@@ -249,8 +260,14 @@ for (const packageName of packageNames) {
   }
 }
 
-process.stdout.write(`${stable}-canary.${max + 1}`);
+process.stdout.write(`${stable}-${channel}.${max + 1}`);
 NODE
+}
+
+next_canary_version() {
+  local stable_version="$1"
+  shift
+  next_prerelease_version canary "$stable_version" "$@"
 }
 
 release_notes_file() {
@@ -261,8 +278,13 @@ stable_tag_name() {
   printf 'v%s\n' "$1"
 }
 
+prerelease_tag_name() {
+  require_prerelease_channel "$1"
+  printf '%s/v%s\n' "$1" "$2"
+}
+
 canary_tag_name() {
-  printf 'canary/v%s\n' "$1"
+  prerelease_tag_name canary "$1"
 }
 
 npm_package_version_exists() {
@@ -302,15 +324,56 @@ is_npm_tlog_duplicate_error() {
     grep -q "equivalent entry already exists in the transparency log" <<< "$output"
 }
 
+package_publish_tool() {
+  node -e '
+    const pkg = require(process.cwd() + "/package.json");
+    const bundled = pkg.bundleDependencies ?? pkg.bundledDependencies ?? [];
+    process.stdout.write(bundled.length > 0 ? "npm" : "pnpm");
+  '
+}
+
+BUNDLED_NPM_PACK_VERSION="10.9.7"
+BUNDLED_NPM_PUBLISH_VERSION="11.18.0"
+
+run_bundled_npm_pack() {
+  npx --yes "npm@$BUNDLED_NPM_PACK_VERSION" "$@"
+}
+
+run_bundled_npm_publish() {
+  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@" --loglevel verbose
+}
+
+run_package_publish() {
+  local publish_tool="$1"
+  local dist_tag="$2"
+  local disable_provenance="${3:-false}"
+
+  if [ "$publish_tool" = "npm" ]; then
+    if [ "$disable_provenance" = "true" ]; then
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public --provenance=false
+    else
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public
+    fi
+    return
+  fi
+
+  if [ "$disable_provenance" = "true" ]; then
+    pnpm publish --no-git-checks --tag "$dist_tag" --access public --provenance=false
+  else
+    pnpm publish --no-git-checks --tag "$dist_tag" --access public
+  fi
+}
+
 publish_package_to_npm() {
   local dist_tag="$1"
   local package_name="$2"
   local package_version="$3"
+  local publish_tool="${4:-pnpm}"
   local publish_log
 
   publish_log="$(mktemp "${TMPDIR:-/tmp}/paperclip-npm-publish.XXXXXX")"
 
-  if (set -o pipefail; pnpm publish --no-git-checks --tag "$dist_tag" --access public 2>&1 | tee "$publish_log"); then
+  if (set -o pipefail; run_package_publish "$publish_tool" "$dist_tag" false 2>&1 | tee "$publish_log"); then
     rm -f "$publish_log"
     return 0
   fi
@@ -328,20 +391,60 @@ publish_package_to_npm() {
     return 0
   fi
 
-  if [ "$dist_tag" != "canary" ]; then
-    release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
-    rm -f "$publish_log"
-    return 1
-  fi
+  case "$dist_tag" in
+    canary|nightly) ;;
+    *)
+      release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
+      rm -f "$publish_log"
+      return 1
+      ;;
+  esac
 
   release_warn "Retrying ${package_name}@${package_version} once with npm provenance disabled."
-  if pnpm publish --no-git-checks --tag "$dist_tag" --access public --provenance=false; then
+  if run_package_publish "$publish_tool" "$dist_tag" true; then
     rm -f "$publish_log"
     return 0
   fi
 
   rm -f "$publish_log"
   return 1
+}
+
+publish_package_to_npm_and_wait() {
+  local dist_tag="$1"
+  local package_name="$2"
+  local package_version="$3"
+  local publish_tool="${4:-pnpm}"
+  local attempts="${5:-12}"
+  local delay_seconds="${6:-5}"
+
+  publish_package_to_npm "$dist_tag" "$package_name" "$package_version" "$publish_tool" || return 1
+
+  if wait_for_npm_package_version "$package_name" "$package_version" "$attempts" "$delay_seconds"; then
+    return 0
+  fi
+
+  release_warn "npm accepted ${package_name}@${package_version}, but the version did not become registry-visible."
+  return 1
+}
+
+verify_npm_installable() {
+  local package_spec="$1"
+  local expected_version="$2"
+  local install_dir
+  local installed_version
+
+  install_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-install.XXXXXX")"
+
+  if ! npm install --prefix "$install_dir" "$package_spec" --no-audit --no-fund; then
+    rm -rf "$install_dir"
+    return 1
+  fi
+
+  installed_version="$(node -e "console.log(require(process.argv[1]).version)" "$install_dir/node_modules/paperclipai/package.json")"
+  rm -rf "$install_dir"
+
+  [ "$installed_version" = "$expected_version" ]
 }
 
 wait_for_release_registry_state() {
@@ -387,6 +490,33 @@ require_on_master_branch() {
   current_branch="$(git_current_branch)"
   if [ "$current_branch" != "master" ]; then
     release_fail "this release step must run from branch master, but current branch is ${current_branch:-<detached>}."
+  fi
+}
+
+# Promotion channels only republish commits that already shipped on the
+# previous lane, so the source commit must carry that lane's release tag.
+require_channel_tag_at_head() {
+  local channel="$1"
+
+  require_prerelease_channel "$channel"
+
+  if ! git -C "$REPO_ROOT" tag --points-at HEAD | grep -q "^${channel}/v"; then
+    release_fail "HEAD has no ${channel}/v* tag; this channel only publishes commits that already shipped a ${channel} release."
+  fi
+}
+
+# The inverse guard: a commit ships on a promotion channel at most once, so
+# concurrent or repeated runs cannot double-publish it. Delete the lane tag
+# first if a republish is genuinely intended.
+require_channel_tag_absent_at_head() {
+  local channel="$1"
+  local existing
+
+  require_prerelease_channel "$channel"
+
+  existing="$(git -C "$REPO_ROOT" tag --points-at HEAD | grep "^${channel}/v" | head -1 || true)"
+  if [ -n "$existing" ]; then
+    release_fail "HEAD already shipped as ${existing}; delete that tag first if you really want to republish this commit on the ${channel} channel."
   fi
 }
 

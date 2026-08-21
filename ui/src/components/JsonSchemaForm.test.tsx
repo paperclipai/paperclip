@@ -134,7 +134,7 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     });
   });
 
-  it("writes the secret id to form values when the picker selects an existing secret", async () => {
+  it("writes a secret_ref binding to form values when the picker selects an existing secret", async () => {
     const root = createRoot(container);
     const onChange = vi.fn();
 
@@ -173,7 +173,11 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     });
 
     expect(onChange).toHaveBeenCalledWith({
-      apiKey: "11111111-1111-4111-8111-111111111111",
+      apiKey: {
+        type: "secret_ref",
+        secretId: "11111111-1111-4111-8111-111111111111",
+        version: "latest",
+      },
     });
 
     await act(async () => {

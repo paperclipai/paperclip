@@ -11,6 +11,7 @@ import { activityLog, agents, companies, createDb, executionWorkspaces, goals, i
 import { eq } from "drizzle-orm";
 import { errorHandler } from "../middleware/index.js";
 import {
+  createFileResourceAvailabilityLimiter,
   createFileResourceLimiter,
   createFileResourceListLimiter,
   fileResourceRoutes,
@@ -1078,11 +1079,11 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
 
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(404);
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(404);
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(404);
 
     const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, graph.issueId));
     const listDenials = rows.filter((row) => row.action === "issue.file_resource_list_denied");
@@ -1160,6 +1161,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const resolveLimitedService: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1221,6 +1225,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const contentLimitedService: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1294,6 +1301,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1380,6 +1390,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         slowListStarted?.();
         await slowList;
@@ -1438,6 +1451,189 @@ describeEmbeddedPostgres("workspace file resources", () => {
     const third = await request(app).get(`/api/issues/${graph.issueId}/file-resources/list`);
     expect(third.status).toBe(429);
   });
+
+  it("returns mixed deduplicated availability results with one aggregate audit event", async () => {
+    const { root, projectRoot, targetProjectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, {
+      projectRoot,
+      targetProjectRoot,
+      executionRoot,
+      targetProjectSourceType: "remote_managed",
+    });
+    await fs.mkdir(path.join(projectRoot, "docs"), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, "README.md"), "# Visible\n", "utf8");
+    await fs.writeFile(path.join(projectRoot, "docs", "guide.md"), "# Guide\n", "utf8");
+    await fs.writeFile(path.join(projectRoot, "archive.bin"), Buffer.from([0, 1, 2, 3]));
+    await fs.writeFile(path.join(projectRoot, "large.txt"), Buffer.alloc(WORKSPACE_FILE_TEXT_MAX_BYTES + 1, "a"));
+    await fs.writeFile(path.join(projectRoot, ".env"), "TOKEN=secret\n", "utf8");
+    await fs.writeFile(path.join(root, "outside-secret.txt"), "outside\n", "utf8");
+    await fs.symlink(path.join(root, "outside-secret.txt"), path.join(projectRoot, "escape.txt"));
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({
+        queries: [
+          { workspace: "project", path: "README.md" },
+          { workspace: "project", path: "./README.md" },
+          { workspace: "project", path: "docs/" },
+          { workspace: "project", path: "archive.bin" },
+          { workspace: "project", path: "large.txt" },
+          { workspace: "project", path: ".env" },
+          { workspace: "project", path: "../outside-secret.txt" },
+          { workspace: "project", path: path.join(root, "host-secret.txt") },
+          { workspace: "project", path: "escape.txt" },
+          { workspace: "project", path: "missing.ts" },
+          {
+            workspace: "project",
+            projectId: graph.targetProjectId,
+            workspaceId: graph.targetProjectWorkspaceId,
+            path: "remote.txt",
+          },
+        ],
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.kind).toBe("workspace_file_availability");
+    expect(response.body.results).toHaveLength(10);
+    const byPath = new Map(response.body.results.map((result: { query: { path: string } }) => [result.query.path, result]));
+    expect(byPath.get("README.md")).toMatchObject({ openable: true, resource: { kind: "file" } });
+    expect(byPath.get("docs/")).toMatchObject({ openable: true, resource: { kind: "directory" } });
+    expect(byPath.get("archive.bin")).toMatchObject({ openable: false, unavailableReason: "unsupported_content" });
+    expect(byPath.get("large.txt")).toMatchObject({ openable: false, unavailableReason: "too_large" });
+    expect(byPath.get(".env")).toMatchObject({ openable: false, unavailableReason: "denied_secret", resource: null });
+    expect(byPath.get("../outside-secret.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "outside_workspace",
+      resource: null,
+    });
+    expect(byPath.get("host-secret.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "invalid_path",
+      resource: null,
+    });
+    expect(byPath.get("escape.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "outside_workspace",
+      resource: null,
+    });
+    expect(byPath.get("missing.ts")).toMatchObject({ openable: false, unavailableReason: "not_found", resource: null });
+    expect(byPath.get("remote.txt")).toMatchObject({
+      openable: false,
+      unavailableReason: "remote_workspace",
+      resource: { kind: "remote_resource" },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(root);
+
+    const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, graph.issueId));
+    const availabilityRows = rows.filter((row) => row.action === "issue.file_resource_availability");
+    expect(availabilityRows).toHaveLength(1);
+    expect(availabilityRows[0]?.details).toMatchObject({
+      outcome: "success",
+      requestedCount: 11,
+      uniqueCount: 10,
+      openableCount: 2,
+      unavailableCount: 8,
+    });
+    expect(JSON.stringify(availabilityRows[0]?.details)).not.toContain(root);
+  });
+
+  it("reports ambiguous auto-discovery as one unavailable result", async () => {
+    const { projectRoot, targetProjectRoot, executionRoot, root } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, targetProjectRoot, executionRoot });
+    const extraRoot = path.join(root, "extra-project");
+    await fs.mkdir(extraRoot, { recursive: true });
+    await fs.writeFile(path.join(targetProjectRoot, "shared.md"), "target\n", "utf8");
+    await fs.writeFile(path.join(extraRoot, "shared.md"), "extra\n", "utf8");
+    const extraProjectId = crypto.randomUUID();
+    await db.insert(projects).values({
+      id: extraProjectId,
+      companyId: graph.companyId,
+      name: "Extra project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: crypto.randomUUID(),
+      companyId: graph.companyId,
+      projectId: extraProjectId,
+      name: "Extra workspace",
+      sourceType: "local_path",
+      cwd: extraRoot,
+      isPrimary: true,
+    });
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: [{ path: "shared.md" }] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.results).toEqual([
+      {
+        query: { path: "shared.md", workspace: "auto", projectId: null, workspaceId: null },
+        openable: false,
+        unavailableReason: "ambiguous_workspace_path",
+        resource: null,
+      },
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain(root);
+  });
+
+  it("enforces board access, company boundaries, and the 100-query cap", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const agentId = crypto.randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: graph.companyId,
+      name: "Availability audit agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    });
+    const agentApp = createApp(db, {
+      type: "agent",
+      agentId,
+      companyId: graph.companyId,
+      source: "agent_key",
+    });
+    const otherCompanyApp = createApp(db, {
+      type: "board",
+      userId: "other-board",
+      companyIds: [graph.otherCompanyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const boardApp = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    expect((await request(agentApp)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(403);
+    expect((await request(otherCompanyApp)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(404);
+    expect((await request(boardApp)
+      .post(`/api/issues/${graph.issueId}/file-resources/availability`)
+      .send({ queries: Array.from({ length: 101 }, (_, index) => ({ path: `file-${index}.ts` })) })).status).toBe(400);
+  });
 });
 
 describeEmbeddedPostgres("file resource route guards", () => {
@@ -1470,6 +1666,9 @@ describeEmbeddedPostgres("file resource route guards", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId })),
+      availability: vi.fn(async () => {
+        throw new Error("not used");
+      }),
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
@@ -1521,5 +1720,66 @@ describeEmbeddedPostgres("file resource route guards", () => {
     expect((await firstResponse).status).toBe(200);
     const third = await request(app).get("/api/issues/issue-1/file-resources/resolve").query({ path: "README.md" });
     expect(third.status).toBe(429);
+  });
+
+  it("uses a batch-specific availability limiter", async () => {
+    const companyId = crypto.randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Availability rate limit company",
+      issuePrefix: "AVL",
+    });
+    let releaseSlowAvailability: (() => void) | null = null;
+    let slowAvailabilityStarted: (() => void) | null = null;
+    const slowAvailability = new Promise<void>((resolve) => {
+      releaseSlowAvailability = resolve;
+    });
+    const availabilityStarted = new Promise<void>((resolve) => {
+      slowAvailabilityStarted = resolve;
+    });
+    const service: WorkspaceFileResourceService = {
+      getIssue: vi.fn(async () => ({ companyId })),
+      availability: vi.fn(async () => {
+        slowAvailabilityStarted?.();
+        await slowAvailability;
+        return { kind: "workspace_file_availability", results: [] };
+      }),
+      list: vi.fn(async () => { throw new Error("not used"); }),
+      resolve: vi.fn(async () => { throw new Error("not used"); }),
+      readContent: vi.fn(async () => { throw new Error("not used"); }),
+      prepareDownload: vi.fn(async () => { throw new Error("not used"); }),
+    };
+    const app = createApp(
+      db,
+      {
+        type: "board",
+        userId: "board-user",
+        companyIds: [companyId],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      {
+        service,
+        availabilityLimiter: createFileResourceAvailabilityLimiter({
+          maxConcurrent: 1,
+          maxRequests: 2,
+          windowMs: 60_000,
+        }),
+      },
+    );
+
+    const firstRequest = request(app)
+      .post("/api/issues/issue-availability/file-resources/availability")
+      .send({ queries: [{ path: "README.md" }] });
+    const firstResponse = firstRequest.then((response) => response);
+    await availabilityStarted;
+    expect((await request(app)
+      .post("/api/issues/issue-availability/file-resources/availability")
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(429);
+    releaseSlowAvailability?.();
+    expect((await firstResponse).status).toBe(200);
+    expect((await request(app)
+      .post("/api/issues/issue-availability/file-resources/availability")
+      .send({ queries: [{ path: "README.md" }] })).status).toBe(429);
   });
 });

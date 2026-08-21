@@ -18,6 +18,8 @@ const mockSecretService = vi.hoisted(() => ({
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
+  list: vi.fn(),
+  getByKey: vi.fn(),
   create: vi.fn(),
   rotate: vi.fn(),
   update: vi.fn(),
@@ -34,6 +36,10 @@ const mockSecretService = vi.hoisted(() => ({
   removeCurrentUserSecretValue: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
+  listBindingReferences: vi.fn(),
+  listAccessEvents: vi.fn(),
+  listAgentSecretAccess: vi.fn(),
+  resolveSecretValueForAgentAccess: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -66,6 +72,48 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
+  });
+
+  it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {
+    const secretId = "11111111-1111-4111-8111-111111111111";
+    mockSecretService.listAgentSecretAccess.mockResolvedValue([{
+      secretId,
+      bindingId: "22222222-2222-4222-8222-222222222222",
+      configPath: "env.OPENAI_API_KEY",
+      key: "openai_api_key",
+      name: "OpenAI API key",
+      description: "Used for model access",
+      delivery: "env",
+      projectionClass: "unclassified",
+      latestVersion: 3,
+      versionSelector: "latest",
+      resolvedVersion: 3,
+    }]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "44444444-4444-4444-8444-444444444444",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_jwt",
+      keyScope: { kind: "standard" },
+    })).get("/api/agents/me/secrets");
+
+    expect(res.status).toBe(200);
+    expect(res.body.secrets).toEqual([{
+      secretRef: secretId,
+      key: "openai_api_key",
+      name: "OpenAI API key",
+      description: "Used for model access",
+      delivery: "env",
+      projectionClass: "unclassified",
+      latestVersion: 3,
+      versionSelector: "latest",
+      resolvedVersion: 3,
+    }]);
+    expect(res.body.secrets[0]).not.toHaveProperty("secretId");
+    expect(res.body.secrets[0]).not.toHaveProperty("bindingId");
+    expect(res.body.secrets[0]).not.toHaveProperty("configPath");
   });
 
   it("returns provider health checks for board callers with company access", async () => {
@@ -839,6 +887,112 @@ describe("secret routes", () => {
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("shared/repointed");
   });
 
+  it("returns 404 for cross-tenant GET /secrets/:id/usage without leaking existence", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-2",
+      name: "Other tenant secret",
+      key: "other-secret",
+      provider: "aws_secrets_manager",
+      managedMode: "paperclip_managed",
+    });
+
+    const crossTenantApp = createApp({
+      type: "board",
+      userId: "mallory",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(crossTenantApp).get(
+      "/api/secrets/44444444-4444-4444-8444-444444444444/usage",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listBindingReferences).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for missing GET /secrets/:id/usage with identical response shape", async () => {
+    mockSecretService.getById.mockResolvedValue(null);
+
+    const res = await request(createApp()).get(
+      "/api/secrets/55555555-5555-4555-8555-555555555555/usage",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listBindingReferences).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for cross-tenant GET /secrets/:id/access-events without leaking existence", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "company-2",
+      name: "Other tenant secret",
+      key: "other-secret",
+      provider: "aws_secrets_manager",
+      managedMode: "paperclip_managed",
+    });
+
+    const crossTenantApp = createApp({
+      type: "board",
+      userId: "mallory",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(crossTenantApp).get(
+      "/api/secrets/66666666-6666-4666-8666-666666666666/access-events",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listAccessEvents).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for missing GET /secrets/:id/access-events with identical response shape", async () => {
+    mockSecretService.getById.mockResolvedValue(null);
+
+    const res = await request(createApp()).get(
+      "/api/secrets/77777777-7777-4777-8777-777777777777/access-events",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listAccessEvents).not.toHaveBeenCalled();
+  });
+
+  it("returns usage bindings for in-tenant GET /secrets/:id/usage", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "88888888-8888-4888-8888-888888888888",
+      companyId: "company-1",
+      name: "OpenAI",
+      key: "openai",
+      provider: "aws_secrets_manager",
+      managedMode: "paperclip_managed",
+    });
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+
+    const res = await request(createApp()).get(
+      "/api/secrets/88888888-8888-4888-8888-888888888888/usage",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      secretId: "88888888-8888-4888-8888-888888888888",
+      bindings: [],
+    });
+    expect(mockSecretService.listBindingReferences).toHaveBeenCalledWith(
+      "company-1",
+      "88888888-8888-4888-8888-888888888888",
+    );
+  });
+
   it("allows DELETE to retry cleanup for already soft-deleted secrets", async () => {
     const secret = {
       id: "33333333-3333-4333-8333-333333333333",
@@ -869,5 +1023,78 @@ describe("secret routes", () => {
         entityId: secret.id,
       }),
     );
+  });
+
+  describe("GET /companies/:companyId/secrets/catalog", () => {
+    const fullSecrets = [
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        name: "MY_API_KEY",
+        key: "my_api_key",
+        status: "active",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerMetadata: null,
+        referenceCount: 2,
+      },
+      {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        name: "DB_PASSWORD",
+        key: "db_password",
+        status: "active",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerMetadata: null,
+        referenceCount: 0,
+      },
+    ];
+
+    it("returns id/name/key/status only for board callers", async () => {
+      mockSecretService.list.mockResolvedValue(fullSecrets);
+
+      const res = await request(createApp()).get("/api/companies/company-1/secrets/catalog");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([
+        { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "MY_API_KEY", key: "my_api_key", status: "active" },
+        { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "DB_PASSWORD", key: "db_password", status: "active" },
+      ]);
+      expect(res.body[0]).not.toHaveProperty("provider");
+      expect(res.body[0]).not.toHaveProperty("referenceCount");
+    });
+
+    it("returns id/name/key/status only for agent callers in the same company", async () => {
+      mockSecretService.list.mockResolvedValue(fullSecrets);
+
+      const agentApp = createApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+      });
+      const res = await request(agentApp).get("/api/companies/company-1/secrets/catalog");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(2);
+      expect(res.body[0]).toMatchObject({ id: expect.any(String), name: "MY_API_KEY", key: "my_api_key", status: "active" });
+    });
+
+    it("rejects unauthenticated requests", async () => {
+      const res = await request(createApp({ type: "none" }))
+        .get("/api/companies/company-1/secrets/catalog");
+
+      // assertBoardOrAgent throws forbidden (403) for all non-agent/non-board actors;
+      // it does not call assertAuthenticated first, so type:"none" gets 403, not 401.
+      expect(res.status).toBe(403);
+    });
+
+    it("rejects agents from a different company", async () => {
+      const res = await request(createApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-2",
+      })).get("/api/companies/company-1/secrets/catalog");
+
+      expect(res.status).toBe(403);
+    });
   });
 });

@@ -24,6 +24,13 @@ interface InlineEditorProps {
    * `MarkdownBody` so resolved URLs render with the inline status icon prefix.
    */
   externalReferences?: MarkdownExternalReferenceMap;
+  /**
+   * Mount the multiline editor already in edit mode, focused — for hosts whose
+   * own affordance opens the editor (the description bubble's pencil, PAP-375).
+   */
+  defaultEditing?: boolean;
+  /** Notified when the multiline editor swaps between display and edit mode. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -61,9 +68,11 @@ export function InlineEditor({
   mentions,
   foldable = false,
   externalReferences,
+  defaultEditing = false,
+  onEditingChange,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
-  const [multilineEditing, setMultilineEditing] = useState(false);
+  const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
   const lastPropValueRef = useRef(value);
@@ -72,7 +81,7 @@ export function InlineEditor({
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurCommitFrameRef = useRef<(() => void) | null>(null);
   const pendingFocusFrameRef = useRef<number | null>(null);
-  const justEnteredEditRef = useRef(false);
+  const justEnteredEditRef = useRef(multiline && defaultEditing);
   const hasBeenFocusedRef = useRef(false);
   const {
     state: autosaveState,
@@ -156,7 +165,8 @@ export function InlineEditor({
     if (autosaveState !== "idle") return;
     hasBeenFocusedRef.current = false;
     setMultilineEditing(false);
-  }, [multiline, multilineEditing, multilineFocused, autosaveState]);
+    onEditingChange?.(false);
+  }, [multiline, multilineEditing, multilineFocused, autosaveState, onEditingChange]);
 
 
   const commit = useCallback(async (nextValue = draft) => {
@@ -223,6 +233,7 @@ export function InlineEditor({
       if (multiline) {
         setMultilineFocused(false);
         setMultilineEditing(false);
+        onEditingChange?.(false);
         hasBeenFocusedRef.current = false;
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
@@ -269,6 +280,7 @@ export function InlineEditor({
         if (multilineEditing) return;
         justEnteredEditRef.current = true;
         setMultilineEditing(true);
+        onEditingChange?.(true);
       };
       return (
         <div

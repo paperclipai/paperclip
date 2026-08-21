@@ -47,4 +47,34 @@ describe("buildClaudeLocalConfig", () => {
     expect(buildClaudeLocalConfig(makeValues({ claudeEngine: "cli" }))).toMatchObject({ engine: "cli" });
     expect(buildClaudeLocalConfig(makeValues({ claudeEngine: "acp" }))).toMatchObject({ engine: "acp" });
   });
+
+  it("keeps user-scoped env bindings so the server resolves them at test time", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        envBindings: {
+          GH_TOKEN: { type: "user_secret_ref", key: "github_token", version: "latest", required: true },
+        },
+      }),
+    );
+
+    expect(config.env).toEqual({
+      GH_TOKEN: { type: "user_secret_ref", key: "github_token", version: "latest", required: true },
+    });
+  });
+
+  it("keeps company secret and plain env bindings", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        envBindings: {
+          API_KEY: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111", version: "latest" },
+          FLAG: { type: "plain", value: "on" },
+        },
+      }),
+    );
+
+    expect(config.env).toEqual({
+      API_KEY: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111", version: "latest" },
+      FLAG: { type: "plain", value: "on" },
+    });
+  });
 });

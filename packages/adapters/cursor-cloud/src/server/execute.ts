@@ -19,6 +19,7 @@ import {
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   renderTemplate,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -107,6 +108,9 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
     ...buildPaperclipEnv(agent),
     PAPERCLIP_RUN_ID: runId,
   };
+  // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
+  // token is the only source of Paperclip API identity.
+  delete env.PAPERCLIP_API_KEY;
 
   const wakeTaskId = trimNullable(context.taskId) ?? trimNullable(context.issueId);
   const wakeReason = trimNullable(context.wakeReason);
@@ -127,8 +131,22 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (!trimNullable(env.PAPERCLIP_API_KEY) && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  // cursor_cloud runs remotely in Cursor's cloud and is intentionally not
+  // issued a Paperclip run JWT (registry: supportsLocalAgentJwt=false).
+  // buildPaperclipEnv always sets PAPERCLIP_API_URL, defaulting to the local
+  // runtime host — which a remote worker can neither reach nor authenticate
+  // against, so any agent-initiated Paperclip API call would fail with a 401
+  // (or be unreachable) and add noise. When there is no usable key, drop the
+  // callback wiring so cloud-side Paperclip tools degrade to a clean no-op.
+  // Run results are delivered server-side via the Cursor Agent SDK (getRun /
+  // wait), not through this callback, so nothing is lost.
+  if (!trimNullable(env.PAPERCLIP_API_KEY)) {
+    delete env.PAPERCLIP_API_URL;
+    delete env.PAPERCLIP_API_BRIDGE_MODE;
   }
 
   const workspace = parseObject(context.paperclipWorkspace);
@@ -395,7 +413,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const renderedPrompt =
-    canReuseSession && wakePrompt.length > 0
+    (canReuseSession && wakePrompt.length > 0) || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
       : renderTemplate(promptTemplate, templateData).trim();
   const paperclipEnvNote = renderPaperclipEnvNote(remoteEnv);

@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueChatThread } from "./IssueChatThread";
 import type { IssueChatComment } from "../lib/issue-chat-messages";
+import type { LiveRunForIssue } from "../api/heartbeats";
 import type { Agent, SuccessfulRunHandoffState } from "@paperclipai/shared";
 
 vi.mock("@assistant-ui/react", () => ({
@@ -76,6 +77,7 @@ function renderThread(
     agentMap?: Map<string, Agent>;
     issueStatus?: string;
     successfulRunHandoff?: SuccessfulRunHandoffState | null;
+    liveRuns?: LiveRunForIssue[];
   } = {},
 ) {
   act(() => {
@@ -85,7 +87,7 @@ function renderThread(
           comments={comments}
           linkedRuns={[]}
           timelineEvents={[]}
-          liveRuns={[]}
+          liveRuns={options.liveRuns ?? []}
           onAdd={async () => {}}
           showComposer={false}
           enableLiveTranscriptPolling={false}
@@ -146,6 +148,34 @@ describe("IssueChatThread system notice routing", () => {
     const toggle = row?.querySelector("button[aria-expanded]") as HTMLButtonElement | null;
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelectorAll('[data-message-role="user"]').length).toBe(0);
+  });
+
+  it("renders a system notice with a malformed createdAt without tripping the error boundary (PAP-16607)", () => {
+    const comment: IssueChatComment = {
+      id: "comment-system-bad-date",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: "Workspace ready.",
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        title: "Workspace ready",
+        detailsDefaultOpen: false,
+      },
+      metadata: { version: 1, sections: [] },
+      // A server serialization bug (Dates collapsed to `{}` by secret
+      // redaction) shipped comments whose timestamps parse to Invalid Date.
+      createdAt: {} as unknown as Date,
+      updatedAt: {} as unknown as Date,
+    };
+
+    renderThread([comment]);
+
+    expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
+    expect(container.textContent).toContain("Workspace ready");
   });
 
   it("expands metadata when detailsDefaultOpen is true", () => {
@@ -391,7 +421,9 @@ describe("IssueChatThread system notice routing", () => {
     expect(sourceLink?.textContent).toBe("Paperclip");
   });
 
-  it("keeps agent-authored comments as assistant bubbles even when presentation requests system_notice", () => {
+  it("routes agent-authored comments to the notice renderer when presentation requests system_notice", () => {
+    const owner = { id: "agent-1", name: "ClaudeCoder" } as unknown as Agent;
+    const agentMap = new Map<string, Agent>([[owner.id, owner]]);
     const comment: IssueChatComment = {
       id: "comment-agent-system",
       companyId: "company-1",
@@ -399,11 +431,166 @@ describe("IssueChatThread system notice routing", () => {
       authorType: "agent",
       authorAgentId: "agent-1",
       authorUserId: null,
+      runId: "run-owner",
+      runAgentId: "agent-1",
       body: "Reassigned to ClaudeFixer.",
       presentation: {
         kind: "system_notice",
         tone: "neutral",
-        title: null,
+        title: "Recovery reassignment",
+        detailsDefaultOpen: false,
+      },
+      metadata: null,
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], { agentMap });
+
+    // No longer an assistant bubble — it collapses like a system notice.
+    expect(container.querySelector('[data-message-role="assistant"]')).toBeNull();
+    const row = container.querySelector('[data-message-role="system"]');
+    expect(row).not.toBeNull();
+    const status = row?.querySelector('[role="status"]');
+    expect(status?.getAttribute("aria-label")).toBe("Recovery reassignment");
+    // The real author's name + run link stay visible on the notice.
+    const sourceLink = status?.querySelector('a[href^="/agents/"]') as HTMLAnchorElement | null;
+    expect(sourceLink?.getAttribute("href")).toBe("/agents/agent-1/runs/run-owner");
+    expect(sourceLink?.textContent).toBe("ClaudeCoder");
+  });
+
+  it("collapses compact system notices to a single quiet row and expands to the full card", () => {
+    const comment: IssueChatComment = {
+      id: "comment-compact",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-recovery",
+      runAgentId: "agent-codex",
+      body: "Recovery escalated to the CTO after repeated stalls.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Recovery escalated",
+        detailsDefaultOpen: false,
+        density: "compact",
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Escalation",
+            rows: [{ type: "agent_link", label: "Owner", agentId: "agent-cto", name: "CTO" }],
+          },
+        ],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment]);
+
+    const row = container.querySelector('[data-testid="compact-system-notice"]');
+    expect(row).not.toBeNull();
+    // Collapsed: title + timestamp + chevron visible, but body/card hidden.
+    expect(row?.textContent).toContain("Recovery escalated");
+    expect(row?.querySelector('[data-testid="compact-system-notice-time"]')).not.toBeNull();
+    expect(row?.querySelector(".lucide-chevron-down")).not.toBeNull();
+    const toggle = row?.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const detailsId = toggle.getAttribute("aria-controls");
+    const details = detailsId ? container.ownerDocument.getElementById(detailsId) : null;
+    expect(details).not.toBeNull();
+    expect(details).toHaveProperty("hidden", true);
+    // The full SystemNotice card lives inside the collapsed region.
+    expect(details?.querySelector('[role="status"]')).not.toBeNull();
+
+    act(() => {
+      toggle.click();
+    });
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(details).toHaveProperty("hidden", false);
+    expect(details?.textContent).toContain("Recovery escalated to the CTO");
+  });
+
+  it("renders a compact notice already expanded when detailsDefaultOpen is true", () => {
+    const comment: IssueChatComment = {
+      id: "comment-compact-open",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: "Recovery escalated to the CTO.",
+      presentation: {
+        kind: "system_notice",
+        tone: "danger",
+        title: "Recovery escalated",
+        detailsDefaultOpen: true,
+        density: "compact",
+      },
+      metadata: null,
+      ...baseTimestamps,
+    };
+
+    renderThread([comment]);
+
+    const row = container.querySelector('[data-testid="compact-system-notice"]');
+    expect(row).not.toBeNull();
+    const toggle = row?.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const detailsId = toggle.getAttribute("aria-controls");
+    const details = detailsId ? container.ownerDocument.getElementById(detailsId) : null;
+    expect(details).toHaveProperty("hidden", false);
+    expect(details?.querySelector('[role="status"]')).not.toBeNull();
+    expect(details?.textContent).toContain("Recovery escalated to the CTO.");
+  });
+
+  it("keeps the author visible on a compact agent-authored notice row", () => {
+    const owner = { id: "agent-1", name: "ClaudeCoder" } as unknown as Agent;
+    const agentMap = new Map<string, Agent>([[owner.id, owner]]);
+    const comment: IssueChatComment = {
+      id: "comment-compact-agent",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "agent",
+      authorAgentId: "agent-1",
+      authorUserId: null,
+      body: "Picked this back up after the wake.",
+      presentation: {
+        kind: "system_notice",
+        tone: "neutral",
+        title: "Recovery owner update",
+        detailsDefaultOpen: false,
+        density: "compact",
+      },
+      metadata: null,
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], { agentMap });
+
+    const row = container.querySelector('[data-testid="compact-system-notice"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Recovery owner update");
+    // Author name shows on the collapsed row itself.
+    expect(row?.querySelector("button[aria-expanded]")?.textContent).toContain("ClaudeCoder");
+  });
+
+  it("keeps notices without density rendering as the full card (graceful fallback)", () => {
+    const comment: IssueChatComment = {
+      id: "comment-no-density",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: "Recovery completed.",
+      presentation: {
+        kind: "system_notice",
+        tone: "success",
+        title: "Recovery completed",
         detailsDefaultOpen: false,
       },
       metadata: null,
@@ -412,8 +599,11 @@ describe("IssueChatThread system notice routing", () => {
 
     renderThread([comment]);
 
-    expect(container.querySelector('[role="status"]')).toBeNull();
-    expect(container.querySelector('[data-message-role="assistant"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="compact-system-notice"]')).toBeNull();
+    const status = container.querySelector('[role="status"]');
+    expect(status?.getAttribute("aria-label")).toBe("Recovery completed");
+    // Body is visible immediately on the full card.
+    expect(status?.textContent).toContain("Recovery completed.");
   });
 
   it("folds stale successful-run disposition warnings into the activity log disclosure style", () => {
@@ -454,6 +644,7 @@ describe("IssueChatThread system notice routing", () => {
       successfulRunHandoff: {
         state: "resolved",
         required: false,
+        hasLiveContinuation: false,
         sourceRunId: "run-stale",
         correctiveRunId: "run-corrective",
         assigneeAgentId: "agent-codex",
@@ -490,5 +681,153 @@ describe("IssueChatThread system notice routing", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(details).toHaveProperty("hidden", false);
     expect(container.textContent).toContain("run-stale");
+  });
+
+  it("folds a required disposition warning while a live continuation is running the issue", () => {
+    const comment: IssueChatComment = {
+      id: "comment-live-disposition-warning",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-source",
+      runAgentId: "agent-codex",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Missing issue disposition",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-source",
+        sections: [],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], {
+      issueStatus: "in_progress",
+      successfulRunHandoff: {
+        state: "required",
+        required: true,
+        hasLiveContinuation: true,
+        liveRunId: "run-live",
+        sourceRunId: "run-source",
+        correctiveRunId: null,
+        assigneeAgentId: "agent-codex",
+        detectedProgressSummary: null,
+        createdAt: new Date("2026-05-04T17:00:00.000Z"),
+      },
+    });
+
+    const row = container.querySelector('[data-testid="stale-disposition-warning"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).not.toContain("Paperclip needs a disposition before this issue can continue.");
+  });
+
+  it("keeps the required disposition warning loud when no live continuation exists", () => {
+    const comment: IssueChatComment = {
+      id: "comment-stuck-disposition-warning",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-source",
+      runAgentId: "agent-codex",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Missing issue disposition",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-source",
+        sections: [],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], {
+      issueStatus: "in_progress",
+      successfulRunHandoff: {
+        state: "required",
+        required: true,
+        hasLiveContinuation: false,
+        sourceRunId: "run-source",
+        correctiveRunId: null,
+        assigneeAgentId: "agent-codex",
+        detectedProgressSummary: null,
+        createdAt: new Date("2026-05-04T17:00:00.000Z"),
+      },
+    });
+
+    expect(container.querySelector('[data-testid="stale-disposition-warning"]')).toBeNull();
+    expect(container.textContent).toContain("Paperclip needs a disposition before this issue can continue.");
+  });
+
+  it("folds a required disposition warning when a live run starts after the issue payload was fetched", () => {
+    const comment: IssueChatComment = {
+      id: "comment-realtime-disposition-warning",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-source",
+      runAgentId: "agent-codex",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Missing issue disposition",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-source",
+        sections: [],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], {
+      issueStatus: "in_progress",
+      liveRuns: [
+        {
+          id: "run-live",
+          status: "running",
+          invocationSource: "wakeup",
+          triggerDetail: null,
+          startedAt: "2026-05-04T17:05:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-05-04T17:05:00.000Z",
+          agentId: "agent-codex",
+          agentName: "CodexCoder",
+          adapterType: "codex_local",
+          issueId: "issue-1",
+        },
+      ],
+      successfulRunHandoff: {
+        state: "required",
+        required: true,
+        // Stale server view: the payload was fetched before run-live started.
+        hasLiveContinuation: false,
+        sourceRunId: "run-source",
+        correctiveRunId: null,
+        assigneeAgentId: "agent-codex",
+        detectedProgressSummary: null,
+        createdAt: new Date("2026-05-04T17:00:00.000Z"),
+      },
+    });
+
+    const row = container.querySelector('[data-testid="stale-disposition-warning"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).not.toContain("Paperclip needs a disposition before this issue can continue.");
   });
 });

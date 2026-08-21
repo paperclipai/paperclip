@@ -19,8 +19,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
 # Add it when git workspace population lands.
 FROM ubuntu:22.04 AS base
 ARG NODE_VERSION
+# ripgrep (rg): required on PATH so OpenCode's skill tooling uses the system
+# binary instead of trying to download a pinned build from github.com at run
+# time. A sandbox with locked-down egress makes that download hang ~127s then
+# fail ("Transport error ... BurntSushi/ripgrep/releases/..."), wasting run
+# budget on every agent run. The root repo Dockerfile already ships rg; this
+# restores parity for the agent-runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git tini gnupg \
+      ca-certificates curl git tini gnupg ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \

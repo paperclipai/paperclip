@@ -22,7 +22,7 @@ set.
 ## Permission Model
 
 - Company skill reads: any same-company actor
-- Company skill mutations: board, a human/agent principal with an explicit `skills:create` grant, or an agent whose `canCreateSkills` permission is enabled. `canCreateSkills` defaults on for agents unless explicitly disabled.
+- Company skill mutations: open to same-company actors by default. Missing `skills:create` grants and `canCreateSkills` settings do not deny ordinary skill work; only an explicit company skill policy restriction does. Core safety and company-boundary checks always remain enforced.
 - Agent skill assignment: same permission model as updating that agent
 - Team installs continue to require `agents:create` because they import or create agents in addition to attaching skills.
 
@@ -188,11 +188,18 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
 
 The server persists canonical company skill keys.
 
+The request must include a merge mode:
+
+- `add` adds the named skills and keeps every other assignment.
+- `remove` removes only the named skills.
+- `replace` overwrites the complete desired skill set. Use it only after explicit confirmation.
+
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
+    "mode": "add",
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
     ]

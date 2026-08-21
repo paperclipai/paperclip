@@ -1,9 +1,16 @@
-import { randomUUID } from "node:crypto";
-import { Router, type Request } from "express";
+import { createHash, randomUUID } from "node:crypto";
+import express, { Router, type Request, type Response } from "express";
+import multer from "multer";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable } from "@paperclipai/db";
+import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
+import {
+  MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
+  MAX_ZIP_TOTAL_DECOMPRESSED_BYTES,
+  readZipArchive,
+} from "@paperclipai/shared/portability-zip";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
@@ -17,12 +24,35 @@ import {
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import { badRequest, forbidden } from "../errors.js";
+import {
+  COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+  companyImportTransferDeclarationSchema,
+  type CompanyImportTransferCreated,
+  type CompanyImportTransferDeclaration,
+  type CompanyImportTransferPartUploadResult,
+  type CompanyImportTransferStatus,
+} from "@paperclipai/shared/company-import-transfer";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
+import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
+import {
+  assembleImportTransferZip,
+  importTransferPartName,
+  importTransferPartSizeOnDisk,
+  isImportTransferRunId,
+  removeImportTransferPart,
+  removeImportTransferSpool,
+  resolveDefaultImportTransferSpoolRoot,
+  writeImportTransferPart,
+} from "../services/company-import-transfers.js";
+import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import {
   accessService,
   agentService,
   budgetService,
+  buildExportFidelityReport,
+  collectExportFidelityCounts,
   companyArtifactsService,
   companyPortabilityService,
   companyService,
@@ -30,12 +60,219 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
-export function companyRoutes(db: Db, storage?: StorageService) {
+// A company import can arrive one of two ways on the import + preview routes:
+//   • application/json — the original inline body `{ source, target, ... }`,
+//     kept byte-identical for CLI and programmatic callers; or
+//   • the raw compressed zip, either as multipart/form-data (a `package` file
+//     field plus a JSON `meta` field) or a bare application/zip body. The zip
+//     is a third of the inline size and already gzip-friendly, so it survives
+//     the browser → edge → harness-proxy → tenant chain that truncated the
+//     inflated inline JSON on large companies.
+// The zip is unzipped server-side into the exact `{ rootPath, files }` bundle
+// the inline source carries, then fed through the unchanged preview/import
+// logic, so import semantics are identical regardless of transport.
+const PORTABLE_ZIP_CONTENT_TYPES = ["application/zip", "application/x-zip-compressed"] as const;
+
+const zipPackageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES, files: 1 },
+});
+
+// Chunked resumable variant of the zip upload above: the client slices the
+// exact same .zip into byte-range parts and uploads them individually, so a
+// dropped connection re-uploads one part instead of the whole package. Parts
+// are spooled to disk and reassembled at apply, then fed through the same
+// preview/import logic — no new container format, no change to import
+// semantics. Only one part is held in memory at a time during upload; the
+// full-zip buffer exists only while an apply runs (matching the single-shot
+// path's memory profile).
+const IMPORT_TRANSFER_PART_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
+
+// The declaration body and response shapes are the shared wire contract in
+// @paperclipai/shared/company-import-transfer — the browser and CLI clients
+// type against the same schemas and path builders.
+const importTransferManifestSchema = companyImportTransferDeclarationSchema;
+
+type ImportTransferManifest = CompanyImportTransferDeclaration;
+
+const importTransferPartBodyParser = express.raw({
+  type: () => true,
+  limit: IMPORT_TRANSFER_PART_SIZE_LIMIT_BYTES,
+});
+
+const rawZipBodyParser = express.raw({
+  type: [...PORTABLE_ZIP_CONTENT_TYPES],
+  limit: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES,
+});
+
+function requestContentType(req: Request) {
+  return (req.header("content-type") ?? "").toLowerCase();
+}
+
+function isMultipartImport(req: Request) {
+  return requestContentType(req).includes("multipart/form-data");
+}
+
+function isZipImport(req: Request) {
+  const contentType = requestContentType(req);
+  return PORTABLE_ZIP_CONTENT_TYPES.some((type) => contentType.includes(type));
+}
+
+function runMiddleware(
+  middleware: (req: Request, res: Response, next: (err?: unknown) => void) => void,
+  req: Request,
+  res: Response,
+) {
+  return new Promise<void>((resolve, reject) => {
+    middleware(req, res, (err?: unknown) => (err ? reject(err) : resolve()));
+  });
+}
+
+/**
+ * Parse the `meta` form/query field into the object the import schemas expect.
+ * A client-declared `source` is ignored — the source is always the uploaded
+ * zip — so a multipart caller only ships the other import fields (include,
+ * target, collisionStrategy, nameOverrides, selectedFiles, adapterOverrides,
+ * pauseAutomations, ...).
+ */
+function parseImportMeta(metaRaw: string | undefined): Record<string, unknown> {
+  if (metaRaw === undefined || metaRaw.trim().length === 0) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metaRaw);
+  } catch {
+    throw badRequest("Import package metadata was not valid JSON.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw badRequest("Import package metadata must be a JSON object.");
+  }
+  const { source: _ignoredSource, ...rest } = parsed as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * The chunked-transfer apply body is the already-parsed JSON equivalent of the
+ * multipart `meta` field: the import fields minus `source` (the source is
+ * always the assembled zip). Mirrors `parseImportMeta` for object bodies.
+ */
+function importTransferApplyMeta(body: unknown): Record<string, unknown> {
+  if (body === undefined || body === null) return {};
+  if (typeof body !== "object" || Array.isArray(body)) {
+    throw badRequest("Import transfer apply body must be a JSON object.");
+  }
+  const { source: _ignoredSource, ...rest } = body as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * Resolve the object to hand the preview/import zod schemas. For a JSON request
+ * this is the inline body unchanged. For a multipart or application/zip request
+ * the uploaded zip is read into `{ rootPath, files }` and combined with the
+ * `meta` fields as `source = { type: "inline", rootPath, files }`. A truncated,
+ * corrupt, or empty zip fails closed with a 400/422 before anything is imported.
+ */
+async function resolveImportPayload(req: Request, res: Response): Promise<unknown> {
+  const multipart = isMultipartImport(req);
+  const rawZip = isZipImport(req);
+  if (!multipart && !rawZip) {
+    return req.body;
+  }
+
+  let zipBytes: Buffer | undefined;
+  let metaRaw: string | undefined;
+  if (multipart) {
+    try {
+      await runMiddleware(zipPackageUpload.single("package"), req, res);
+    } catch (error) {
+      if (error instanceof multer.MulterError) {
+        if (error.code === "LIMIT_FILE_SIZE") {
+          throw unprocessable(
+            `Import package exceeds the ${Math.floor(PORTABLE_ZIP_UPLOAD_LIMIT_BYTES / (1024 * 1024))} MB upload limit`,
+          );
+        }
+        throw badRequest(error.message);
+      }
+      throw error;
+    }
+    const file = (req as Request & { file?: { buffer?: Buffer } }).file;
+    zipBytes = file?.buffer;
+    const metaField = (req.body as { meta?: unknown } | undefined)?.meta;
+    metaRaw = typeof metaField === "string" ? metaField : undefined;
+  } else {
+    try {
+      await runMiddleware(rawZipBodyParser, req, res);
+    } catch (error) {
+      throw badRequest(error instanceof Error ? error.message : "Invalid zip upload");
+    }
+    zipBytes = Buffer.isBuffer(req.body) ? req.body : undefined;
+    const metaQuery = req.query.meta;
+    metaRaw = typeof metaQuery === "string" ? metaQuery : undefined;
+  }
+
+  if (!zipBytes || zipBytes.length === 0) {
+    throw badRequest("Import package upload was empty.");
+  }
+  const archive = await readImportZipArchive(zipBytes);
+  return {
+    ...parseImportMeta(metaRaw),
+    source: { type: "inline", rootPath: archive.rootPath, files: archive.files },
+  };
+}
+
+/**
+ * Read an uploaded import zip with the scaled bomb guards. Shared by the
+ * single-shot upload path (`resolveImportPayload`) and the chunked transfer
+ * apply path, so both feed the exact same `{ rootPath, files }` bundle into
+ * the unchanged preview/import logic.
+ */
+async function readImportZipArchive(zipBytes: Buffer) {
+  let archive: Awaited<ReturnType<typeof readZipArchive>>;
+  try {
+    // Scale the bomb guards from the configured upload cap so a legitimately
+    // compressible package under the cap never trips them (~4x covers dense
+    // text; the per-entry ceiling is bounded by V8's string limit regardless).
+    archive = await readZipArchive(zipBytes, {
+      maxEntryDecompressedBytes: MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
+      maxTotalDecompressedBytes: Math.max(
+        MAX_ZIP_TOTAL_DECOMPRESSED_BYTES,
+        PORTABLE_ZIP_UPLOAD_LIMIT_BYTES * 4,
+      ),
+    });
+  } catch (error) {
+    throw badRequest(`Import package could not be read: ${errorMessage(error)}`);
+  }
+  if (Object.keys(archive.files).length === 0) {
+    throw badRequest("Import package contained no files.");
+  }
+  return archive;
+}
+
+/**
+ * Async job opt-in. Cloud tenants set the `x-paperclip-cloud-async-import`
+ * header server-side (they are not a browser, so it is never stripped). Board
+ * browsers cannot use that header — the Cloud harness proxy strips every
+ * inbound `x-paperclip-cloud-*` header as anti-spoofing — so they opt in with
+ * the proxy-safe `?async=1` query parameter instead. Either signal enters the
+ * async path.
+ */
+function wantsAsyncImport(req: Request) {
+  return req.query.async === "1" || req.header("x-paperclip-cloud-async-import") === "1";
+}
+
+export interface CompanyRoutesOptions {
+  /** Overridable in tests; defaults to `<instance root>/import-transfers`. */
+  importTransferSpoolRoot?: string;
+}
+
+export function companyRoutes(db: Db, storage?: StorageService, options?: CompanyRoutesOptions) {
   const router = Router();
+  const importTransferSpoolRoot =
+    options?.importTransferSpoolRoot ?? resolveDefaultImportTransferSpoolRoot();
   const svc = companyService(db);
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
@@ -44,7 +281,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
-  const importJobTerminalRetentionMs = 5 * 60 * 1000;
+  // Terminal jobs are retained in memory for an hour after they settle. A long
+  // import can outlast a user stepping away, and dropping the completion after
+  // only a few minutes made a later poll 404 — surfacing a finished, fully
+  // written import as a scary failure. An hour is long enough to cover a real
+  // "walk away and come back" gap while keeping the map bounded, and it needs
+  // no new persistence (jobs remain in-memory-only; a restart still 404s, which
+  // the client now treats as a soft success once it has seen the job running).
+  const importJobTerminalRetentionMs = 60 * 60 * 1000;
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -72,9 +316,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     from: z.string().optional(),
     to: z.string().optional(),
     userId: z.string().min(1).optional(),
-    goalId: z.string().uuid().optional(),
-    projectId: z.string().uuid().optional(),
-    issueId: z.string().uuid().optional(),
+    goalId: z.string().guid().optional(),
+    projectId: z.string().guid().optional(),
+    issueId: z.string().guid().optional(),
     limit: z.string().optional(),
     offset: z.string().optional(),
   }).passthrough();
@@ -142,7 +386,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
-    res.json(await artifacts.list(companyId, query));
+    res.json(await artifacts.list(companyId, query, {
+      userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+    }));
   });
 
   router.get("/:companyId/timeline", async (req, res) => {
@@ -250,43 +496,125 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(result);
   });
 
+  router.get("/:companyId/export/fidelity", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertSameCompanyCeoAgentOrBoard(req, companyId, "company export fidelity");
+    const counts = await collectExportFidelityCounts(db, companyId);
+    res.json(buildExportFidelityReport(companyId, counts));
+  });
+
   router.post("/import/preview", async (req, res) => {
     assertBoard(req);
-    const body = companyPortabilityPreviewSchema.parse(req.body);
+    const body = companyPortabilityPreviewSchema.parse(await resolveImportPayload(req, res));
     assertImportTargetAccess(req, body.target);
     const preview = await portability.previewImport(body);
     res.json(preview);
   });
 
   router.get("/import/jobs/:jobId", async (req, res) => {
-    assertCloudTenantCaller(req);
+    // Board sessions and trusted Cloud tenants both poll here. A job is
+    // readable only by the actor key that created it; every other caller —
+    // like every unknown or expired id — gets the same 404, so job ids
+    // cannot be probed across users or tenants. Jobs live in memory only
+    // (see the async block below), so a restart also surfaces as this 404.
+    assertBoard(req);
     cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
     const job = importJobs.get(req.params.jobId as string);
-    if (!job || job.cloudTenantKey !== cloudTenantRequestKey(req)) {
+    if (!job || job.actorKey !== importJobActorKey(req)) {
       res.status(404).json({ error: "Import job not found" });
       return;
     }
     res.json(importJobResponse(job));
   });
 
-  router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
-    assertBoard(req);
-    const rawImportBody: unknown = req.body;
+  /**
+   * Post-resolution import execution, shared by the single-shot upload route
+   * and the chunked transfer apply route: validate the resolved body, run the
+   * import synchronously or through the in-memory async job machinery, and
+   * fire the optional completion hooks (the transfer path uses them to settle
+   * its ledger run) on the import's real outcome in either mode.
+   */
+  async function executeImportRequest(
+    req: Request,
+    res: Response,
+    rawImportBody: unknown,
+    hooks?: {
+      onSuccess?: (result: CompanyPortabilityImportResult) => Promise<void>;
+      /** Fires when the request is refused before any import work starts (e.g. another import is already running for the actor). */
+      onConflict?: () => Promise<void>;
+      onFailure?: (message: string) => Promise<void>;
+    },
+  ) {
     const actor = getActorInfo(req);
     const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
-    if (req.header("x-paperclip-cloud-async-import") === "1") {
-      assertCloudTenantCaller(req);
-      cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
-      const job = createImportJob(cloudTenantRequestKey(req));
-      importJobs.set(job.id, job);
-      const operation = async () => {
+    const operation = async () => {
+      try {
         const importBody = companyPortabilityImportSchema.parse(rawImportBody);
         assertImportTargetAccess(req, importBody.target);
         const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
-        const result = await portability.importBundle(importBody, boardUserId);
-        await logImportedCompanyActivity(db, activity, result);
+        const result = await portability.importBundle(importBody, boardUserId, {
+          pauseAutomations: importBody.pauseAutomations === true,
+        });
+        // The import is committed. Settlement (hooks) runs before the
+        // best-effort audit entry so a logging failure cannot make a
+        // committed import read as failed — or, on the transfer path, release
+        // the apply claim and invite a duplicate re-import.
+        await hooks?.onSuccess?.(result);
+        try {
+          await logImportedCompanyActivity(db, activity, result);
+        } catch (activityError) {
+          logger.warn(
+            { err: activityError, companyId: result.company.id },
+            "failed to write the company.imported activity entry for a committed import",
+          );
+        }
         return result;
-      };
+      } catch (error) {
+        await hooks?.onFailure?.(errorMessage(error));
+        throw error;
+      }
+    };
+    if (wantsAsyncImport(req)) {
+      // Async job path. Two kinds of callers opt in:
+      //  - trusted Cloud tenants (original behavior, kept byte-identical),
+      //    keyed by their tenant identity headers;
+      //  - any other board session, keyed by its user id, so long imports
+      //    survive proxies cutting the connection while the server finishes.
+      // Jobs are held in memory only and are lost on restart — existing
+      // semantics; the status route above 404s unknown ids, so a client
+      // that can no longer see its job treats it as gone and resubmits.
+      cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
+      const isCloudTenant = req.actor.source === "cloud_tenant";
+      const actorKey = importJobActorKey(req);
+      const signature = importRequestSignature(rawImportBody);
+      if (!isCloudTenant) {
+        // One live import per board actor: while a job for this key is still
+        // running, a resubmit of the *same* import gets 409 carrying the
+        // running job's id and status URL so the client adopts it instead of
+        // importing the same bundle twice. A *different* import (another tab,
+        // another target) gets a 409 without a job to adopt, so the client
+        // surfaces it as an error rather than switching to the wrong result.
+        // Terminal jobs never block a resubmit.
+        const running = findRunningImportJob(importJobs, actorKey);
+        if (running) {
+          // No import work starts on this path, so a caller holding a claim
+          // (the transfer apply) must be told to release it — otherwise the
+          // refused transfer would sit in "applying" until a restart.
+          await hooks?.onConflict?.();
+          if (running.signature === signature) {
+            res.status(409).json(importJobConflictResponse(running));
+          } else {
+            res.status(409).json(importAlreadyRunningResponse());
+          }
+          return;
+        }
+      }
+      const job = createImportJob(
+        actorKey,
+        isCloudTenant ? "cloud_tenant" : "board",
+        signature,
+      );
+      importJobs.set(job.id, job);
       res.status(202).json(importJobAcceptedResponse(job));
       setImmediate(() => {
         void runImportJob(job, operation);
@@ -294,12 +622,417 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
 
-    const importBody = companyPortabilityImportSchema.parse(rawImportBody);
-    assertImportTargetAccess(req, importBody.target);
-    const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
-    const result = await portability.importBundle(importBody, boardUserId);
-    await logImportedCompanyActivity(db, activity, result);
+    const result = await operation();
     res.json(result);
+  }
+
+  router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
+    assertBoard(req);
+    // Resolve the request body up front: a JSON caller's inline body is used
+    // unchanged; a multipart/application-zip caller's uploaded zip is read into
+    // the same `{ source: { type: "inline", rootPath, files } }` bundle here,
+    // fast and in-memory, so the async job machinery below is transport-agnostic.
+    const rawImportBody: unknown = await resolveImportPayload(req, res);
+    await executeImportRequest(req, res, rawImportBody);
+  });
+
+  /**
+   * Load the transfer run for the URL's id, scoped to the caller the same way
+   * import jobs are (`importJobActorKey`): an unknown id, another actor's id,
+   * and a non-import run are all the same 404, so transfer ids cannot be
+   * probed across users or tenants. The id is regex-validated as a UUID before
+   * it is used anywhere (it is later joined into spool paths).
+   */
+  async function requireImportTransferRun(req: Request) {
+    const transferId = req.params.transferId as string;
+    if (!isImportTransferRunId(transferId)) {
+      throw notFound("Import transfer not found");
+    }
+    const run = await companyTransferRunService.getRunForActor(db, transferId, importJobActorKey(req));
+    if (!run || run.direction !== "import") {
+      throw notFound("Import transfer not found");
+    }
+    return run;
+  }
+
+  /** The declared part list persisted on the run at create time. */
+  function storedImportTransferManifest(run: { manifest: unknown }): ImportTransferManifest {
+    const parsed = importTransferManifestSchema.safeParse(run.manifest);
+    if (!parsed.success) {
+      throw conflict("Import transfer has no recorded part manifest");
+    }
+    return parsed.data;
+  }
+
+  /**
+   * Indexes the client still has to upload. A part counts as done only when
+   * the ledger recorded it AND its spool file is still on disk at the declared
+   * size — so a swept or damaged spool surfaces as missing parts to re-upload
+   * instead of a failing apply.
+   */
+  async function importTransferMissingParts(
+    run: { id: string; completedParts: string[] },
+    manifest: ImportTransferManifest,
+  ): Promise<number[]> {
+    const completed = new Set(run.completedParts);
+    const missing: number[] = [];
+    for (const part of manifest.parts) {
+      if (!completed.has(importTransferPartName(part.index))) {
+        missing.push(part.index);
+        continue;
+      }
+      const sizeOnDisk = await importTransferPartSizeOnDisk(importTransferSpoolRoot, run.id, part.index);
+      if (sizeOnDisk !== part.byteSize) {
+        missing.push(part.index);
+      }
+    }
+    return missing;
+  }
+
+  // Declare a chunked import transfer. The declaration is content-addressed:
+  // the idempotency key derives from the whole-zip hash plus every part hash,
+  // so re-declaring the same zip resumes the prior run (with its uploaded
+  // parts intact) instead of starting over.
+  router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH, async (req, res) => {
+    assertBoard(req);
+    const declared = importTransferManifestSchema.parse(req.body);
+    if (declared.totalBytes > PORTABLE_ZIP_UPLOAD_LIMIT_BYTES) {
+      throw unprocessable(
+        `Import package exceeds the ${Math.floor(PORTABLE_ZIP_UPLOAD_LIMIT_BYTES / (1024 * 1024))} MB upload limit`,
+      );
+    }
+    if (declared.partSizeBytes > IMPORT_TRANSFER_PART_SIZE_LIMIT_BYTES) {
+      throw unprocessable(
+        `Import transfer parts may be at most ${Math.floor(IMPORT_TRANSFER_PART_SIZE_LIMIT_BYTES / (1024 * 1024))} MB`,
+      );
+    }
+    declared.parts.forEach((part, position) => {
+      if (part.index !== position) {
+        throw unprocessable("Import transfer parts must be contiguous, ordered 0..n-1");
+      }
+      if (part.byteSize > declared.partSizeBytes) {
+        throw unprocessable(`Part ${part.index} is larger than the declared partSizeBytes`);
+      }
+    });
+    const declaredTotal = declared.parts.reduce((sum, part) => sum + part.byteSize, 0);
+    if (declaredTotal !== declared.totalBytes) {
+      throw unprocessable("Sum of part byte sizes must equal totalBytes");
+    }
+
+    const idempotencyKey = createHash("sha256")
+      .update(JSON.stringify([declared.zipSha256, declared.parts.map((part) => part.sha256)]))
+      .digest("hex");
+    const { run, alreadyCompleted } = await companyTransferRunService.resumeOrCreate(db, {
+      direction: "import",
+      actorKey: importJobActorKey(req),
+      idempotencyKey,
+      containerRef: { kind: "chunked_zip_upload" },
+    });
+    if (alreadyCompleted) {
+      res.json({
+        transferId: run.id,
+        status: "completed",
+        alreadyCompleted: true,
+        totalParts: declared.parts.length,
+        missingParts: [],
+      } satisfies CompanyImportTransferCreated);
+      return;
+    }
+    if (run.manifest === null || run.manifest === undefined) {
+      const manifestSha256 = createHash("sha256").update(JSON.stringify(declared)).digest("hex");
+      await companyTransferRunService.recordManifest(db, run.id, declared, manifestSha256, {
+        chunkCount: declared.parts.length,
+        blobCount: 0,
+      });
+    }
+    await companyTransferRunService.start(db, run.id);
+    res.json({
+      transferId: run.id,
+      status: "running",
+      alreadyCompleted: false,
+      totalParts: declared.parts.length,
+      missingParts: await importTransferMissingParts(run, declared),
+    } satisfies CompanyImportTransferCreated);
+  });
+
+  // Upload one declared part as a raw body. Verified against the declared
+  // size and sha256 before it is spooled; re-uploading an already completed
+  // part is a no-op success, so clients can blindly retry.
+  router.put(
+    `${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/parts/:partIndex`,
+    importTransferPartBodyParser,
+    async (req, res) => {
+      assertBoard(req);
+      const run = await requireImportTransferRun(req);
+      if (run.status === "completed") {
+        throw conflict("Import transfer has already been applied");
+      }
+      if (run.status === "applying") {
+        // An apply is assembling the spool right now; accepting writes would
+        // let a retried upload race the files being read. Parts are frozen
+        // until the apply settles (completed short-circuits, failed resumes).
+        throw conflict("Import transfer apply is in progress; retry after it settles");
+      }
+      const manifest = storedImportTransferManifest(run);
+      const rawIndex = req.params.partIndex as string;
+      // Strict integer-in-bounds validation before the index goes anywhere
+      // near a filesystem path.
+      if (!/^\d{1,5}$/.test(rawIndex) || Number(rawIndex) >= manifest.parts.length) {
+        throw notFound("Import transfer part not found");
+      }
+      const partIndex = Number(rawIndex);
+      const declared = manifest.parts[partIndex]!;
+      const partName = importTransferPartName(partIndex);
+      if (run.completedParts.includes(partName)) {
+        const sizeOnDisk = await importTransferPartSizeOnDisk(importTransferSpoolRoot, run.id, partIndex);
+        if (sizeOnDisk === declared.byteSize) {
+          res.json({ ok: true, index: partIndex, alreadyCompleted: true } satisfies CompanyImportTransferPartUploadResult);
+          return;
+        }
+      }
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (bytes.length !== declared.byteSize) {
+        throw unprocessable(
+          `Part ${partIndex} upload is ${bytes.length} bytes but was declared as ${declared.byteSize} bytes`,
+        );
+      }
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (digest !== declared.sha256) {
+        throw unprocessable(`Part ${partIndex} content does not match its declared sha256`);
+      }
+      await writeImportTransferPart(importTransferSpoolRoot, run.id, partIndex, bytes);
+      const recorded = await companyTransferRunService.completePart(db, run.id, partName);
+      if (!recorded) {
+        // The run left pending/running between the load above and this
+        // record. Which way it went decides the file's fate: under a claimed
+        // or completed apply the just-written bytes are hash-verified
+        // identical to what the apply assembles, so the file must NOT be
+        // deleted out from under it; a swept or failed run is dead, so the
+        // stray part is dropped and the client told to re-create.
+        const current = await companyTransferRunService.getRun(db, run.id);
+        if (current?.status === "applying" || current?.status === "completed") {
+          throw conflict("Import transfer apply is in progress; retry after it settles");
+        }
+        await removeImportTransferPart(importTransferSpoolRoot, run.id, partIndex);
+        res.status(410).json({ error: "Import transfer expired — re-create it" });
+        return;
+      }
+      res.json({ ok: true, index: partIndex, alreadyCompleted: false } satisfies CompanyImportTransferPartUploadResult);
+    },
+  );
+
+  // Resume polling: which parts are done, which are still missing.
+  router.get(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId`, async (req, res) => {
+    assertBoard(req);
+    const run = await requireImportTransferRun(req);
+    const manifest = storedImportTransferManifest(run);
+    const missingParts = run.status === "completed" ? [] : await importTransferMissingParts(run, manifest);
+    res.json({
+      transferId: run.id,
+      status: run.status,
+      totalParts: manifest.parts.length,
+      completedParts: manifest.parts.length - missingParts.length,
+      missingParts,
+    } satisfies CompanyImportTransferStatus);
+  });
+
+  /**
+   * Resolve a completed transfer into the same raw preview/import body a
+   * single-shot zip upload produces: load the run, require every part, then
+   * assemble the spool and verify it against the declared whole-file hash.
+   * Shared by the transfer preview and apply routes; returns null after
+   * responding 409 when parts are still missing. A whole-file mismatch fails
+   * closed for both callers: every part verified individually but the whole
+   * does not match the declaration, so the spool is deleted and a resume
+   * re-uploads every part instead of re-assembling the same corrupt bytes.
+   *
+   * With `claimApply` (the apply route), the run is atomically claimed before
+   * the spool is touched: the import pipeline is not idempotent, so of any
+   * overlapping applies of this transfer exactly one may run it — a single
+   * guarded status flip to "applying" that losers see as 409. The claim is
+   * settled by complete() on success or the guarded releaseApplyClaim() on
+   * error (a released run stays retryable; a settled one is never reopened).
+   * The preview route takes no claim — it never consumes the transfer — so
+   * both its status gate and its assembly errors are re-checked against the
+   * ledger (see the catch below) to keep a concurrent apply's spool cleanup
+   * from surfacing as an internal error.
+   */
+  async function resolveImportTransferBody(
+    req: Request,
+    res: Response,
+    options: { claimApply?: boolean } = {},
+  ) {
+    const run = await requireImportTransferRun(req);
+    if (run.status === "completed") {
+      throw conflict("Import transfer has already been applied");
+    }
+    if (run.status === "applying") {
+      // An apply holds the claim right now: its assembly is reading the spool
+      // and its success deletes it, so neither a preview nor a second apply
+      // may touch the parts until the claim settles.
+      throw conflict("Import transfer apply is in progress; retry after it settles");
+    }
+    if (run.status === "cancelled") {
+      // The abandoned-spool sweep cancelled the run and deleted its parts —
+      // same contract as the part-upload route: the caller re-creates it.
+      res.status(410).json({ error: "Import transfer expired — re-create it" });
+      return null;
+    }
+    const manifest = storedImportTransferManifest(run);
+    const missingParts = await importTransferMissingParts(run, manifest);
+    if (missingParts.length > 0) {
+      res.status(409).json({
+        error: "Import transfer is missing parts",
+        missingParts,
+      });
+      return null;
+    }
+    if (options.claimApply && !(await companyTransferRunService.claimApply(db, run.id))) {
+      throw conflict("Import transfer apply is already in progress");
+    }
+    try {
+      const zipBytes = await assembleImportTransferZip(importTransferSpoolRoot, run.id, manifest.parts.length);
+      const zipSha256 = createHash("sha256").update(zipBytes).digest("hex");
+      if (zipBytes.length !== manifest.totalBytes || zipSha256 !== manifest.zipSha256) {
+        await companyTransferRunService.fail(db, run.id, "Assembled import package failed whole-file verification");
+        await removeImportTransferSpool(importTransferSpoolRoot, run.id);
+        throw unprocessable("Assembled import package failed verification; upload the transfer again");
+      }
+      const archive = await readImportZipArchive(zipBytes);
+      return {
+        run,
+        rawBody: {
+          ...importTransferApplyMeta(req.body),
+          source: { type: "inline", rootPath: archive.rootPath, files: archive.files },
+        },
+      };
+    } catch (error) {
+      // Whatever escapes here (a malformed zip, the verification failure
+      // above) must not leave a claimed run parked in "applying": release
+      // the claim, which fails the run and keeps it retryable. The release
+      // is guarded on "applying", so the verification path that already
+      // failed the run keeps its more specific terminal state.
+      if (options.claimApply) {
+        await companyTransferRunService.releaseApplyClaim(db, run.id, errorMessage(error));
+        throw error;
+      }
+      // Unclaimed (preview) path: assembly read the spool without freezing
+      // it, so a concurrent apply may have completed — or the sweep cancelled
+      // the run — and deleted the part files mid-assembly. Re-read the ledger
+      // and surface those races as the same clean signals the status gate
+      // above sends; only a run that is genuinely still open rethrows as a
+      // real assembly failure.
+      const current = await companyTransferRunService.getRun(db, run.id);
+      if (current?.status === "completed") {
+        throw conflict("Import transfer has already been applied");
+      }
+      if (current?.status === "applying") {
+        throw conflict("Import transfer apply is in progress; retry after it settles");
+      }
+      if (current?.status === "cancelled") {
+        res.status(410).json({ error: "Import transfer expired — re-create it" });
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  // Run the import preview against the assembled spool without consuming the
+  // transfer: the ledger run stays open and the parts stay spooled, so the
+  // subsequent apply reuses them instead of re-uploading. The body carries the
+  // same meta fields the multipart preview route's `meta` field does.
+  router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/preview`, async (req, res) => {
+    assertBoard(req);
+    const resolved = await resolveImportTransferBody(req, res);
+    if (!resolved) return;
+    const body = companyPortabilityPreviewSchema.parse(resolved.rawBody);
+    assertImportTargetAccess(req, body.target);
+    const preview = await portability.previewImport(body);
+    res.json(preview);
+  });
+
+  // Assemble the spooled parts back into the original zip, verify it against
+  // the declared whole-file hash, and run it through the exact import path a
+  // single-shot zip upload takes. The body carries the same meta fields the
+  // multipart route's `meta` field does (include/target/collisionStrategy/...).
+  router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/apply`, async (req, res) => {
+    assertBoard(req);
+    const resolved = await resolveImportTransferBody(req, res, { claimApply: true });
+    if (!resolved) return;
+    const { run, rawBody: rawImportBody } = resolved;
+    try {
+      await executeImportRequest(req, res, rawImportBody, {
+        onSuccess: async (result) => {
+          // Settle the run the moment the import is committed: every later
+          // step is best-effort, because any error escaping this hook reads
+          // as a failed apply and — before complete() — would release the
+          // claim on an already-committed import. complete() gets one retry;
+          // if both attempts fail the run is left "applying" (unclaimable, so
+          // no duplicate import) and logged for the operator; a restart's
+          // stranded-run recovery then makes it inspectable as failed.
+          try {
+            await companyTransferRunService.complete(db, run.id);
+          } catch {
+            try {
+              await companyTransferRunService.complete(db, run.id);
+            } catch (settleError) {
+              logger.error(
+                { err: settleError, transferId: run.id },
+                "import committed but the transfer run could not be marked completed",
+              );
+              return;
+            }
+          }
+          try {
+            await companyTransferRunService.attachCompany(db, run.id, result.company.id);
+          } catch (attachError) {
+            logger.warn(
+              { err: attachError, transferId: run.id },
+              "failed to attach the imported company to its transfer run",
+            );
+          }
+          // Best-effort cleanup: the import is committed and the run is
+          // completed, so a spool deletion error must not escape — it would
+          // reach the failure paths below and read as a failed apply. The
+          // leftover dir is harmless (completed runs never assemble again)
+          // and the sweep collects terminal-run spools immediately.
+          try {
+            await removeImportTransferSpool(importTransferSpoolRoot, run.id);
+          } catch (cleanupError) {
+            logger.warn(
+              { err: cleanupError, transferId: run.id },
+              "failed to delete import transfer spool after a successful apply",
+            );
+          }
+        },
+        onFailure: async (message) => {
+          // Parts remain spooled: the failure is in the import itself, not
+          // the upload, so a retry of apply can reuse the verified parts.
+          // Guarded release, not a blind fail: this hook also fires when an
+          // error escapes onSuccess above, i.e. possibly after complete(),
+          // and a completed run must never be flipped back to claimable.
+          await companyTransferRunService.releaseApplyClaim(db, run.id, message);
+        },
+        onConflict: async () => {
+          // The request was refused before any import work (another import is
+          // running for this actor): release the claim so the transfer stays
+          // retryable instead of stranded in "applying" until a restart.
+          await companyTransferRunService.releaseApplyClaim(
+            db,
+            run.id,
+            "another import is already running for this actor",
+          );
+        },
+      });
+    } catch (error) {
+      // Whatever escapes here (bad meta, an import error rethrown after
+      // onFailure) must not leave the run parked in "applying": release the
+      // claim, which keeps the run retryable. The release is guarded on
+      // "applying", so a run that already settled — failed by onFailure, or
+      // completed before a late error — keeps its terminal state.
+      await companyTransferRunService.releaseApplyClaim(db, run.id, errorMessage(error));
+      throw error;
+    }
   });
 
   router.post("/:companyId/exports/preview", async (req, res) => {
@@ -349,6 +1082,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const result = await portability.importBundle(body, req.actor.type === "board" ? req.actor.userId : null, {
       mode: "agent_safe",
       sourceCompanyId: companyId,
+      pauseAutomations: body.pauseAutomations === true,
     });
     await logActivity(db, {
       companyId: result.company.id,
@@ -358,6 +1092,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityId: result.company.id,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.imported",
       details: {
         include: body.include ?? null,
@@ -370,7 +1105,15 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(result);
   });
 
-  router.post("/", validate(createCompanySchema), async (req, res) => {
+  router.post("/", (req, _res, next) => {
+    assertBoard(req);
+    if (isCloudManagedInstance()) {
+      throw forbidden("Company creation is managed by Paperclip Cloud", {
+        code: "cloud_managed",
+      });
+    }
+    next();
+  }, validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
@@ -478,6 +1221,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.updated",
         entityType: "company",
         entityId: companyId,
@@ -503,6 +1247,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.branding_updated",
       entityType: "company",
       entityId: companyId,
@@ -544,9 +1289,25 @@ type CompanyImportResult = {
   warnings: unknown[];
 };
 
+type ImportJobActorKind = "cloud_tenant" | "board";
+
+/**
+ * In-memory only: import jobs do not survive a server restart, and terminal
+ * jobs are dropped after `importJobTerminalRetentionMs`. Both cases surface
+ * to pollers as the status route's 404 for an unknown id.
+ */
 interface ImportJobRecord {
   id: string;
-  cloudTenantKey: string;
+  /** Identity that created the job; the only key allowed to read it. */
+  actorKey: string;
+  actorKind: ImportJobActorKind;
+  /**
+   * Fingerprint of the import request body. A resubmit is adopted (409 →
+   * watch the running job) only when it carries the same signature, so a
+   * *different* import from another tab is rejected instead of silently
+   * adopting an unrelated job (and its target). Board jobs only.
+   */
+  signature?: string;
   status: "running" | "succeeded" | "failed";
   createdAt: string;
   updatedAt: string;
@@ -558,6 +1319,12 @@ interface ImportJobRecord {
     warningCount: number;
     companyAction: unknown;
   };
+  /**
+   * Full import result, retained for board-created jobs only so the import
+   * page can run the same success path as the synchronous response. Cloud
+   * tenant job responses keep their original summary-only shape.
+   */
+  fullResult?: CompanyPortabilityImportResult;
 }
 
 interface ImportedCompanyActivityContext {
@@ -568,12 +1335,6 @@ interface ImportedCompanyActivityContext {
   include: unknown;
 }
 
-function assertCloudTenantCaller(req: Request) {
-  if (req.actor.source !== "cloud_tenant") {
-    throw forbidden("Trusted Cloud tenant access required");
-  }
-}
-
 function cloudTenantRequestKey(req: Request) {
   return [
     req.actor.userId ?? "",
@@ -582,20 +1343,59 @@ function cloudTenantRequestKey(req: Request) {
   ].join(":");
 }
 
-function createImportJob(cloudTenantKey: string): ImportJobRecord {
+/**
+ * Identity a job is created under and authorized against. Cloud tenant
+ * callers keep their header-derived tenant key; every other board session is
+ * keyed by its user id. The distinct prefixes keep the two namespaces
+ * disjoint, so crafted tenant headers can never collide with a board key.
+ */
+function importJobActorKey(req: Request) {
+  if (req.actor.source === "cloud_tenant") {
+    return `cloud-tenant:${cloudTenantRequestKey(req)}`;
+  }
+  return `board:${req.actor.userId ?? "local-board"}`;
+}
+
+function createImportJob(
+  actorKey: string,
+  actorKind: ImportJobActorKind,
+  signature?: string,
+): ImportJobRecord {
   const now = new Date().toISOString();
   return {
-    id: `tenant-import-${randomUUID()}`,
-    cloudTenantKey,
+    // Cloud tenant job ids keep their original prefix; board jobs get their own.
+    id: `${actorKind === "cloud_tenant" ? "tenant-import" : "import"}-${randomUUID()}`,
+    actorKey,
+    actorKind,
+    signature,
     status: "running",
     createdAt: now,
     updatedAt: now,
   };
 }
 
+/**
+ * Stable fingerprint of an import request body. The same client resubmitting
+ * the same import produces a byte-identical body (no nonce/timestamp), so its
+ * signature matches; a different import differs. Used to tell a duplicate
+ * submit apart from a concurrent, unrelated import.
+ */
+function importRequestSignature(body: unknown): string {
+  return createHash("sha256").update(JSON.stringify(body) ?? "").digest("hex");
+}
+
+function findRunningImportJob(importJobs: Map<string, ImportJobRecord>, actorKey: string) {
+  for (const job of importJobs.values()) {
+    if (job.status === "running" && job.actorKey === actorKey) {
+      return job;
+    }
+  }
+  return undefined;
+}
+
 async function runImportJob(
   job: ImportJobRecord,
-  operation: () => Promise<CompanyImportResult>,
+  operation: () => Promise<CompanyPortabilityImportResult>,
 ) {
   try {
     const result = await operation();
@@ -609,6 +1409,9 @@ async function runImportJob(
       warningCount: result.warnings.length,
       companyAction: result.company.action,
     };
+    if (job.actorKind === "board") {
+      job.fullResult = result;
+    }
   } catch (error) {
     const now = new Date().toISOString();
     job.status = "failed";
@@ -654,13 +1457,41 @@ async function logImportedCompanyActivity(
   });
 }
 
+function importJobStatusUrl(job: ImportJobRecord) {
+  return `/api/companies/import/jobs/${encodeURIComponent(job.id)}`;
+}
+
 function importJobAcceptedResponse(job: ImportJobRecord) {
   return {
     job: {
       id: job.id,
       status: job.status,
     },
-    statusUrl: `/api/companies/import/jobs/${encodeURIComponent(job.id)}`,
+    statusUrl: importJobStatusUrl(job),
+    retryAfterMs: 1000,
+  };
+}
+
+/**
+ * 409 body for a concurrent, *different* import while one is already running.
+ * Carries no job to adopt, so the client reports it as an error rather than
+ * watching (and switching to) an unrelated import's result.
+ */
+function importAlreadyRunningResponse() {
+  return {
+    error: "A different import is already running for this account. Wait for it to finish before starting another.",
+  };
+}
+
+/** 409 body for a duplicate submit: points at the job already running. */
+function importJobConflictResponse(job: ImportJobRecord) {
+  return {
+    error: "An import is already running for this account",
+    job: {
+      id: job.id,
+      status: job.status,
+    },
+    statusUrl: importJobStatusUrl(job),
     retryAfterMs: 1000,
   };
 }
@@ -676,6 +1507,9 @@ function importJobResponse(job: ImportJobRecord) {
       ...(job.completedAt ? { completedAt: job.completedAt } : {}),
       ...(job.error ? { error: job.error } : {}),
       ...(job.result ? { result: job.result } : {}),
+      // Board jobs additionally carry the full import result (parity with
+      // the synchronous response); cloud tenant jobs never set it.
+      ...(job.fullResult ? { importResult: job.fullResult } : {}),
     },
     ...(isTerminal ? {} : { retryAfterMs: 1000 }),
   };

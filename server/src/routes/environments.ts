@@ -8,13 +8,19 @@ import {
   finishEnvironmentCustomImageSetupSessionSchema,
   getEnvironmentCapabilities,
   probeEnvironmentConfigSchema,
+  resolveDeclaredSandboxCapabilities,
   redactEnvironmentCustomImageSetupSession,
   redactEnvironmentCustomImageTemplate,
+  relinkEnvironmentCustomImageTemplateSchema,
   startEnvironmentCustomImageSetupSessionSchema,
   type EnvironmentDeleteBlastRadius,
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getManagedInstanceConfig, SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
+import { parseExecutionPolicyBootstrapEnv } from "../services/execution-policy-bootstrap.js";
+import { isExecutionForcedToKubernetes } from "../services/execution-allowlist.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -43,16 +49,283 @@ import {
 } from "../services/environment-config.js";
 import { probeEnvironment } from "../services/environment-probe.js";
 import { secretService } from "../services/secrets.js";
-import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
+import {
+  listReadyPluginEnvironmentDrivers,
+  type ReadyPluginWorkerRecovery,
+} from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether this environment row was provisioned by the platform: the
+ * managed-config environment provisioner marker, or the legacy managed
+ * Kubernetes wrapper marker (rows created by builds that predate the
+ * generalized provisioner and have not been adopted yet).
+ */
+export function isPlatformProvisionedEnvironment(environment: {
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  return (
+    environment.metadata?.managedByPaperclip === true ||
+    environment.metadata?.managedKubernetesSandbox === true
+  );
+}
+
+function redactSecretLikeConfigKeys(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SECRET_LIKE_CONFIG_KEY_PATTERN.test(key)) continue;
+    if (isPlainRecord(child)) {
+      result[key] = redactSecretLikeConfigKeys(child);
+    } else if (Array.isArray(child)) {
+      result[key] = child.map((element) =>
+        isPlainRecord(element) ? redactSecretLikeConfigKeys(element) : element,
+      );
+    } else {
+      result[key] = child;
+    }
+  }
+  return result;
+}
+
+/**
+ * Floor view of a platform-provisioned environment on a cloud-managed
+ * instance: credential-shaped config keys are never echoed — to ANY actor,
+ * including instance admins — while structural config (provider, image,
+ * template, region, ...) and the managed markers in `metadata` stay
+ * visible so admin surfaces can render the environment and show its
+ * platform-managed state.
+ *
+ * Env vars are the one tenant-owned field on a managed sandbox row: the
+ * platform never writes them (`ensureManagedSandboxEnvironment` reconciles
+ * name/config/metadata/status only), and tenants may edit them through the
+ * envVars-only PATCH exception below — so they echo back for round-trip
+ * editing. Everywhere else (the local slot, legacy kubernetes-marker rows
+ * that pre-generalization builds may have stamped platform values on) env
+ * vars stay blanked.
+ */
+export function applyPlatformProvisionedEnvironmentFloor<T extends {
+  driver?: string;
+  config: Record<string, unknown> | null;
+  envVars?: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+}>(environment: T): T {
+  const tenantEnvVarsVisible = isTenantEditableManagedSandbox(environment);
+  return {
+    ...environment,
+    config: redactSecretLikeConfigKeys(isPlainRecord(environment.config) ? environment.config : {}),
+    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") && !tenantEnvVarsVisible
+      ? { envVars: {} }
+      : {}),
+  };
+}
+
+/**
+ * Whether this platform-provisioned row participates in the tenant
+ * env-vars contract: the generalized managed sandbox slot only. The local
+ * slot and legacy kubernetes-marker rows do not — the tenant never runs
+ * on local under this regime, and legacy rows may carry platform-written
+ * values.
+ */
+function isTenantEditableManagedSandbox(environment: {
+  driver?: string;
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  return (
+    environment.driver === "sandbox" &&
+    environment.metadata?.managedByPaperclip === true &&
+    environment.metadata?.managedKubernetesSandbox !== true
+  );
+}
+
+const PLATFORM_PROVISIONED_MARKER_KEYS = [
+  "managedByPaperclip",
+  "managedKubernetesSandbox",
+] as const;
+
+/**
+ * Whether some bootstrap path on this instance currently owns the managed
+ * sandbox slot: the managed-config `environments` section
+ * (`applyManagedEnvironments`) or the forced execution-mode bootstrap
+ * (`PAPERCLIP_EXECUTION_MODE=kubernetes`). Both adopt and refresh the
+ * marked sandbox row on every boot. Fails closed: an unparseable document
+ * or env value counts as configured, keeping the slot protected (a
+ * malformed value refuses startup anyway, so a running server never hits
+ * the catch).
+ */
+function isManagedSandboxProvisioningConfigured(): boolean {
+  try {
+    if ((getManagedInstanceConfig()?.environments.length ?? 0) > 0) return true;
+  } catch {
+    return true;
+  }
+  try {
+    return parseExecutionPolicyBootstrapEnv(process.env) !== null;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Whether this row occupies a provisioner-owned environment slot whose
+ * platform markers are LIVE state — i.e. some platform code path converges
+ * the markers on this exact row, so a marker here is never a stale
+ * leftover:
+ *
+ * - The single local row (`environments_local_driver_idx`): on a
+ *   cloud-managed instance `ensureLocalEnvironment` adopts and stamps it
+ *   from every caller (company creation, the heartbeat, run
+ *   orchestration), so the local slot is platform-owned unconditionally.
+ * - The single marked sandbox row (`environments_managed_sandbox_idx`):
+ *   owned only while a managed-sandbox bootstrap path is configured —
+ *   `ensureManagedSandboxEnvironment` then adopts and refreshes whichever
+ *   row holds the slot on every boot.
+ * - Any sandbox row bearing the legacy kubernetes marker while the
+ *   persisted instance execution policy forces kubernetes:
+ *   `findKubernetesEnvironment` selects marked rows (newest first) for
+ *   every forced run, so under that policy each marked row is — or on the
+ *   newest row's removal becomes — the live runtime row. This holds even
+ *   with no bootstrap path configured: the per-run guard reads the
+ *   persisted `executionMode`, which can outlive the env that seeded it.
+ *
+ * With no provisioning path configured and no forced-kubernetes policy the
+ * platform holds no claim on any sandbox row, so a platform marker there
+ * is stale by definition and stays recoverable via the marker-clear
+ * escape hatch below.
+ */
+async function isPlatformSlotEnvironment(
+  environment: { driver: string; metadata: Record<string, unknown> | null },
+  options: { isForcedKubernetesExecution: () => Promise<boolean> },
+): Promise<boolean> {
+  if (environment.driver === "local") return true;
+  if (environment.driver !== "sandbox") return false;
+  if (
+    environment.metadata?.managedByPaperclip === true &&
+    isManagedSandboxProvisioningConfigured()
+  ) {
+    return true;
+  }
+  return (
+    environment.metadata?.managedKubernetesSandbox === true &&
+    (await options.isForcedKubernetesExecution())
+  );
+}
+
+/**
+ * Returns true when the PATCH body is a metadata-only write whose only
+ * purpose is to clear platform markers (setting them to null/false). This is
+ * the escape hatch for rows that had these markers stamped through the old
+ * unrestricted API before the floor was introduced. It never applies to a
+ * row whose slot markers are live (see `isPlatformSlotEnvironment`) —
+ * clearing a live slot row's markers would reclassify it as
+ * tenant-managed and lift the write floor in two steps.
+ */
+function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
+  if (!isPlainRecord(body)) return false;
+  const bodyKeys = Object.keys(body);
+  if (bodyKeys.length !== 1 || bodyKeys[0] !== "metadata") return false;
+  const metadata = body.metadata;
+  if (!isPlainRecord(metadata)) return false;
+  const metaKeys = Object.keys(metadata);
+  if (metaKeys.length === 0) return false;
+  return metaKeys.every(
+    (key) =>
+      (PLATFORM_PROVISIONED_MARKER_KEYS as readonly string[]).includes(key) &&
+      (metadata[key] === null || metadata[key] === false),
+  );
+}
+
+/**
+ * Returns true when the PATCH body touches nothing but `envVars` (as a
+ * plain object). This is the one tenant edit the managed-environment write
+ * floor admits: agents need environment variables in their managed
+ * sandbox, and everything else on the row (name, driver, config, status,
+ * metadata) stays platform-owned.
+ */
+function isTenantEnvVarsOnlyPatch(body: unknown): boolean {
+  if (!isPlainRecord(body)) return false;
+  const bodyKeys = Object.keys(body);
+  return bodyKeys.length === 1 && bodyKeys[0] === "envVars" && isPlainRecord(body.envVars);
+}
+
+/**
+ * Floor: on cloud-managed instances, platform-provisioned rows are
+ * platform-owned runtime state — no actor, including instance admins, may
+ * update or delete them. Binds to the persisted row's markers, so a patch
+ * cannot strip the marker to lift the floor.
+ *
+ * Exceptions:
+ *
+ * - A metadata-only patch that only clears the marker keys is allowed so
+ *   tenants can recover rows stamped with stale markers by the old
+ *   unrestricted API — for every row except those whose markers are live
+ *   platform state (see `isPlatformSlotEnvironment`): there, clearing the
+ *   markers would let the very next write reclassify the row as
+ *   tenant-managed and bypass this floor. Every marker outside a live slot
+ *   is stale by construction, so no row is ever locked unrecoverably.
+ * - An envVars-only patch on the generalized managed sandbox row is
+ *   allowed: env vars are the one tenant-owned field there (agents need
+ *   their environment variables inside the managed sandbox), the platform
+ *   never writes them, and the body shape guarantees nothing else — name,
+ *   driver, config, status, metadata — rides along. DELETE still calls
+ *   this with no options, so deletion stays blocked.
+ */
+async function assertPlatformProvisionedEnvironmentWritable(
+  environment: { driver: string; metadata: Record<string, unknown> | null },
+  options?: {
+    patchBody: unknown;
+    isForcedKubernetesExecution: () => Promise<boolean>;
+  },
+): Promise<void> {
+  if (!isCloudManagedInstance() || !isPlatformProvisionedEnvironment(environment)) return;
+  if (
+    options !== undefined &&
+    isPlatformMarkerClearOnlyPatch(options.patchBody) &&
+    !(await isPlatformSlotEnvironment(environment, options))
+  ) return;
+  if (
+    options !== undefined &&
+    isTenantEnvVarsOnlyPatch(options.patchBody) &&
+    isTenantEditableManagedSandbox(environment)
+  ) return;
+  throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
+    code: "environment_platform_managed",
+  });
+}
+
+/**
+ * Floor: on cloud-managed instances the platform markers in `metadata` are
+ * reserved to the platform provisioner (which writes them at the service
+ * layer, not through these routes). A client payload that sets them to a
+ * truthy value is rejected — otherwise a tenant could stamp its own row as
+ * platform-provisioned and permanently lock it behind the write floor above.
+ * Clearing (null/false) is allowed so stale markers can be removed.
+ */
+function assertNoClientPlatformProvisionedMarkers(metadata: unknown): void {
+  if (!isCloudManagedInstance() || !isPlainRecord(metadata)) return;
+  for (const key of PLATFORM_PROVISIONED_MARKER_KEYS) {
+    if (metadata[key] !== undefined && metadata[key] !== null && metadata[key] !== false) {
+      throw unprocessable(
+        `metadata.${key} is reserved to the platform on cloud-managed instances`,
+        { code: "environment_platform_marker_reserved" },
+      );
+    }
+  }
+}
+
 export function environmentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    recoverMissingPluginWorker?: ReadyPluginWorkerRecovery;
+  } = {},
 ) {
   const router = Router();
   const svc = environmentService(db);
@@ -118,6 +391,24 @@ export function environmentRoutes(
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
+    // Floor: on cloud-managed instances, platform-provisioned rows use the
+    // floored view — credential-shaped config keys are never echoed to any
+    // reader, structural config stays visible, and tenant env vars on the
+    // managed sandbox row round-trip for full readers only. Restricted
+    // readers keep the structural floor fields (the platform config carries
+    // no secrets by the managed-config contract) but never env vars — the
+    // same envVars posture the restricted view applies to every other
+    // environment, since tenant env vars can carry pasted credentials.
+    if (isCloudManagedInstance() && isPlatformProvisionedEnvironment(environment)) {
+      const floored = applyPlatformProvisionedEnvironmentFloor(environment);
+      if (canReadFullInstanceEnvironment(req)) {
+        return floored;
+      }
+      return {
+        ...floored,
+        ...(Object.prototype.hasOwnProperty.call(floored, "envVars") ? { envVars: {} } : {}),
+      };
+    }
     return canReadFullInstanceEnvironment(req)
       ? environment
       : redactEnvironmentForRestrictedView(environment);
@@ -205,6 +496,18 @@ export function environmentRoutes(
     return await resolveCustomImageCompanyId(req);
   }
 
+  /**
+   * Pick the company context used to create new secrets from raw-pasted
+   * values, normalize env-var bindings, and resolve probe secrets. An
+   * explicit route param / query wins, then the single company the
+   * environment's bindings already live in, then the actor's own company,
+   * then the instance's only company (when exactly one exists).
+   * Bindings must never veto an explicit caller context: config-derived
+   * bindings live in the company that owns each referenced secret (see
+   * `replaceSecretRefsForInstanceTarget`), so an environment's bindings may
+   * legitimately sit in a different company — or several — than the board
+   * that is editing it.
+   */
   async function resolveEnvironmentSecretContextCompanyId(
     req: Request,
     environmentId: string,
@@ -216,21 +519,23 @@ export function environmentRoutes(
         : typeof req.query.companyId === "string" && req.query.companyId.trim().length > 0
           ? req.query.companyId.trim()
           : null;
+    if (routeCompanyId) return routeCompanyId;
     const bindingCompanyIds = await secrets.listBindingCompanyIdsForTarget({
       targetType: "environment",
       targetId: environmentId,
     });
-    if (routeCompanyId && bindingCompanyIds.length > 0 && !bindingCompanyIds.includes(routeCompanyId)) {
-      throw conflict("Environment secret bindings already use a different company context.");
-    }
-    if (routeCompanyId) return routeCompanyId;
     if (bindingCompanyIds.length === 1) return bindingCompanyIds[0] ?? null;
-    if (bindingCompanyIds.length > 1) {
-      throw conflict("Environment secret bindings span multiple companies and require explicit companyId context.");
-    }
     if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
     if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length === 1) {
       return req.actor.companyIds[0] ?? null;
+    }
+    // Single-company instances have exactly one possible secret scope, so an
+    // actor whose memberships cannot pin a company (none, or several — e.g. an
+    // instance admin provisioned without a membership row) still resolves.
+    // Mirrors the fallback in `resolveCustomImageCompanyId`.
+    const instanceCompanyIds = await instanceSettings.listCompanyIds();
+    if (instanceCompanyIds.length === 1 && instanceCompanyIds[0]) {
+      return instanceCompanyIds[0];
     }
     if (!options.required) return null;
     throw unprocessable(
@@ -278,6 +583,12 @@ export function environmentRoutes(
     }
     if (impact.staticReferences.isInstanceDefault) {
       return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
+    }
+    if (impact.pendingCleanupLeaseCount > 0) {
+      return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
+    }
+    if (impact.reusableSandboxLeaseCount > 0) {
+      return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
     }
     return null;
   }
@@ -360,13 +671,29 @@ export function environmentRoutes(
     throw unprocessable(failure.message);
   }
 
+  /**
+   * Managed-sandbox-only policy (`enableManagedSandboxOnly`): the local
+   * environment disappears from every read surface — the list and the
+   * by-id read — for every actor, including instance admins. The row
+   * itself stays in the database (company creation and the heartbeat
+   * depend on `ensureLocalEnvironment`); run selection independently
+   * refuses local under the same flag, so hiding here is presentation,
+   * not the enforcement boundary.
+   */
+  async function isManagedSandboxOnlyInstance(): Promise<boolean> {
+    return (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+  }
+
   router.get("/companies/:companyId/environments", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const rows = await svc.list({
       status: req.query.status as string | undefined,
       driver: req.query.driver as string | undefined,
     });
-    res.json(rows.map((row) => presentEnvironmentForRead(req, row)));
+    const visible = (await isManagedSandboxOnlyInstance())
+      ? rows.filter((row) => row.driver !== "local")
+      : rows;
+    res.json(visible.map((row) => presentEnvironmentForRead(req, row)));
   });
 
   router.get("/environments/:id/delete-blast-radius", async (req, res) => {
@@ -384,6 +711,7 @@ export function environmentRoutes(
     const pluginDrivers = await listReadyPluginEnvironmentDrivers({
       db,
       workerManager: options.pluginWorkerManager,
+      recoverMissingWorker: options.recoverMissingPluginWorker,
     });
     res.json(getEnvironmentCapabilities(
       AGENT_ADAPTER_TYPES,
@@ -395,13 +723,26 @@ export function environmentRoutes(
             supportsSavedProbe: true,
             supportsUnsavedProbe: true,
             supportsRunExecution: true,
-            supportsReusableLeases: driver.supportsReusableLeases ?? true,
+            // Publish reusable-lease support only when the declaration allows it
+            // AND the live worker verified all reuse lifecycle methods, so the
+            // presentation matches the acquisition guard, which requires them.
+            // The declaration part uses the same resolver acquisition uses, so
+            // the nested `sandboxCapabilities` override wins over the legacy
+            // `supportsReusableLeases` flag: a manifest with legacy `true` and
+            // nested `false` presents as not reusable. Default an absent value
+            // to false with `=== true`. A ready worker that omits any reuse
+            // lifecycle method presents as not reusable, because acquisition
+            // would always fall back to an ephemeral lease.
+            supportsReusableLeases:
+              resolveDeclaredSandboxCapabilities(driver).reusableLeases === true
+              && driver.reusableLeaseMethodsVerified,
             supportsInteractiveSetup: driver.supportsInteractiveSetup,
             interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
             supportsTemplateCapture: driver.supportsTemplateCapture,
             templateRefKind: driver.templateRefKind,
             templateConfigBinding: driver.templateConfigBinding,
             supportsTemplateDelete: driver.supportsTemplateDelete,
+            supportsLoginPty: driver.supportsLoginPty ?? false,
             displayName: driver.displayName,
             description: driver.description,
             source: "plugin" as const,
@@ -612,6 +953,31 @@ export function environmentRoutes(
     res.json(result);
   });
 
+  router.post(
+    "/environments/:environmentId/custom-image-template/relink",
+    validate(relinkEnvironmentCustomImageTemplateSchema),
+    async (req, res) => {
+      assertCanAccessInstanceEnvironments(req);
+      const companyId = await resolveCustomImageCompanyId(req);
+      const actor = getActorInfo(req);
+      // The service classifies drift, re-stamps the fingerprint, and writes the
+      // activity row in one transaction. The route never classifies.
+      const result = await customImages.relinkActiveTemplate({
+        environmentId: req.params.environmentId as string,
+        confirmBootSourceDrift: req.body.confirmBootSourceDrift === true,
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+        },
+        companyId,
+      });
+      res.json(result);
+    },
+  );
+
   router.delete("/environments/:environmentId/custom-image-template", async (req, res) => {
     assertCanAccessInstanceEnvironments(req);
     const companyId = await resolveCustomImageCompanyId(req);
@@ -633,6 +999,7 @@ export function environmentRoutes(
   router.post("/companies/:companyId/environments", validate(createEnvironmentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCanAccessInstanceEnvironments(req);
+    assertNoClientPlatformProvisionedMarkers(req.body.metadata);
     if (req.body.driver === "local") {
       const existingLocal = await svc.list({ driver: "local" });
       if (existingLocal.length > 0) {
@@ -661,17 +1028,23 @@ export function environmentRoutes(
         pluginWorkerManager: options.pluginWorkerManager,
       }),
     };
-    const environment = await svc.create(input);
-    await secrets.syncSecretRefsForTarget(
-      companyId,
-      { targetType: "environment", targetId: environment.id },
-      await collectEnvironmentSecretRefs({ db, environment }),
-    );
-    await secrets.syncEnvBindingsForTarget(
-      companyId,
-      { targetType: "environment", targetId: environment.id },
-      environment.envVars,
-    );
+    // Create the row and its binding rows atomically so an invalid secret
+    // ref cannot leave an environment persisted without its bindings.
+    const environment = await db.transaction(async (tx) => {
+      const created = await svc.create(input, undefined, { db: tx });
+      await secrets.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: created.id },
+        await collectEnvironmentSecretRefs({ db, environment: created }),
+        { db: tx },
+      );
+      await secrets.syncEnvBindingsForTarget(
+        companyId,
+        { targetType: "environment", targetId: created.id },
+        created.envVars,
+        { db: tx },
+      );
+      return created;
+    });
     await logInstanceEnvironmentActivity({
       actor,
       action: "environment.created",
@@ -682,26 +1055,42 @@ export function environmentRoutes(
         status: environment.status,
       },
     });
-    res.status(201).json(environment);
+    res.status(201).json(presentEnvironmentForRead(req, environment));
   });
 
   router.get("/environments/:id", async (req, res) => {
+    assertCanReadInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
-    if (!environment) {
+    if (!environment || (environment.driver === "local" && (await isManagedSandboxOnlyInstance()))) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanReadInstanceEnvironments(req);
     res.json(presentEnvironmentForRead(req, environment));
   });
 
-  router.get("/environments/:id/leases", async (req, res) => {
+  router.get("/environments/:id/secret-refs", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    // Metadata only (name / status / owning company) — never secret values.
+    // Environments are instance-scoped while secrets are company-scoped, so
+    // the editor needs this to render refs whose secret a given company's
+    // picker cannot list. Gated by the same instance-level access check as
+    // environment editing.
+    const refs = await collectEnvironmentSecretRefs({ db, environment });
+    res.json({ refs: await secrets.describeSecretRefs(refs) });
+  });
+
+  router.get("/environments/:id/leases", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
+    const environment = await svc.getById(req.params.id as string);
+    if (!environment) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
     const leases = await svc.listLeases(environment.id, {
       status: req.query.status as string | undefined,
     });
@@ -709,22 +1098,51 @@ export function environmentRoutes(
   });
 
   router.get("/environment-leases/:leaseId", async (req, res) => {
+    assertCanReadInstanceEnvironments(req);
     const lease = await svc.getLeaseById(req.params.leaseId as string);
     if (!lease) {
       res.status(404).json({ error: "Environment lease not found" });
       return;
     }
-    assertCanReadInstanceEnvironments(req);
     res.json(lease);
   });
 
   router.patch("/environments/:id", validate(updateEnvironmentSchema), async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const existing = await svc.getById(req.params.id as string);
     if (!existing) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanAccessInstanceEnvironments(req);
+    await assertPlatformProvisionedEnvironmentWritable(existing, {
+      patchBody: req.body,
+      isForcedKubernetesExecution: async () =>
+        isExecutionForcedToKubernetes({
+          executionMode: (await instanceSettings.getGeneral()).executionMode,
+        }),
+    });
+    assertNoClientPlatformProvisionedMarkers(req.body.metadata);
+    // The durable `pending_cleanup` lease row stores the provider, the provider
+    // lease id, and the immutable config metadata for an orphan sandbox. The
+    // teardown retry reads that row alone and never reads the current environment
+    // provider. So a provider change or an environment delete after the record
+    // lands cannot strand the teardown. That immutable record is the correctness
+    // invariant.
+    //
+    // This pre-transaction check is a best-effort fast-fail only. It rejects a
+    // provider change while a known `pending_cleanup` lease exists, so the
+    // operator resolves the cleanup first. An orphan record that lands after this
+    // check still carries its own immutable teardown context, so the
+    // time-of-check-to-time-of-use window here cannot strand a sandbox.
+    const changesProviderTarget =
+      (req.body.driver !== undefined && req.body.driver !== existing.driver) ||
+      req.body.config !== undefined;
+    if (changesProviderTarget && (await svc.hasUnresolvedPendingCleanupLeases(existing.id))) {
+      throw conflict(
+        "Cannot change the driver or provider config while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+        { code: "environment_pending_sandbox_cleanup" },
+      );
+    }
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
     const nextName = req.body.name ?? existing.name;
@@ -772,7 +1190,29 @@ export function environmentRoutes(
           }
         : {}),
     };
-    const environment = await svc.update(existing.id, patch);
+    // Persist the config change and its binding rows atomically: a binding
+    // ref that fails validation (e.g. a deleted secret) must roll the whole
+    // save back instead of leaving the config re-pointed with stale bindings.
+    const environment = await db.transaction(async (tx) => {
+      const updated = await svc.update(existing.id, patch, { db: tx });
+      if (!updated) return null;
+      if (patch.config !== undefined || patch.driver !== undefined) {
+        await secrets.replaceSecretRefsForInstanceTarget(
+          { targetType: "environment", targetId: updated.id },
+          await collectEnvironmentSecretRefs({ db, environment: updated }),
+          { db: tx },
+        );
+      }
+      if (patch.envVars !== undefined) {
+        await secrets.syncEnvBindingsForTarget(
+          companyIdForSecrets!,
+          { targetType: "environment", targetId: updated.id },
+          updated.envVars,
+          { db: tx },
+        );
+      }
+      return updated;
+    });
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
@@ -781,11 +1221,6 @@ export function environmentRoutes(
       ReturnType<typeof customImages.reconcileActiveTemplateForConfigChange>
     > = { action: "none" };
     if (patch.config !== undefined || patch.driver !== undefined) {
-      await secrets.syncSecretRefsForTarget(
-        companyIdForSecrets!,
-        { targetType: "environment", targetId: environment.id },
-        await collectEnvironmentSecretRefs({ db, environment }),
-      );
       try {
         customImageReconciliation = await customImages.reconcileActiveTemplateForConfigChange({
           environmentId: environment.id,
@@ -796,31 +1231,26 @@ export function environmentRoutes(
         // Reconciliation is best-effort; a failure must not fail the save.
       }
     }
-    if (patch.envVars !== undefined) {
-      await secrets.syncEnvBindingsForTarget(
-        companyIdForSecrets!,
-        { targetType: "environment", targetId: environment.id },
-        environment.envVars,
-      );
-    }
     await logInstanceEnvironmentActivity({
       actor,
       action: "environment.updated",
       entityId: environment.id,
       details: summarizeEnvironmentUpdate(patch as Record<string, unknown>, environment),
     });
+    const presented = presentEnvironmentForRead(req, environment);
     res.json(customImageReconciliation.action === "none"
-      ? environment
-      : { ...environment, customImageReconciliation });
+      ? presented
+      : { ...presented, customImageReconciliation });
   });
 
   router.delete("/environments/:id", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const existing = await svc.getById(req.params.id as string);
     if (!existing) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanAccessInstanceEnvironments(req);
+    await assertPlatformProvisionedEnvironmentWritable(existing);
     const actor = getActorInfo(req);
     const impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {
@@ -873,16 +1303,16 @@ export function environmentRoutes(
         status: removed.status,
       },
     });
-    res.json(removed);
+    res.json(presentEnvironmentForRead(req, removed));
   });
 
   router.post("/environments/:id/probe", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanAccessInstanceEnvironments(req);
     const actor = getActorInfo(req);
     const companyIdForSecrets = await resolveEnvironmentSecretContextCompanyId(req, environment.id, { required: false });
     const companyIdForProbe = companyIdForSecrets

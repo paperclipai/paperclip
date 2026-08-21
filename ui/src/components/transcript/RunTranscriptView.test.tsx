@@ -3,10 +3,10 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
-import type { TranscriptEntry } from "../../adapters";
-import { buildTranscript, type RunLogChunk } from "../../adapters";
+import { buildTranscript, type RunLogChunk, type TranscriptEntry } from "../../adapters";
+import type { ToolRunDecision } from "@paperclipai/shared";
 import { ThemeProvider } from "../../context/ThemeContext";
-import { RunTranscriptView, normalizeTranscript } from "./RunTranscriptView";
+import { RunTranscriptView, keyTranscriptBlocks, normalizeTranscript } from "./RunTranscriptView";
 
 describe("RunTranscriptView", () => {
   it("folds repeated tool_call status updates for the same toolUseId into one block", () => {
@@ -207,6 +207,103 @@ describe("RunTranscriptView", () => {
     expect(html).not.toContain("result");
   });
 
+  it("links tool rows to pending governed action decisions", () => {
+    const invocationId = "11111111-1111-4111-8111-111111111111";
+    const actionRequestId = "22222222-2222-4222-8222-222222222222";
+    const decision: ToolRunDecision = {
+      invocation: {
+        id: invocationId,
+        companyId: "company-1",
+        idempotencyKey: null,
+        actorType: "agent",
+        actorId: "agent-1",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        runId: "run-1",
+        applicationId: null,
+        connectionId: null,
+        catalogEntryId: null,
+        toolName: "send_email",
+        argumentsHash: "hash-1",
+        argumentsSummary: { summary: "{\"to\":\"redacted\"}" },
+        policyDecision: "require_approval",
+        matchedPolicyIds: [],
+        approvalState: "pending",
+        status: "awaiting_approval",
+        upstreamRequestId: null,
+        resultHash: null,
+        resultSummary: null,
+        resultSizeBytes: null,
+        resultArtifactId: null,
+        errorCode: null,
+        errorMessage: null,
+        startedAt: null,
+        completedAt: null,
+        createdAt: new Date("2026-03-12T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-12T00:00:00.000Z"),
+      },
+      actionRequest: {
+        id: actionRequestId,
+        companyId: "company-1",
+        invocationId,
+        issueId: "issue-1",
+        interactionId: "33333333-3333-4333-8333-333333333333",
+        approvalId: null,
+        status: "pending",
+        canonicalArgumentsHash: "hash-1",
+        canonicalArgumentsSummary: { summary: "{\"to\":\"redacted\"}" },
+        signedArguments: null,
+        previewMarkdown: "Tool: `send_email`",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        decidedByAgentId: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        expiresAt: null,
+        resolvedAt: null,
+        createdAt: new Date("2026-03-12T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-12T00:00:00.000Z"),
+      },
+      auditEvents: [],
+      latestAuditEvent: null,
+      decision: "require_approval",
+      outcome: "pending",
+      reasonCode: "requires_approval_policy",
+      denialReason: null,
+      pendingAction: {
+        actionRequestId,
+        issueId: "issue-1",
+        interactionId: "33333333-3333-4333-8333-333333333333",
+        approvalId: null,
+        status: "pending",
+        previewMarkdown: "Tool: `send_email`",
+      },
+    };
+
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          density="compact"
+          entries={[
+            {
+              kind: "tool_call",
+              ts: "2026-03-12T00:00:00.000Z",
+              name: "send_email",
+              invocationId,
+              input: { to: "redacted@example.com" },
+            },
+          ]}
+          toolDecisions={[decision]}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain("Needs approval");
+    expect(html).toContain(`Action request ${actionRequestId.slice(0, 8)}`);
+  });
+
   it("windows large raw transcripts instead of rendering every entry at once", () => {
     const entries: TranscriptEntry[] = Array.from({ length: 500 }, (_, index) => ({
       kind: "stdout",
@@ -224,5 +321,49 @@ describe("RunTranscriptView", () => {
     expect(html).toContain("line-179");
     expect(html).not.toContain("line-250");
     expect(html).not.toContain("line-499");
+  });
+
+  it("keeps the streaming tail block's key stable as deltas merge in", () => {
+    // A streaming assistant message accumulates deltas; each delta advances the
+    // block's `ts`. The React key must stay anchored to the block's opening
+    // timestamp so the tail does not unmount/remount (restarting its fade).
+    const firstDelta: TranscriptEntry[] = [
+      { kind: "assistant", ts: "2026-03-12T00:00:00.000Z", text: "Hel", delta: true },
+    ];
+    const withMoreDeltas: TranscriptEntry[] = [
+      ...firstDelta,
+      { kind: "assistant", ts: "2026-03-12T00:00:00.400Z", text: "lo the", delta: true },
+      { kind: "assistant", ts: "2026-03-12T00:00:00.900Z", text: "re", delta: true },
+    ];
+
+    const keyOf = (entries: TranscriptEntry[]) => {
+      const keyed = keyTranscriptBlocks(normalizeTranscript(entries, true));
+      return keyed[keyed.length - 1]!.key;
+    };
+
+    // Same opening timestamp → identical key even though `ts` advanced.
+    expect(keyOf(withMoreDeltas)).toBe(keyOf(firstDelta));
+    // And that key is anchored to the opening ts, not the latest one.
+    expect(keyOf(withMoreDeltas)).toContain("2026-03-12T00:00:00.000Z");
+    expect(keyOf(withMoreDeltas)).not.toContain("2026-03-12T00:00:00.900Z");
+  });
+
+  it("assigns unique keys and does not remount earlier blocks when a new tail arrives", () => {
+    const base: TranscriptEntry[] = [
+      { kind: "assistant", ts: "2026-03-12T00:00:00.000Z", text: "first message", delta: true },
+      { kind: "thinking", ts: "2026-03-12T00:00:01.000Z", text: "pondering", delta: true },
+    ];
+    const withNewTail: TranscriptEntry[] = [
+      ...base,
+      { kind: "assistant", ts: "2026-03-12T00:00:02.000Z", text: "second message", delta: true },
+    ];
+
+    const baseKeys = keyTranscriptBlocks(normalizeTranscript(base, true)).map((b) => b.key);
+    const nextKeys = keyTranscriptBlocks(normalizeTranscript(withNewTail, true)).map((b) => b.key);
+
+    // Keys are unique within a render.
+    expect(new Set(nextKeys).size).toBe(nextKeys.length);
+    // Existing blocks keep their identity when a new block appends after them.
+    expect(nextKeys.slice(0, baseKeys.length)).toEqual(baseKeys);
   });
 });

@@ -56,10 +56,15 @@ import type {
   CompanySkillListItem,
   CompanySkillLastEditor,
   CompanySkillOriginalSummary,
+  CompanySkillProjectBrowseRequest,
+  CompanySkillProjectBrowseResult,
   CompanySkillProjectScanConflict,
+  CompanySkillProjectScanCandidate,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,
+  CompanySkillRenameRequest,
+  CompanySkillRenameResult,
   CompanySkillSharingScope,
   CompanySkillSourceBadge,
   CompanySkillSourceType,
@@ -87,15 +92,23 @@ import type {
   IssueAttachment,
   IssueDocument,
 } from "@paperclipai/shared";
-import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
+import {
+  isUuidLike,
+  joinFrontmatterBlock,
+  normalizeAgentUrlKey,
+  parseFrontmatterMarkdown,
+  splitFrontmatterBlock,
+  stringifyFrontmatter,
+} from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
+import { folderService } from "./folders.js";
 import {
   copyCatalogSkillFile,
   getCatalogPackageMetadata,
@@ -118,6 +131,7 @@ type CompanySkillListDbRow = Pick<
   CompanySkillRow,
   | "id"
   | "companyId"
+  | "folderId"
   | "key"
   | "slug"
   | "name"
@@ -150,6 +164,8 @@ type CompanySkillListRow = Pick<
   CompanySkill,
   | "id"
   | "companyId"
+  | "folderId"
+  | "folderPath"
   | "key"
   | "slug"
   | "name"
@@ -212,6 +228,7 @@ type ImportedSkill = {
 type ImportedSkillPersistValues = Pick<
   CompanySkill,
   | "companyId"
+  | "folderId"
   | "key"
   | "slug"
   | "name"
@@ -240,7 +257,7 @@ type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
 
 export type ImportPackageSkillResult = {
   skill: CompanySkill;
-  action: "created" | "updated" | "skipped";
+  action: "created" | "renamed" | "replaced" | "skipped";
   originalKey: string;
   originalSlug: string;
   requestedRefs: string[];
@@ -360,6 +377,22 @@ type SkillActor = {
   userId?: string | null;
 };
 
+type BundledSkillReleaseManifestEntry = {
+  id: string;
+  releaseName: string;
+  releasedAt: string;
+  notes: string;
+  dir: string;
+};
+
+type CreateVersionOptions = {
+  fileInventory?: CompanySkillVersionFileInventoryEntry[];
+  release?: { id: string; name: string; releasedAt: Date };
+  updateCurrentVersion?: boolean;
+  skipInventoryRefresh?: boolean;
+  skill?: CompanySkill;
+};
+
 type PlannedSkillReassignment = {
   agentId: string;
   reassignment: CompanySkillForkReassignment;
@@ -375,6 +408,7 @@ function selectCompanySkillColumns() {
   return {
     id: companySkills.id,
     companyId: companySkills.companyId,
+    folderId: companySkills.folderId,
     key: companySkills.key,
     slug: companySkills.slug,
     name: companySkills.name,
@@ -415,13 +449,16 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".agent/skills",
   ".augment/skills",
   ".claude/skills",
+  ".codex/skills",
   ".codebuddy/skills",
   ".commandcode/skills",
   ".continue/skills",
+  ".cursor/skills",
   ".cortex/skills",
   ".crush/skills",
   ".factory/skills",
   ".goose/skills",
+  ".gemini/skills",
   ".junie/skills",
   ".iflow/skills",
   ".kilocode/skills",
@@ -431,6 +468,7 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".vibe/skills",
   ".mux/skills",
   ".openhands/skills",
+  ".opencode/skills",
   ".pi/skills",
   ".qoder/skills",
   ".qwen/skills",
@@ -542,6 +580,26 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 function buildSkillRuntimeName(key: string, slug: string) {
   if (key.startsWith("paperclipai/paperclip/")) return slug;
   return `${slug}--${hashSkillValue(key)}`;
+}
+
+/**
+ * Rewrite only the top-level `name:` frontmatter field of a SKILL.md document,
+ * leaving the body and every other field byte-identical. Returns the input
+ * unchanged when there is no frontmatter or no `name:` field to update.
+ */
+function rewriteFrontmatterName(markdown: string, newName: string): string {
+  const block = splitFrontmatterBlock(markdown);
+  if (!block.hasFrontmatter) return markdown;
+  let replaced = false;
+  const nextLines = block.frontmatterText.split("\n").map((line) => {
+    if (!replaced && /^name\s*:/.test(line)) {
+      replaced = true;
+      return stringifyFrontmatter({ name: newName });
+    }
+    return line;
+  });
+  if (!replaced) return markdown;
+  return joinFrontmatterBlock({ ...block, frontmatterText: nextLines.join("\n") });
 }
 
 function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: Record<string, unknown> | null) {
@@ -686,9 +744,12 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
 }
 
 function parseGitHubSourceUrl(rawUrl: string) {
-  const url = new URL(rawUrl);
+  const url = parseRemoteSkillImportUrl(rawUrl);
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
   }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
@@ -711,6 +772,32 @@ function parseGitHubSourceUrl(rawUrl: string) {
     explicitRef = true;
   }
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
+}
+
+function parseRemoteSkillImportUrl(rawUrl: string) {
+  try {
+    return new URL(rawUrl);
+  } catch {
+    throw unprocessable("Invalid remote skill source URL.");
+  }
+}
+
+function normalizeRemoteSkillImportSource(rawUrl: string) {
+  const url = parseRemoteSkillImportUrl(rawUrl);
+  if (url.username || url.password || url.search || url.hash) {
+    throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
+  }
+  if (isGitRepoSkillImportSource(rawUrl)) {
+    const hostname = url.hostname.toLowerCase() === "www.github.com" ? "github.com" : url.hostname.toLowerCase();
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length >= 2) {
+      const owner = segments[0]!.toLowerCase();
+      const repo = segments[1]!.replace(/\.git$/i, "").toLowerCase();
+      const suffix = segments.slice(2).join("/");
+      return `https://${hostname}/${owner}/${repo}${suffix ? `/${suffix}` : ""}`;
+    }
+  }
+  return url.toString();
 }
 
 async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
@@ -773,10 +860,14 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   if (!normalizedSource) {
     throw unprocessable("Skill source is required.");
   }
+  const normalizedRemoteSource = /^https?:\/\//i.test(normalizedSource)
+    ? normalizeRemoteSkillImportSource(normalizedSource)
+    : null;
+  const canonicalSource = normalizedRemoteSource ?? normalizedSource;
 
   // Key-style imports (org/repo/skill) originate from the skills.sh registry
-  if (!/^https?:\/\//i.test(normalizedSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedSource)) {
-    const [owner, repo, skillSlugRaw] = normalizedSource.split("/");
+  if (!/^https?:\/\//i.test(canonicalSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(canonicalSource)) {
+    const [owner, repo, skillSlugRaw] = canonicalSource.split("/");
     return {
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: normalizeSkillSlug(skillSlugRaw),
@@ -785,9 +876,9 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
     };
   }
 
-  if (!/^https?:\/\//i.test(normalizedSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedSource)) {
+  if (!/^https?:\/\//i.test(canonicalSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(canonicalSource)) {
     return {
-      resolvedSource: `https://github.com/${normalizedSource}`,
+      resolvedSource: `https://github.com/${canonicalSource}`,
       requestedSkillSlug,
       originalSkillsShUrl: null,
       warnings,
@@ -795,23 +886,42 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   }
 
   // Detect skills.sh URLs and resolve to GitHub: https://skills.sh/org/repo/skill → org/repo/skill key
-  const skillsShMatch = normalizedSource.match(/^https?:\/\/(?:www\.)?skills\.sh\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?(?:[?#].*)?$/i);
+  const skillsShMatch = canonicalSource.match(/^https?:\/\/(?:www\.)?skills\.sh\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?$/i);
   if (skillsShMatch) {
     const [, owner, repo, skillSlugRaw] = skillsShMatch;
     return {
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: skillSlugRaw ? normalizeSkillSlug(skillSlugRaw) : requestedSkillSlug,
-      originalSkillsShUrl: normalizedSource,
+      originalSkillsShUrl: canonicalSource,
       warnings,
     };
   }
 
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(canonicalSource) && !/^https:\/\//i.test(canonicalSource)) {
+    throw unprocessable("Remote skill sources must use HTTPS", {
+      code: "skill_source_validation_failed",
+    });
+  }
+
   return {
-    resolvedSource: normalizedSource,
+    resolvedSource: canonicalSource,
     requestedSkillSlug,
     originalSkillsShUrl: null,
     warnings,
   };
+}
+
+export function isGitRepoSkillImportSource(source: string) {
+  try {
+    const parsed = new URL(source.trim());
+    if (parsed.protocol !== "https:") return false;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname.endsWith(".githubusercontent.com") || hostname === "gist.github.com") return false;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    return segments.length >= 2 && !parsed.pathname.endsWith(".md");
+  } catch {
+    return false;
+  }
 }
 
 function resolveBundledSkillsRoot() {
@@ -820,6 +930,15 @@ function resolveBundledSkillsRoot() {
     path.resolve(moduleDir, "../../skills"),
     path.resolve(process.cwd(), "skills"),
     path.resolve(moduleDir, "../../../skills"),
+  ];
+}
+
+function resolveBundledSkillReleasesRoot() {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "../../skills-releases/paperclip"),
+    path.resolve(process.cwd(), "skills-releases/paperclip"),
+    path.resolve(moduleDir, "../../../skills-releases/paperclip"),
   ];
 }
 
@@ -982,6 +1101,93 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+function pathIsContained(rootPath: string, candidatePath: string) {
+  const relativePath = path.relative(rootPath, candidatePath);
+  return relativePath === ""
+    || (!path.isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`));
+}
+
+async function assertNoSymlinksInLocalTree(currentPath: string): Promise<void> {
+  const entries = await fs.readdir(currentPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === ".git" || entry.name === "node_modules") continue;
+    const absolutePath = path.join(currentPath, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw unprocessable(`Project skill candidate contains a symbolic link at ${absolutePath}.`);
+    }
+    if (entry.isDirectory()) {
+      await assertNoSymlinksInLocalTree(absolutePath);
+    }
+  }
+}
+
+async function validateProjectSkillImportPath(
+  skillDir: string,
+  workspaceRoot: string,
+  inventoryMode: LocalSkillInventoryMode,
+) {
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolvedSkillDir = path.resolve(skillDir);
+  if (!pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} is outside workspace root ${resolvedWorkspaceRoot}.`);
+  }
+
+  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
+  let currentPath = resolvedWorkspaceRoot;
+  const relativeSkillDir = path.relative(resolvedWorkspaceRoot, resolvedSkillDir);
+  for (const segment of relativeSkillDir.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    const segmentStat = await fs.lstat(currentPath);
+    if (segmentStat.isSymbolicLink()) {
+      throw unprocessable(`Project skill candidate contains a symbolic link at ${currentPath}.`);
+    }
+  }
+
+  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
+  }
+
+  const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
+  const skillFileStat = await fs.lstat(skillFilePath);
+  if (skillFileStat.isSymbolicLink()) {
+    throw unprocessable(`Project skill candidate contains a symbolic link at ${skillFilePath}.`);
+  }
+  if (!skillFileStat.isFile()) {
+    throw unprocessable(`No SKILL.md file was found in ${resolvedSkillDir}.`);
+  }
+  const canonicalSkillFilePath = await fs.realpath(skillFilePath);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillFilePath)) {
+    throw unprocessable(`Project skill file ${skillFilePath} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
+  }
+
+  if (inventoryMode === "full") {
+    await assertNoSymlinksInLocalTree(resolvedSkillDir);
+    return;
+  }
+  for (const relativeDir of PROJECT_ROOT_SKILL_SUBDIRECTORIES) {
+    const absoluteDir = path.join(resolvedSkillDir, relativeDir);
+    const dirStat = await fs.lstat(absoluteDir).catch(() => null);
+    if (!dirStat) continue;
+    if (dirStat.isSymbolicLink()) {
+      throw unprocessable(`Project skill candidate contains a symbolic link at ${absoluteDir}.`);
+    }
+    if (dirStat.isDirectory()) {
+      await assertNoSymlinksInLocalTree(absoluteDir);
+    }
+  }
+}
+
+function projectSkillImportFailureReason(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("symbolic link")) {
+    return "Skipped because symbolic links can point outside the project workspace. Replace the link with a real file or directory to import this skill.";
+  }
+  if (message.includes("outside workspace root")) return "Project skill candidate resolves outside the workspace.";
+  if (message.includes("No SKILL.md file")) return "Project skill candidate does not contain a readable SKILL.md file.";
+  return "Project skill candidate could not be read.";
+}
+
 async function collectLocalSkillInventory(
   skillDir: string,
   mode: LocalSkillInventoryMode = "full",
@@ -1064,6 +1270,26 @@ function isPaperclipBundledSkillKey(key: string) {
   return key.startsWith("paperclipai/paperclip/");
 }
 
+function paperclipBundledFolderCategory(key: string, metadata?: unknown) {
+  const keyParts = key.split("/");
+  if (keyParts[0] === "paperclipai" && keyParts[1] === "bundled" && keyParts[2]) {
+    return keyParts[2];
+  }
+  if (isPaperclipBundledSkillKey(key)) return "paperclip-core";
+  if (isPlainRecord(metadata) && asString(metadata.sourceKind) === "paperclip_bundled") {
+    return "paperclip-core";
+  }
+  return null;
+}
+
+function bundledFolderLabel(category: string) {
+  return category
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function stripDerivedPaperclipBundledMetadata(key: string, metadata: unknown): unknown {
   if (metadata === null || metadata === undefined) return {};
   const comparable = stableJsonComparable(metadata);
@@ -1095,6 +1321,7 @@ function importedSkillPersistValuesMatchExisting(
   values: ImportedSkillPersistValues,
 ) {
   return existing.companyId === values.companyId
+    && existing.folderId === values.folderId
     && existing.key === values.key
     && existing.slug === values.slug
     && existing.name === values.name
@@ -1138,9 +1365,14 @@ export async function readLocalSkillImportFromDirectory(
   options?: {
     inventoryMode?: LocalSkillInventoryMode;
     metadata?: Record<string, unknown> | null;
+    workspaceRoot?: string;
   },
 ): Promise<ImportedSkill> {
   const resolvedSkillDir = path.resolve(skillDir);
+  const inventoryMode = options?.inventoryMode ?? "full";
+  if (options?.workspaceRoot) {
+    await validateProjectSkillImportPath(resolvedSkillDir, options.workspaceRoot, inventoryMode);
+  }
   const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
   const markdown = await fs.readFile(skillFilePath, "utf8");
   const parsed = parseFrontmatterMarkdown(markdown);
@@ -1153,7 +1385,7 @@ export async function readLocalSkillImportFromDirectory(
     sourceKind: "local_path",
     ...(options?.metadata ?? {}),
   };
-  const inventory = await collectLocalSkillInventory(resolvedSkillDir, options?.inventoryMode ?? "full");
+  const inventory = await collectLocalSkillInventory(resolvedSkillDir, inventoryMode);
 
   return {
     key: deriveCanonicalSkillKey(companyId, {
@@ -1177,33 +1409,88 @@ export async function readLocalSkillImportFromDirectory(
   };
 }
 
-export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSkillScanTarget): Promise<Array<{
+export async function discoverProjectWorkspaceSkillDirectories(
+  target: ProjectSkillScanTarget,
+  explicitPaths: string[] = [],
+): Promise<Array<{
   skillDir: string;
+  directoryRoot: string;
+  relativePath: string;
   inventoryMode: LocalSkillInventoryMode;
 }>> {
-  const discovered = new Map<string, LocalSkillInventoryMode>();
-  const rootSkillPath = path.join(target.workspaceCwd, "SKILL.md");
+  const discovered = new Map<string, {
+    directoryRoot: string;
+    relativePath: string;
+    inventoryMode: LocalSkillInventoryMode;
+  }>();
+  const workspaceRoot = await fs.realpath(path.resolve(target.workspaceCwd)).catch(() => null);
+  if (!workspaceRoot) return [];
+  const rootSkillPath = path.join(workspaceRoot, "SKILL.md");
   if ((await statPath(rootSkillPath))?.isFile()) {
-    discovered.set(path.resolve(target.workspaceCwd), "project_root");
+    discovered.set(workspaceRoot, {
+      directoryRoot: ".",
+      relativePath: ".",
+      inventoryMode: "project_root",
+    });
+  }
+
+  for (const explicitPath of explicitPaths) {
+    const relativeSkillDir = explicitPath.toLowerCase().endsWith("/skill.md")
+      ? path.posix.dirname(explicitPath)
+      : explicitPath.toLowerCase() === "skill.md"
+        ? "."
+        : explicitPath;
+    const absoluteSkillDir = await fs.realpath(path.resolve(workspaceRoot, relativeSkillDir)).catch(() => null);
+    if (!absoluteSkillDir) continue;
+    const relativeToWorkspace = path.relative(workspaceRoot, absoluteSkillDir);
+    if (
+      relativeToWorkspace === ".."
+      || relativeToWorkspace.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativeToWorkspace)
+    ) continue;
+    if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
+    discovered.set(absoluteSkillDir, {
+      directoryRoot: relativeSkillDir === "." ? "." : path.posix.dirname(relativeSkillDir),
+      relativePath: relativeSkillDir,
+      inventoryMode: relativeSkillDir === "." ? "project_root" : "full",
+    });
   }
 
   for (const relativeRoot of PROJECT_SCAN_DIRECTORY_ROOTS) {
-    const absoluteRoot = path.join(target.workspaceCwd, relativeRoot);
+    const absoluteRoot = path.join(workspaceRoot, relativeRoot);
     const rootStat = await statPath(absoluteRoot);
     if (!rootStat?.isDirectory()) continue;
 
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
       const absoluteSkillDir = path.resolve(absoluteRoot, entry.name);
+      const entryStat = entry.isSymbolicLink() ? await statPath(absoluteSkillDir) : null;
+      if (!entry.isDirectory() && !entryStat?.isDirectory()) continue;
       if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
-      discovered.set(absoluteSkillDir, "full");
+      discovered.set(absoluteSkillDir, {
+        directoryRoot: relativeRoot,
+        relativePath: normalizePortablePath(path.relative(workspaceRoot, absoluteSkillDir)),
+        inventoryMode: "full",
+      });
     }
   }
 
   return Array.from(discovered.entries())
-    .map(([skillDir, inventoryMode]) => ({ skillDir, inventoryMode }))
+    .map(([skillDir, details]) => ({ skillDir, ...details }))
     .sort((left, right) => left.skillDir.localeCompare(right.skillDir));
+}
+
+function normalizeProjectScanSelectionPath(value: string): string | null {
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (trimmed === ".") return ".";
+  if (!trimmed || trimmed.startsWith("/") || /^[A-Za-z]:\//.test(trimmed)) return null;
+  const segments = trimmed.split("/").filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) return null;
+  return segments.join("/");
+}
+
+function projectScanSelectionKey(workspaceId: string, relativePath: string) {
+  return `${workspaceId}\u0000${relativePath}`;
 }
 
 async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
@@ -1285,14 +1572,7 @@ async function readUrlSkillImports(
 ): Promise<{ skills: ImportedSkill[]; warnings: string[] }> {
   const url = sourceUrl.trim();
   const warnings: string[] = [];
-  const looksLikeRepoUrl = (() => { try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    const h = parsed.hostname.toLowerCase();
-    if (h.endsWith(".githubusercontent.com") || h === "gist.github.com") return false;
-    const segments = parsed.pathname.split("/").filter(Boolean);
-    return segments.length >= 2 && !parsed.pathname.endsWith(".md");
-  } catch { return false; } })();
+  const looksLikeRepoUrl = isGitRepoSkillImportSource(url);
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
@@ -1586,6 +1866,9 @@ function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion
   return {
     ...row,
     label: row.label ?? null,
+    releaseId: row.releaseId ?? null,
+    releaseName: row.releaseName ?? null,
+    releasedAt: row.releasedAt ?? null,
     fileInventory: Array.isArray(row.fileInventory)
       ? row.fileInventory.flatMap((entry) => {
         if (!isPlainRecord(entry)) return [];
@@ -2072,6 +2355,27 @@ function resolveManagedSkillsRoot(companyId: string) {
   return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
 }
 
+/**
+ * A rename target must be a true Paperclip-managed local skill: a `local_path`
+ * skill whose `managed_local` source directory lives directly under the
+ * company managed-skills root (e.g. `<managedRoot>/<slug>`). This deliberately
+ * excludes catalog (`__catalog__/...`), runtime (`__runtime__/...`) and other
+ * reserved subtrees, project-scanned skills, unmanaged `local_path` skills, and
+ * all remote source types, which keep their own identity/update semantics.
+ */
+function isPaperclipManagedRenameTarget(skill: CompanySkill): boolean {
+  if (skill.sourceType !== "local_path") return false;
+  if (getSkillMeta(skill).sourceKind !== "managed_local") return false;
+  const skillDir = normalizeSkillDirectory(skill);
+  if (!skillDir) return false;
+  const managedRoot = resolveManagedSkillsRoot(skill.companyId);
+  const relative = path.relative(managedRoot, skillDir);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep);
+  // Managed skills are a direct child of the root; reject reserved `__*` dirs.
+  return segments.length === 1 && !segments[0]!.startsWith("__");
+}
+
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
   const normalized = normalizePortablePath(relativePath);
   const skillDir = normalizeSkillDirectory(skill);
@@ -2473,6 +2777,8 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
   return {
     id: skill.id,
     companyId: skill.companyId,
+    folderId: skill.folderId,
+    folderPath: skill.folderPath ?? null,
     key: skill.key,
     slug: skill.slug,
     name: skill.name,
@@ -2573,8 +2879,35 @@ async function listLastEditorsBySkillId(
 }
 
 export function companySkillService(db: Db) {
+  const folderSvc = folderService(db);
   const agents = agentService(db);
   const projects = projectService(db);
+
+  async function assertLocalImportSourceAllowed(companyId: string, source: string) {
+    const sourceRealPath = await fs.realpath(path.resolve(source)).catch(() => null);
+    if (!sourceRealPath) {
+      throw unprocessable("Local skill source is not available", {
+        code: "skill_source_validation_failed",
+      });
+    }
+    const projectRows = await projects.list(companyId);
+    const configuredRoots = [
+      resolveManagedSkillsRoot(companyId),
+      ...projectRows.flatMap((project) => project.workspaces.map((workspace) => workspace.cwd)),
+    ].filter((root): root is string => typeof root === "string" && root.trim().length > 0);
+    const approvedRoots = (await Promise.all(
+      configuredRoots.map((root) => fs.realpath(path.resolve(root)).catch(() => null)),
+    )).filter((root): root is string => Boolean(root));
+    const allowed = approvedRoots.some(
+      (root) => sourceRealPath === root || sourceRealPath.startsWith(`${root}${path.sep}`),
+    );
+    if (!allowed) {
+      throw forbidden("Local skill source is outside approved company workspace roots", {
+        code: "skill_workspace_boundary_denied",
+        remediation: "Import from a configured Paperclip workspace or the company managed-skill directory.",
+      });
+    }
+  }
 
   async function ensureBundledSkills(companyId: string) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
@@ -2600,6 +2933,122 @@ export function companySkillService(db: Db) {
       return upsertImportedSkills(companyId, bundledSkills);
     }
     return [];
+  }
+
+  async function readBundledSkillReleaseRegistry() {
+    for (const registryRoot of resolveBundledSkillReleasesRoot()) {
+      const manifestPath = path.join(registryRoot, "releases.json");
+      const manifestText = await fs.readFile(manifestPath, "utf8").catch(() => null);
+      if (!manifestText) continue;
+      const parsed = JSON.parse(manifestText) as unknown;
+      if (!Array.isArray(parsed)) throw new Error(`Invalid bundled skill release manifest: ${manifestPath}`);
+      return parsed.map((entry): BundledSkillReleaseManifestEntry & { releaseDir: string } => {
+        if (!isPlainRecord(entry)) throw new Error(`Invalid bundled skill release entry: ${manifestPath}`);
+        const id = asString(entry.id);
+        const releaseName = asString(entry.releaseName);
+        const releasedAt = asString(entry.releasedAt);
+        const notes = asString(entry.notes);
+        const dir = asString(entry.dir);
+        if (!id || !releaseName || !releasedAt || !notes || !dir) {
+          throw new Error(`Incomplete bundled skill release entry: ${manifestPath}`);
+        }
+        const releaseDir = path.resolve(registryRoot, dir);
+        const relativeReleaseDir = path.relative(registryRoot, releaseDir);
+        if (relativeReleaseDir.startsWith("..") || path.isAbsolute(relativeReleaseDir)) {
+          throw new Error(`Bundled skill release directory escapes registry root: ${dir}`);
+        }
+        return { id, releaseName, releasedAt, notes, dir, releaseDir };
+      });
+    }
+    return [];
+  }
+
+  async function collectVersionFileInventoryFromDirectory(
+    skillDir: string,
+  ): Promise<CompanySkillVersionFileInventoryEntry[]> {
+    const inventory = await collectLocalSkillInventory(skillDir);
+    return Promise.all(inventory.map(async (entry) => ({
+      ...entry,
+      content: await fs.readFile(path.join(skillDir, entry.path), "utf8"),
+    })));
+  }
+
+  async function ensureBundledSkillReleases(companyId: string, bundledSkills: CompanySkill[]) {
+    const paperclipSkill = bundledSkills.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    if (!paperclipSkill) return;
+    for (const release of await readBundledSkillReleaseRegistry()) {
+      const fileInventory = serializeVersionFileInventory(
+        await collectVersionFileInventoryFromDirectory(release.releaseDir),
+      );
+      const existing = await db
+        .select()
+        .from(companySkillVersions)
+        .where(and(
+          eq(companySkillVersions.companyId, companyId),
+          eq(companySkillVersions.companySkillId, paperclipSkill.id),
+          eq(companySkillVersions.releaseId, release.id),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (existing) {
+        const existingInventory = toCompanySkillVersion(existing).fileInventory;
+        const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
+          path: entry.path,
+          sha256: sha256Buffer(entry.content),
+        })));
+        const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
+          path: entry.path,
+          sha256: sha256Buffer(entry.content),
+        })));
+        if (existingHash !== registryHash) {
+          throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
+        }
+        continue;
+      }
+      const releasedAt = new Date(release.releasedAt);
+      if (Number.isNaN(releasedAt.getTime())) {
+        throw new Error(`Invalid bundled skill release date: ${release.releasedAt}`);
+      }
+      await createVersion(companyId, paperclipSkill.id, { label: release.releaseName }, null, {
+        fileInventory,
+        release: { id: release.id, name: release.releaseName, releasedAt },
+        updateCurrentVersion: false,
+        skipInventoryRefresh: true,
+        skill: paperclipSkill,
+      });
+    }
+  }
+
+  async function reconcilePaperclipSkillFolders(companyId: string) {
+    const shippedSkills = await db
+      .select({
+        id: companySkills.id,
+        key: companySkills.key,
+        folderId: companySkills.folderId,
+        metadata: companySkills.metadata,
+      })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId))
+      .then((rows) => rows.flatMap((skill) => {
+        const category = paperclipBundledFolderCategory(skill.key, skill.metadata);
+        return category ? [{ ...skill, category }] : [];
+      }));
+    const foldersByCategory = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureBundledCategory>>>();
+    for (const skill of shippedSkills) {
+      let folder = foldersByCategory.get(skill.category);
+      if (!folder) {
+        folder = await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(skill.category));
+        foldersByCategory.set(skill.category, folder);
+      }
+      if (skill.folderId === folder.id) continue;
+      await db
+        .update(companySkills)
+        .set({ folderId: folder.id, updatedAt: new Date() })
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skill.id)));
+    }
+    await folderSvc.pruneEmptyBundledCategories(
+      companyId,
+      Array.from(foldersByCategory.keys(), bundledFolderLabel),
+    );
   }
 
   async function reconcileLocalPathSkillSources(companyId: string) {
@@ -2692,7 +3141,9 @@ export function companySkillService(db: Db) {
       if (!companyExists) {
         throw notFound("Company not found");
       }
-      await ensureBundledSkills(companyId);
+      const bundledSkills = await ensureBundledSkills(companyId);
+      await ensureBundledSkillReleases(companyId, bundledSkills);
+      await reconcilePaperclipSkillFolders(companyId);
       await reconcileLocalPathSkillSources(companyId);
     })();
 
@@ -2708,10 +3159,11 @@ export function companySkillService(db: Db) {
 
   async function list(companyId: string, query: CompanySkillListQuery = {}): Promise<CompanySkillListItem[]> {
     await ensureSkillInventoryCurrent(companyId);
-    const rows = await db
+    const [dbRows, folderListing] = await Promise.all([db
       .select({
         id: companySkills.id,
         companyId: companySkills.companyId,
+        folderId: companySkills.folderId,
         key: companySkills.key,
         slug: companySkills.slug,
         name: companySkills.name,
@@ -2743,7 +3195,21 @@ export function companySkillService(db: Db) {
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId))
       .orderBy(asc(companySkills.name), asc(companySkills.key))
-      .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow)));
+      .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow))),
+      folderSvc.list(companyId, "skill"),
+    ]);
+    const folderPaths = new Map(folderListing.folders.map((folder) => [folder.id, folder.path]));
+    const rows = dbRows.map((skill) => ({
+      ...skill,
+      folderPath: skill.folderId ? folderPaths.get(skill.folderId) ?? null : null,
+    }));
+    let selectedFolderIds: Set<string> | null = null;
+    if (query.folderId) {
+      await folderSvc.validateSkillFolder(companyId, query.folderId, { allowBundled: true });
+      selectedFolderIds = query.includeSubtree
+        ? await folderSvc.descendantIds(companyId, "skill", query.folderId)
+        : new Set([query.folderId]);
+    }
     const agentRows = await agents.list(companyId);
     const q = query.q?.trim().toLowerCase() ?? "";
     const categories = new Set(
@@ -2754,6 +3220,7 @@ export function companySkillService(db: Db) {
     );
     const filtered = rows.filter((skill) => {
       if (query.scope && skill.sharingScope !== query.scope) return false;
+      if (!q && selectedFolderIds && (!skill.folderId || !selectedFolderIds.has(skill.folderId))) return false;
       if (categories.size > 0 && !skill.categories.some((category) => categories.has(categoryLookupKey(category)))) return false;
       if (q) {
         const haystack = [
@@ -2836,7 +3303,7 @@ export function companySkillService(db: Db) {
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, id)))
       .then((rows) => rows[0] ?? null);
-    return row ? toCompanySkill(row) : null;
+    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
   async function getByKey(companyId: string, key: string) {
@@ -2845,7 +3312,7 @@ export function companySkillService(db: Db) {
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
       .then((rows) => rows[0] ?? null);
-    return row ? toCompanySkill(row) : null;
+    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
   async function getBySlugIfUnique(companyId: string, slug: string) {
@@ -2853,7 +3320,13 @@ export function companySkillService(db: Db) {
       .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, slug)));
-    return rows.length === 1 ? toCompanySkill(rows[0]!) : null;
+    return rows.length === 1 ? enrichFolderPath(companyId, toCompanySkill(rows[0]!)) : null;
+  }
+
+  async function enrichFolderPath(companyId: string, skill: CompanySkill): Promise<CompanySkill> {
+    if (!skill.folderId) return { ...skill, folderPath: null };
+    const folder = await folderSvc.getFolder(companyId, skill.folderId);
+    return { ...skill, folderPath: folder?.kind === "skill" ? folder.path : null };
   }
 
   async function getByRouteRef(companyId: string, ref: string) {
@@ -3061,11 +3534,14 @@ export function companySkillService(db: Db) {
     skillId: string,
     input: CompanySkillVersionCreateRequest = {},
     actor: SkillActor | null = null,
+    options: CreateVersionOptions = {},
   ): Promise<CompanySkillVersion> {
-    await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(companyId, skillId);
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
+    const skill = options.skill ?? await getById(companyId, skillId);
     if (!skill) throw notFound("Skill not found");
-    const fileInventory = serializeVersionFileInventory(await collectVersionFileInventory(companyId, skill));
+    const fileInventory = serializeVersionFileInventory(
+      options.fileInventory ?? await collectVersionFileInventory(companyId, skill),
+    );
     const versionRow = await db.transaction(async (tx) => {
       await tx.execute(sql`
         select ${companySkills.id}
@@ -3087,6 +3563,9 @@ export function companySkillService(db: Db) {
           companySkillId: skillId,
           revisionNumber: Number(nextRevision ?? 1),
           label: input.label?.trim() || null,
+          releaseId: options.release?.id ?? null,
+          releaseName: options.release?.name ?? null,
+          releasedAt: options.release?.releasedAt ?? null,
           fileInventory,
           authorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
           authorUserId: actor?.type === "user" ? actor.userId ?? null : null,
@@ -3094,10 +3573,12 @@ export function companySkillService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      await tx
-        .update(companySkills)
-        .set({ currentVersionId: row.id, updatedAt: new Date() })
-        .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)));
+      if (options.updateCurrentVersion !== false) {
+        await tx
+          .update(companySkills)
+          .set({ currentVersionId: row.id, updatedAt: new Date() })
+          .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)));
+      }
       return row;
     });
     if (!versionRow) throw notFound("Failed to persist skill version");
@@ -3499,6 +3980,159 @@ export function companySkillService(db: Db) {
     };
   }
 
+  async function renameSkill(
+    companyId: string,
+    skillId: string,
+    input: CompanySkillRenameRequest,
+  ): Promise<CompanySkillRenameResult> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+
+    if (!isPaperclipManagedRenameTarget(skill)) {
+      throw unprocessable(
+        "Only Paperclip-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.",
+        { skillId: skill.id, sourceType: skill.sourceType, sourceKind: getSkillMeta(skill).sourceKind ?? null },
+      );
+    }
+
+    const newName = input.name.trim();
+    if (!newName) throw unprocessable("Skill name is required.");
+    const newSlug = normalizeSkillSlug(input.slug ?? null) ?? normalizeSkillSlug(newName);
+    if (!newSlug) {
+      throw unprocessable("Skill name must contain at least one letter or number to derive a slug.");
+    }
+    const newKey = `company/${companyId}/${newSlug}`;
+
+    const previousName = skill.name;
+    const previousSlug = skill.slug;
+    const previousKey = skill.key;
+
+    // Normalized no-op: nothing changes, so skip all filesystem/DB work.
+    if (newName === previousName && newSlug === previousSlug && newKey === previousKey) {
+      return { skill, previousName, previousSlug, previousKey, reassignments: [] };
+    }
+
+    // Authoritative conflict detection against slug and key within the company.
+    if (newSlug !== previousSlug || newKey !== previousKey) {
+      const existing = await listFull(companyId);
+      for (const other of existing) {
+        if (other.id === skill.id) continue;
+        if ((normalizeSkillSlug(other.slug) ?? other.slug) === newSlug) {
+          throw conflict(`A company skill with slug "${newSlug}" already exists.`, {
+            conflict: "slug",
+            slug: newSlug,
+          });
+        }
+        if (other.key === newKey) {
+          throw conflict(`A company skill with key "${newKey}" already exists.`, {
+            conflict: "key",
+            key: newKey,
+          });
+        }
+      }
+    }
+
+    const managedRoot = resolveManagedSkillsRoot(companyId);
+    const oldDir = normalizeSkillDirectory(skill)!;
+    const newDir = path.resolve(managedRoot, newSlug);
+    const directoryMoved = newDir !== oldDir;
+
+    if (directoryMoved && (await statPath(newDir))) {
+      throw conflict(`A managed skill directory already exists at ${newDir}.`, { conflict: "directory" });
+    }
+
+    // Plan agent reassignments from the old key to the new key, preserving each
+    // pinned versionId. Resolve against the pre-rename reference targets so the
+    // old key still maps cleanly.
+    const referenceSkills = await listReferenceTargets(companyId);
+    const agentRows = await agents.list(companyId, { includeTerminated: true });
+    const plannedReassignments: CompanySkillForkReassignment[] = agentRows
+      .filter((agent) =>
+        resolveDesiredSkillEntries(referenceSkills, agent.adapterConfig as Record<string, unknown>)
+          .some((entry) => entry.key === previousKey))
+      .map((agent) => ({ agentId: agent.id, previousSkillKey: previousKey, nextSkillKey: newKey }));
+
+    // Reversible filesystem stage: capture the original SKILL.md so a failed DB
+    // transaction can be rolled back to the pre-rename on-disk state.
+    const originalMarkdown = await fs.readFile(path.join(oldDir, "SKILL.md"), "utf8").catch(() => null);
+    const rewrittenMarkdown = rewriteFrontmatterName(originalMarkdown ?? skill.markdown, newName);
+    let movedDir = false;
+    try {
+      if (directoryMoved) {
+        await fs.mkdir(path.dirname(newDir), { recursive: true });
+        await fs.rename(oldDir, newDir);
+        movedDir = true;
+      }
+      if (originalMarkdown !== null) {
+        if (rewrittenMarkdown !== originalMarkdown) {
+          await fs.writeFile(path.join(newDir, "SKILL.md"), rewrittenMarkdown, "utf8");
+        }
+      }
+
+      await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(companySkills)
+          .set({
+            name: newName,
+            slug: newSlug,
+            key: newKey,
+            sourceLocator: newDir,
+            markdown: rewrittenMarkdown,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
+          .returning({ id: companySkills.id })
+          .then((rows) => rows[0] ?? null);
+        if (!updated) throw notFound("Skill not found");
+
+        for (const item of plannedReassignments) {
+          const row = await tx
+            .select({ id: agentsTable.id, adapterConfig: agentsTable.adapterConfig })
+            .from(agentsTable)
+            .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (!row) continue;
+          const adapterConfig = row.adapterConfig as Record<string, unknown>;
+          const nextEntries = resolveDesiredSkillEntries(referenceSkills, adapterConfig).map((entry) =>
+            entry.key === previousKey
+              ? { key: newKey, versionId: entry.versionId ?? null }
+              : entry);
+          await tx
+            .update(agentsTable)
+            .set({
+              adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)));
+        }
+      });
+    } catch (error) {
+      // Roll back the filesystem to its pre-rename state.
+      if (originalMarkdown !== null) {
+        await fs
+          .writeFile(path.join(movedDir ? newDir : oldDir, "SKILL.md"), originalMarkdown, "utf8")
+          .catch(() => {});
+      }
+      if (movedDir) {
+        await fs.rename(newDir, oldDir).catch(() => {});
+      }
+      throw error;
+    }
+
+    // Remove the stale runtime materialization so runtime sync recreates it
+    // under the new key/slug.
+    await fs.rm(
+      path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
+      { recursive: true, force: true },
+    );
+
+    const renamed = await getById(companyId, skill.id);
+    if (!renamed) throw notFound("Renamed skill not found");
+    return { skill: renamed, previousName, previousSlug, previousKey, reassignments: plannedReassignments };
+  }
+
   async function updateStatus(companyId: string, skillId: string): Promise<CompanySkillUpdateStatus | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
@@ -3731,6 +4365,7 @@ export function companySkillService(db: Db) {
     input: CompanySkillCreateRequest,
     actor: SkillActor | null = null,
   ): Promise<CompanySkill> {
+    if (input.folderId) await folderSvc.validateSkillFolder(companyId, input.folderId);
     const slug = normalizeSkillSlug(input.slug ?? input.name) ?? "skill";
     const key = `company/${companyId}/${slug}`;
     const existing = await getByKey(companyId, key);
@@ -3817,6 +4452,7 @@ export function companySkillService(db: Db) {
         authorName: normalizeStoreText(input.authorName, 200) ?? forkSource?.authorName ?? created.authorName,
         homepageUrl: normalizeStoreText(input.homepageUrl, 2000) ?? forkSource?.homepageUrl ?? created.homepageUrl,
         categories: input.categories ? normalizeCategoryList(input.categories) : forkSource?.categories ?? created.categories,
+        folderId: input.folderId ?? null,
         sharingScope,
         forkedFromSkillId: forkSource?.id ?? null,
         forkedFromCompanyId: forkSource?.companyId ?? null,
@@ -4175,17 +4811,80 @@ export function companySkillService(db: Db) {
     return persistAuditMetadata(reset, postAudit);
   }
 
+  async function browseProjectWorkspace(
+    companyId: string,
+    input: CompanySkillProjectBrowseRequest,
+  ): Promise<CompanySkillProjectBrowseResult> {
+    const project = (await projects.listByIds(companyId, [input.projectId]))[0];
+    if (!project) throw notFound("Project not found");
+    const workspace = project.workspaces.find((entry) => entry.id === input.workspaceId);
+    if (!workspace) throw notFound("Project workspace not found");
+    const workspaceCwd = asString(workspace.cwd);
+    if (!workspaceCwd || workspace.sourceType === "remote_managed") {
+      throw unprocessable("Project workspace is not available for local browsing.");
+    }
+
+    const normalizedPath = input.path?.trim() ? normalizeProjectScanSelectionPath(input.path) : ".";
+    if (!normalizedPath) throw unprocessable("Project workspace path is invalid.");
+    const workspaceRoot = await fs.realpath(path.resolve(workspaceCwd)).catch(() => null);
+    if (!workspaceRoot) throw unprocessable("Project workspace is not available locally.");
+    const targetPath = await fs.realpath(path.resolve(workspaceRoot, normalizedPath)).catch(() => null);
+    if (!targetPath) throw notFound("Project workspace folder not found");
+    const relativeTarget = path.relative(workspaceRoot, targetPath);
+    if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
+      throw forbidden("Project workspace path is outside the workspace.");
+    }
+    const targetStat = await fs.stat(targetPath);
+    if (!targetStat.isDirectory()) throw unprocessable("Project workspace path must be a folder.");
+
+    const directoryEntries = await fs.readdir(targetPath, { withFileTypes: true });
+    const visibleDirectoryEntries = directoryEntries.filter((entry) => (
+      !entry.isSymbolicLink()
+      && entry.name !== ".git"
+      && entry.name !== "node_modules"
+      && (entry.isDirectory() || entry.isFile())
+    ));
+    const entries: CompanySkillProjectBrowseResult["entries"] = [];
+    for (const entry of visibleDirectoryEntries.slice(0, 250)) {
+      const entryPath = normalizedPath === "." ? entry.name : `${normalizedPath}/${entry.name}`;
+      entries.push({
+        name: entry.name,
+        path: entryPath,
+        kind: entry.isDirectory() ? "directory" : "file",
+        isSkill: entry.isDirectory()
+          ? Boolean((await statPath(path.join(targetPath, entry.name, "SKILL.md")))?.isFile())
+          : entry.name === "SKILL.md",
+      });
+    }
+    entries.sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+    return {
+      projectId: project.id,
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      path: normalizedPath,
+      parentPath: normalizedPath === "." ? null : path.posix.dirname(normalizedPath) || ".",
+      entries,
+      truncated: visibleDirectoryEntries.length > 250,
+    };
+  }
+
   async function scanProjectWorkspaces(
     companyId: string,
     input: CompanySkillProjectScanRequest = {},
   ): Promise<CompanySkillProjectScanResult> {
     await ensureSkillInventoryCurrent(companyId);
+    const mode = input.mode ?? "import";
+    const selectiveImport = mode === "import" && input.selection !== undefined;
     const projectRows = input.projectIds?.length
       ? await projects.listByIds(companyId, input.projectIds)
       : await projects.list(companyId);
     const workspaceFilter = new Set(input.workspaceIds ?? []);
     const skipped: CompanySkillProjectScanSkipped[] = [];
     const conflicts: CompanySkillProjectScanConflict[] = [];
+    const candidates: CompanySkillProjectScanCandidate[] = [];
     const warnings: string[] = [];
     const imported: CompanySkill[] = [];
     const updated: CompanySkill[] = [];
@@ -4193,8 +4892,40 @@ export function companySkillService(db: Db) {
     const acceptedSkills = [...availableSkills];
     const acceptedByKey = new Map(acceptedSkills.map((skill) => [skill.key, skill]));
     const scanTargets: ProjectSkillScanTarget[] = [];
+    const workspaceContexts = new Map<string, {
+      projectId: string;
+      projectName: string;
+      workspaceId: string;
+      workspaceName: string;
+    }>();
+    const selectedPaths = new Map<string, { workspaceId: string; path: string; slug?: string }>();
+    const invalidSelections: Array<{ workspaceId: string; path: string; slug?: string }> = [];
+    const rediscoveredSelections = new Set<string>();
     const scannedProjectIds = new Set<string>();
     let discovered = 0;
+
+    for (const selection of input.selection ?? []) {
+      const normalizedPath = normalizeProjectScanSelectionPath(selection.path);
+      if (!normalizedPath) {
+        invalidSelections.push(selection);
+        continue;
+      }
+      const renamedSlug = selection.slug === undefined
+        ? undefined
+        : normalizeSkillSlug(selection.slug);
+      if (selection.slug !== undefined && !renamedSlug) {
+        invalidSelections.push(selection);
+        continue;
+      }
+      selectedPaths.set(projectScanSelectionKey(selection.workspaceId, normalizedPath), {
+        workspaceId: selection.workspaceId,
+        path: normalizedPath,
+        ...(renamedSlug ? { slug: renamedSlug } : {}),
+      });
+    }
+    const selectedWorkspaceIds = new Set(
+      Array.from(selectedPaths.values()).map((selection) => selection.workspaceId),
+    );
 
     const trackWarning = (message: string) => {
       warnings.push(message);
@@ -4209,7 +4940,14 @@ export function companySkillService(db: Db) {
 
     for (const project of projectRows) {
       for (const workspace of project.workspaces) {
+        workspaceContexts.set(workspace.id, {
+          projectId: project.id,
+          projectName: project.name,
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+        });
         if (workspaceFilter.size > 0 && !workspaceFilter.has(workspace.id)) continue;
+        if (selectiveImport && !selectedWorkspaceIds.has(workspace.id)) continue;
         const workspaceCwd = asString(workspace.cwd);
         if (!workspaceCwd) {
           skipped.push({
@@ -4248,10 +4986,18 @@ export function companySkillService(db: Db) {
 
     for (const target of scanTargets) {
       scannedProjectIds.add(target.projectId);
-      const directories = await discoverProjectWorkspaceSkillDirectories(target);
+      const explicitPaths = Array.from(selectedPaths.values())
+        .filter((selection) => selection.workspaceId === target.workspaceId)
+        .map((selection) => selection.path);
+      const directories = await discoverProjectWorkspaceSkillDirectories(target, explicitPaths);
 
       for (const directory of directories) {
         discovered += 1;
+        const selectionKey = projectScanSelectionKey(target.workspaceId, directory.relativePath);
+        const selected = !selectiveImport || selectedPaths.has(selectionKey);
+        const selectedRename = selectedPaths.get(selectionKey)?.slug;
+        if (selectedPaths.has(selectionKey)) rediscoveredSelections.add(selectionKey);
+        if (selectiveImport && !selected) continue;
 
         let nextSkill: ImportedSkill;
         try {
@@ -4265,21 +5011,102 @@ export function companySkillService(db: Db) {
               workspaceName: target.workspaceName,
               workspaceCwd: target.workspaceCwd,
             },
+            workspaceRoot: target.workspaceCwd,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = projectSkillImportFailureReason(error);
+          candidates.push({
+            slug: path.basename(directory.skillDir),
+            name: path.basename(directory.skillDir),
+            description: null,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "skipped",
+            reason: message,
+          });
           skipped.push({
             projectId: target.projectId,
             projectName: target.projectName,
             workspaceId: target.workspaceId,
             workspaceName: target.workspaceName,
             path: directory.skillDir,
-            reason: trackWarning(`Skipped ${directory.skillDir}: ${message}`),
+            reason: trackWarning(
+              `Skipped ${target.projectName} / ${target.workspaceName} / ${directory.relativePath}: ${message}`,
+            ),
           });
           continue;
         }
 
         const normalizedSourceDir = normalizeSourceLocatorDirectory(nextSkill.sourceLocator);
+        const existingBySource = normalizedSourceDir
+          ? acceptedSkills.find((skill) => normalizeSkillDirectory(skill) === normalizedSourceDir) ?? null
+          : null;
+        if (existingBySource) {
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingBySource.id,
+            reason: "This skill is already installed from the same path.",
+          });
+          if (mode === "preview" || !selected) continue;
+          const persisted = (await upsertImportedSkills(companyId, [{
+            ...nextSkill,
+            key: existingBySource.key,
+            slug: existingBySource.slug,
+          }]))[0];
+          if (!persisted) continue;
+          updated.push(persisted);
+          upsertAcceptedSkill(persisted);
+          continue;
+        }
+
+        const existingBundledBySlug = acceptedSkills.find((skill) => (
+          skill.slug === nextSkill.slug
+          && (isPaperclipBundledSkillKey(skill.key) || asString(skill.metadata?.sourceKind) === "paperclip_bundled")
+        )) ?? null;
+        if (existingBundledBySlug) {
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingBundledBySlug.id,
+            reason: "This skill is already available as a built-in.",
+          });
+          continue;
+        }
+
+        if (selectedRename) {
+          const renamedKey = `local/${hashSkillValue(path.resolve(nextSkill.sourceLocator ?? directory.skillDir))}/${selectedRename}`;
+          nextSkill = {
+            ...nextSkill,
+            key: renamedKey,
+            slug: selectedRename,
+            metadata: {
+              ...(isPlainRecord(nextSkill.metadata) ? nextSkill.metadata : {}),
+              skillKey: renamedKey,
+            },
+          };
+        }
+
         const existingByKey = acceptedByKey.get(nextSkill.key) ?? null;
         if (existingByKey) {
           const existingSourceDir = normalizeSkillDirectory(existingByKey);
@@ -4289,6 +5116,7 @@ export function companySkillService(db: Db) {
             || !normalizedSourceDir
             || existingSourceDir !== normalizedSourceDir
           ) {
+            const reason = `Skill key ${nextSkill.key} already points at ${existingByKey.sourceLocator ?? "another source"}.`;
             conflicts.push({
               slug: nextSkill.slug,
               key: nextSkill.key,
@@ -4300,11 +5128,40 @@ export function companySkillService(db: Db) {
               existingSkillId: existingByKey.id,
               existingSkillKey: existingByKey.key,
               existingSourceLocator: existingByKey.sourceLocator,
-              reason: `Skill key ${nextSkill.key} already points at ${existingByKey.sourceLocator ?? "another source"}.`,
+              reason,
+            });
+            candidates.push({
+              slug: nextSkill.slug,
+              name: nextSkill.name,
+              description: nextSkill.description,
+              workspaceId: target.workspaceId,
+              workspaceName: target.workspaceName,
+              projectId: target.projectId,
+              projectName: target.projectName,
+              directoryRoot: directory.directoryRoot,
+              relativePath: directory.relativePath,
+              status: "conflict",
+              existingSkillId: existingByKey.id,
+              reason,
             });
             continue;
           }
 
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingByKey.id,
+            ...(selectiveImport && !selected ? { reason: "Not selected for import." } : {}),
+          });
+          if (mode === "preview" || !selected) continue;
           const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
           if (!persisted) continue;
           updated.push(persisted);
@@ -4317,6 +5174,7 @@ export function companySkillService(db: Db) {
           return normalizeSkillDirectory(skill) !== normalizedSourceDir;
         });
         if (slugConflict) {
+          const reason = `Slug ${nextSkill.slug} is already in use by ${slugConflict.sourceLocator ?? slugConflict.key}.`;
           conflicts.push({
             slug: nextSkill.slug,
             key: nextSkill.key,
@@ -4328,15 +5186,65 @@ export function companySkillService(db: Db) {
             existingSkillId: slugConflict.id,
             existingSkillKey: slugConflict.key,
             existingSourceLocator: slugConflict.sourceLocator,
-            reason: `Slug ${nextSkill.slug} is already in use by ${slugConflict.sourceLocator ?? slugConflict.key}.`,
+            reason,
+          });
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "conflict",
+            existingSkillId: slugConflict.id,
+            reason,
           });
           continue;
         }
 
+        candidates.push({
+          slug: nextSkill.slug,
+          name: nextSkill.name,
+          description: nextSkill.description,
+          workspaceId: target.workspaceId,
+          workspaceName: target.workspaceName,
+          projectId: target.projectId,
+          projectName: target.projectName,
+          directoryRoot: directory.directoryRoot,
+          relativePath: directory.relativePath,
+          status: selected ? "new" : "skipped",
+          ...(!selected ? { reason: "Not selected for import." } : {}),
+        });
+        if (mode === "preview" || !selected) continue;
         const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
         if (!persisted) continue;
         imported.push(persisted);
         upsertAcceptedSkill(persisted);
+      }
+    }
+
+    if (selectiveImport) {
+      const unmatchedSelections = [
+        ...invalidSelections,
+        ...Array.from(selectedPaths.entries())
+          .filter(([key]) => !rediscoveredSelections.has(key))
+          .map(([, selection]) => selection),
+      ];
+      for (const selection of unmatchedSelections) {
+        const context = workspaceContexts.get(selection.workspaceId) ?? null;
+        skipped.push({
+          projectId: context?.projectId ?? null,
+          projectName: context?.projectName ?? null,
+          workspaceId: selection.workspaceId,
+          workspaceName: context?.workspaceName ?? null,
+          path: selection.path,
+          reason: trackWarning(
+            `Skipped selection ${selection.workspaceId}:${selection.path}: the path was not rediscovered in the project workspace scan.`,
+          ),
+        });
       }
     }
 
@@ -4348,6 +5256,7 @@ export function companySkillService(db: Db) {
       updated,
       skipped,
       conflicts,
+      candidates,
       warnings,
     };
   }
@@ -4653,6 +5562,10 @@ export function companySkillService(db: Db) {
     }
     const markdown = await fs.readFile(path.join(originSnapshotLocator, catalogSkill.entrypoint), "utf8");
     const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey, originSnapshotLocator);
+    const bundledCategory = paperclipBundledFolderCategory(catalogSkill.key, metadata);
+    const bundledFolder = bundledCategory
+      ? await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory))
+      : null;
     const parsed = parseFrontmatterMarkdown(markdown);
     const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, {
       ...metadata,
@@ -4660,6 +5573,7 @@ export function companySkillService(db: Db) {
     });
     const values = {
       companyId,
+      folderId: bundledFolder?.id ?? existingByKey?.folderId ?? null,
       key: catalogSkill.key,
       slug,
       name: catalogSkill.name,
@@ -4912,6 +5826,14 @@ export function companySkillService(db: Db) {
     const importedSkills = readInlineSkillImports(companyId, normalizedFiles);
     if (importedSkills.length === 0) return [];
 
+    // Conflict handling must never bypass source and reserved-key checks. In
+    // particular, the safe default "skip" path still validates the incoming
+    // package before returning the existing skill.
+    for (const skill of importedSkills) {
+      assertImportedSkillKeyAllowed(skill);
+      assertImportedSkillSourceAllowed(skill);
+    }
+
     for (const skill of importedSkills) {
       if (skill.sourceType !== "catalog") continue;
       const materializedDir = await materializeCatalogSkillFiles(companyId, skill, normalizedFiles);
@@ -4920,7 +5842,7 @@ export function companySkillService(db: Db) {
       }
     }
 
-    const conflictStrategy = options?.onConflict ?? "replace";
+    const conflictStrategy = options?.onConflict ?? "skip";
     const existingSkills = await listFull(companyId);
     const existingByKey = new Map(existingSkills.map((skill) => [skill.key, skill]));
     const existingBySlug = new Map(
@@ -4934,8 +5856,7 @@ export function companySkillService(db: Db) {
       skill: ImportedSkill;
       originalKey: string;
       originalSlug: string;
-      existingBefore: CompanySkill | null;
-      actionHint: "created" | "updated";
+      actionHint: "created" | "renamed" | "replaced";
       reason: string | null;
     }> = [];
     const out: ImportPackageSkillResult[] = [];
@@ -4949,17 +5870,29 @@ export function companySkillService(db: Db) {
       const conflict = existingByIncomingKey ?? existingByIncomingSlug;
 
       if (!conflict || conflictStrategy === "replace") {
-        toPersist.push(importedSkill);
+        const skillToPersist = conflict && conflict.key !== importedSkill.key
+          ? {
+              ...importedSkill,
+              key: conflict.key,
+              slug: conflict.slug,
+              metadata: {
+                ...(importedSkill.metadata ?? {}),
+                skillKey: conflict.key,
+                importedFromSkillKey: originalKey,
+                importedFromSkillSlug: originalSlug,
+              },
+            }
+          : importedSkill;
+        toPersist.push(skillToPersist);
         prepared.push({
-          skill: importedSkill,
+          skill: skillToPersist,
           originalKey,
           originalSlug,
-          existingBefore: existingByIncomingKey,
-          actionHint: existingByIncomingKey ? "updated" : "created",
-          reason: existingByIncomingKey ? "Existing skill key matched; replace strategy." : null,
+          actionHint: conflict ? "replaced" : "created",
+          reason: conflict ? "Existing skill matched; explicit replace strategy." : null,
         });
-        usedSlugs.add(normalizedSlug);
-        usedKeys.add(importedSkill.key);
+        usedSlugs.add(normalizeSkillSlug(skillToPersist.slug) ?? skillToPersist.slug);
+        usedKeys.add(skillToPersist.key);
         continue;
       }
 
@@ -4993,8 +5926,7 @@ export function companySkillService(db: Db) {
         skill: renamedSkill,
         originalKey,
         originalSlug,
-        existingBefore: null,
-        actionHint: "created",
+        actionHint: "renamed",
         reason: `Existing skill matched; renamed to ${renamedSlug}.`,
       });
       usedSlugs.add(renamedSlug);
@@ -5049,8 +5981,18 @@ export function companySkillService(db: Db) {
       };
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
+      const bundledCategory = paperclipBundledFolderCategory(skill.key, incomingMeta);
+      const bundledFolder = bundledCategory
+        ? await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory))
+        : null;
+      const projectId = asString(incomingMeta.projectId);
+      const projectName = asString(incomingMeta.projectName);
+      const projectFolder = !existing && incomingKind === "project_scan" && projectId && projectName
+        ? await folderSvc.ensureProjectFolder(companyId, projectId, projectName)
+        : null;
       const values: ImportedSkillPersistValues = {
         companyId,
+        folderId: bundledFolder?.id ?? projectFolder?.id ?? existing?.folderId ?? null,
         key: skill.key,
         slug: skill.slug,
         name: skill.name,
@@ -5099,6 +6041,9 @@ export function companySkillService(db: Db) {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
+    if (local) {
+      await assertLocalImportSourceAllowed(companyId, parsed.resolvedSource);
+    }
     const { skills, warnings } = local
       ? {
         skills: (await readLocalSkillImports(companyId, parsed.resolvedSource))
@@ -5974,6 +6919,7 @@ export function companySkillService(db: Db) {
     updateComment,
     deleteComment,
     forkSkill,
+    renameSkill,
     updateStatus,
     readFile,
     updateSkill,
@@ -5999,6 +6945,7 @@ export function companySkillService(db: Db) {
     pruneExpiredTestHarnessIssues,
     importFromSource,
     installFromCatalog,
+    browseProjectWorkspace,
     scanProjectWorkspaces,
     importPackageFiles,
     auditSkill,

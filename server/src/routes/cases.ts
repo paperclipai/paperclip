@@ -31,7 +31,7 @@ import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { documentAnnotationService, logActivity } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 type CaseRouteDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 type CaseActor = ReturnType<typeof getActorInfo>;
@@ -48,29 +48,29 @@ const caseKeySchema = z.string().trim().min(1).max(512);
 const documentKeySchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/);
 
 const createCaseSchema = z.object({
-  projectId: z.string().uuid().nullable().optional(),
+  projectId: z.string().guid().nullable().optional(),
   caseType: caseTypeSchema,
   key: caseKeySchema.nullable().optional(),
   title: z.string().trim().min(1).max(500),
   summary: z.string().max(8_000).nullable().optional(),
   status: caseStatusSchema.optional(),
   fields: jsonObjectSchema.optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
+  parentCaseId: z.string().guid().nullable().optional(),
 }).strict();
 
 const patchCaseSchema = z.object({
-  projectId: z.string().uuid().nullable().optional(),
+  projectId: z.string().guid().nullable().optional(),
   title: z.string().trim().min(1).max(500).optional(),
   summary: z.string().max(8_000).nullable().optional(),
   status: caseStatusSchema.optional(),
   fields: jsonObjectSchema.optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
-  labels: z.array(z.string().uuid()).max(100).optional(),
-  labelIds: z.array(z.string().uuid()).max(100).optional(),
+  parentCaseId: z.string().guid().nullable().optional(),
+  labels: z.array(z.string().guid()).max(100).optional(),
+  labelIds: z.array(z.string().guid()).max(100).optional(),
 }).strict();
 
 const createIssueLinkSchema = z.object({
-  issueId: z.string().uuid(),
+  issueId: z.string().guid(),
   role: z.enum(CASE_LINK_ROLES),
 }).strict();
 
@@ -79,7 +79,7 @@ const upsertCaseDocumentSchema = z.object({
   format: z.string().trim().min(1).max(80).optional().default("markdown"),
   body: z.string().max(200_000),
   changeSummary: z.string().trim().max(1_000).nullable().optional(),
-  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseRevisionId: z.string().guid().nullable().optional(),
 }).strict();
 
 const queryListParamSchema = z.union([z.string(), z.array(z.string())]).optional();
@@ -89,13 +89,13 @@ const listCasesQuerySchema = z.object({
   types: queryListParamSchema,
   status: z.string().trim().min(1).max(120).optional(),
   statuses: queryListParamSchema,
-  project: z.string().uuid().optional(),
-  projectId: z.string().uuid().optional(),
+  project: z.string().guid().optional(),
+  projectId: z.string().guid().optional(),
   projectIds: queryListParamSchema,
   includeNoProject: z.enum(["true", "false", "1", "0"]).optional(),
-  label: z.string().uuid().optional(),
-  labelId: z.string().uuid().optional(),
-  parent: z.string().uuid().optional(),
+  label: z.string().guid().optional(),
+  labelId: z.string().guid().optional(),
+  parent: z.string().guid().optional(),
   q: z.string().trim().min(1).max(200).optional(),
   includeAncestors: z.enum(["true", "false", "1", "0"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
@@ -206,7 +206,7 @@ function caseLookupCompanyIds(req: Request) {
 
 async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
   const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, caseLookupCompanyIds(req));
-  if (!row) throw notFound("Case not found");
+  if (!row || !hasCompanyAccess(req, row.companyId)) throw notFound("Case not found");
   assertCompanyAccess(req, row.companyId);
   return row;
 }
@@ -218,7 +218,7 @@ async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
 async function resolveSharedPathCase(db: Db, req: Request, idOrIdentifier: string) {
   const companyIds = caseLookupCompanyIds(req);
   const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
-  if (!row) return null;
+  if (!row || !hasCompanyAccess(req, row.companyId)) return null;
   await assertCasesEnabled(db);
   assertCompanyAccess(req, row.companyId);
   return row;
@@ -837,6 +837,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "case.document_annotation_thread_created",
         entityType: "case",
         entityId: caseRow.id,
@@ -875,6 +876,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "case.document_annotation_comment_added",
         entityType: "case",
         entityId: caseRow.id,
@@ -911,6 +913,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: thread.status === "resolved"
           ? "case.document_annotation_thread_resolved"
           : "case.document_annotation_thread_reopened",
@@ -1422,7 +1425,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     await assertCasesEnabled(db);
     const issueIdOrIdentifier = (req.params.issueId as string).trim();
     const issue = await loadIssueByIdOrIdentifier(db, issueIdOrIdentifier, caseLookupCompanyIds(req));
-    if (!issue) throw notFound("Issue not found");
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
     assertCompanyAccess(req, issue.companyId);
     const rows = await db
       .select({ link: caseIssueLinks, caseRow: cases })

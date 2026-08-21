@@ -10,11 +10,14 @@ import {
   type IssueChatLinkedRun,
 } from "./issue-chat-messages";
 import type {
+  AskUserQuestionsInteraction,
+  AskUserQuestionsQuestion,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import { registerUIAdapter, unregisterUIAdapter } from "../adapters/registry";
 
 function createAgent(id: string, name: string): Agent {
   return {
@@ -92,6 +95,13 @@ function createInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -120,6 +130,13 @@ function createRequestConfirmation(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -618,6 +635,44 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("suppresses live-run Working messages for terminal issues", () => {
+    const liveRun: LiveRunForIssue = {
+      id: "run-live-terminal",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:04:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:04:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+    };
+
+    const terminalMessages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [liveRun],
+      issueStatus: "done",
+      currentUserId: "user-1",
+    });
+    const liveMessages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [liveRun],
+      issueStatus: "in_progress",
+      currentUserId: "user-1",
+    });
+
+    expect(terminalMessages.find((message) => message.id === "run-assistant:run-live-terminal")).toBeUndefined();
+    expect(liveMessages.find((message) => message.id === "run-assistant:run-live-terminal")).toMatchObject({
+      status: { type: "running" },
+      metadata: { custom: { waitingText: "Working..." } },
+    });
+  });
+
   it("merges thread interactions into the same chronological feed as comments and runs", () => {
     const messages = buildIssueChatMessages({
       comments: [
@@ -673,6 +728,77 @@ describe("buildIssueChatMessages", () => {
         },
       },
     });
+  });
+
+  it("drops degenerate ask_user_questions interactions so they leave no empty slot (PAP-424)", () => {
+    function askInteraction(
+      id: string,
+      questions: AskUserQuestionsQuestion[],
+    ): AskUserQuestionsInteraction {
+      return {
+        id,
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "ask_user_questions",
+        title: null,
+        summary: null,
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        createdAt: new Date("2026-04-06T12:02:00.000Z"),
+        updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+        resolvedAt: null,
+        resolverPolicy: "anyone",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        resolverPolicyProvenance: "inherited",
+        effectiveResolverPolicySource: "requested",
+        legacyResolverPolicyAliases: { requested: "board_or_agents", effective: "board_or_agents" },
+        payload: { version: 1, questions },
+        result: null,
+      } as AskUserQuestionsInteraction;
+    }
+
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+        }),
+      ],
+      interactions: [
+        // A truly unanswerable card (no options, no free-text) — must be
+        // filtered out entirely.
+        askInteraction("interaction-degenerate", [
+          { id: "q1", prompt: "Anything?", selectionMode: "single", options: [] },
+        ]),
+        // A legitimate yes/no question survives.
+        askInteraction("interaction-legit", [
+          {
+            id: "q1",
+            prompt: "Ship it?",
+            selectionMode: "single",
+            options: [
+              { id: "yes", label: "Yes" },
+              { id: "no", label: "No" },
+            ],
+          },
+        ]),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const ids = messages.map((message) => `${message.role}:${message.id}`);
+    // The legit card is present; the degenerate one leaves no message at all.
+    expect(ids).toEqual(["user:comment-1", "system:interaction:interaction-legit"]);
+    expect(ids).not.toContain("system:interaction:interaction-degenerate");
   });
 
   it("preserves ephemeral active-run status metadata for rendering", () => {
@@ -956,6 +1082,86 @@ describe("buildIssueChatMessages", () => {
       toolName: "search",
       result: "search completed",
     }));
+  });
+
+  it("honors a wider transcript window declared by an adapter's UI module", () => {
+    // Capability path: an adapter (built-in or plugin) declares
+    // transcriptPresentation on its UI module; shared code resolves it via the
+    // registry with no adapter identities. The test registers a synthetic
+    // verbose adapter — the test right above pins the default 30-entry window
+    // for adapters that declare nothing.
+    registerUIAdapter({
+      type: "verbose_test_local",
+      label: "Verbose Test",
+      parseStdoutLine: () => [],
+      ConfigFields: () => null,
+      buildAdapterConfig: () => ({}),
+      transcriptPresentation: { maxVisibleEntries: 400, liveReasoningView: "scrollLog" },
+    });
+
+    try {
+      const isoAt = (baseMs: number, offsetSeconds: number) =>
+        new Date(baseMs + offsetSeconds * 1000).toISOString();
+      const baseMs = Date.parse("2026-04-06T12:00:00.000Z");
+      // 90 renderable entries: over the default 30-entry window, under the
+      // declared 400-entry window, so nothing is trimmed.
+      const transcript = [
+        ...Array.from({ length: 9 }, (_, index) => ({
+          kind: "assistant" as const,
+          ts: isoAt(baseMs, index),
+          text: `Older update ${index + 1}`,
+        })),
+        {
+          kind: "tool_call" as const,
+          ts: isoAt(baseMs, 9),
+          name: "search",
+          toolUseId: "tool-keep",
+          input: { query: "issue chat virtualization" },
+        },
+        ...Array.from({ length: 79 }, (_, index) => ({
+          kind: "assistant" as const,
+          ts: isoAt(baseMs, 10 + index),
+          text: `Recent update ${index + 1}`,
+        })),
+        {
+          kind: "tool_result" as const,
+          ts: isoAt(baseMs, 89),
+          toolUseId: "tool-keep",
+          content: "search completed",
+          isError: false,
+        },
+      ];
+
+      const messages = buildIssueChatMessages({
+        comments: [],
+        timelineEvents: [],
+        linkedRuns: [
+          {
+            runId: "run-history-verbose",
+            status: "succeeded",
+            agentId: "agent-1",
+            agentName: "VerboseCoder",
+            adapterType: "verbose_test_local",
+            createdAt: new Date("2026-04-06T12:00:00.000Z"),
+            startedAt: new Date("2026-04-06T12:00:00.000Z"),
+            finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+          },
+        ],
+        liveRuns: [],
+        transcriptsByRunId: new Map([["run-history-verbose", transcript]]),
+        hasOutputForRun: (runId) => runId === "run-history-verbose",
+        currentUserId: "user-1",
+      });
+
+      expect(messages).toHaveLength(1);
+      const textParts = messages[0]?.content
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text) ?? [];
+      expect(textParts.join("\n")).toContain("Older update 1");
+      expect(textParts.join("\n")).toContain("Recent update 79");
+    } finally {
+      unregisterUIAdapter("verbose_test_local");
+    }
   });
 
   it("keeps the same assistant message id when a live run becomes a cancelled historical run", () => {

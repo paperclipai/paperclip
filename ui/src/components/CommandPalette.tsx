@@ -132,7 +132,7 @@ export function CommandPalette() {
     enabled: !!selectedCompanyId && open,
   });
   const projects = useMemo(
-    () => allProjects.filter((p) => !p.archivedAt),
+    () => allProjects,
     [allProjects],
   );
 

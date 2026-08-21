@@ -37,6 +37,7 @@ export const AGENT_ADAPTER_TYPES = [
   "grok_local",
   "hermes_gateway",
   "hermes_local",
+  "kimi_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -213,11 +214,25 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_REVIEW_POLICIES = ["anyone", "not_creator", "human_only"] as const;
+export type IssueReviewPolicy = (typeof ISSUE_REVIEW_POLICIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+
+export const SUMMARY_SLOT_SCOPE_KINDS = [
+  "project",
+  "workspaces_overview",
+  "project_workspace",
+  "execution_workspace",
+] as const;
+export type SummarySlotScopeKind = (typeof SUMMARY_SLOT_SCOPE_KINDS)[number];
+export const SUMMARY_SLOT_KEYS = ["header"] as const;
+export type SummarySlotKey = (typeof SUMMARY_SLOT_KEYS)[number];
+export const SUMMARY_SLOT_STATUSES = ["idle", "generating", "failed"] as const;
+export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
 
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
@@ -227,6 +242,9 @@ export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KI
 
 export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
 export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_DENSITIES = ["compact"] as const;
+export type IssueCommentPresentationDensity = (typeof ISSUE_COMMENT_PRESENTATION_DENSITIES)[number];
 
 export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
   "text",
@@ -252,6 +270,65 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
+export const ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES = [
+  "anyone",
+  "not_creator",
+  "human_only",
+] as const;
+export type IssueThreadInteractionCanonicalResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES)[number];
+
+export const ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES = [
+  "board_or_agents",
+  "board_only",
+] as const;
+export type IssueThreadInteractionLegacyResolverPolicyAlias =
+  (typeof ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES)[number];
+
+/**
+ * Accepted resolver-policy input values. New product surfaces should use the
+ * canonical values; the two board-prefixed values remain write-compatible
+ * aliases for one migration window.
+ */
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
+  ...ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ...ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES,
+] as const;
+export type IssueThreadInteractionResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
+
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES = [
+  "explicit",
+  "inherited",
+  "legacy_inherited_restriction",
+] as const;
+export type IssueThreadInteractionResolverPolicyProvenance =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES)[number];
+
+export const ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES = [
+  "requested",
+  "company_cap",
+  "governed_action",
+] as const;
+export type IssueThreadInteractionEffectiveResolverPolicySource =
+  (typeof ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES)[number];
+
+export function normalizeIssueThreadInteractionResolverPolicy(
+  policy: IssueThreadInteractionResolverPolicy,
+): IssueThreadInteractionCanonicalResolverPolicy {
+  if (policy === "board_or_agents") return "anyone";
+  if (policy === "board_only") return "human_only";
+  return policy;
+}
+
+export function legacyIssueThreadInteractionResolverPolicyAlias(
+  policy: IssueThreadInteractionCanonicalResolverPolicy,
+): IssueThreadInteractionLegacyResolverPolicyAlias | null {
+  if (policy === "anyone") return "board_or_agents";
+  if (policy === "human_only") return "board_only";
+  return null;
+}
+
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
 
@@ -276,6 +353,10 @@ export type IssueThreadInteractionContinuationPolicy =
 
 export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
 
+// Marks the single onboarding "first task" so surfaces can special-case it
+// (e.g. suppress the seeded-description bubble and rely on a seeded greeting).
+export const ONBOARDING_FIRST_TASK_ORIGIN_KIND = "onboarding_first_task";
+
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
@@ -285,6 +366,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -296,6 +378,7 @@ export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number]
 
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",
+  "deliberate_wait_without_target",
   "stranded_assigned_issue",
   "workspace_validation",
   "configuration_validation",
@@ -303,6 +386,8 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "issue_graph_liveness",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
+
+export const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 
 export const ISSUE_RECOVERY_ACTION_STATUSES = [
   "active",
@@ -322,6 +407,8 @@ export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_T
 
 export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
+  "handed_back",
+  "owner_completed",
   "delegated",
   "false_positive",
   "blocked",
@@ -442,6 +529,8 @@ export type IssueMonitorScheduledBy = (typeof ISSUE_MONITOR_SCHEDULED_BY)[number
 export const ISSUE_EXECUTION_MONITOR_KINDS = ["external_service"] as const;
 export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[number];
 
+export const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
+
 export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
   "wake_owner",
   "create_recovery_issue",
@@ -552,6 +641,12 @@ export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[num
 export const ROUTINE_CATCH_UP_POLICIES = ["skip_missed", "enqueue_missed_with_cap"] as const;
 export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
 
+export const ROUTINE_ACTIVITY_GATE_POLICIES = ["always", "require_external_activity"] as const;
+export type RoutineActivityGatePolicy = (typeof ROUTINE_ACTIVITY_GATE_POLICIES)[number];
+
+export const ROUTINE_ACTIVITY_GATE_SCOPES = ["company", "project"] as const;
+export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[number];
+
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
@@ -659,6 +754,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "plugin",
   "issue",
   "run",
+  "tool_connection",
   "system",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
@@ -674,6 +770,55 @@ export const SECRET_ACCESS_OUTCOMES = [
 ] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
+export const SECRET_PROJECTION_CLASSES = ["unclassified", "class_3_static_lease"] as const;
+export type SecretProjectionClass = (typeof SECRET_PROJECTION_CLASSES)[number];
+
+export const CLASS3_STATIC_LEASE_ALLOWLIST = [
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "agent",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "routine",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "agent",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "routine",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+] as const;
+export type Class3StaticLeaseAllowlistKey = (typeof CLASS3_STATIC_LEASE_ALLOWLIST)[number]["key"];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
@@ -686,6 +831,9 @@ export const BILLING_TYPES = [
   "unknown",
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
+
+export const COST_STATUSES = ["reported", "unpriced"] as const;
+export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",
@@ -857,6 +1005,14 @@ export const PERMISSION_KEYS = [
   "skills:create",
   "skills:suggest-changes",
   "environments:manage",
+  "tools:admin",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "audit:view_agent_actions",
+  "tools:use",
+  "tools:manage_runtime",
+  "inbox:manage",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
@@ -866,6 +1022,235 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
+
+export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolApplicationStatus = (typeof TOOL_APPLICATION_STATUSES)[number];
+
+export const TOOL_CONNECTION_KINDS = ["managed"] as const;
+export type ToolConnectionKind = (typeof TOOL_CONNECTION_KINDS)[number];
+
+export const TOOL_CONNECTION_HEALTH_STATUSES = [
+  "unknown",
+  "healthy",
+  "degraded",
+  "failed",
+  "unchecked",
+  "ok",
+  "error",
+  "missing_secret",
+] as const;
+export type ToolConnectionHealthStatus = (typeof TOOL_CONNECTION_HEALTH_STATUSES)[number];
+
+/**
+ * Health states that mean an app needs the user's attention (a bad/missing key
+ * or a degraded connection). Single source of truth shared by the needs-
+ * attention aggregation and the prosumer Apps surfaces so their counts agree.
+ */
+export const TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES: readonly ToolConnectionHealthStatus[] = [
+  "degraded",
+  "failed",
+  "error",
+  "missing_secret",
+];
+
+export function isToolConnectionAttentionHealth(status: ToolConnectionHealthStatus): boolean {
+  return TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES.includes(status);
+}
+
+export const TOOL_CATALOG_ENTRY_KINDS = ["tool", "resource", "prompt"] as const;
+export type ToolCatalogEntryKind = (typeof TOOL_CATALOG_ENTRY_KINDS)[number];
+
+export const TOOL_CATALOG_ENTRY_STATUSES = ["active", "disabled", "quarantined", "removed"] as const;
+export type ToolCatalogEntryStatus = (typeof TOOL_CATALOG_ENTRY_STATUSES)[number];
+
+export const TOOL_RISK_LEVELS = ["low", "medium", "high", "critical", "read", "write", "destructive"] as const;
+export type ToolRiskLevel = (typeof TOOL_RISK_LEVELS)[number];
+
+export const TOOL_PROFILE_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolProfileStatus = (typeof TOOL_PROFILE_STATUSES)[number];
+
+export const TOOL_PROFILE_DEFAULT_ACTIONS = ["deny", "allow"] as const;
+export type ToolProfileDefaultAction = (typeof TOOL_PROFILE_DEFAULT_ACTIONS)[number];
+
+export const TOOL_PROFILE_ENTRY_SELECTOR_TYPES = [
+  "application",
+  "connection",
+  "catalog_entry",
+  "tool_name",
+  "risk_level",
+] as const;
+export type ToolProfileEntrySelectorType = (typeof TOOL_PROFILE_ENTRY_SELECTOR_TYPES)[number];
+
+export const TOOL_PROFILE_ENTRY_EFFECTS = ["include", "exclude"] as const;
+export type ToolProfileEntryEffect = (typeof TOOL_PROFILE_ENTRY_EFFECTS)[number];
+
+export const TOOL_PROFILE_BINDING_TARGET_TYPES = ["company", "agent", "project", "routine", "issue", "gateway"] as const;
+export type ToolProfileBindingTargetType = (typeof TOOL_PROFILE_BINDING_TARGET_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolMcpGatewayStatus = (typeof TOOL_MCP_GATEWAY_STATUSES)[number];
+
+export const TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES = [
+  "gateway_only",
+  "inherit_context_then_gateway",
+  "gateway_then_context",
+] as const;
+export type ToolMcpGatewayDefaultProfileMode = (typeof TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES)[number];
+
+export const TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES = [
+  "none",
+  "company",
+  "project",
+  "routine",
+  "issue",
+  "agent",
+] as const;
+export type ToolMcpGatewayContextScopeType = (typeof TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES = ["gateway_client", "heartbeat_run", "board_user", "agent"] as const;
+export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
+export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_PATHS = ["exchange", "oauth_access", "static"] as const;
+export type ConnectionTokenIssuancePath = (typeof CONNECTION_TOKEN_ISSUANCE_PATHS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_OUTCOMES = [
+  "success",
+  "denied",
+  "rate_limited",
+  "use_env_lease",
+  "upstream_error",
+  "failure",
+] as const;
+export type ConnectionTokenIssuanceOutcome = (typeof CONNECTION_TOKEN_ISSUANCE_OUTCOMES)[number];
+
+export const TOOL_POLICY_TYPES = [
+  "allow",
+  "block",
+  "require_approval",
+  "trust_rule",
+  "rate_limit",
+] as const;
+export type ToolPolicyType = (typeof TOOL_POLICY_TYPES)[number];
+
+export const TOOL_POLICY_DECISIONS = ["allow", "deny", "require_approval", "rate_limited", "defer_runtime"] as const;
+export type ToolPolicyDecision = (typeof TOOL_POLICY_DECISIONS)[number];
+
+export const TOOL_INVOCATION_STATUSES = [
+  "pending",
+  "authorized",
+  "denied",
+  "awaiting_approval",
+  "executing",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "rate_limited",
+] as const;
+export type ToolInvocationStatus = (typeof TOOL_INVOCATION_STATUSES)[number];
+
+export const TOOL_INVOCATION_APPROVAL_STATES = [
+  "not_required",
+  "required",
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+] as const;
+export type ToolInvocationApprovalState = (typeof TOOL_INVOCATION_APPROVAL_STATES)[number];
+
+export const TOOL_ACTION_REQUEST_STATUSES = [
+  "pending",
+  "approved",
+  "executing",
+  "rejected",
+  "expired",
+  "cancelled",
+  "executed",
+  "failed",
+] as const;
+export type ToolActionRequestStatus = (typeof TOOL_ACTION_REQUEST_STATUSES)[number];
+
+export const TOOL_AUDIT_EVENT_TYPES = [
+  "discovery",
+  "policy_decision",
+  "invocation_created",
+  "call_started",
+  "call_completed",
+  "call_failed",
+  "call_denied",
+  "approval_requested",
+  "approval_resolved",
+  "session_revoked",
+  "trust_rule_created",
+  "trust_rule_revoked",
+  "trust_rule_used",
+  "runtime_started",
+  "runtime_stopped",
+  "rate_limited",
+] as const;
+export type ToolAuditEventType = (typeof TOOL_AUDIT_EVENT_TYPES)[number];
+
+export const TOOL_AUDIT_OUTCOMES = ["pending", "success", "failure", "denied", "timeout", "cancelled"] as const;
+export type ToolAuditOutcome = (typeof TOOL_AUDIT_OUTCOMES)[number];
+
+/**
+ * Connection-level lifecycle events surfaced on the per-app Activity tab
+ * alongside tool-call events (PAP-11284). These are derived from the
+ * company activity log rows scoped to a single tool connection.
+ */
+export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
+  "app_connected",
+  "app_paused",
+  "app_resumed",
+  "allowlist_changed",
+  "reconnected",
+  "disconnected",
+  "actions_quarantined",
+] as const;
+export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
+
+export const TOOL_RUNTIME_KINDS = ["remote_session", "local_stdio"] as const;
+export type ToolRuntimeKind = (typeof TOOL_RUNTIME_KINDS)[number];
+
+export const TOOL_RUNTIME_SLOT_STATUSES = ["starting", "running", "idle", "stopped", "failed", "disabled", "error"] as const;
+export type ToolRuntimeSlotStatus = (typeof TOOL_RUNTIME_SLOT_STATUSES)[number];
+
+export const TOOL_RATE_LIMIT_WINDOW_KINDS = ["minute", "hour", "day", "month"] as const;
+export type ToolRateLimitWindowKind = (typeof TOOL_RATE_LIMIT_WINDOW_KINDS)[number];
+
+export const TOOL_ACCESS_ACTIVITY_ACTIONS = [
+  "tool_application.created",
+  "tool_application.updated",
+  "tool_application.archived",
+  "tool_connection.created",
+  "tool_connection.updated",
+  "tool_connection.tested",
+  "tool_connection.catalog_refreshed",
+  "tool_profile.created",
+  "tool_profile.updated",
+  "tool_profile.duplicated",
+  "tool_profile.deleted",
+  "tool_profile.new_tools_reviewed",
+  "tool_profile.bound",
+  "tool_profile.unbound",
+  "tool_policy.created",
+  "tool_policy.updated",
+  "tool_policy.disabled",
+  "tool_trust_rule.created",
+  "tool_trust_rule.revoked",
+  "tool_runtime_slot.started",
+  "tool_runtime_slot.stopped",
+  "tool_action_request.created",
+  "tool_action_request.resolved",
+] as const;
+export type ToolAccessActivityAction = (typeof TOOL_ACCESS_ACTIVITY_ACTIONS)[number];
 
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification
@@ -935,6 +1320,14 @@ export const PLUGIN_CAPABILITIES = [
   "issue.relations.read",
   "issue.subtree.read",
   "issue.comments.read",
+  // Read pending issue-thread interactions (decision cards) on an issue.
+  "issue.interactions.read",
+  // Read issue attachment metadata and, via the capability-scoped host
+  // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
+  "issue.attachments.read",
+  // Read company approvals (list + get). The host redacts approval payloads to
+  // match the web app's own approval read surface.
+  "approvals.read",
   "issue.documents.read",
   "agents.read",
   "goals.read",
@@ -956,7 +1349,18 @@ export const PLUGIN_CAPABILITIES = [
   "issues.checkout",
   "issues.wakeup",
   "issue.comments.create",
+  "issue.comments.create_human_attributed",
   "issue.interactions.create",
+  // Respond to (accept/reject) an issue-thread interaction on behalf of a
+  // paired board user. Impersonation surface: the host independently
+  // re-verifies the actor is an active human member of the company at apply
+  // time (never trusts plugin-supplied identity), matching the web app's
+  // board-only interaction resolve route.
+  "issue.interactions.respond",
+  // Decide (approve/reject) a company approval on behalf of a paired board
+  // user. Same apply-time active-human-member re-verification as above; the
+  // web app's approval decision routes are board-only.
+  "approvals.respond",
   "issue.documents.write",
   "projects.managed",
   "routines.managed",

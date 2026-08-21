@@ -62,6 +62,19 @@ const primaryIssue: Issue = {
   documentSummaries: issueDocumentSummaries,
   currentExecutionWorkspace: storybookExecutionWorkspaces[0]!,
 };
+const modelOverrideIssue: Issue = {
+  ...primaryIssue,
+  id: "issue-model-override-visual",
+  identifier: "MOD-1",
+  issueNumber: 1,
+  title: "Verify task-level model override provenance",
+  assigneeAdapterOverrides: {
+    adapterConfig: {
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "high",
+    },
+  },
+};
 const childIssues = storybookIssues.filter((issue) => issue.parentId === primaryIssue.id);
 const longProject: Project = {
   ...storybookProjects[0]!,
@@ -308,6 +321,61 @@ function IssuePropertiesLongValuePane({ inline = false }: { inline?: boolean }) 
         </div>
       </div>
     </LongValueStorybookData>
+  );
+}
+
+function IssuePropertiesModelOverridePane() {
+  return (
+    <StorybookData>
+      <div className="paperclip-story p-6">
+        <div className="mx-auto w-80 border border-border bg-card">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={modelOverrideIssue}
+              childIssues={[]}
+              onAddSubIssue={() => undefined}
+              onUpdate={() => undefined}
+              inline
+            />
+          </div>
+        </div>
+      </div>
+    </StorybookData>
+  );
+}
+
+function IssuePropertiesMobileBlockerActionsPane() {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const openTimer = window.setTimeout(() => {
+      const trigger = rootRef.current?.querySelector<HTMLButtonElement>(
+        'button[aria-label^="Actions for blocker"]',
+      );
+      if (!trigger) return;
+      trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger.click();
+    }, 0);
+    return () => window.clearTimeout(openTimer);
+  }, []);
+
+  return (
+    <StorybookData>
+      <div ref={rootRef} className="paperclip-story min-h-screen p-4">
+        <div className="mx-auto max-w-sm border border-border bg-background">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={storybookIssues[1]!}
+              childIssues={[]}
+              onUpdate={() => undefined}
+              inline
+            />
+          </div>
+        </div>
+      </div>
+    </StorybookData>
   );
 }
 
@@ -886,6 +954,17 @@ export const IssuePropertiesLongValuesDesktop: Story = {
 export const IssuePropertiesLongValuesMobile: Story = {
   name: "IssueProperties - long values mobile inline",
   render: () => <IssuePropertiesLongValuePane inline />,
+};
+
+export const IssuePropertiesModelOverride: Story = {
+  name: "IssueProperties - task model override",
+  render: () => <IssuePropertiesModelOverridePane />,
+};
+
+export const IssuePropertiesMobileBlockerActions: Story = {
+  name: "IssueProperties - mobile blocker actions open",
+  render: () => <IssuePropertiesMobileBlockerActionsPane />,
+  parameters: { viewport: { defaultViewport: "mobile1" } },
 };
 
 function ModelProfileLedgerStandalone() {

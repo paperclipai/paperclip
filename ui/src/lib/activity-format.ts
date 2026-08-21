@@ -1,5 +1,6 @@
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "./company-members";
+import { formatReviewPolicyValue } from "./review-policy";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
 
@@ -69,6 +70,19 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  // Interaction outcomes (PAP-16506). An agent may now resolve one — including a
+  // review of its own work — so these must read as outcomes in the feed instead
+  // of falling through to the raw "issue thread interaction accepted" action id.
+  // `details.interactionKind` sharpens the wording; see INTERACTION_OUTCOME_LABELS.
+  "issue.thread_interaction_created": "asked for a decision on",
+  "issue.thread_interaction_accepted": "accepted the request on",
+  "issue.thread_interaction_rejected": "rejected the request on",
+  "issue.thread_interaction_answered": "answered the request on",
+  "issue.thread_interaction_withdrawn": "withdrew the request on",
+  "issue.thread_interaction_cancelled": "cancelled the request on",
+  "issue.thread_interaction_expired": "expired the request on",
+  "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on",
+  "issue.stalled_review_decided": "recorded a review verdict on",
   "project.created": "created",
   "project.updated": "updated",
   "project.deleted": "deleted",
@@ -82,6 +96,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.archived": "archived",
   "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
+  "audit.exported": "exported the agent audit log for",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -112,6 +127,9 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.successful_run_handoff_required": "Run finished without a clear next step",
   "issue.successful_run_handoff_resolved": "Next step chosen",
   "issue.successful_run_handoff_escalated": "Run finished without a next step - recovery escalated",
+  "issue.cross_issue_influence_cap_rejected": "hit the per-run cross-task write cap",
+  "issue.cross_issue_influence_observed": "made a cross-task write",
+  "issue.attribution_spoof_rejected": "tried to choose its own responsible user",
   "issue.recovery_action_opened": "Opened a source-scoped recovery action",
   "issue.recovery_action_resolved": "Resolved the recovery action",
   "issue.recovery_action_escalated": "Escalated the recovery action",
@@ -129,7 +147,63 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "issue.thread_interaction_created": "asked for a decision",
+  "issue.thread_interaction_accepted": "accepted the request",
+  "issue.thread_interaction_rejected": "rejected the request",
+  "issue.thread_interaction_answered": "answered the request",
+  "issue.thread_interaction_withdrawn": "withdrew the request",
+  "issue.thread_interaction_cancelled": "cancelled the request",
+  "issue.thread_interaction_expired": "expired the request",
+  "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on the request",
+  "issue.stalled_review_decided": "recorded a review verdict",
 };
+
+/**
+ * `issue.stalled_review_decided` carries the verb the actor chose, so the line
+ * names the verdict ("approved the review") rather than the generic action.
+ * Mirrors `StalledReviewDecisionAction` in shared.
+ */
+const STALLED_REVIEW_DECISION_LABELS: Record<string, string> = {
+  approve: "approved the review",
+  request_changes: "requested changes on the review",
+  send_back: "sent the review back to work",
+};
+
+/**
+ * `issue.thread_interaction_accepted` / `_rejected` fire for *every* interaction
+ * kind, not only for a review. A task suggestion or a question is accepted, not
+ * approved, so the kind on the event picks the verb. Kinds absent from a map
+ * keep the neutral "accepted the request" wording from the tables above, which
+ * is also the fallback for an event that carries no kind.
+ */
+const INTERACTION_ACCEPTED_LABELS: Record<string, string> = {
+  request_confirmation: "approved the request",
+  request_checkbox_confirmation: "approved the request",
+  suggest_tasks: "accepted the task suggestions",
+  ask_user_questions: "accepted the answers",
+};
+
+const INTERACTION_REJECTED_LABELS: Record<string, string> = {
+  request_confirmation: "rejected the request",
+  request_checkbox_confirmation: "rejected the request",
+  suggest_tasks: "declined the task suggestions",
+  ask_user_questions: "declined the questions",
+};
+
+/**
+ * Kind-aware wording for an interaction outcome, or `null` when the tables
+ * above already say it well enough.
+ */
+function formatInteractionOutcomeLabel(action: string, details: ActivityDetails): string | null {
+  const table = action === "issue.thread_interaction_accepted"
+    ? INTERACTION_ACCEPTED_LABELS
+    : action === "issue.thread_interaction_rejected"
+      ? INTERACTION_REJECTED_LABELS
+      : null;
+  if (!table) return null;
+  const kind = typeof details?.interactionKind === "string" ? details.interactionKind : null;
+  return kind ? table[kind] ?? null : null;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -280,6 +354,11 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
     const assigneeName = formatAssigneeName(details, options);
     parts.push(assigneeName ? `made ${assigneeName} responsible for the task` : "cleared the responsible");
   }
+  if (details.reviewPolicy !== undefined) {
+    // `null` is the default ("anyone can approve"), so it must not read as
+    // "changed the review policy to none" (PAP-16506).
+    parts.push(`changed who can approve to ${formatReviewPolicyValue(details.reviewPolicy)}`);
+  }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");
 
@@ -338,6 +417,15 @@ export function formatActivityVerb(
     if (issueUpdatedVerb) return issueUpdatedVerb;
   }
 
+  if (action === "issue.stalled_review_decided") {
+    const decision = typeof details?.action === "string" ? details.action : null;
+    const label = decision ? STALLED_REVIEW_DECISION_LABELS[decision] : null;
+    if (label) return `${label} on`;
+  }
+
+  const outcomeLabel = formatInteractionOutcomeLabel(action, details);
+  if (outcomeLabel) return `${outcomeLabel} on`;
+
   const structuredChange = formatStructuredIssueChange({
     action,
     details,
@@ -371,6 +459,15 @@ export function formatIssueActivityAction(
     const detail = formatAcceptedPlanDecompositionDetail(details);
     if (detail) return detail;
   }
+
+  if (action === "issue.stalled_review_decided") {
+    const decision = typeof details?.action === "string" ? details.action : null;
+    const label = decision ? STALLED_REVIEW_DECISION_LABELS[decision] : null;
+    if (label) return label;
+  }
+
+  const outcomeLabel = formatInteractionOutcomeLabel(action, details);
+  if (outcomeLabel) return outcomeLabel;
 
   if (action.startsWith("issue.monitor_") && details) {
     const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()

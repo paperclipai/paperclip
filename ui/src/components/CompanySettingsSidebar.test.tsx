@@ -3,14 +3,12 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
-}));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
 }));
 const mockPluginsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -74,10 +72,6 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
-
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
 }));
@@ -114,17 +108,11 @@ describe("CompanySettingsSidebar", () => {
       failedRuns: 0,
       joinRequests: 2,
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: false,
-    });
     mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({
       slots: [],
       isLoading: false,
       errorMessage: null,
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: false,
     });
   });
 
@@ -134,7 +122,7 @@ describe("CompanySettingsSidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the company back link and the settings sections in the sidebar", async () => {
+  it("renders one unified settings list without company or instance headers", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -150,16 +138,18 @@ describe("CompanySettingsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Paperclip");
-    expect(container.textContent).toContain("Company Settings");
-    expect(container.textContent).toContain("Company settings");
-    expect(container.textContent).toContain("Instance settings");
+    expect(container.textContent).not.toContain("Company Settings");
+    expect(container.textContent).not.toContain("Instance Settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Environments");
-    expect(container.textContent).not.toContain("Cloud upstream");
+    expect(container.textContent).toContain("Export");
+    expect(container.textContent).toContain("Import");
     expect(container.textContent).toContain("Members");
-    expect(container.textContent).not.toContain("Cloud upstream");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
+    expect(container.textContent).toContain("Access");
+    expect(container.textContent).toContain("Heartbeats");
+    expect(container.textContent).not.toContain("Tools & Access");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
@@ -169,8 +159,35 @@ describe("CompanySettingsSidebar", () => {
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        to: "/company/export",
+        label: "Export",
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/import",
+        label: "Import",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
         to: "/company/settings/instance/environments",
         label: "Environments",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/access",
+        label: "Access",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/heartbeats",
+        label: "Heartbeats",
         end: true,
       }),
     );
@@ -203,13 +220,11 @@ describe("CompanySettingsSidebar", () => {
         end: true,
       }),
     );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/company/settings/instance/general",
-        label: "General",
-        end: true,
-      }),
-    );
+    expect(new Set(
+      sidebarNavItemMock.mock.calls
+        .filter(([props]) => props.label === "General")
+        .map(([props]) => props.to),
+    )).toEqual(new Set(["/company/settings"]));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/instance/plugins",
@@ -222,36 +237,9 @@ describe("CompanySettingsSidebar", () => {
         label: "Adapters",
       }),
     );
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("shows cloud upstream only when cloud sync is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: true,
-    });
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsSidebar />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Cloud upstream");
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/company/settings/cloud-upstream",
-        label: "Cloud upstream",
-        end: true,
+        to: "/company/settings/tools",
       }),
     );
 
@@ -297,38 +285,6 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings/permissions",
         label: "Permissions",
-        end: true,
-      }),
-    );
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("shows cloud upstream only when cloud sync is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: true,
-    });
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsSidebar />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Cloud upstream");
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/company/settings/cloud-upstream",
-        label: "Cloud upstream",
         end: true,
       }),
     );
@@ -396,5 +352,66 @@ describe("CompanySettingsSidebar", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("CompanySettingsSidebar operator-hidden entries", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockSidebarBadgesApi.get.mockResolvedValue({
+      inbox: 0,
+      approvals: 0,
+      failedRuns: 0,
+      joinRequests: 0,
+    });
+    mockPluginsApi.list.mockResolvedValue([]);
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false, errorMessage: null });
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderSidebar(hiddenSettings?: string[]) {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      ...(hiddenSettings ? { hiddenSettings } : {}),
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  it("skips operator-hidden pages and their queries", async () => {
+    await renderSidebar(["instance.plugins", "instance.heartbeats"]);
+
+    expect(container.textContent).not.toContain("Plugins");
+    expect(container.textContent).not.toContain("Heartbeats");
+    expect(container.textContent).toContain("General");
+    expect(container.textContent).toContain("Adapters");
+    expect(container.textContent).toContain("Access");
+    expect(mockPluginsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("keeps every entry when nothing is hidden", async () => {
+    await renderSidebar();
+
+    expect(container.textContent).toContain("Access");
+    expect(container.textContent).toContain("Plugins");
+    expect(container.textContent).toContain("Heartbeats");
+    expect(container.textContent).toContain("Adapters");
+    expect(mockPluginsApi.list).toHaveBeenCalled();
   });
 });

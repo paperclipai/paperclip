@@ -12,6 +12,7 @@ const mockHealthApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -57,6 +58,20 @@ vi.mock("./Sidebar", () => ({
 
 vi.mock("./CompanySettingsSidebar", () => ({
   CompanySettingsSidebar: () => <div>Company settings sidebar</div>,
+}));
+
+vi.mock("./AppsSidebar", () => ({
+  AppsSidebar: () => <div>Apps sidebar</div>,
+}));
+
+vi.mock("./AppConnectionSidebar", () => ({
+  AppDetailSidebar: (props: { kind: "connection"; connectionId: string } | { kind: "application"; applicationId: string }) => (
+    <div>
+      {props.kind === "connection"
+        ? `App detail sidebar connection ${props.connectionId}`
+        : `App detail sidebar application ${props.applicationId}`}
+    </div>
+  ),
 }));
 
 vi.mock("./BreadcrumbBar", () => ({
@@ -202,6 +217,10 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../lib/company-selection", () => ({
   shouldSyncCompanySelectionFromRoute: () => false,
+  // No bounce in the shared harness: these tests exercise layout chrome, not
+  // archived-company routing (covered by company-selection unit tests and the
+  // archived-company-url e2e).
+  resolveArchivedCompanyBounce: () => null,
 }));
 
 vi.mock("../lib/main-content-focus", () => ({
@@ -245,6 +264,7 @@ describe("Layout", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
@@ -444,13 +464,15 @@ describe("Layout", () => {
     expect(selector?.value).toBe("secrets");
     const selectorText = selector?.textContent?.toLowerCase() ?? "";
     expect(selectorText).toContain("general");
-    expect(selectorText).toContain("cloud upstream");
+    expect(selectorText).toContain("export");
+    expect(selectorText).toContain("import");
     expect(selectorText).toContain("members");
     expect(selectorText).toContain("invites");
     expect(selectorText).toContain("secrets");
-    expect(selectorText).toContain("instance general");
-    expect(selectorText).toContain("instance environments");
-    expect(selectorText).toContain("instance plugins");
+    expect(selectorText).toContain("profile");
+    expect(selectorText).toContain("environments");
+    expect(selectorText).toContain("plugins");
+    expect(selectorText).not.toContain("instance general");
 
     await act(async () => {
       root.unmount();
@@ -479,6 +501,247 @@ describe("Layout", () => {
     expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Plugin route sidebar");
     expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each(["/PAP/company/export", "/PAP/company/import"])(
+    "renders the shared settings sidebar on %s",
+    async (pathname) => {
+      currentPathname = pathname;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(container.textContent).toContain("Company settings sidebar");
+      expect(container.textContent).toContain("Main company nav");
+      expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+
+      await act(async () => {
+        root.unmount();
+      });
+    },
+  );
+
+  it("keeps the app sidebar and shows the Apps sidebar in the secondary pane on legacy tools routes", async () => {
+    currentPathname = "/PAP/tools/runtime";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Company settings sidebar");
+    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
+    currentPathname = "/PAP/apps";
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+    expect(mockSetForceCollapsed).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the Apps sidebar on the M8 advanced-setup tabs", async () => {
+    currentPathname = "/PAP/apps/advanced/run-your-own";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the Apps sidebar on legacy developer tabs behind the Advanced door", async () => {
+    currentPathname = "/PAP/apps/advanced/runtime";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  // Reserved Apps subroutes are not connection ids. They must keep the
+  // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
+  it.each(["browse", "connections", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+    currentPathname = `/PAP/apps/${route}`;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("App detail sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the Apps sidebar on the gateways list and detail routes", async () => {
+    for (const pathname of ["/PAP/apps/gateways", "/PAP/apps/gateways/gw-1/overview"]) {
+      currentPathname = pathname;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(container.textContent).toContain("Apps sidebar");
+      expect(container.textContent).toContain("Main company nav");
+      expect(container.textContent).not.toContain("App detail sidebar");
+
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("uses the app connection sidebar on app detail routes", async () => {
+    currentPathname = "/PAP/apps/conn-1/permissions";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("App detail sidebar connection conn-1");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Apps sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses the app detail sidebar on not-connected app routes", async () => {
+    currentPathname = "/PAP/apps/app/app-1/permissions";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("App detail sidebar application app-1");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Apps sidebar");
 
     await act(async () => {
       root.unmount();

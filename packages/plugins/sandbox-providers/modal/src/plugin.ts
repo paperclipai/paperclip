@@ -213,11 +213,13 @@ function isValidShellEnvKey(value: string): boolean {
 
 // Modal's `sandbox.exec` takes an argv array and bypasses the shell entirely,
 // so adapter probes that rely on PATH mutations from /etc/profile or ~/.bashrc
-// do not work without an explicit login shell. Mirroring the Daytona / E2B
-// providers, wrap the user command in a `sh -lc` script that sources common
-// login profiles plus nvm before invoking it. Env is set after profile sourcing
-// so caller env wins; stdin is staged to a temp file and shell-redirected so
-// fast-failing commands do not race a streaming stdin writer.
+// do not work without an explicit profile source. Wrap the user command in a
+// `sh -c` script that sources the common login profiles before it runs. The
+// script sources no `nvm.sh`; the sandbox image supplies node on the PATH. The
+// script sources the profiles itself, so a non-login shell (`sh -c`) is enough.
+// Env is set after profile sourcing so caller env wins; stdin is staged to a
+// temp file and shell-redirected so fast-failing commands do not race a
+// streaming stdin writer.
 function buildLoginShellScript(input: {
   command: string;
   args: string[];
@@ -244,8 +246,6 @@ function buildLoginShellScript(input: {
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
   ];
   if (input.cwd) {
     lines.push(`cd ${shellQuote(input.cwd)}`);
@@ -624,7 +624,7 @@ const plugin = definePlugin({
           env: params.env,
           stdinPath: stdinPath ?? undefined,
         });
-        const proc = await sandbox.exec(["sh", "-lc", script], {
+        const proc = await sandbox.exec(["sh", "-c", script], {
           timeoutMs: callerTimeoutMs,
           stdout: "pipe",
           stderr: "pipe",

@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
+import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
 import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+
+function buildSandboxProviderManifest(driver: Record<string, unknown>) {
+  return {
+    id: "paperclip.capability-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Capability Provider",
+    description: "Sandbox provider that declares fine-grained capabilities.",
+    author: "Paperclip",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "capability-provider",
+        kind: "sandbox_provider",
+        displayName: "Capability Provider",
+        configSchema: { type: "object" },
+        ...driver,
+      },
+    ],
+  };
+}
 
 describe("plugin capability constants", () => {
   it("exposes each capability once", () => {
@@ -104,10 +128,14 @@ describe("plugin managed routine validators", () => {
     const parsed = pluginManagedRoutineDeclarationSchema.parse({
       routineKey: "wiki.refresh",
       title: "Refresh Wiki",
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
       issueTemplate: { surfaceVisibility: "default" },
     });
 
     expect(parsed.issueTemplate?.surfaceVisibility).toBe("default");
+    expect(parsed.activityGatePolicy).toBe("require_external_activity");
+    expect(parsed.activityGateScope).toBe("project");
   });
 
   it("rejects non-core issue surface visibility values in routine templates", () => {
@@ -244,5 +272,153 @@ describe("plugin UI slot validators", () => {
     expect(parsed.success).toBe(false);
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
+  });
+});
+
+describe("sandbox provider capability declaration validators", () => {
+  it("test_manifest_accepts_sandbox_capabilities_and_rejects_unknown_capability_keys", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: {
+          reusableLeases: true,
+          nativeSyncIn: true,
+          nativeSyncOut: false,
+          persistentProcessSessions: true,
+          independentControlCommands: false,
+          incrementalSessionOutput: true,
+        },
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.sandboxCapabilities).toEqual({
+      reusableLeases: true,
+      nativeSyncIn: true,
+      nativeSyncOut: false,
+      persistentProcessSessions: true,
+      independentControlCommands: false,
+      incrementalSessionOutput: true,
+    });
+
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: {
+          reusableLeases: true,
+          // A typo or unknown capability name must fail validation, not drop
+          // silently. The nested schema is `.strict()`.
+          nativeSync: true,
+        },
+      }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_manifest_accepts_concurrent_sync_operations_capability", () => {
+    // A provider opts in to parallel bidirectional file sync with this key. The
+    // strict schema accepts it and keeps the declared value.
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: { concurrentSyncOperations: true },
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.sandboxCapabilities).toEqual({
+      concurrentSyncOperations: true,
+    });
+  });
+
+  it("test_manifest_rejects_unknown_sync_concurrency_capability_key", () => {
+    // A neighboring but unknown concurrency key must fail validation, not drop
+    // silently. The strict schema rejects a capability the host does not honor.
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: { concurrentSyncAndExec: true },
+      }),
+    );
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_supports_reusable_leases_compat_maps_to_reusable_leases", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsReusableLeases: true }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    expect(driver?.sandboxCapabilities).toBeUndefined();
+    expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(true);
+  });
+
+  it("test_sandbox_capabilities_reusable_leases_wins_over_compat_field", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        supportsReusableLeases: true,
+        sandboxCapabilities: { reusableLeases: false },
+      }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    // The nested declaration wins over the legacy compat flag when both exist.
+    expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(false);
+  });
+});
+
+describe("login pty transport capability and legacy alias", () => {
+  it("test_login_pty_new_field_parses_and_carries_the_flag", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsLoginPty: true }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.supportsLoginPty).toBe(true);
+  });
+
+  it("test_legacy_alias_only_canonicalizes_onto_login_pty", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsSetupTokenLogin: true }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    // The validator maps the deprecated alias onto the canonical field at parse
+    // time, and it drops the alias so a downstream reader cannot read the old
+    // name.
+    expect(driver?.supportsLoginPty).toBe(true);
+    expect(driver).not.toHaveProperty("supportsSetupTokenLogin");
+  });
+
+  it("test_conflicting_alias_and_new_field_reject", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        supportsLoginPty: true,
+        supportsSetupTokenLogin: false,
+      }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_matching_alias_and_new_field_pass", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        supportsLoginPty: true,
+        supportsSetupTokenLogin: true,
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.supportsLoginPty).toBe(true);
+  });
+
+  it("test_unknown_login_field_misspelling_rejects", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({ supportsLoginPTY: true }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_login_pty_accepts_literal_booleans_only", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({ supportsLoginPty: "true" }),
+    );
+
+    expect(rejected.success).toBe(false);
   });
 });

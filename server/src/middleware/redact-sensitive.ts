@@ -39,13 +39,57 @@ const SENSITIVE_KEYS = new Set<string>([
   "sessiontoken",
   "private_key",
   "privatekey",
+  // The Claude setup-token login fields. `browserCode` carries the one-time
+  // sign-in code and `authorization_code` carries the OAuth code; neither may
+  // reach a log line.
+  "browsercode",
+  "authorization_code",
+  "authorizationcode",
+  // The workspace login handoff ticket (PAP-17572). It is a signed bearer
+  // credential carried as a query parameter, so it must never reach a log line
+  // even though the exchange itself answers 302.
+  "ticket",
 ]);
 
 const MAX_DEPTH = 6;
 const REDACTED = "[REDACTED]";
+const URLISH_KEYS = new Set<string>([
+  "href",
+  "locator",
+  "source",
+  "source_locator",
+  "sourcelocator",
+  "source_url",
+  "sourceurl",
+  "uri",
+  "url",
+  // The Claude setup-token login URL. A structured `loginUrl` that reaches a log
+  // sink keeps its origin and path only; the OAuth query, fragment, and any
+  // credentials are stripped (SR-5 backstop).
+  "loginurl",
+  "login_url",
+]);
 
 function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.has(key.toLowerCase());
+}
+
+function isUrlishKey(key: string): boolean {
+  return URLISH_KEYS.has(key.toLowerCase());
+}
+
+function stripSecretBearingUrlParts(value: string): string {
+  try {
+    const url = new URL(value);
+    if (!url.username && !url.password && !url.search && !url.hash) return value;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return value;
+  }
 }
 
 export function redactSensitive(value: unknown, depth = 0): unknown {
@@ -59,6 +103,10 @@ export function redactSensitive(value: unknown, depth = 0): unknown {
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     if (isSensitiveKey(key)) {
       out[key] = REDACTED;
+      continue;
+    }
+    if (typeof entry === "string" && isUrlishKey(key)) {
+      out[key] = stripSecretBearingUrlParts(entry);
       continue;
     }
     out[key] = redactSensitive(entry, depth + 1);

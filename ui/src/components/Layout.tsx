@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
+import { AppsSidebar } from "./AppsSidebar";
+import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -27,10 +29,12 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { useOptionalToastActions } from "../context/ToastContext";
 import {
   applyMainContentScrollTop,
   NavigationScrollMemory,
@@ -45,12 +49,27 @@ import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
 
 function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
-  if (!companyPrefix) return null;
-  const segments = pathname.split("/").filter(Boolean);
-  if (segments.length < 2) return null;
-  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
-  return segments[1]?.toLowerCase() ?? null;
+  return getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null;
 }
+
+function getCompanyPathSegments(pathname: string, companyPrefix: string | undefined): string[] {
+  if (!companyPrefix) return [];
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length < 2) return [];
+  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return [];
+  return segments.slice(1);
+}
+
+const RESERVED_APP_SUBPATHS = new Set([
+  "browse",
+  "connections",
+  "connect",
+  "review",
+  "attention",
+  "gateways",
+  "advanced",
+  "app",
+]);
 
 function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
   const segments = pathname.split("/").filter(Boolean);
@@ -76,6 +95,8 @@ export function Layout() {
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
+  // Optional: Layout also renders in harnesses without a ToastProvider.
+  const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
     companies,
     loading: companiesLoading,
@@ -91,7 +112,23 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
-  const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const { enabled: appsEnabled } = useAppsEnabled();
+  const isCompanySettingsRoute = [
+    "/company/settings",
+    "/company/export",
+    "/company/import",
+  ].some((settingsPath) => location.pathname.includes(settingsPath));
+  const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
+  const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
+  const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+  const appDetailConnectionId =
+    isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
+      ? companyPathSegments[1]
+      : null;
+  const appDetailApplicationId =
+    isAppsRoute && companyPathSegments[1]?.toLowerCase() === "app" && companyPathSegments[2]
+      ? companyPathSegments[2]
+      : null;
   // The Skills Store renders its own secondary (category) sidebar, so the main
   // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
   const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
@@ -138,6 +175,12 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
+  ) : appsEnabled && appDetailConnectionId ? (
+    <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
+  ) : appsEnabled && appDetailApplicationId ? (
+    <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
+  ) : appsEnabled && (isAppsRoute || isToolsRoute) ? (
+    <AppsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount
       slot={routeSidebarSlot}
@@ -176,11 +219,14 @@ export function Layout() {
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
     if (health?.deploymentMode === "authenticated") return;
+    // Cloud provisions the single company for a stack, and POST /companies is a
+    // 403 floor there — auto-opening the wizard could only dead-end.
+    if (health?.cloud) return;
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
+  }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
@@ -201,6 +247,27 @@ export function Layout() {
       return;
     }
 
+    // Stale state (remembered paths, history, bookmarks, restored tabs)
+    // deposits users into archived companies long after archiving; a cold
+    // arrival bounces to an active company instead of dwelling there.
+    // Deliberate visits (the company is already the selection) stay put.
+    const bounce = resolveArchivedCompanyBounce({
+      matchedCompany,
+      selectedCompanyId,
+      companies,
+    });
+    if (bounce) {
+      pushToast?.({
+        title: `${matchedCompany.name} is archived`,
+        body: `Switched to ${bounce.name}.`,
+        tone: "info",
+        dedupeKey: `archived-company-bounce:${matchedCompany.id}`,
+      });
+      setSelectedCompanyId(bounce.id, { source: "route_sync" });
+      navigate(`/${bounce.issuePrefix}/dashboard`, { replace: true });
+      return;
+    }
+
     if (
       shouldSyncCompanySelectionFromRoute({
         selectionSource,
@@ -218,6 +285,7 @@ export function Layout() {
     location.pathname,
     location.search,
     navigate,
+    pushToast,
     selectionSource,
     selectedCompanyId,
     setSelectedCompanyId,
@@ -549,6 +617,7 @@ export function Layout() {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
+              serverGit={health?.serverInfo?.git}
               version={health?.version}
             />
           </div>
@@ -568,6 +637,7 @@ export function Layout() {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
+              serverGit={health?.serverInfo?.git}
               version={health?.version}
             />
           </SidebarShell>
@@ -596,6 +666,20 @@ export function Layout() {
               id="main-content"
               ref={mainContentRef}
               tabIndex={-1}
+              // Publish the pinned-composer bottom offset to descendants
+              // (PAP-495): while the auto-hiding mobile nav is on screen, raise
+              // it to the nav height so a sticky composer clears the nav; drop
+              // it back to the safe-area dock when the nav hides. Desktop leaves
+              // the token at its :root default.
+              style={
+                isMobile
+                  ? ({
+                      "--tc-composer-bottom": mobileNavVisible
+                        ? "var(--sz-calc-14)"
+                        : "var(--sz-calc-8)",
+                    } as CSSProperties)
+                  : undefined
+              }
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
                 // Reserve the scrollbar gutter on desktop so pages whose height

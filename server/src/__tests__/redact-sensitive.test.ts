@@ -39,6 +39,14 @@ describe("redactSensitive", () => {
     expect(out.limit).toBe(20);
   });
 
+  it("strips secret-bearing query and fragment values from source URLs", () => {
+    const out = redactSensitive({
+      source: "https://github.com/acme/private-skill?token=secret#token=secret",
+    }) as Record<string, unknown>;
+
+    expect(out.source).toBe("https://github.com/acme/private-skill");
+  });
+
   it("recurses into nested objects and arrays", () => {
     const out = redactSensitive({
       user: { email: "user@example.com", password: "secret-pass" },

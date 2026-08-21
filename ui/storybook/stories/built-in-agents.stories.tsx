@@ -7,7 +7,7 @@ import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
 import { InlineBanner } from "@/components/InlineBanner";
 import { AgentStatusBadge } from "@/components/StatusBadge";
-import { BuiltInAgentBadge, BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
+import { BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { BuiltInBundlePanel } from "@/components/BuiltInBundlePanel";
 import {
@@ -81,23 +81,22 @@ function RosterRow({
   lifecycle?: "needs_setup" | "pending_approval";
   status: string;
 }) {
-  const cluster = (
+  const cluster = lifecycle ? (
     <>
-      <BuiltInAgentBadge />
-      {lifecycle && <BuiltInLifecycleChip status={lifecycle} />}
+      <BuiltInLifecycleChip status={lifecycle} />
       {lifecycle === "needs_setup" && (
         <Button size="xs" variant="outline">Set up</Button>
       )}
     </>
-  );
+  ) : null;
   return (
     <EntityRow
       title={name}
       titleClassName="w-56"
       titlePriority
       subtitle="General"
-      secondaryRow={<div className="xl:hidden flex flex-wrap items-center gap-1.5">{cluster}</div>}
-      meta={<div className="hidden xl:flex items-center gap-1.5">{cluster}</div>}
+      secondaryRow={cluster ? <div className="xl:hidden flex flex-wrap items-center gap-1.5">{cluster}</div> : undefined}
+      meta={cluster ? <div className="hidden xl:flex items-center gap-1.5">{cluster}</div> : undefined}
       trailing={<AgentStatusBadge status={status} />}
     />
   );
@@ -131,7 +130,7 @@ export const SurfaceGallery: Story = {
           <RosterRow name="Briefs Agent" lifecycle="pending_approval" status="idle" />
         </div>
         <p className="text-[11px] text-muted-foreground">
-          Resize below the <code>xl</code> breakpoint to see the badge/action
+          Resize below the <code>xl</code> breakpoint to see the lifecycle/action
           cluster drop to a second line so the agent name never collapses
           (PAP-12988).
         </p>
@@ -201,15 +200,11 @@ export const SurfaceGallery: Story = {
           <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
             <span className="min-w-0 truncate">Briefs Agent</span>
             <span className="ml-1 flex items-center gap-1">
-              <BuiltInAgentBadge compact />
               <BuiltInLifecycleChip status="needs_setup" compact />
             </span>
           </div>
           <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
             <span className="min-w-0 truncate">Learning Agent</span>
-            <span className="ml-1 flex items-center gap-1">
-              <BuiltInAgentBadge compact />
-            </span>
           </div>
         </div>
       </div>

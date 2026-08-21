@@ -3,6 +3,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
+import { createApiProxy } from "./src/lib/vite-api-proxy";
+
+const apiProxy = createApiProxy();
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
@@ -25,11 +28,12 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5173,
     watch: createUiDevWatchOptions(process.cwd()),
-    proxy: {
-      "/api": {
-        target: "http://localhost:3100",
-        ws: true,
-      },
-    },
+    proxy: apiProxy,
+  },
+  preview: {
+    port: 3101,
+    host: "0.0.0.0",
+    allowedHosts: true,
+    proxy: apiProxy,
   },
 }));

@@ -178,7 +178,7 @@ describe("adapter routes", () => {
     expect(processAdapter.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
       supportsAcp: false,
     });
@@ -216,6 +216,24 @@ describe("adapter routes", () => {
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
       supportsAcp: false,
+    });
+
+    const kimiAdapter = res.body.find((a: any) => a.type === "kimi_local");
+    expect(kimiAdapter).toBeDefined();
+    expect(kimiAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+      supportsAcp: true,
+    });
+    expect(kimiAdapter.acp).toMatchObject({
+      agentId: "kimi",
+      skillsMode: "ephemeral",
+      prerequisites: {
+        nodeRange: ">=20.0.0",
+        packages: ["@moonshot-ai/kimi-code"],
+      },
     });
 
     const hermesLocal = res.body.find((a: any) => a.type === "hermes_local");

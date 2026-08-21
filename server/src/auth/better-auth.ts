@@ -12,6 +12,16 @@ import {
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import {
+  workspaceLoginHandoffPlugin,
+  type WorkspaceHandoffExpectedIdentity,
+} from "./workspace-login-handoff-plugin.js";
+import {
+  normalizeWorkspaceHandoffOrigin,
+  resolveWorkspaceHandoffLocalCompanyId,
+  resolveWorkspaceHandoffLocalKey,
+  resolveWorkspaceHandoffLocalWorkspaceId,
+} from "./workspace-login-handoff.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -51,6 +61,28 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
   return {
     cookiePrefix: deriveAuthCookiePrefix(),
     ...(input.disableSecureCookies ? { useSecureCookies: false } : {}),
+  };
+}
+
+export function shouldEnableAuthRateLimit(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  override?: string | undefined;
+}): boolean {
+  const override = input.override?.trim().toLowerCase();
+  if (override === "true") return true;
+  if (override === "false") return false;
+
+  return input.deploymentMode === "authenticated";
+}
+
+export function buildBetterAuthRateLimitOptions(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  override?: string | undefined;
+}) {
+  return {
+    enabled: shouldEnableAuthRateLimit(input),
   };
 }
 
@@ -122,6 +154,34 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
+/**
+ * Identity a managed workspace instance compares an inbound handoff ticket
+ * against. Every field comes from persisted configuration or injected runtime
+ * identity — never from request headers — so a spoofed `X-Forwarded-Host` or
+ * Tailscale identity header cannot retarget a ticket. Returns null when this
+ * process was not started as a managed workspace, which leaves the exchange
+ * endpoint unregistered.
+ */
+export function resolveWorkspaceHandoffIdentity(
+  config: Config,
+  env: NodeJS.ProcessEnv = process.env,
+): WorkspaceHandoffExpectedIdentity | null {
+  const key = resolveWorkspaceHandoffLocalKey(env);
+  if (!key) return null;
+  const configuredOrigin =
+    normalizeWorkspaceHandoffOrigin(env.PAPERCLIP_PUBLIC_URL)
+    ?? (config.authBaseUrlMode === "explicit"
+      ? normalizeWorkspaceHandoffOrigin(config.authPublicBaseUrl)
+      : null);
+  return {
+    key,
+    instanceId: resolvePaperclipInstanceId(),
+    executionWorkspaceId: resolveWorkspaceHandoffLocalWorkspaceId(env),
+    companyId: resolveWorkspaceHandoffLocalCompanyId(env),
+    origin: configuredOrigin,
+  };
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
@@ -158,7 +218,34 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    rateLimit: buildBetterAuthRateLimitOptions({
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+    }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
+    // Registered only for a managed workspace instance: the plugin is what makes
+    // `Open workspace` password-independent, and a control-plane instance that
+    // was never handed a workspace key must not expose the exchange at all.
+    ...(resolveWorkspaceHandoffIdentity(config)
+      ? {
+          plugins: [
+            workspaceLoginHandoffPlugin({
+              db,
+              // Re-resolved per exchange so a hot restart cannot keep validating
+              // against an origin the control plane has since republished.
+              resolveExpectedIdentity: () =>
+                resolveWorkspaceHandoffIdentity(config) ?? {
+                  key: null,
+                  instanceId: null,
+                  executionWorkspaceId: null,
+                  companyId: null,
+                  origin: null,
+                },
+            }),
+          ],
+        }
+      : {}),
   };
 
   if (!baseUrl) {

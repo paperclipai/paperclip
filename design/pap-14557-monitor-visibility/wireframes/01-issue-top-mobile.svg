@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 01 · Issue page (mobile) — banner, properties chip, composer strip. 375×812 -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <line x1="0" y1="56" x2="375" y2="56" />
+  <polyline points="28,20 20,28 28,36" fill="none" />
+  <text x="44" y="33" font-size="14" font-weight="600" stroke="none" fill="#000">PAP-14557</text>
+  <circle cx="343" cy="28" r="12" fill="#e6e6e6" />
+
+  <!-- title + pill -->
+  <text x="16" y="92" font-size="20" font-weight="700" stroke="none" fill="#000">Nightly model comparison sweep</text>
+  <g transform="translate(16,108)">
+    <rect width="96" height="24" rx="12" />
+    <text x="48" y="16" font-size="12" text-anchor="middle" stroke="none" fill="#000">In Progress</text>
+  </g>
+
+  <!-- NEW: monitor banner -->
+  <g transform="translate(16,148)">
+    <rect width="344" height="112" rx="8" />
+    <circle cx="32" cy="32" r="12" />
+    <line x1="32" y1="32" x2="32" y2="24" />
+    <line x1="32" y1="32" x2="38" y2="32" />
+    <text x="56" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">Waiting on monitor — in 2h 12m</text>
+    <text x="56" y="48" font-size="12" stroke="none" fill="#666">Thu Jul 17, 4:08 PM · Attempt 1</text>
+    <g transform="translate(56,64)">
+      <rect width="104" height="32" rx="4" />
+      <text x="52" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#000">Check now</text>
+    </g>
+  </g>
+
+  <!-- description placeholder -->
+  <g transform="translate(16,292)">
+    <line x1="0" y1="8" x2="344" y2="8" stroke="#666" />
+    <line x1="0" y1="24" x2="344" y2="24" stroke="#666" />
+    <line x1="0" y1="40" x2="240" y2="40" stroke="#666" />
+  </g>
+
+  <!-- comment card -->
+  <g transform="translate(16,356)">
+    <rect width="344" height="120" rx="8" />
+    <circle cx="28" cy="28" r="12" fill="#e6e6e6" />
+    <text x="48" y="24" font-size="14" font-weight="600" stroke="none" fill="#000">Senior Engineer Fable</text>
+    <text x="48" y="40" font-size="12" stroke="none" fill="#666">15m ago</text>
+    <line x1="16" y1="60" x2="328" y2="60" stroke="#666" />
+    <line x1="16" y1="76" x2="328" y2="76" stroke="#666" />
+    <line x1="16" y1="92" x2="224" y2="92" stroke="#666" />
+  </g>
+
+  <!-- collapsed properties row with monitor chip -->
+  <g transform="translate(16,500)">
+    <rect width="344" height="48" rx="8" />
+    <text x="16" y="29" font-size="14" font-weight="600" stroke="none" fill="#000">Properties</text>
+    <circle cx="240" cy="24" r="7" />
+    <line x1="240" y1="24" x2="240" y2="19" />
+    <line x1="240" y1="24" x2="244" y2="24" />
+    <text x="252" y="28" font-size="12" stroke="none" fill="#666">in 2h 12m</text>
+    <polyline points="324,20 332,28 324,36" fill="none" />
+  </g>
+
+  <!-- NEW: monitor strip above composer -->
+  <g transform="translate(16,624)">
+    <rect width="344" height="56" rx="8" />
+    <circle cx="28" cy="28" r="10" />
+    <line x1="28" y1="28" x2="28" y2="21" />
+    <line x1="28" y1="28" x2="33" y2="28" />
+    <text x="48" y="24" font-size="14" font-weight="600" stroke="none" fill="#000">Resumes in 2h 12m</text>
+    <text x="48" y="42" font-size="12" stroke="none" fill="#666">Jul 17, 4:08 PM · Attempt 1</text>
+    <text x="288" y="32" font-size="12" stroke="none" fill="#000">Check now</text>
+  </g>
+
+  <!-- composer -->
+  <g transform="translate(16,696)">
+    <rect width="344" height="96" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#666">Reply…</text>
+    <g transform="translate(16,48)">
+      <rect width="32" height="32" rx="4" />
+      <line x1="10" y1="22" x2="22" y2="10" />
+    </g>
+    <g transform="translate(240,48)">
+      <rect width="88" height="32" rx="4" fill="#000" />
+      <text x="44" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Send</text>
+    </g>
+  </g>
+
+  <!-- annotations -->
+  <g data-region="annotations">
+    <rect x="8" y="140" width="360" height="128" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(360,140)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <rect x="224" y="508" width="112" height="32" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(216,504)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <rect x="8" y="616" width="360" height="72" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(360,616)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+  </g>
+</svg>

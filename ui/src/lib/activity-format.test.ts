@@ -66,6 +66,72 @@ describe("activity formatting", () => {
     expect(formatIssueActivityAction("issue.monitor_recovery_issue_created")).toBe("created a monitor recovery issue");
   });
 
+  // PAP-16506 P4: agents can now resolve an interaction, including a review of
+  // their own work, so an outcome has to read as an outcome in the timeline
+  // instead of leaking the raw action id.
+  it("reads an interaction outcome as an outcome, whoever gave it", () => {
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted")).toBe("accepted the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_rejected")).toBe("rejected the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_withdrawn")).toBe("withdrew the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_expired")).toBe("expired the request");
+    expect(formatActivityVerb("issue.thread_interaction_accepted")).toBe("accepted the request on");
+    expect(formatActivityVerb("issue.thread_interaction_rejected")).toBe("rejected the request on");
+  });
+
+  // The accepted/rejected actions fire for every interaction kind, so only a
+  // confirmation may read as an approval.
+  it("says 'approved' only for a confirmation, never for a suggestion or a question", () => {
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: "request_confirmation" }))
+      .toBe("approved the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: "request_checkbox_confirmation" }))
+      .toBe("approved the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: "suggest_tasks" }))
+      .toBe("accepted the task suggestions");
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: "ask_user_questions" }))
+      .toBe("accepted the answers");
+    expect(formatIssueActivityAction("issue.thread_interaction_rejected", { interactionKind: "request_confirmation" }))
+      .toBe("rejected the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_rejected", { interactionKind: "suggest_tasks" }))
+      .toBe("declined the task suggestions");
+    expect(formatActivityVerb("issue.thread_interaction_accepted", { interactionKind: "suggest_tasks" }))
+      .toBe("accepted the task suggestions on");
+  });
+
+  it("keeps the neutral wording for a kind it does not know", () => {
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: "request_item_verdicts" }))
+      .toBe("accepted the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: "future_kind" }))
+      .toBe("accepted the request");
+    expect(formatIssueActivityAction("issue.thread_interaction_accepted", { interactionKind: 7 }))
+      .toBe("accepted the request");
+  });
+
+  it("names the verb an actor chose on a stalled review", () => {
+    expect(formatIssueActivityAction("issue.stalled_review_decided", { action: "approve" }))
+      .toBe("approved the review");
+    expect(formatIssueActivityAction("issue.stalled_review_decided", { action: "request_changes" }))
+      .toBe("requested changes on the review");
+    expect(formatIssueActivityAction("issue.stalled_review_decided", { action: "send_back" }))
+      .toBe("sent the review back to work");
+    expect(formatActivityVerb("issue.stalled_review_decided", { action: "approve" }))
+      .toBe("approved the review on");
+  });
+
+  it("falls back to a generic verdict line when the decision verb is missing", () => {
+    expect(formatIssueActivityAction("issue.stalled_review_decided")).toBe("recorded a review verdict");
+    expect(formatIssueActivityAction("issue.stalled_review_decided", { action: "shrug" }))
+      .toBe("recorded a review verdict");
+  });
+
+  it("describes a review-policy change without calling the default 'none'", () => {
+    expect(formatIssueActivityAction("issue.updated", { reviewPolicy: null }))
+      .toBe("changed who can approve to anyone");
+    expect(formatIssueActivityAction("issue.updated", { reviewPolicy: "human_only" }))
+      .toBe("changed who can approve to human only");
+    expect(formatIssueActivityAction("issue.updated", { reviewPolicy: "not_creator" }))
+      .toBe("changed who can approve to anyone else");
+  });
+
   it("uses plain next-step copy for successful-run handoff activity", () => {
     expect(formatActivityVerb("issue.successful_run_handoff_required")).toBe("flagged missing next step on");
     expect(formatIssueActivityAction("issue.successful_run_handoff_required")).toBe("Run finished without a clear next step");
