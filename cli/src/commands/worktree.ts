@@ -65,6 +65,7 @@ import {
   formatEmbeddedPostgresError,
   loadWithoutEmbeddedPostgresExitHooks,
   prepareEmbeddedPostgresNativeRuntime,
+  inspectPostmasterLock,
   probeProcessLiveness,
 } from "@paperclipai/db";
 import type { Command } from "commander";
@@ -1185,17 +1186,23 @@ export async function ensureEmbeddedPostgres(
   }
   await prepareEmbeddedPostgresNativeRuntime();
 
+  // The allowExisting guard turns on ownership alone, so it is answered from the
+  // lock file before anything tries to reach the cluster. Refusing to seed over a
+  // database somebody else owns must not depend on that database being reachable
+  // -- an owner mid-recovery, or wedged, is exactly when the guard matters most.
+  const ownership = inspectPostmasterLock(dataDir).status;
+  if (options.allowExisting === false && ownership !== "absent" && ownership !== "stale") {
+    throw new Error(
+      `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running. `
+      + "Stop the worktree service that owns this database, then retry the seed.",
+    );
+  }
+
   // One adjudicator for the whole repo. It refuses on ambiguity and verifies
   // that whatever answers a port actually serves THIS data directory before we
   // hand it to callers that create databases and take backups on it.
   const decision = await decideEmbeddedCluster(dataDir, preferredPort);
   if (decision.action === "adopt") {
-    if (options.allowExisting === false) {
-      throw new Error(
-        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running ` +
-          `(port=${decision.port}). Stop the worktree service that owns this database, then retry the seed.`,
-      );
-    }
     return { port: decision.port, startedByThisProcess: false, stop: async () => {} };
   }
 
