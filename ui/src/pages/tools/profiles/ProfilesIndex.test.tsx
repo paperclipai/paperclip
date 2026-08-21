@@ -140,7 +140,7 @@ describe("ProfilesIndex", () => {
     expect(container.textContent).toContain("9 tools · 3 apps");
     expect(container.textContent).toContain("2 agents");
     expect(container.textContent).toContain("All except 2 tools");
-    expect(container.textContent).toContain("Company default");
+    expect(container.textContent).toContain("Organization default");
   });
 
   it("shows a new-tools chip in the Allows column", async () => {

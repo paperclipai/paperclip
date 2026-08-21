@@ -1661,9 +1661,9 @@ function NewSkillWizard({
                     draft.sharingScope === scope ? "border-foreground bg-accent/50" : "border-border",
                   )}
                 >
-                  <span className="block font-medium">{scope === "company" ? "Company" : "Private"}</span>
+                  <span className="block font-medium">{scope === "company" ? "Organization" : "Private"}</span>
                   <span className="mt-1 block text-xs text-muted-foreground">
-                    {scope === "company" ? "Visible inside this company." : "Only visible in your library."}
+                    {scope === "company" ? "Visible inside this organization." : "Only visible in your library."}
                   </span>
                 </button>
               ))}
@@ -5147,8 +5147,8 @@ export function CompanySkills() {
   const studioBackHref = studioForkDetailQuery.data ? routeForSkill(studioForkDetailQuery.data) : "/skills";
   const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
   const studioDescription = studioForkFromId
-    ? "Review the fork metadata and create an editable company copy."
-    : "Create an editable company skill in the Paperclip workspace.";
+    ? "Review the fork metadata and create an editable organization copy."
+    : "Create an editable organization skill in the Paperclip workspace.";
   return (
     <>
       {policyDenial.denial ? (

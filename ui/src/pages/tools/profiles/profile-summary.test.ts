@@ -37,7 +37,7 @@ describe("allowsLabel", () => {
 describe("assignedLabel", () => {
   it("prefers the company-default label", () => {
     expect(assignedLabel(summary({ isCompanyDefault: true, appliesToAgentCount: 4 }))).toEqual({
-      text: "Company default",
+      text: "Organization default",
       unassigned: false,
     });
   });

@@ -151,7 +151,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
 
   return useMutation({
     mutationFn: (variables: MutationVariables) => {
-      if (!companyId) throw new Error("Select a company first.");
+      if (!companyId) throw new Error("Select an organization first.");
       const body = { state: variables.state, starred: variables.starred };
       return variables.resourceType === "project"
         ? resourceMembershipsApi.updateProject(companyId, variables.resourceId, body)
