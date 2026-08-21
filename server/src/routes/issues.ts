@@ -463,8 +463,18 @@ async function assertNoBlockingLinkedPullRequest(
         objectIds: linkedPullRequestObjectIds,
         force: true,
       });
+      // A concurrent refresh of the same object (another request, a
+      // background poller, or another server instance) reports
+      // "refresh_in_progress" or "refresh_superseded" instead of "resolved",
+      // but it still returns the latest DB row for that object. If that row's
+      // *current* liveness is "fresh" -- i.e. some resolve completed within
+      // its TTL window, whether this call's or a concurrent one's -- treat it
+      // as confirmed rather than rejecting a merged-and-green PR purely
+      // because of refresh contention.
       const confirmedIds = new Set(
-        refreshResults.filter((result) => result.reason === "resolved").map((result) => result.object.id),
+        refreshResults
+          .filter((result) => result.reason === "resolved" || result.object.liveness === "fresh")
+          .map((result) => result.object.id),
       );
       for (const objectId of linkedPullRequestObjectIds) {
         if (!confirmedIds.has(objectId)) unconfirmedObjectIds.add(objectId);

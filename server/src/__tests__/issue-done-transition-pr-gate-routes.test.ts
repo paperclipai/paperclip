@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, createDb } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { companies, companyMemberships, createDb, externalObjects } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -308,6 +309,34 @@ describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
       code: "done_transition_pr_gate",
       reason: "unverified",
     });
+  });
+
+  it("allows done for a merged+green PR when the forced refresh loses a concurrent-refresh race (AGE-626 Greptile finding)", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(107, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-concurrent-107",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Simulate a concurrent refresh already in flight (another request, a
+    // background poller, or another server instance holding the lease) at
+    // the moment the done PATCH tries to force-refresh this same object.
+    // claimObjectRefresh will fail to acquire the lease and the resolver
+    // returns { reason: "refresh_in_progress" } -- but the row it reads back
+    // is still the merged+green snapshot resolved moments ago by
+    // createIssueWithPr's own refresh call, i.e. genuinely fresh. The gate
+    // must not reject this as "unverified" purely because of that race.
+    await db
+      .update(externalObjects)
+      .set({ refreshStartedAt: new Date() })
+      .where(eq(externalObjects.companyId, companyId));
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
   });
 
   it("gates done when the pull request is referenced only from a comment, not the description", async () => {
