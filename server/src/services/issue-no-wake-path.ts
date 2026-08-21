@@ -24,7 +24,15 @@ export interface NoWakePathIssueInput {
   blockedByIssueIds: readonly string[];
   /** Flat-column-derived monitor projection; see `deriveFlatMonitorStatus`. */
   monitorStatus: FlatIssueMonitorStatus | null;
-  /** True if an active run currently owns this specific issue. */
+  /**
+   * True if an active run, queued run, or scheduled retry currently owns
+   * this specific issue. Deliberately broader than "is `issues.executionRunId`
+   * bound to a queued/running heartbeat run": a queued wake that has not yet
+   * been converted into a run, or a `scheduled_retry` run, both represent a
+   * live path too and must not be misclassified as saturation (Greptile
+   * review on AGE-924 PR #11911 flagged the narrower check as a false
+   * positive against exactly these two cases).
+   */
   hasActiveRun: boolean;
   /** Current status of `assigneeAgentId`'s agent record, if any. */
   assigneeAgentStatus: string | null;
@@ -42,8 +50,10 @@ export interface NoWakePathIssueInput {
  *    `deriveFlatMonitorStatus`) + no unresolved blocker.
  * 3. `todo` + no assignee (agent or user).
  * 4. An agent assignee is set, that agent's own status is `running`, but no
- *    active run is bound to *this* issue — the assignee is saturated on a
- *    different lane and cannot wake this one.
+ *    active run, queued run, or scheduled retry (`hasActiveRun`) is bound to
+ *    *this* issue — the assignee is saturated on a different lane and cannot
+ *    wake this one. A queued wake awaiting a run, or a `scheduled_retry` run,
+ *    both count as `hasActiveRun: true` and must not trip this condition.
  */
 export function classifyNoWakePath(issue: NoWakePathIssueInput): NoWakePathReason | null {
   if (

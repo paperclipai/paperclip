@@ -2436,6 +2436,7 @@ type IssueListPreparedResponse =
   | {
       kind: "full";
       body: unknown[];
+      noWakePathScanTruncated?: boolean;
     };
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
@@ -6108,6 +6109,7 @@ export function issueRoutes(
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
+        const noWakePathScanTruncated = Boolean((rawResult as unknown as { noWakePathScanTruncated?: boolean }).noWakePathScanTruncated);
         const result = await actorCanReadCompanyScope(req, companyId)
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
@@ -6162,6 +6164,7 @@ export function issueRoutes(
         }));
         return {
           kind: "full",
+          noWakePathScanTruncated,
           body: result.map((issue) => ({
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
@@ -6227,6 +6230,9 @@ export function issueRoutes(
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
+    if (coordinated.response.noWakePathScanTruncated) {
+      res.setHeader("X-Paperclip-No-Wake-Path-Scan-Truncated", "true");
+    }
     res.json(coordinated.response.body);
   });
 

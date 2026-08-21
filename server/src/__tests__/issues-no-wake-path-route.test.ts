@@ -2,7 +2,16 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { isNotNull } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { agents, companies, companyMemberships, issueRelations, issues, principalPermissionGrants } from "@paperclipai/db";
+import {
+  agents,
+  agentWakeupRequests,
+  companies,
+  companyMemberships,
+  heartbeatRuns,
+  issueRelations,
+  issues,
+  principalPermissionGrants,
+} from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
   describeEmbeddedPostgres,
@@ -27,6 +36,8 @@ describeEmbeddedPostgres("issue list monitorStatus + noWakePath (AGE-924)", () =
     // `agents.companyId` both carry FKs, so agents must go after the issues
     // that reference them and before the companies that agents reference.
     resetEach: async (db) => {
+      await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
       await db.delete(issues).where(isNotNull(issues.parentId));
       await db.delete(issues);
       await db.delete(agents);
@@ -225,5 +236,76 @@ describeEmbeddedPostgres("issue list monitorStatus + noWakePath (AGE-924)", () =
     await request(routeApp(ctx.db, company.actor, issueRoutes))
       .get(`/api/companies/${company.companyId}/issues?noWakePath=true&attention=blocked`)
       .expect(400);
+  });
+
+  it("does not misclassify a queued run or scheduled retry as assignee saturation (Greptile finding on PR #11911)", async () => {
+    const company = await seedCompanyWithBoardAccess(ctx.db, "No wake path queued and retry");
+    const companyId = company.companyId;
+    const [runningAgent] = await ctx.db
+      .insert(agents)
+      .values([{ id: randomUUID(), companyId, name: "Busy", status: "running" }])
+      .returning();
+
+    const queuedWakeIssueId = randomUUID();
+    const scheduledRetryIssueId = randomUUID();
+    const queuedRunNotBoundIssueId = randomUUID();
+    await ctx.db.insert(issues).values([
+      // A wake was queued for this issue but has not converted into a run yet
+      // (issues.executionRunId is still null), so `activeRun` alone would
+      // report false — this must still count as a live path.
+      { id: queuedWakeIssueId, companyId, title: "Queued wake, no run yet", status: "in_progress", priority: "medium", assigneeAgentId: runningAgent!.id },
+      // A run is `scheduled_retry` for this issue — a live path, not dead.
+      { id: scheduledRetryIssueId, companyId, title: "Scheduled retry", status: "in_progress", priority: "medium", assigneeAgentId: runningAgent!.id },
+      // A run is `queued` for this issue via contextSnapshot, but
+      // issues.executionRunId was never stamped.
+      { id: queuedRunNotBoundIssueId, companyId, title: "Queued run via contextSnapshot only", status: "in_progress", priority: "medium", assigneeAgentId: runningAgent!.id },
+    ]);
+    await ctx.db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId: runningAgent!.id,
+      source: "issue_watchdog",
+      status: "queued",
+      reason: "issue_wake",
+      payload: { issueId: queuedWakeIssueId },
+    });
+    await ctx.db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: runningAgent!.id,
+        status: "scheduled_retry",
+        contextSnapshot: { issueId: scheduledRetryIssueId },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: runningAgent!.id,
+        status: "queued",
+        contextSnapshot: { issueId: queuedRunNotBoundIssueId },
+      },
+    ]);
+
+    const res = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true`)
+      .expect(200);
+    const ids = new Set((res.body as Array<{ id: string }>).map((row) => row.id));
+
+    expect(ids.has(queuedWakeIssueId)).toBe(false);
+    expect(ids.has(scheduledRetryIssueId)).toBe(false);
+    expect(ids.has(queuedRunNotBoundIssueId)).toBe(false);
+  });
+
+  it("surfaces X-Paperclip-No-Wake-Path-Scan-Truncated when the bounded scan hits its cap", async () => {
+    const company = await seedCompanyWithBoardAccess(ctx.db, "No wake path truncation");
+    const companyId = company.companyId;
+    await ctx.db.insert(issues).values([
+      { id: randomUUID(), companyId, title: "Todo, unassigned", status: "todo", priority: "medium" },
+    ]);
+
+    const healthyRes = await request(routeApp(ctx.db, company.actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?noWakePath=true`)
+      .expect(200);
+    expect(healthyRes.headers["x-paperclip-no-wake-path-scan-truncated"]).toBeUndefined();
   });
 });

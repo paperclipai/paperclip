@@ -134,6 +134,20 @@ describe("classifyNoWakePath", () => {
     ).toBeNull();
   });
 
+  it("condition 4's hasActiveRun is documented as covering queued runs and scheduled retries, not just 'running' (regression for AGE-924 PR #11911 Greptile finding)", () => {
+    // The classifier itself only sees the boolean; the broadening lives in
+    // how the caller (issues.ts) computes it via noWakePathLiveExecutionIssueIds,
+    // which folds in queued heartbeat runs, scheduled_retry runs, and queued
+    // wake requests that have not yet stamped issues.executionRunId. This
+    // test pins the classifier's contract: hasActiveRun: true always wins,
+    // regardless of which underlying live-path kind it represents.
+    expect(
+      classifyNoWakePath(
+        issue({ status: "in_progress", assigneeAgentId: "agent-1", assigneeAgentStatus: "running", hasActiveRun: true }),
+      ),
+    ).toBeNull();
+  });
+
   it("a healthy in_review issue with a live monitor is not a no-wake-path issue", () => {
     expect(
       isNoWakePath(
