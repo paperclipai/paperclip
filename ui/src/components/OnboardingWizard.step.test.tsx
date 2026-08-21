@@ -105,7 +105,9 @@ function currentStep(): "mission" | "agent" | "closed" | "other" {
   if (!body.querySelector("[role='dialog'], .fixed.inset-0")) return "closed";
   const headings = [...body.querySelectorAll("h3")].map((h) => h.textContent);
   if (headings.includes("Define your mission")) return "mission";
-  if (body.querySelector("input[placeholder='Chief of staff']")) return "agent";
+  // Keyed on the role control rather than the name field: the name is optional
+  // and starts empty, so its placeholder is the generic "Name".
+  if (body.querySelector("#onboarding-agent-role")) return "agent";
   return "other";
 }
 
@@ -753,12 +755,37 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(currentStep()).toBe("agent");
     }
 
+    /**
+     * Choose a role, which the step now requires before it will advance — it
+     * asks rather than assuming one. Driven by keyboard because the control is
+     * a Radix listbox: its pointer path needs `hasPointerCapture`, which jsdom
+     * does not implement, while its keyboard path does not.
+     */
+    async function pickRole(label = "CEO") {
+      const trigger = document.getElementById("onboarding-agent-role")!;
+      await act(async () => {
+        trigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        );
+      });
+      await settle();
+      const option = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === label,
+      ) as HTMLElement | undefined;
+      expect(option).toBeDefined();
+      await act(async () => {
+        option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
+      await settle();
+    }
+
     it("seeds the lead agent's instructions with the mission it was never asked for", async () => {
       // The regression this exists for. The agent step feeds
       // `composeCeoInstructions` from the mission field, and a company entered
       // here never types one — so the agent was hired knowing nothing of the
       // mission the customer gave at signup, and nothing reported it.
       await openOnAgentStep();
+      await pickRole();
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
@@ -790,6 +817,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       // nothing — the same "retained data is not an answer" rule the draft
       // ownership gate follows.
       await openOnAgentStep();
+      await pickRole();
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
@@ -847,6 +875,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       await rerender();
       await settle();
       expect(currentStep()).toBe("agent");
+      await pickRole();
 
       const next = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("Next"),
@@ -868,6 +897,39 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(file.content).toContain("Scale the marketplace");
     });
 
+    it("hires the agent with the role the customer picked", async () => {
+      // The role was hardcoded to "ceo" before the role select existed. A
+      // dropdown that renders but does not reach the hire call would look
+      // entirely correct on screen and silently mis-file every agent.
+      await openOnAgentStep();
+      // Deliberately not the first option: "ceo" is what the hardcoded value
+      // was, so a test that picked it could not tell a wired dropdown from an
+      // ignored one.
+      await pickRole("Engineer");
+
+      const next = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Next"),
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      const [, payload] = mockAgentsApi.hire.mock.calls.at(-1)!;
+      expect(payload.role).toBe("engineer");
+      // Picking a role also renamed the agent, since the field still held the
+      // name the wizard supplied.
+      expect(payload.name).toBe("Engineer");
+    });
+
     it("does not offer a way back behind the step it entered on", async () => {
       // Step 1 creates a company. A run that already holds one must not be
       // able to walk into it, by the Back button or the progress bar.
@@ -878,10 +940,20 @@ describe("OnboardingWizard — which step it lands on", () => {
       );
       expect(back).toBeUndefined();
 
-      const nameSegment = document.body.querySelector(
-        '[aria-label="Step 1"]',
-      ) as HTMLButtonElement | null;
-      expect(nameSegment?.disabled).toBe(true);
+      // The progress strip's segments are the only jump controls on this
+      // screen. Entering here means there is nowhere behind to return to, so
+      // every one of them is inert — asserted over the whole set rather than
+      // one segment, since a single enabled one is the whole defect.
+      const segments = [...document.body.querySelectorAll("button")].filter((b) =>
+        ["Create your first agent", "Connect a model", "Review"].includes(
+          b.getAttribute("aria-label") ?? "",
+        ),
+      ) as HTMLButtonElement[];
+      expect(segments).toHaveLength(3);
+      expect(segments.every((segment) => segment.disabled)).toBe(true);
+
+      // And company creation is genuinely unreachable, not merely unlinked.
+      expect(document.body.textContent).not.toContain("Name your company");
     });
   });
 });

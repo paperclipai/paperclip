@@ -60,6 +60,7 @@
     "lexical": "0.49.0",
     "lucide-react": "^0.577.0",
     "mermaid": "^11.16.1",
+    "motion": "^12.42.2",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

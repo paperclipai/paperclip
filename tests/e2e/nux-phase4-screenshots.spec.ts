@@ -83,7 +83,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     // Step 2 advances via "Confirm mission" (creates the company + goal);
     // step 3 is the team-lead naming step of the capsule wizard.
     await page.getByRole("button", { name: /Confirm mission/ }).click();
-    await page.waitForSelector('input[placeholder="Chief of staff"]', {
+    await page.waitForSelector("#onboarding-agent-role", {
       timeout: 30_000,
     });
     await page.screenshot({ path: shot("04-hire-team-lead.png") });
