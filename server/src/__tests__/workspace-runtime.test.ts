@@ -72,6 +72,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
+const RUNTIME_OWNED_GIT_BRANCH_METADATA = {
+  createdByRuntime: true,
+  gitBranchOwnershipVersion: 1,
+} as const;
+
 const execFileAsync = promisify(execFile);
 
 function stableStringifyForTest(value: unknown): string {
@@ -3655,6 +3660,7 @@ describe("realizeExecutionWorkspace", () => {
         sourceIssueId: "issue-1",
         metadata: {
           createdByRuntime: workspace.branchCreatedByRuntime,
+          gitBranchOwnershipVersion: 1,
         },
       },
       projectWorkspace: {
@@ -3728,7 +3734,10 @@ describe("realizeExecutionWorkspace", () => {
         projectId: reused.projectId,
         projectWorkspaceId: reused.workspaceId,
         sourceIssueId: "issue-reused-cleanup",
-        metadata: { createdByRuntime: reused.branchCreatedByRuntime },
+        metadata: {
+          createdByRuntime: reused.branchCreatedByRuntime,
+          gitBranchOwnershipVersion: 1,
+        },
       },
       projectWorkspace: {
         cwd: repoRoot,
@@ -3793,7 +3802,7 @@ describe("realizeExecutionWorkspace", () => {
         projectId: workspace.projectId,
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
-        metadata: { createdByRuntime: true },
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       projectWorkspace: {
         cwd: repoRoot,
@@ -3858,7 +3867,7 @@ describe("realizeExecutionWorkspace", () => {
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
         metadata: {
-          createdByRuntime: true,
+          ...RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
       },
       projectWorkspace: {
@@ -3933,7 +3942,7 @@ describe("realizeExecutionWorkspace", () => {
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
         metadata: {
-          createdByRuntime: true,
+          ...RUNTIME_OWNED_GIT_BRANCH_METADATA,
           worktreeInstanceRoot: instanceRoot,
         },
       },
@@ -9123,7 +9132,10 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
         sourceIssueId: "issue-pr-prep",
         // Persist ownership the way the heartbeat does: from the branch
         // ownership signal, never from worktree creation.
-        metadata: { createdByRuntime: workspace.branchCreatedByRuntime },
+        metadata: {
+          createdByRuntime: workspace.branchCreatedByRuntime,
+          gitBranchOwnershipVersion: 1,
+        },
       },
       projectWorkspace: {
         cwd: repoRoot,
@@ -9149,6 +9161,26 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
     expect(cleanup.warnings).toEqual([]);
     await expect(fs.stat(workspace.cwd)).rejects.toThrow();
     expect(await readGit(repoRoot, ["rev-parse", "refs/heads/feature/operator-owned"])).toBe(branchTip);
+  });
+
+  it("treats unversioned legacy ownership as operator-owned during cleanup", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/legacy-owned", "legacy-owned.txt");
+    const workspace = await realizeExistingBranch(repoRoot, "feature/legacy-owned");
+    const cleanupInput = cleanupWorkspaceInput(workspace, repoRoot, branchTip);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      ...cleanupInput,
+      workspace: {
+        ...cleanupInput.workspace,
+        metadata: { createdByRuntime: true },
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspace.cwd)).rejects.toThrow();
+    expect(await readGit(repoRoot, ["rev-parse", "refs/heads/feature/legacy-owned"])).toBe(branchTip);
   });
 
   it("terminal cleanup preserves a pre-existing branch pinned via a literal branchTemplate", async () => {
@@ -9240,11 +9272,14 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
     const operatorOwned = await restoreWithMetadata({ createdByRuntime: false });
     expect(operatorOwned?.branchCreatedByRuntime).toBe(false);
 
-    const runtimeOwned = await restoreWithMetadata({ createdByRuntime: true });
+    const legacyOwned = await restoreWithMetadata({ createdByRuntime: true });
+    expect(legacyOwned?.branchCreatedByRuntime).toBe(false);
+
+    const runtimeOwned = await restoreWithMetadata(RUNTIME_OWNED_GIT_BRANCH_METADATA);
     expect(runtimeOwned?.branchCreatedByRuntime).toBe(true);
   });
 
-  it("fails closed instead of recreating a missing operator-owned branch", async () => {
+  it("fails closed instead of recreating a missing branch from unversioned legacy ownership", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "feature/missing-operator-owned";
     await createBranchWithCommit(repoRoot, branchName, "operator-owned.txt");
@@ -9272,7 +9307,7 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName,
-        metadata: { createdByRuntime: false },
+        metadata: { createdByRuntime: true },
       },
       issue: {
         id: "issue-pr-prep",

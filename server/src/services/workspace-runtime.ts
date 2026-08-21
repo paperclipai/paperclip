@@ -63,6 +63,7 @@ import {
 } from "./local-service-supervisor.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
@@ -168,8 +169,9 @@ export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
   // Branch ownership, distinct from `created` (which reports a fresh worktree
   // checkout). True only when this realization created the branch ref itself;
   // attaching a worktree to a pre-existing branch keeps the branch
-  // operator-owned. Persisted as metadata.createdByRuntime, which terminal
-  // cleanup uses to decide whether the branch may be deleted.
+  // operator-owned. Persisted with versioned branch-ownership metadata, which
+  // restore and terminal cleanup use to decide whether the branch may be
+  // recreated or deleted.
   branchCreatedByRuntime: boolean;
   baseRefSha?: string | null;
   pendingForwardBranchReconcile?: PendingForwardBranchReconcile | null;
@@ -3669,10 +3671,11 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     worktreePath: strategy === "git_worktree" ? (input.workspace.providerRef ?? cwd) : null,
     warnings: [],
     created: false,
-    // Restoring a persisted workspace keeps its recorded branch ownership, so
-    // a runtime-created branch stays cleanup-eligible across reuse heartbeats
-    // and an attached pre-existing branch stays operator-owned.
-    branchCreatedByRuntime: input.workspace.metadata?.createdByRuntime === true,
+    // Only the versioned ownership record introduced with branch-level
+    // ownership semantics can authorize branch recreation or deletion. Older
+    // createdByRuntime=true rows described worktree ownership, so trusting
+    // them here could recreate or later delete an operator-owned branch.
+    branchCreatedByRuntime: isRuntimeOwnedGitBranch(input.workspace.metadata),
     baseRefSha: readRecordedBaseRefSha(input.workspace.metadata),
   };
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
@@ -4045,11 +4048,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       warnings.push(`Could not read worktree instance pointer: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  // Ownership signal persisted from RealizedExecutionWorkspace.branchCreatedByRuntime:
-  // true only when the runtime created the branch ref (or local_fs directory)
-  // itself. A worktree attached to a pre-existing branch persists false, so
-  // cleanup below removes the worktree but leaves the branch untouched.
+  // Local-directory ownership keeps the historical createdByRuntime signal.
+  // Git branch deletion additionally requires the version marker introduced
+  // with branch-level ownership semantics. Unmarked legacy rows fail closed:
+  // their worktrees are removable, but their branch refs are operator-owned.
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
+  const branchCreatedByRuntime = isRuntimeOwnedGitBranch(input.workspace.metadata);
   const cleanupCommands = input.runCleanupCommands === false
     ? []
     : [
@@ -4136,7 +4140,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         }
       }
     }
-    if (createdByRuntime && input.workspace.branchName) {
+    if (branchCreatedByRuntime && input.workspace.branchName) {
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
       } else {
@@ -8468,7 +8472,9 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
           worktreePath: row.strategyType === "git_worktree" ? row.cwd : null,
           warnings: [],
           created: false,
-          branchCreatedByRuntime: (row.metadata as Record<string, unknown> | null)?.createdByRuntime === true,
+          branchCreatedByRuntime: isRuntimeOwnedGitBranch(
+            row.metadata as Record<string, unknown> | null,
+          ),
         },
         executionWorkspaceId: row.id,
         config: {

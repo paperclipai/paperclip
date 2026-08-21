@@ -1278,6 +1278,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       existingMetadata: null,
       source: "task_session",
       createdByRuntime: resolveExecutionWorkspaceBranchOwnership(executionWorkspace),
+      strategyType: "git_worktree",
       configSnapshot: null,
       shouldReuseExisting: false,
       baseRef: "origin/main",
@@ -1285,6 +1286,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
     });
 
     expect(metadata.createdByRuntime).toBe(false);
+    expect(metadata.gitBranchOwnershipVersion).toBe(1);
   });
 
   it("does not downgrade recorded runtime ownership after worktree reuse", () => {
@@ -1297,6 +1299,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       existingMetadata: { createdByRuntime: true },
       source: "task_session",
       createdByRuntime: resolveExecutionWorkspaceBranchOwnership(executionWorkspace),
+      strategyType: "git_worktree",
       configSnapshot: null,
       shouldReuseExisting: false,
       baseRef: "origin/main",
@@ -1304,6 +1307,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
     });
 
     expect(metadata.createdByRuntime).toBe(true);
+    expect(metadata.gitBranchOwnershipVersion).toBe(1);
   });
 
   it("merges config snapshot for newly realized workspaces", () => {
@@ -1311,6 +1315,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       existingMetadata: null,
       source: "task_session",
       createdByRuntime: true,
+      strategyType: "project_primary",
       configSnapshot: {
         environmentId: "env-new",
         provisionCommand: "bash ./scripts/provision.sh",
@@ -1344,6 +1349,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       },
       source: "task_session",
       createdByRuntime: false,
+      strategyType: "project_primary",
       configSnapshot: {
         environmentId: "env-new",
         provisionCommand: "bash ./scripts/new-provision.sh",
@@ -1366,6 +1372,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       existingMetadata: null,
       source: "task_session",
       createdByRuntime: true,
+      strategyType: "project_primary",
       configSnapshot: null,
       shouldReuseExisting: false,
       baseRef: "origin/main",
@@ -1491,6 +1498,7 @@ describe("effective run execution workspace config freshness", () => {
       },
       source: "task_session",
       createdByRuntime: false,
+      strategyType: "project_primary",
       configSnapshot: {
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev -- --host 0.0.0.0", port: 3200 }],
@@ -1622,6 +1630,7 @@ describe("effective run execution workspace config freshness", () => {
       },
       source: "task_session",
       createdByRuntime: false,
+      strategyType: "project_primary",
       configSnapshot: {
         provisionCommand: "pnpm install --frozen-lockfile",
       },

@@ -178,6 +178,11 @@ import {
 } from "./issue-continuation-summary.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  GIT_BRANCH_OWNERSHIP_METADATA_KEY,
+  GIT_BRANCH_OWNERSHIP_METADATA_VERSION,
+  isRuntimeOwnedGitBranch,
+} from "./execution-workspace-branch-ownership.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
@@ -1426,6 +1431,7 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
   existingMetadata: Record<string, unknown> | null | undefined;
   source: string;
   createdByRuntime: boolean;
+  strategyType: "project_primary" | "git_worktree";
   configSnapshot: Record<string, unknown> | null;
   shouldReuseExisting: boolean;
   shouldRefreshConfigSnapshot?: boolean;
@@ -1438,6 +1444,11 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
     source: input.source,
     createdByRuntime: input.createdByRuntime,
   } as Record<string, unknown>;
+  if (input.strategyType === "git_worktree") {
+    base[GIT_BRANCH_OWNERSHIP_METADATA_KEY] = GIT_BRANCH_OWNERSHIP_METADATA_VERSION;
+  } else {
+    delete base[GIT_BRANCH_OWNERSHIP_METADATA_KEY];
+  }
 
   const existingSnapshot = parseObject(base.baseRefSnapshot);
   if (
@@ -15078,8 +15089,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             && existingExecutionWorkspace?.branchName
               ? {
                   branchName: existingExecutionWorkspace.branchName,
-                  createdByRuntime:
-                    existingExecutionWorkspace.metadata?.createdByRuntime === true,
+                  createdByRuntime: isRuntimeOwnedGitBranch(
+                    existingExecutionWorkspace.metadata,
+                  ),
                 }
               : null,
           heartbeatRunId: run.id,
@@ -15103,6 +15115,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // pre-existing branch reports created=true but must never make terminal
       // cleanup delete that operator-owned branch.
       createdByRuntime: resolveExecutionWorkspaceBranchOwnership(executionWorkspace),
+      strategyType: executionWorkspace.strategy,
       configSnapshot,
       shouldReuseExisting: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace,
       shouldRefreshConfigSnapshot: resolvedWorkspaceReusePolicy.shouldRefreshWorkspaceConfigSnapshot,
