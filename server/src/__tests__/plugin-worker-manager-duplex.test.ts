@@ -557,6 +557,34 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("ends the route on the frame count bound even when an exit notification arrives before the overflow data frame", async () => {
+    // Regression test: an exit notification must never share the pre-open hold's
+    // capacity with data frames. The worker here batches exactly
+    // maxPreBindBufferedFrames valid data frames (no violation), then its exit,
+    // then one more data frame that should trip the buffered-frame bound. If the
+    // exit consumed a hold slot, that last data frame would be dropped by the
+    // hold before the replay ever applies the buffered bound to it, and the
+    // route would end normally on the exit (exitCode: 0) instead of on the
+    // bound (exitCode: null).
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 3 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          batchWithOpenReply: true,
+          data: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+          exitCode: 0,
+          dataAfterExit: [{ chunk: "overflow" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("delivers a batched pre-bind chunk that a later listener drains before the byte cap ends the route", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxTotalDataBytes: 4 },

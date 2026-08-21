@@ -1505,13 +1505,26 @@ export function createPluginWorkerHandle(
     listener: ((chunk: string) => void) | null;
     buffered: string[];
     bufferedChars: number;
-    // Raw data and exit notifications that arrive before the route binds. The
-    // host reads the worker stdout line by line. The open reply and a data or
-    // exit notification can arrive in one read batch, so the host dispatches the
-    // notification before the deferred open-reply continuation flips the state to
-    // `open`. The host holds these frames here and replays them in order right
-    // after it binds the route, so a batched frame is never lost.
+    // Raw data notifications that arrive before the route binds. The host reads
+    // the worker stdout line by line. The open reply and a data notification can
+    // arrive in one read batch, so the host dispatches the notification before
+    // the deferred open-reply continuation flips the state to `open`. The host
+    // holds these frames here and replays them in order right after it binds the
+    // route, so a batched frame is never lost. Bounded by the pre-open hold
+    // ceiling — see `bufferPreOpenDuplexChannelNotification`.
     preOpen: JsonRpcNotification[];
+    // The most recent exit notification that arrived before the route binds, or
+    // null. A single slot, not an array: only the last exit a worker sends before
+    // the bind is ever meaningful, so the host overwrites this on every pre-open
+    // exit instead of holding each one. That keeps a worker that batches many
+    // exit notifications before it replies to the open from growing this past one
+    // entry — the pre-open hold ceiling bounds only `preOpen`, so an exit that
+    // shared that array with data frames could otherwise consume a data frame's
+    // hold slot and let a data frame that should trip the buffered-frame bound
+    // get dropped by the hold instead. Replayed after `preOpen` drains, so data
+    // still delivers before the exit resolves the wait, matching a real worker's
+    // order.
+    preOpenExit: JsonRpcNotification | null;
     pendingRequests: number;
     protocolErrors: number;
     totalDataBytes: number;
@@ -1565,6 +1578,7 @@ export function createPluginWorkerHandle(
     // listener must still receive. The buffered bytes stay bounded by the
     // pre-bind buffered bound, and `onData` clears them once it drains them.
     route.preOpen = [];
+    route.preOpenExit = null;
     clearDuplexChannelLifetimeTimer(route);
     // A terminalized route reports a null exit code, which the caller treats as a
     // failure.
@@ -1593,22 +1607,34 @@ export function createPluginWorkerHandle(
   }
 
   // Hold one data or exit notification that arrives before the route binds. The
-  // host replays the held frames in order after it binds the route. Bound the
-  // hold by a pre-open ceiling derived from the pre-bind buffered-frame bound, so
-  // a worker that floods frames before it replies to the open cannot make the
-  // host hold an unbounded number of frames. Count one protocol error for each
-  // frame past the ceiling.
+  // host replays the held notifications after it binds the route: `preOpen`
+  // drains first, in order, then the held exit (if any) resolves the wait last —
+  // see `drainPreOpenDuplexChannelNotifications`.
   //
-  // This ceiling is separate from the pre-bind buffered-frame bound, but it
-  // tracks it: the replay after the bind applies the buffered bound to each held
-  // frame, so the buffered bound ends the route when a caller lowers (or raises)
-  // it. The hold ceiling stays above the buffered bound by construction
+  // A data notification goes on `preOpen`, bounded by a pre-open ceiling derived
+  // from the pre-bind buffered-frame bound, so a worker that floods data frames
+  // before it replies to the open cannot make the host hold an unbounded number
+  // of them. Count one protocol error for each data frame past the ceiling. This
+  // ceiling is separate from the pre-bind buffered-frame bound, but it tracks it:
+  // the replay after the bind applies the buffered bound to each held frame, so
+  // the buffered bound ends the route when a caller lowers (or raises) it. The
+  // hold ceiling stays above the buffered bound by construction
   // (maxDuplexChannelPreOpenHoldFrames = maxDuplexChannelPreBindFrames + margin),
   // or it would drop a frame before the buffered bound can end the route.
+  //
+  // An exit notification never touches `preOpen`. It overwrites the single
+  // `preOpenExit` slot instead, so a worker that batches an exit among enough
+  // data frames to fill the hold cannot consume a data frame's hold slot: the
+  // ceiling above bounds `preOpen` alone, so it stays exactly the margin above
+  // the buffered bound regardless of how many exit notifications arrive pre-open.
   function bufferPreOpenDuplexChannelNotification(
     route: DuplexChannelRoute,
     notification: JsonRpcNotification,
   ): void {
+    if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
+      route.preOpenExit = notification;
+      return;
+    }
     if (route.preOpen.length >= maxDuplexChannelPreOpenHoldFrames) {
       recordDuplexChannelProtocolError(route);
       return;
@@ -1616,21 +1642,26 @@ export function createPluginWorkerHandle(
     route.preOpen.push(notification);
   }
 
-  // Replay the held pre-open frames in order right after the route binds. The
-  // route is `open` now, so each frame passes through the normal per-frame bounds
-  // and the session-identifier match. A frame that ends the route terminalizes
-  // it, and every later frame in the replay is a no-op, because the routing
-  // functions drop a frame when the route is not `open`.
+  // Replay the held pre-open notifications right after the route binds. The
+  // route is `open` now, so each notification passes through the normal
+  // per-frame bounds and the session-identifier match. Drain the held data
+  // frames first, in order, then replay the held exit (if any) last, so data
+  // still delivers before the exit resolves the wait, matching a real worker's
+  // order. A frame that ends the route terminalizes it, and every later
+  // notification in the replay is a no-op, because the routing functions drop a
+  // notification when the route is not `open`.
   function drainPreOpenDuplexChannelNotifications(route: DuplexChannelRoute): void {
-    if (route.preOpen.length === 0) return;
-    const pending = route.preOpen;
-    route.preOpen = [];
-    for (const notification of pending) {
-      if (notification.method === DUPLEX_CHANNEL_DATA_NOTIFICATION) {
+    if (route.preOpen.length > 0) {
+      const pending = route.preOpen;
+      route.preOpen = [];
+      for (const notification of pending) {
         routeDuplexChannelData(notification);
-      } else if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
-        routeDuplexChannelExit(notification);
       }
+    }
+    if (route.preOpenExit) {
+      const exitNotification = route.preOpenExit;
+      route.preOpenExit = null;
+      routeDuplexChannelExit(exitNotification);
     }
   }
 
@@ -1747,6 +1778,7 @@ export function createPluginWorkerHandle(
     route.buffered = [];
     route.bufferedChars = 0;
     route.preOpen = [];
+    route.preOpenExit = null;
     clearDuplexChannelLifetimeTimer(route);
     settleRouteWait(route, { exitCode: null });
   }
@@ -1776,6 +1808,7 @@ export function createPluginWorkerHandle(
       buffered: [],
       bufferedChars: 0,
       preOpen: [],
+      preOpenExit: null,
       pendingRequests: 0,
       protocolErrors: 0,
       totalDataBytes: 0,
