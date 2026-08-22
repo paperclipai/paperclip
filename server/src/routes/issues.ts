@@ -10747,6 +10747,20 @@ export function issueRoutes(
       const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
+        if (dependents.length > 0) {
+          try {
+            await svc.transitionResolvedBlockedDependentsToTodo(
+              dependents.map((d) => d.id),
+              issue.id,
+              "blocker_done",
+            );
+          } catch (err) {
+            logger.warn(
+              { err, blockerIssueId: issue.id, dependentIds: dependents.map((d) => d.id) },
+              "failed to auto-transition resolved blocked dependents to todo",
+            );
+          }
+        }
         for (const dependent of dependents) {
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
@@ -10775,6 +10789,18 @@ export function issueRoutes(
           readiness.isDependencyReady &&
           readiness.blockerIssueIds.length > 0
         ) {
+          try {
+            await svc.transitionResolvedBlockedDependentsToTodo(
+              [issue.id],
+              resolvedBlockerIssueId,
+              "blocked_dependency_restored",
+            );
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "failed to auto-transition restored blocked dependency to todo",
+            );
+          }
           await addDependencyResolvedWakeup({
             agentId: issue.assigneeAgentId!,
             dependentIssueId: issue.id,
@@ -12779,6 +12805,20 @@ export function issueRoutes(
       const becameDone = issueBeforeCommentDecision.status !== "done" && currentIssue.status === "done";
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
+        if (dependents.length > 0) {
+          try {
+            await svc.transitionResolvedBlockedDependentsToTodo(
+              dependents.map((d) => d.id),
+              currentIssue.id,
+              "blocker_done",
+            );
+          } catch (err) {
+            logger.warn(
+              { err, blockerIssueId: currentIssue.id, dependentIds: dependents.map((d) => d.id) },
+              "failed to auto-transition resolved blocked dependents to todo after comment",
+            );
+          }
+        }
         for (const dependent of dependents) {
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,

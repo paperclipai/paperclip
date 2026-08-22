@@ -6438,6 +6438,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         try {
+          try {
+            await issuesSvc.transitionResolvedBlockedDependentsToTodo(
+              [candidate.id],
+              resolvedBlockerIssueId,
+              `backstop:${source}`,
+            );
+          } catch (transitionErr) {
+            logger.warn(
+              { err: transitionErr, issueId: candidate.id, source },
+              "backstop: failed to auto-transition resolved blocked dependent to todo",
+            );
+          }
           const wake = await deps.enqueueWakeup(agentId, {
             source: "automation",
             triggerDetail: "system",
