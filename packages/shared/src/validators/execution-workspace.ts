@@ -59,6 +59,19 @@ export const executionWorkspaceCloseReadinessStateSchema = z.enum([
   "blocked",
 ]);
 
+export const executionWorkspaceCloseGitInspectionStateSchema = z.enum([
+  "available",
+  "unavailable",
+  "not_applicable",
+]);
+
+export const executionWorkspaceCloseGitInspectionSchema = z.object({
+  state: executionWorkspaceCloseGitInspectionStateSchema,
+  errorCode: z.string().nullable(),
+  message: z.string().nullable(),
+  retryable: z.boolean(),
+}).strict();
+
 export const executionWorkspaceCloseActionKindSchema = z.enum([
   "archive_record",
   "stop_runtime_services",
@@ -138,8 +151,10 @@ export const executionWorkspaceCloseReadinessSchema = z.object({
   linkedIssues: z.array(executionWorkspaceCloseLinkedIssueSchema),
   plannedActions: z.array(executionWorkspaceCloseActionSchema),
   isDestructiveCloseAllowed: z.boolean(),
+  requiresGitUnavailableAcknowledgement: z.boolean(),
   isSharedWorkspace: z.boolean(),
   isProjectPrimaryWorkspace: z.boolean(),
+  gitInspection: executionWorkspaceCloseGitInspectionSchema,
   git: executionWorkspaceCloseGitReadinessSchema.nullable(),
   runtimeServices: z.array(workspaceRuntimeServiceSchema),
 }).strict();
@@ -156,6 +171,7 @@ export const updateExecutionWorkspaceSchema = z.object({
   cleanupReason: z.string().optional().nullable(),
   config: executionWorkspaceConfigSchema.optional().nullable(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  acknowledgeGitUnavailable: z.boolean().optional(),
 }).strict();
 
 const branchReconcileReasonSchema = z.string().trim().min(1);

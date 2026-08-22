@@ -1,8 +1,12 @@
 import express from "express";
+import { once } from "node:events";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+import { HttpError } from "../errors.js";
+import { createCloseReadinessDemandLimiter } from "../services/execution-workspace-close-readiness-demand.js";
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -41,8 +45,16 @@ const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeases: vi.fn(async () => undefined),
 }));
 
+const mockCloseReadinessDemandLimiter = vi.hoisted(() => ({
+  acquire: vi.fn(() => vi.fn()),
+  recordAborted: vi.fn(),
+  recordTimedOut: vi.fn(),
+  recordDegraded: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  closeReadinessDemandLimiter: mockCloseReadinessDemandLimiter,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
@@ -83,6 +95,7 @@ function createApp(actor: Record<string, unknown> = {
     (req as any).actor = actor;
     next();
   });
+  app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.use("/api", executionWorkspaceRoutes({} as any));
   app.use(errorHandler);
   return app;
@@ -115,9 +128,226 @@ describe.sequential("execution workspace routes", () => {
       },
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockCloseReadinessDemandLimiter.acquire.mockImplementation(() => vi.fn());
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
+
+  it("propagates an abort signal without hydrating a duplicate Git inspection", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      workspaceId: "workspace-1",
+      state: "blocked",
+      blockingReasons: ["Git status is unavailable"],
+      requiresGitUnavailableAcknowledgement: true,
+      gitInspection: {
+        state: "unavailable",
+        errorCode: "workspace_git_scan_saturated",
+        message: "Git status is unavailable",
+        retryable: false,
+      },
+      git: null,
+    });
+
+    const res = await request(createApp()).get("/api/execution-workspaces/workspace-1/close-readiness");
+
+    expect(res.status).toBe(200);
+    expect(res.body.gitInspection.state).toBe("unavailable");
+    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("workspace-1", { inspectGit: false });
+    expect(mockExecutionWorkspaceService.getCloseReadiness).toHaveBeenCalledWith(
+      "workspace-1",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        fairnessKeys: ["actor:user:local-board"],
+      }),
+    );
+    expect(mockCloseReadinessDemandLimiter.acquire).toHaveBeenCalledWith({
+      workspaceKey: "workspace-1",
+      tenantKey: "company:company-1",
+    });
+  });
+
+  it("rejects saturation before database or service allocations and advertises retry backoff", async () => {
+    mockCloseReadinessDemandLimiter.acquire.mockImplementation(() => {
+      throw new HttpError(503, "Workspace close readiness is temporarily at capacity", {
+        code: "close_readiness_saturated",
+        retryable: false,
+      });
+    });
+
+    const res = await request(createApp()).get("/api/execution-workspaces/workspace-1/close-readiness");
+
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("1");
+    expect(res.body).toMatchObject({ code: "close_readiness_saturated" });
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.getCloseReadiness).not.toHaveBeenCalled();
+  });
+
+  it("aborts the service waiter and releases route demand when the HTTP client disconnects", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+    });
+    let capturedSignal: AbortSignal | null = null;
+    const release = vi.fn();
+    mockCloseReadinessDemandLimiter.acquire.mockReturnValue(release);
+    mockExecutionWorkspaceService.getCloseReadiness.mockImplementation(
+      (_id: string, options: { signal: AbortSignal }) => new Promise((resolve) => {
+        capturedSignal = options.signal;
+        options.signal.addEventListener("abort", () => resolve(null), { once: true });
+      }),
+    );
+
+    const pendingRequest = request(createApp()).get("/api/execution-workspaces/workspace-1/close-readiness");
+    const completion = pendingRequest.then(
+      () => undefined,
+      () => undefined,
+    );
+    await vi.waitFor(() => expect(capturedSignal).not.toBeNull());
+    pendingRequest.abort();
+    await completion;
+
+    await vi.waitFor(() => expect(capturedSignal?.aborted).toBe(true));
+    expect(mockCloseReadinessDemandLimiter.recordAborted).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps health responsive and route demand bounded during thousands of close-readiness requests", async () => {
+    const limiter = createCloseReadinessDemandLimiter({
+      maxWaiters: 64,
+      maxWaitersPerWorkspace: 8,
+      maxWaitersPerTenant: 32,
+      warningIntervalMs: 60_000,
+    });
+    mockCloseReadinessDemandLimiter.acquire.mockImplementation(limiter.acquire.bind(limiter));
+    mockCloseReadinessDemandLimiter.recordAborted.mockImplementation(limiter.recordAborted.bind(limiter));
+    mockCloseReadinessDemandLimiter.recordTimedOut.mockImplementation(limiter.recordTimedOut.bind(limiter));
+    mockExecutionWorkspaceService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+    }));
+    let releaseInspections!: () => void;
+    const inspectionsBlocked = new Promise<void>((resolve) => {
+      releaseInspections = resolve;
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockImplementation(async (id: string) => {
+      await inspectionsBlocked;
+      return {
+        workspaceId: id,
+        state: "ready",
+        blockingReasons: [],
+        gitInspection: { state: "available" },
+      };
+    });
+
+    const app = createApp();
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const client = request(server);
+    const eventLoopDelay = monitorEventLoopDelay({ resolution: 10 });
+    const baselineMemory = process.memoryUsage();
+    eventLoopDelay.enable();
+    try {
+      const requestCount = 2_000;
+      const hotRequestCount = 1_000;
+      const routeWaveSize = 250;
+      const stormRequests: Array<Promise<number>> = [];
+      const healthLatencies: number[] = [];
+      let settledRequestCount = 0;
+      for (let waveStart = 0; waveStart < requestCount; waveStart += routeWaveSize) {
+        const waveEnd = Math.min(requestCount, waveStart + routeWaveSize);
+        for (let index = waveStart; index < waveEnd; index += 1) {
+          const workspaceId = index < hotRequestCount ? "hot" : `workspace-${index % 80}`;
+          stormRequests.push(
+            client
+              .get(`/api/execution-workspaces/${workspaceId}/close-readiness`)
+              .then((response) => {
+                settledRequestCount += 1;
+                return response.status;
+              }),
+          );
+        }
+        await vi.waitFor(() => {
+          const snapshot = limiter.snapshot();
+          expect(snapshot.totals.admitted + snapshot.totals.rejected).toBe(waveEnd);
+        }, { timeout: 5_000 });
+        await vi.waitFor(() => {
+          expect(settledRequestCount).toBeGreaterThanOrEqual(waveEnd - limiter.snapshot().waiterCount);
+        }, { timeout: 5_000 });
+        const remainingHealthRequests = 100 - healthLatencies.length;
+        const waveHealthLatencies = await Promise.all(Array.from(
+          { length: Math.min(13, remainingHealthRequests) },
+          async () => {
+            const startedAt = performance.now();
+            const response = await client.get("/api/health");
+            expect(response.status).toBe(200);
+            return performance.now() - startedAt;
+          },
+        ));
+        healthLatencies.push(...waveHealthLatencies);
+      }
+      const peakMemory = process.memoryUsage();
+      releaseInspections();
+      const statuses = await Promise.all(stormRequests);
+      stormRequests.length = 0;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const settledMemory = process.memoryUsage();
+      const snapshot = limiter.snapshot();
+      const sortedHealthLatencies = [...healthLatencies].sort((a, b) => a - b);
+      const healthPercentile = (percentile: number) =>
+        sortedHealthLatencies[Math.ceil(sortedHealthLatencies.length * percentile) - 1]!;
+      const healthP50Ms = healthPercentile(0.5);
+      const healthP95Ms = healthPercentile(0.95);
+      const healthP99Ms = healthPercentile(0.99);
+      const eventLoopP99Ms = eventLoopDelay.percentile(99) / 1_000_000;
+      const mib = 1024 * 1024;
+      const succeeded = statuses.filter((status) => status === 200).length;
+      const rejected = statuses.filter((status) => status === 503).length;
+
+      expect(succeeded).toBeLessThanOrEqual(32);
+      expect(rejected).toBeGreaterThan(1_900);
+      expect(snapshot).toMatchObject({
+        waiterCount: 0,
+        workspaceKeyCount: 0,
+        tenantKeyCount: 0,
+      });
+      expect(snapshot.peakWaiters).toBeLessThanOrEqual(32);
+      expect(healthP99Ms).toBeLessThan(250);
+      expect(eventLoopP99Ms).toBeLessThan(250);
+      expect(peakMemory.heapUsed - baselineMemory.heapUsed).toBeLessThan(128 * mib);
+      expect(peakMemory.rss - baselineMemory.rss).toBeLessThan(192 * mib);
+      // V8 can retain a larger young-generation allocation after the Promise
+      // wave in a loaded serialized shard even when every route waiter is gone.
+      // Keep a hard ceiling that still fails unbounded request retention.
+      expect(settledMemory.heapUsed - baselineMemory.heapUsed).toBeLessThan(128 * mib);
+      expect(settledMemory.rss - baselineMemory.rss).toBeLessThan(192 * mib);
+      console.info("close-readiness route stress evidence", {
+        requests: requestCount,
+        hotKeyRequests: hotRequestCount,
+        succeeded,
+        rejected,
+        peakRouteWaiters: snapshot.peakWaiters,
+        healthP50Ms: Number(healthP50Ms.toFixed(1)),
+        healthP95Ms: Number(healthP95Ms.toFixed(1)),
+        healthP99Ms: Number(healthP99Ms.toFixed(1)),
+        eventLoopDelayP99Ms: Number(eventLoopP99Ms.toFixed(1)),
+        heapPeakDeltaMiB: Number(((peakMemory.heapUsed - baselineMemory.heapUsed) / mib).toFixed(1)),
+        rssPeakDeltaMiB: Number(((peakMemory.rss - baselineMemory.rss) / mib).toFixed(1)),
+        heapSettledDeltaMiB: Number(((settledMemory.heapUsed - baselineMemory.heapUsed) / mib).toFixed(1)),
+        rssSettledDeltaMiB: Number(((settledMemory.rss - baselineMemory.rss) / mib).toFixed(1)),
+      });
+    } finally {
+      releaseInspections();
+      eventLoopDelay.disable();
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      }
+    }
+  }, 15_000);
 
   it("uses summary mode for lightweight workspace lookups", async () => {
     const res = await request(createApp())
@@ -452,6 +682,96 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).toHaveBeenCalledTimes(1);
     // The destruction fence never runs, so no worktree is removed.
     expect(mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit acknowledgement before closing with unavailable Git readiness", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "blocked",
+      blockingReasons: ["Git readiness is unavailable"],
+      requiresGitUnavailableAcknowledgement: true,
+      gitInspection: { state: "unavailable", message: "scan timed out" },
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(409);
+    expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).not.toHaveBeenCalled();
+  });
+
+  it("bounds archive close-readiness demand before starting Git inspection", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+    });
+    mockCloseReadinessDemandLimiter.acquire.mockImplementation(() => {
+      throw new HttpError(503, "Workspace close readiness is temporarily at capacity", {
+        code: "close_readiness_saturated",
+        retryable: false,
+      });
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(503);
+    expect(res.headers["retry-after"]).toBe("1");
+    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith(
+      "workspace-1",
+      { inspectGit: false },
+    );
+    expect(mockExecutionWorkspaceService.getCloseReadiness).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).not.toHaveBeenCalled();
+  });
+
+  it("permits acknowledged unavailable Git only when it is the sole blocker", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "blocked",
+      blockingReasons: ["Git readiness is unavailable"],
+      requiresGitUnavailableAcknowledgement: true,
+      gitInspection: { state: "unavailable", message: "scan timed out" },
+    });
+    mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+      outcome: "reopen_pending",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived", acknowledgeGitUnavailable: true });
+
+    expect(res.status).toBe(409);
+    expect(mockExecutionWorkspaceService.getCloseReadiness).toHaveBeenCalledWith(
+      "workspace-1",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        fairnessKeys: ["actor:user:local-board"],
+        cacheTtlMs: 0,
+      }),
+    );
+    expect(mockCloseReadinessDemandLimiter.acquire).toHaveBeenCalledWith({
+      workspaceKey: "workspace-1",
+      tenantKey: "company:company-1",
+    });
+    expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).toHaveBeenCalledTimes(1);
   });
 
   it("destroys the reusable sandbox leases inside the destruction fence when the archive wins", async () => {

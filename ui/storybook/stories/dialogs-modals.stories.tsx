@@ -181,8 +181,15 @@ const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
     },
   ],
   isDestructiveCloseAllowed: true,
+  requiresGitUnavailableAcknowledgement: false,
   isSharedWorkspace: false,
   isProjectPrimaryWorkspace: false,
+  gitInspection: {
+    state: "available",
+    errorCode: null,
+    message: null,
+    retryable: false,
+  },
   git: {
     repoRoot: "/Users/dotta/paperclip",
     workspacePath: "/Users/dotta/paperclip/.paperclip/worktrees/PAP-1641-create-super-detailed-storybooks-for-our-project",

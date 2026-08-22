@@ -94,7 +94,7 @@ describe("workspace Git scan route load regression", () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
-  it("keeps 500 cross-actor/cross-issue requests globally bounded while health stays responsive", async () => {
+  it("keeps 500 cross-actor/cross-issue requests bounded and degrades excess demand", async () => {
     let releaseScans!: () => void;
     const scanGate = new Promise<void>((resolve) => {
       releaseScans = resolve;
@@ -140,12 +140,18 @@ describe("workspace Git scan route load regression", () => {
       .query({ mode: "changed" })
       .then((response) => response));
 
-    await vi.waitFor(
-      () => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(498),
-      { timeout: 15_000, interval: 20 },
-    );
+    await vi.waitFor(() => {
+      const snapshot = scheduler.snapshot();
+      expect(snapshot.activeCount).toBe(2);
+      expect(snapshot.totals.rejected).toBeGreaterThan(0);
+    }, { timeout: 15_000, interval: 20 });
     const loadedSnapshot = scheduler.snapshot();
     expect(loadedSnapshot).toMatchObject({ activeCount: 2, queuedCount: 0, inFlightCount: 2 });
+    expect(loadedSnapshot.peaks.active).toBeLessThanOrEqual(2);
+    expect(loadedSnapshot.peaks.queued).toBeLessThanOrEqual(4);
+    expect(loadedSnapshot.peaks.waiters).toBeLessThanOrEqual(32);
+    expect(loadedSnapshot.peaks.perKeyWaiters).toBeLessThanOrEqual(16);
+    expect(loadedSnapshot.peaks.totalDemand).toBeLessThanOrEqual(128);
 
     const healthLatencies: number[] = [];
     for (let index = 0; index < 25; index += 1) {
@@ -164,9 +170,21 @@ describe("workspace Git scan route load regression", () => {
       counts[response.status] = (counts[response.status] ?? 0) + 1;
       return counts;
     }, {});
-    expect(outcomeCounts).toEqual({ 200: 500 });
+    expect(Object.keys(outcomeCounts).map(Number).sort()).toEqual([200, 503]);
+    expect(outcomeCounts[200]).toBeGreaterThan(0);
+    expect(outcomeCounts[200]).toBeLessThanOrEqual(32);
+    expect(outcomeCounts[503]).toBe(500 - outcomeCounts[200]!);
     expect({ runnerCalls, peakActive }).toEqual({ runnerCalls: 2, peakActive: 2 });
-    expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
+    const settledSnapshot = scheduler.snapshot();
+    expect(settledSnapshot).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      inFlightCount: 0,
+      waiterCount: 0,
+      resolvingCount: 0,
+      totalDemandCount: 0,
+    });
+    expect(settledSnapshot.totals.rejected).toBe(outcomeCounts[503]);
 
     console.info("workspace Git scan regression metrics", {
       requests: responses.length,
@@ -174,6 +192,9 @@ describe("workspace Git scan route load regression", () => {
       underlyingScans: runnerCalls,
       peakActive,
       peakQueued: loadedSnapshot.queuedCount,
+      peakWaiters: loadedSnapshot.peaks.waiters,
+      peakPerKeyWaiters: loadedSnapshot.peaks.perKeyWaiters,
+      peakTotalDemand: loadedSnapshot.peaks.totalDemand,
       outcomes: outcomeCounts,
       healthP99Ms: Math.round(healthP99Ms * 100) / 100,
       unreapedChildCount: 0,

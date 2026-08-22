@@ -372,6 +372,8 @@ export type {
   ExecutionWorkspaceConfig,
   ExecutionWorkspaceCloseAction,
   ExecutionWorkspaceCloseActionKind,
+  ExecutionWorkspaceCloseGitInspection,
+  ExecutionWorkspaceCloseGitInspectionState,
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,

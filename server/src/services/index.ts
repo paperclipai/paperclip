@@ -176,6 +176,13 @@ export {
   workspaceGitOperationScheduler,
   type WorkspaceGitSchedulerSnapshot,
 } from "./workspace-git-operation-scheduler.js";
+export {
+  CLOSE_READINESS_ERROR_CODES,
+  closeReadinessDemandLimiter,
+  createCloseReadinessDemandLimiter,
+  getCloseReadinessDemandSnapshot,
+  type CloseReadinessDemandSnapshot,
+} from "./execution-workspace-close-readiness-demand.js";
 export { workProductService } from "./work-products.js";
 export {
   logActivity,
