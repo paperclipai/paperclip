@@ -3560,6 +3560,47 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       }
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
+      // In-run disposition re-ask (2026-08-22, operator-approved escalation):
+      // instructions alone did not stop narration-ended runs — lanes carrying
+      // the Run Disposition Law still completed without any parseable
+      // disposition (~6/hr measured post-law). One bounded follow-up turn in
+      // the SAME session is far cheaper than the corrective handoff run it
+      // replaces (the session is warm; the handoff is a separate cold run).
+      // Best-effort: any failure or timeout simply falls through to the
+      // existing recovery paths. Never more than one re-ask per run.
+      if (
+        terminal.status === "completed"
+        && !timedOut
+        && !tokenBudgetExhausted
+        && !extractPaperclipDisposition(textParts.join("").trim()).disposition
+      ) {
+        try {
+          const reask = runtime.startTurn({
+            handle: sessionHandle,
+            text:
+              "Your previous reply ended without the required disposition. "
+              + "Reply now with ONLY one line, no prose:\n"
+              + 'PAPERCLIP_DISPOSITION: {"status":"<done|blocked|in_review|cancelled|continuing>"}\n'
+              + 'For "blocked" you MUST include "blocker":"<the named blocker>". '
+              + 'For "continuing" you may include "summary":"<one-line next step>".',
+            mode: "prompt",
+            requestId: `${ctx.runId}-disposition-reask`,
+            timeoutMs: 90_000,
+          });
+          for await (const event of reask.events) {
+            if (event.type === "text_delta") textParts.push(event.text);
+          }
+          await reask.result;
+          await emitAcpxLog(ctx, {
+            type: "acpx.result",
+            summary: "disposition_reask",
+            stopReason: null,
+            message: "in-run disposition re-ask completed",
+          });
+        } catch {
+          // best-effort; the corrective handoff remains the fallback
+        }
+      }
       // Read usage before the close/warm-handle paths below can discard state.
       const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
       const summarizedTurnUsage = summarizeAcpxTurnUsage({
