@@ -21,6 +21,18 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
+### Multi-Company Key Resolution
+
+The default Paperclip key file (`paperclip-claimed-api-key.json`) has a flat structure scoped to a single company:
+
+```json
+{ "token": "<api-token>", "apiKey": "<api-key>" }
+```
+
+This works fine for single-company setups. **Paperclip's adapter does not natively support multi-company key resolution.** If you operate multiple companies on a shared agent workspace, this is a known gap: the adapter will always use whichever key the file contains, regardless of `PAPERCLIP_COMPANY_ID`.
+
+**Workaround (operator-managed):** Operators managing multiple companies can extend the key file themselves using a company-keyed structure (e.g., `{ "<companyId>": { "token": "...", "apiKey": "..." }, ... }`), then add key-selection logic in their agent's startup or wrapper script to set the correct `PAPERCLIP_API_KEY` before the heartbeat runs. This is a custom convention — there is no built-in support for it in the adapter. Native multi-company key resolution is a planned improvement.
+
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
 **CLI safety — use `npx paperclipai` for content-bearing arguments.** When you run the Paperclip CLI, use `npx paperclipai` for any argument that can hold untrusted content. Untrusted content includes issue text, comment bodies, Markdown, pasted snippets, and model output. `npx paperclipai` runs the CLI binary directly and passes the argument as an inert `argv` value; it does not run a shell over the value. Do not use `pnpm paperclipai` for such an argument. `pnpm paperclipai` is a `package.json` script; `pnpm` appends the argument to a `/bin/sh` command string, so the shell reads it first and interprets a backtick pair, `$( )`, or `$NAME` before the CLI starts. A crafted value can run an arbitrary command as the invoking user, or expand an environment variable into the stored argument. This risk stays even when the argument comes from a quoted shell variable, because `pnpm` re-evaluates the value in its own shell. Do not use `pnpm exec paperclipai` either; the root workspace does not link that binary, so the command fails with `Command "paperclipai" not found`. To run local `cli/src` changes with a content-bearing argument, use `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts <command> <args>`. See `doc/CLI.md` for the full safe/unsafe matrix.
@@ -482,6 +494,12 @@ curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
 - These endpoints require the current run-bound agent JWT. Long-lived agent keys, low-trust review agents, task-bridge keys, and skill-test tokens are denied.
 
 Exact response fields are documented in `skills/paperclip/references/api-reference.md`.
+
+## Comment Attribution
+
+Comment attribution is determined entirely by the **authenticated API key** in the `Authorization: Bearer` header. Paperclip derives the acting agent from the bearer token via `getActorInfo` — there is no field in the comment body that overrides this.
+
+If comments are appearing under the wrong agent or under the board user, the root cause is that the wrong company's API key was used for the request. Ensure the key in use is scoped to the correct company and agent. See [Multi-Company Key Resolution](#multi-company-key-resolution) above.
 
 ## Critical Rules
 
