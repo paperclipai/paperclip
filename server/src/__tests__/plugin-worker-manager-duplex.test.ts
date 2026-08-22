@@ -163,6 +163,30 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("carries a transport-close exit through to the wait result", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          data: [{ chunk: "one" }],
+          // The worker reports a reason-less transport close with no exit code.
+          transportClosed: true,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The discriminator survives the worker exit notification, so the host wait
+      // resolves with the transport-close mark and no exit code.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null, transportClosed: true });
+      expect(chunks).toEqual(["one"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("isolates a throwing listener during the buffered replay so every buffered chunk routes", async () => {
     const handle = makeDuplexHandle();
     try {

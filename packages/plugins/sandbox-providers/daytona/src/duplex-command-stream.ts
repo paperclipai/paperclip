@@ -45,6 +45,8 @@ export type {
   DaytonaPtyProcess,
 } from "./setup-token-pty.js";
 
+import { sendPtyInputInChunks } from "./pty-chunked-input.js";
+
 /**
  * A live duplex channel session for one command. The session allocates a real
  * pseudo-terminal in raw mode, streams the raw output, accepts host input, and
@@ -56,8 +58,13 @@ export interface DuplexChannelSession {
   onData(listener: (chunk: string) => void): void;
   /** Writes raw input bytes to the pseudo-terminal. */
   write(data: string): void;
-  /** Resolves with the child exit code when the command ends. */
-  wait(): Promise<{ exitCode: number | null }>;
+  /**
+   * Resolves when the command ends or the transport closes. A numeric `exitCode`
+   * is a real process exit. `transportClosed` is true when the pseudo-terminal
+   * socket closed with no exit data, so the caller can tell a real process exit
+   * from a reason-less transport close.
+   */
+  wait(): Promise<{ exitCode: number | null; transportClosed: boolean }>;
   /** Stops the child process. Safe to call more than one time. */
   kill(): void;
   /** Releases the session resources. Safe to call more than one time. */
@@ -221,17 +228,25 @@ export async function openDaytonaDuplexChannelSession(
       }
     },
     write(data: string): void {
-      // Fire the input write. A write error must not throw into the transport, so
-      // the transport's stream stays the single result path. On a rejected write,
-      // end the channel at once and report the typed reason. The raw provider
-      // error never reaches a sink.
-      void handle.sendInput(data).catch(() => {
-        endOnWriteError();
-      });
+      // Send the input as byte-bounded chunks under the provider message cap. A
+      // whole payload in one message can cross the cap and take the channel down,
+      // so the chunker slices the payload and sends each chunk in order. A write
+      // error must not throw into the transport, so the transport's stream stays
+      // the single result path. On a rejected chunk, the chunker ends the channel
+      // one time through `endOnWriteError` and sends no later chunk. The raw
+      // provider error never reaches a sink.
+      sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data, endOnWriteError);
     },
-    async wait(): Promise<{ exitCode: number | null }> {
+    async wait(): Promise<{ exitCode: number | null; transportClosed: boolean }> {
       const result = await handle.wait();
-      return { exitCode: typeof result.exitCode === "number" ? result.exitCode : null };
+      if (typeof result.exitCode === "number") {
+        // A numeric exit code is a real process exit. The SDK parses it from the
+        // pseudo-terminal WebSocket close reason (for example `{"exitCode":0}`).
+        return { exitCode: result.exitCode, transportClosed: false };
+      }
+      // A non-numeric exit code marks a reason-less transport close: the socket
+      // closed with no exit data. It is a transport close, not a process exit.
+      return { exitCode: null, transportClosed: true };
     },
     kill(): void {
       void handle.kill().catch(() => undefined);

@@ -64,6 +64,7 @@ export type DuplexBrokerState = "opening" | "open" | "lost" | "closing" | "close
 /** The reason the broker classified a loss. The broker records it for metrics only. */
 export type DuplexBrokerLossReason =
   | "channel_exit"
+  | "transport_closed"
   | "stream_failure"
   | "protocol_failure"
   | "heartbeat_write_failure"
@@ -75,6 +76,8 @@ export type DuplexBrokerLossReason =
  * carries only the closed enum value. The map is total over the internal reasons,
  * so no raw text ever reaches the typed reason.
  *   - `channel_exit` -> `provider_exit`: the provider channel process exited.
+ *   - `transport_closed` -> `transport_closed`: the provider transport closed with
+ *     no exit data, so the loss is a transport close, not a process exit.
  *   - `stream_failure` -> `write_error`: a write to the channel failed.
  *   - `protocol_failure` -> `rpc_failure`: a malformed or mismatched frame.
  *   - `heartbeat_write_failure` -> `heartbeat_timeout`: the liveness write failed.
@@ -82,6 +85,7 @@ export type DuplexBrokerLossReason =
  */
 const BROKER_LOSS_REASON_TO_TYPED: Readonly<Record<DuplexBrokerLossReason, DuplexLossReason>> = {
   channel_exit: "provider_exit",
+  transport_closed: "transport_closed",
   stream_failure: "write_error",
   protocol_failure: "rpc_failure",
   heartbeat_write_failure: "heartbeat_timeout",
@@ -452,10 +456,12 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     if (stopped) return;
     const afterOrderlyCompletion = orderlyCompletionSeq !== null;
     // A clean channel end that orders after a host-observed orderly completion is
-    // a normal teardown, not a loss. Stop cleanly, emit no loss event, and leave
-    // the run a success. This keeps the closed telemetry contract: an orderly
-    // close is not a loss and emits no loss event.
-    if (afterOrderlyCompletion && reason === "channel_exit") {
+    // a normal teardown, not a loss. A process exit and a reason-less transport
+    // close both end the channel, so both count as the normal teardown here. Stop
+    // cleanly, emit no loss event, and leave the run a success. This keeps the
+    // closed telemetry contract: an orderly close is not a loss and emits no loss
+    // event.
+    if (afterOrderlyCompletion && (reason === "channel_exit" || reason === "transport_closed")) {
       stopped = true;
       clearHeartbeat();
       clearPending();
@@ -813,7 +819,14 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     }
   };
 
-  const onExit = (): void => {
+  const onExit = (exit: { exitCode: number | null; transportClosed?: boolean }): void => {
+    // A reason-less transport close is not a process exit. Record it as a distinct
+    // loss, so a transport close stays legible in the loss taxonomy. A real process
+    // exit stays `channel_exit` -> `provider_exit`.
+    if (exit.transportClosed === true) {
+      recordLoss("transport_closed", "The sandbox channel transport closed with no exit.");
+      return;
+    }
     recordLoss("channel_exit", "The sandbox channel process exited.");
   };
 

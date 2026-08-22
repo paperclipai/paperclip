@@ -27,6 +27,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import { sendPtyInputInChunks } from "./pty-chunked-input.js";
+
 /**
  * A live pseudo-terminal session for one setup-token login command. The session
  * allocates a real pseudo-terminal, streams the raw terminal output, accepts
@@ -161,9 +163,11 @@ export async function openDaytonaSetupTokenPtySession(
       }
     },
     write(data: string): void {
-      // Fire the input write. A write error must not throw into the runner, so
-      // the runner's fixed status stays the single result path.
-      void handle.sendInput(data).catch(() => undefined);
+      // Send the input as byte-bounded chunks under the provider message cap. The
+      // login input is short today, so the latent defect never fires, but the same
+      // unbounded write goes through the one chunker. A write error must not throw
+      // into the runner, so the runner's fixed status stays the single result path.
+      sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data);
     },
     async wait(): Promise<{ exitCode: number | null }> {
       const result = await handle.wait();

@@ -7,6 +7,7 @@ import {
   type DaytonaPtyHandle,
   type DaytonaPtyProcess,
 } from "./duplex-command-stream.js";
+import { PTY_INPUT_CHUNK_BYTES, PTY_MESSAGE_CAP_BYTES } from "./pty-chunked-input.js";
 
 // The carriage return that submits the launch wrapper line to the terminal.
 const ENTER = "\r";
@@ -357,22 +358,61 @@ describe("openDaytonaDuplexChannelSession", () => {
     expect(received).toEqual(['{"version":1,"type":"heartbeat"}\n']);
   });
 
-  it("resolves wait with the gateway exit code", async () => {
+  it("maps a numeric SDK exit code to a process exit", async () => {
     const process = createFakeProcess();
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
     process.handle?.finish(3);
 
-    await expect(session.wait()).resolves.toEqual({ exitCode: 3 });
+    // A numeric exit code is a real process exit, not a transport close.
+    await expect(session.wait()).resolves.toEqual({ exitCode: 3, transportClosed: false });
   });
 
-  it("maps an absent exit code to null", async () => {
+  it("maps an absent SDK exit code to a transport close", async () => {
     const process = createFakeProcess();
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
     process.handle?.finish(undefined);
 
-    await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    // A non-numeric SDK result marks a reason-less transport close with no exit
+    // data, so the seam reports a transport close, not a process exit.
+    await expect(session.wait()).resolves.toEqual({ exitCode: null, transportClosed: true });
+  });
+
+  it("splits a write above the provider cap into more than one send under the cap", async () => {
+    const process = createFakeProcess();
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    const handle = process.handle;
+    if (!handle) throw new Error("The fake process opened no handle.");
+    // The launch wrapper is the first recorded input. Count only the write's sends.
+    const before = handle.inputs.length;
+
+    // A fixed payload well above the provider message cap. It stays fixed, so a
+    // raised chunk size above this size makes the write one send and fails this
+    // test. The payload is ASCII, so the fake's per-send decode keeps each byte.
+    const payload = "x".repeat(150_416);
+    session.write(payload);
+
+    const sends = handle.inputs.slice(before);
+    expect(sends.length).toBeGreaterThan(1);
+    for (const chunk of sends) {
+      expect(Buffer.byteLength(chunk, "utf8")).toBeLessThanOrEqual(PTY_INPUT_CHUNK_BYTES);
+      expect(Buffer.byteLength(chunk, "utf8")).toBeLessThanOrEqual(PTY_MESSAGE_CAP_BYTES);
+    }
+    // The sends rejoin to the exact payload, so the chunker loses no byte.
+    expect(sends.join("")).toBe(payload);
+  });
+
+  it("sends a write below the provider cap as exactly one send", async () => {
+    const process = createFakeProcess();
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    const handle = process.handle;
+    if (!handle) throw new Error("The fake process opened no handle.");
+    const before = handle.inputs.length;
+
+    session.write('{"version":1,"type":"heartbeat"}\n');
+
+    expect(handle.inputs.slice(before)).toHaveLength(1);
   });
 
   it("kills the child on stop and releases the socket on close", async () => {

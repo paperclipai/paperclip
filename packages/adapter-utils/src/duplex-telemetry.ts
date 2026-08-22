@@ -85,9 +85,10 @@ export type DuplexLossClass = "pre_dispatch" | "post_dispatch";
  * cause to one of these values before any sink reads it. The set covers the
  * loss-detection modes the transport names: a gateway stdin end of file, a
  * provider process exit, a heartbeat timeout, and an RPC failure. It adds
- * `write_error` for a rejected host-to-sandbox write and `other` for an unknown
- * cause. The host maps an unknown cause or any caught provider text to `other`,
- * so no raw provider text reaches a sink.
+ * `write_error` for a rejected host-to-sandbox write, `transport_closed` for a
+ * reason-less provider transport close with no exit data, and `other` for an
+ * unknown cause. The host maps an unknown cause or any caught provider text to
+ * `other`, so no raw provider text reaches a sink.
  */
 export const DUPLEX_LOSS_REASONS = [
   "stdin_eof",
@@ -95,6 +96,7 @@ export const DUPLEX_LOSS_REASONS = [
   "heartbeat_timeout",
   "rpc_failure",
   "write_error",
+  "transport_closed",
   "other",
 ] as const;
 

@@ -572,8 +572,13 @@ export interface DuplexChannelHostSession {
   onData(listener: (chunk: string) => void): void;
   /** Writes raw input bytes to the channel. */
   write(data: string): void;
-  /** Resolves with the child exit code when the command ends or the route ends. */
-  wait(): Promise<{ exitCode: number | null }>;
+  /**
+   * Resolves when the command ends or the route ends. A numeric `exitCode` is a
+   * real process exit. `transportClosed` is true when the provider transport
+   * closed with no exit data, so the broker can tell a real process exit from a
+   * reason-less transport close.
+   */
+  wait(): Promise<{ exitCode: number | null; transportClosed?: boolean }>;
   /** Stops the child process. Safe to call more than one time. */
   kill(): void;
   /** Closes the route and releases the channel. Safe to call more than one time. */
@@ -1280,8 +1285,8 @@ export function createPluginWorkerHandle(
   // Settle the route wait exactly once. Replace the settler with a no-op, so a
   // later exit or terminalize never settles the wait a second time.
   function settleRouteWait(
-    route: { settleWait: (value: { exitCode: number | null }) => void },
-    value: { exitCode: number | null },
+    route: { settleWait: (value: { exitCode: number | null; transportClosed?: boolean }) => void },
+    value: { exitCode: number | null; transportClosed?: boolean },
   ): void {
     const settle = route.settleWait;
     route.settleWait = () => {};
@@ -1557,7 +1562,7 @@ export function createPluginWorkerHandle(
     totalDataBytes: number;
     lifetimeTimer: ReturnType<typeof setTimeout> | null;
     terminalized: boolean;
-    settleWait: (value: { exitCode: number | null }) => void;
+    settleWait: (value: { exitCode: number | null; transportClosed?: boolean }) => void;
     // The data frames that arrived before the bind, held in order. The bind
     // replays them through the exact-pair routing, so an early frame is never
     // lost and a frame whose pair does not match the bound pair still fails
@@ -1869,6 +1874,14 @@ export function createPluginWorkerHandle(
       return;
     }
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
+    // A reason-less transport close carries `transportClosed`; a real process exit
+    // does not. Carry the discriminator to the wait only when it is a transport
+    // close, so a real exit keeps the plain `{ exitCode }` result and the broker
+    // still keeps the two apart in the loss taxonomy.
+    if (params.transportClosed === true) {
+      settleRouteWait(resolved, { exitCode, transportClosed: true });
+      return;
+    }
     settleRouteWait(resolved, { exitCode });
   }
 
@@ -1953,10 +1966,13 @@ export function createPluginWorkerHandle(
     input: DuplexChannelOpenInput,
   ): Promise<DuplexChannelHostSession> {
     const hostRouteId = nextDuplexHostRouteId();
-    let settleWait: (value: { exitCode: number | null }) => void = () => {};
-    const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
-      settleWait = resolve;
-    });
+    let settleWait: (value: { exitCode: number | null; transportClosed?: boolean }) => void =
+      () => {};
+    const waitPromise = new Promise<{ exitCode: number | null; transportClosed?: boolean }>(
+      (resolve) => {
+        settleWait = resolve;
+      },
+    );
     const route: DuplexChannelRoute = {
       hostRouteId,
       state: "reserved",

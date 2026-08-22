@@ -16,6 +16,7 @@ import {
 } from "./duplex-frame-codec.js";
 import {
   createDuplexTelemetry,
+  DUPLEX_COUNTER_LOSS_TOTAL,
   DUPLEX_SPAN_REQUEST,
   type DuplexTelemetryCounterRecord,
   type DuplexTelemetryEventRecord,
@@ -627,5 +628,93 @@ describe("duplex bridge broker request limits", () => {
       outcome: "indeterminate",
       retryable: false,
     });
+  });
+});
+
+
+/**
+ * A channel harness that captures the broker exit listener. `emitExit` invokes it,
+ * so a test drives one channel exit into the broker.
+ */
+function createExitChannelHarness(): {
+  channel: CommandManagedDuplexChannel;
+  emitExit: (exit: { exitCode: number | null; transportClosed?: boolean }) => void;
+} {
+  let exitListener:
+    | ((exit: { exitCode: number | null; transportClosed?: boolean }) => void)
+    | null = null;
+  const channel: CommandManagedDuplexChannel = {
+    write: () => undefined,
+    onData: () => undefined,
+    onExit: (listener) => {
+      exitListener = listener;
+    },
+    stop: () => undefined,
+    close: () => Promise.resolve(),
+  };
+  return {
+    channel,
+    emitExit: (exit) => {
+      if (!exitListener) throw new Error("The broker did not bind the exit listener.");
+      exitListener(exit);
+    },
+  };
+}
+
+describe("duplex bridge broker exit taxonomy", () => {
+  const brokers: DuplexBridgeBroker[] = [];
+
+  afterEach(async () => {
+    while (brokers.length > 0) {
+      const broker = brokers.pop();
+      if (broker) await broker.close();
+    }
+  });
+
+  it("records a transport close as a distinct loss, not a process exit", () => {
+    const { telemetry, capture } = createTelemetryCapture();
+    const harness = createExitChannelHarness();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: () =>
+        Promise.resolve({ status: 200, headers: {}, body: "" }),
+      telemetry,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A reason-less transport close carries the discriminator and no exit code.
+    harness.emitExit({ exitCode: null, transportClosed: true });
+
+    expect(broker.lossRecord?.reason).toBe("transport_closed");
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "transport_closed" });
+    const lossCounter = capture.counters.find(
+      (record) => record.metric === DUPLEX_COUNTER_LOSS_TOTAL,
+    );
+    expect(lossCounter?.dimensions.loss_reason).toBe("transport_closed");
+  });
+
+  it("records a numeric exit as a process exit", () => {
+    const { telemetry, capture } = createTelemetryCapture();
+    const harness = createExitChannelHarness();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: () =>
+        Promise.resolve({ status: 200, headers: {}, body: "" }),
+      telemetry,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A numeric exit code is a real process exit, so the broker keeps the existing
+    // channel_exit -> provider_exit mapping.
+    harness.emitExit({ exitCode: 0 });
+
+    expect(broker.lossRecord?.reason).toBe("channel_exit");
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
+    const lossCounter = capture.counters.find(
+      (record) => record.metric === DUPLEX_COUNTER_LOSS_TOTAL,
+    );
+    expect(lossCounter?.dimensions.loss_reason).toBe("provider_exit");
   });
 });

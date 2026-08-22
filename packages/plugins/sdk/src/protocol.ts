@@ -1191,6 +1191,12 @@ export interface PluginDuplexChannelExitParams {
   workerSessionId: string;
   /** The child exit code, or null when the child ended with no code. */
   exitCode: number | null;
+  /**
+   * True when the provider transport closed with no exit data, so the exit is a
+   * reason-less transport close, not a process exit. Absent or false marks a real
+   * process exit. The host maps a transport close to a distinct loss reason.
+   */
+  transportClosed?: boolean;
 }
 
 /** The worker→host notification method for one duplex channel data chunk. */
