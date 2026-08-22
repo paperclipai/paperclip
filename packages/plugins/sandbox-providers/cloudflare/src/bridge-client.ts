@@ -31,6 +31,11 @@ interface BridgeErrorBody {
   details?: unknown;
 }
 
+interface ParsedErrorBody {
+  errorBody: BridgeErrorBody;
+  rawText: string | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -65,6 +70,85 @@ async function parseJson(response: Response): Promise<unknown> {
     return null;
   }
   return await response.json();
+}
+
+async function parseErrorBody(response: Response): Promise<ParsedErrorBody> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.toLowerCase().includes("application/json")) {
+    try {
+      const body = await response.json();
+      return {
+        errorBody: isRecord(body) ? body as BridgeErrorBody : {},
+        rawText: null,
+      };
+    } catch (error) {
+      return {
+        errorBody: {},
+        rawText: `Malformed JSON error response: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  const rawText = await response.text().catch(() => "");
+  return {
+    errorBody: {},
+    rawText,
+  };
+}
+
+function buildBridgeErrorMessage(status: number, errorBody: BridgeErrorBody, rawText: string | null): string {
+  if (typeof errorBody.message === "string" && errorBody.message.trim().length > 0) {
+    return errorBody.message.trim();
+  }
+
+  const text = rawText?.replace(/\s+/g, " ").trim() ?? "";
+  if (status === 403 && /\b1010\b/i.test(text) && /cloudflare/i.test(text)) {
+    return "Cloudflare sandbox bridge request was blocked by Cloudflare 1010 bot protection. Exempt the bridge endpoint or token-authenticated API path from bot/security rules.";
+  }
+
+  if (text.length > 0) {
+    return `Cloudflare sandbox bridge request failed with HTTP ${status}: ${text.slice(0, 240)}`;
+  }
+
+  return `Cloudflare sandbox bridge request failed with HTTP ${status}.`;
+}
+
+function normalizeExecuteResponse(body: unknown): CloudflareBridgeExecuteResponse {
+  if (!isRecord(body)) {
+    throw new CloudflareBridgeError({
+      status: 502,
+      code: "malformed_execute_response",
+      message: "Cloudflare sandbox bridge returned a malformed exec response.",
+      details: body,
+    });
+  }
+
+  const exitCode = body.exitCode;
+  const timedOut = body.timedOut;
+  const stdout = body.stdout;
+  const stderr = body.stderr;
+  if (
+    !(typeof exitCode === "number" || exitCode === null) ||
+    typeof timedOut !== "boolean" ||
+    typeof stdout !== "string" ||
+    typeof stderr !== "string"
+  ) {
+    throw new CloudflareBridgeError({
+      status: 502,
+      code: "malformed_execute_response",
+      message: "Cloudflare sandbox bridge returned a malformed exec response.",
+      details: body,
+    });
+  }
+
+  return {
+    exitCode,
+    signal: typeof body.signal === "string" || body.signal === null ? body.signal : null,
+    timedOut,
+    stdout,
+    stderr,
+    metadata: isRecord(body.metadata) ? body.metadata : undefined,
+  };
 }
 
 function encodeExecuteRequestBody(body: CloudflareBridgeExecuteRequest, options?: BridgeExecuteOptions): string {
@@ -116,19 +200,16 @@ async function requestJson<T>(
       headers: buildHeaders(config, extraHeaders),
       signal: controller.signal,
     });
-    const body = await parseJson(response);
     if (!response.ok) {
-      const errorBody = isRecord(body) ? body as BridgeErrorBody : {};
+      const { errorBody, rawText } = await parseErrorBody(response);
       throw new CloudflareBridgeError({
         status: response.status,
         code: typeof errorBody.error === "string" ? errorBody.error : null,
-        message:
-          typeof errorBody.message === "string" && errorBody.message.trim().length > 0
-            ? errorBody.message
-            : `Cloudflare sandbox bridge request failed with HTTP ${response.status}.`,
+        message: buildBridgeErrorMessage(response.status, errorBody, rawText),
         details: errorBody.details,
       });
     }
+    const body = await parseJson(response);
     return body as T;
   } catch (error) {
     if (error instanceof CloudflareBridgeError) throw error;
@@ -161,15 +242,11 @@ async function requestResponse(
       signal: controller.signal,
     });
     if (!response.ok) {
-      const body = await parseJson(response);
-      const errorBody = isRecord(body) ? body as BridgeErrorBody : {};
+      const { errorBody, rawText } = await parseErrorBody(response);
       throw new CloudflareBridgeError({
         status: response.status,
         code: typeof errorBody.error === "string" ? errorBody.error : null,
-        message:
-          typeof errorBody.message === "string" && errorBody.message.trim().length > 0
-            ? errorBody.message
-            : `Cloudflare sandbox bridge request failed with HTTP ${response.status}.`,
+        message: buildBridgeErrorMessage(response.status, errorBody, rawText),
         details: errorBody.details,
       });
     }
@@ -249,7 +326,7 @@ async function consumeExecuteEventStream(
       }
 
       if (event.event === "complete") {
-        result = JSON.parse(event.data) as CloudflareBridgeExecuteResponse;
+        result = normalizeExecuteResponse(JSON.parse(event.data));
         continue;
       }
 
@@ -346,12 +423,12 @@ export function createCloudflareBridgeClient(options: BridgeClientOptions) {
           extraHeaders,
         ).then((response) => consumeExecuteEventStream(response, options));
       }
-      return requestJson<CloudflareBridgeExecuteResponse>(
+      return requestJson<unknown>(
         config,
         `${apiPrefix}/exec`,
         { method: "POST", body: encodedBody },
         extraHeaders,
-      );
+      ).then(normalizeExecuteResponse);
     },
   };
 }
