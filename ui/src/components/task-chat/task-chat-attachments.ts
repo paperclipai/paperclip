@@ -115,6 +115,26 @@ export interface AttachmentRef {
 const ATTACHMENT_LINK_RE =
   /(?<!!)\[((?:\\.|[^\]\\])+)\]\((\/api\/(?:attachments|assets)\/[^()\s]+\/content(?:\?[^()\s]*)?)\)/g;
 
+/** Markdown image embeds (`![name](url)`), same escaped-label grammar. */
+const IMAGE_EMBED_RE = /!\[((?:\\.|[^\]\\])*)\]\(([^()\s]+)\)/g;
+
+/**
+ * Every image embedded in a message body, in document order, deduped by URL.
+ * Feeds the bubble's lightbox: the refs become the gallery items and the
+ * clicked <img> src picks the initial index.
+ */
+export function extractImageRefs(body: string): AttachmentRef[] {
+  const refs: AttachmentRef[] = [];
+  const seen = new Set<string>();
+  for (const match of body.matchAll(IMAGE_EMBED_RE)) {
+    const [, name, url] = match;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    refs.push({ name: name.replace(/\\([[\]])/g, "$1"), url });
+  }
+  return refs;
+}
+
 export interface ExtractedAttachmentRefs {
   refs: AttachmentRef[];
   /** Body with lines that were nothing but extracted links removed. */

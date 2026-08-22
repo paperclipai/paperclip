@@ -6749,21 +6749,37 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const invocationById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
       let visibleRequests = requests;
       if (status === "pending") {
-        const invalidRequestIds = requests
-          .filter((request) => {
-            const invocation = invocationById.get(request.invocationId);
-            if (!invocation) return true;
-            try {
-              return !readSignedToolArgumentsPayload({
-                signedArguments: request.signedArguments,
-                invocationId: invocation.id,
-                toolName: invocation.toolName,
-              });
-            } catch {
-              return true;
-            }
-          })
-          .map((request) => request.id);
+        // A pending request that the creator has not signed yet is still being
+        // set up. The gateway creates the row (signedArguments = null) and signs
+        // it in a second step, so a review-queue read can observe the row inside
+        // that window. Hide such a request from the queue, but do not cancel it —
+        // cancelling here races the two-step create and makes the later approve
+        // fail with action_not_pending. Only cancel a request that carries a
+        // signature we cannot verify (secret rotation or tampering).
+        const unsignedRequestIds = new Set<string>();
+        const invalidRequestIds: string[] = [];
+        for (const request of requests) {
+          const invocation = invocationById.get(request.invocationId);
+          if (!invocation) {
+            invalidRequestIds.push(request.id);
+            continue;
+          }
+          if (request.signedArguments === null) {
+            unsignedRequestIds.add(request.id);
+            continue;
+          }
+          let readable = false;
+          try {
+            readable = Boolean(readSignedToolArgumentsPayload({
+              signedArguments: request.signedArguments,
+              invocationId: invocation.id,
+              toolName: invocation.toolName,
+            }));
+          } catch {
+            readable = false;
+          }
+          if (!readable) invalidRequestIds.push(request.id);
+        }
         if (invalidRequestIds.length > 0) {
           await db
             .update(toolActionRequests)
@@ -6773,8 +6789,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
               eq(toolActionRequests.status, "pending"),
               inArray(toolActionRequests.id, invalidRequestIds),
             ));
-          const invalidIds = new Set(invalidRequestIds);
-          visibleRequests = requests.filter((request) => !invalidIds.has(request.id));
+        }
+        const hiddenIds = new Set([...invalidRequestIds, ...unsignedRequestIds]);
+        if (hiddenIds.size > 0) {
+          visibleRequests = requests.filter((request) => !hiddenIds.has(request.id));
         }
       }
       if (visibleRequests.length === 0) return [];

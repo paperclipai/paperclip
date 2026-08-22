@@ -108,6 +108,36 @@ describe("TaskChatBubble accent-bubble text color", () => {
   });
 });
 
+describe("TaskChatBubble agent page-surface treatment", () => {
+  it("renders agent prose without a card background or constrained width", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    flushSync(() =>
+      root.render(
+        <ThemeProvider>
+          <TaskChatBubble
+            item={{ id: "agent-message", kind: "message", author: "agent", authorName: "Codex", text: "A long-form agent response" }}
+          />
+        </ThemeProvider>,
+      ),
+    );
+
+    const bubble = container.querySelector('[data-testid="task-chat-agent-bubble"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.className).toContain("w-full");
+    expect(bubble?.className).toContain("bg-transparent");
+    expect(bubble?.className).toContain("px-1");
+    expect(bubble?.className).not.toContain("rounded-2xl");
+    expect(bubble?.className).not.toContain("bg-(--bubble-agent)");
+    expect(bubble?.className).not.toContain("max-w-(--pct-85)");
+
+    flushSync(() => root.unmount());
+    container.remove();
+  });
+});
+
 describe("TaskChatBubble interstitial self-talk (PAP-357)", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;

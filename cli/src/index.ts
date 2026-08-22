@@ -1,7 +1,9 @@
 import { Command } from "commander";
+import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
+import { channelsCommand } from "./commands/channels.js";
 import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
@@ -131,6 +133,14 @@ program
   .action(envCommand);
 
 program
+  .command("channels")
+  .description("Show the release channels and which one this install follows")
+  .option("--json", "Machine-readable output")
+  .action(async (opts) => {
+    await channelsCommand(opts);
+  });
+
+program
   .command("configure")
   .description("Update configuration sections")
   .option("-c, --config <path>", "Path to config file")
@@ -241,6 +251,8 @@ auth
 registerClientAuthCommands(auth);
 
 async function main(): Promise<void> {
+  warnIfUnsupportedNodeVersion(process.versions.node, (message) => console.warn(message));
+
   let failed = false;
   try {
     await program.parseAsync();

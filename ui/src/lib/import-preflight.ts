@@ -36,6 +36,9 @@ function fileEntryInlineBytes(entry: CompanyPortabilityFileEntry): number {
  * bytes, base64 payloads with their entry structure, the serialized file-path
  * keys (thousands of paths are real bytes), and an envelope allowance for the
  * rest of the request body.
+ *
+ * Mirrored by `estimateInlineImportBytes` in cli/src/commands/client/company.ts
+ * (the CLI cannot import from ui/) — keep the math on both sides in sync.
  */
 export function estimateInlineImportBytes(files: Record<string, CompanyPortabilityFileEntry>): number {
   let total = REQUEST_ENVELOPE_ALLOWANCE_BYTES;

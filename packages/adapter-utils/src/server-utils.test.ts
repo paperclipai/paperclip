@@ -10,6 +10,7 @@ import {
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
+  buildPaperclipEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -887,6 +888,9 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
       "for request_confirmation this resumes only after acceptance",
     );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Never create probe or throwaway issue-thread interactions to discover the interactions API shape or your permissions",
+    );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
@@ -1736,6 +1740,52 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt.indexOf("Open plan comments to incorporate:")).toBeLessThan(prompt.indexOf("New comments in order:"));
   });
 
+  it("renders grouped non-plan document annotations with editing scope", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-522", title: "Document annotations", status: "in_progress" },
+      documentReviewContext: {
+        issueId: "issue-1",
+        documents: [{
+          documentKey: "qa-evidence",
+          documentId: "document-2",
+          title: "QA evidence",
+          latestRevisionId: "revision-3",
+          latestRevisionNumber: 3,
+          threads: [{
+            id: "thread-2",
+            documentKey: "qa-evidence",
+            documentId: "document-2",
+            status: "open",
+            revisionNumber: 3,
+            anchorState: "active",
+            anchorConfidence: "exact",
+            selectedText: "Passed in Chrome",
+            prefixText: "Evidence: ",
+            suffixText: ".",
+            comments: [{ id: "comment-2", threadId: "thread-2", body: "Attach the run id.", author: { type: "user", id: "board-user" } }],
+            commentCount: 1,
+          }],
+          totals: { openThreadCount: 1, includedThreadCount: 1, omittedThreadCount: 0, commentCount: 1, includedCommentCount: 1, omittedCommentCount: 0 },
+          truncated: true,
+        }],
+        totals: { openThreadCount: 1, includedThreadCount: 1, omittedThreadCount: 0, commentCount: 1, includedCommentCount: 1, omittedCommentCount: 0 },
+        truncated: true,
+      },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: true,
+    });
+
+    expect(prompt).toContain("## Open document annotations");
+    expect(prompt).toContain("### QA evidence");
+    expect(prompt).toContain("selected text: Passed in Chrome");
+    expect(prompt).toContain("Attach the run id.");
+    expect(prompt).toContain("propose a child issue before making code changes");
+    expect(prompt).toContain("prefer replying and resolving the thread over rewriting the snapshot");
+    expect(prompt).toContain("[document review context truncated]");
+  });
+
   it("renders dependency-blocked interaction guidance", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",
@@ -2576,5 +2626,60 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("buildPaperclipEnv", () => {
+  const ENV_KEYS = [
+    "PAPERCLIP_API_URL",
+    "PAPERCLIP_RUNTIME_API_URL",
+    "PAPERCLIP_LISTEN_HOST",
+    "PAPERCLIP_LISTEN_PORT",
+    "HOST",
+    "PORT",
+  ] as const;
+
+  function withEnv(overrides: Record<string, string>, fn: () => void) {
+    const saved = new Map<string, string | undefined>();
+    for (const key of ENV_KEYS) saved.set(key, process.env[key]);
+    try {
+      for (const key of ENV_KEYS) delete process.env[key];
+      for (const [key, value] of Object.entries(overrides)) process.env[key] = value;
+      fn();
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it("prefers an explicit PAPERCLIP_API_URL override over the derived runtime URL", () => {
+    withEnv(
+      {
+        PAPERCLIP_API_URL: "http://localhost:3100",
+        PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100",
+      },
+      () => {
+        const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+        expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
+        expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
+        expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
+      },
+    );
+  });
+
+  it("falls back to the derived runtime URL when no explicit override is set", () => {
+    withEnv({ PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100" }, () => {
+      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.7:3100");
+    });
+  });
+
+  it("derives a listen-host URL when neither override is set", () => {
+    withEnv({ PAPERCLIP_LISTEN_HOST: "0.0.0.0", PAPERCLIP_LISTEN_PORT: "3200" }, () => {
+      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
+    });
   });
 });

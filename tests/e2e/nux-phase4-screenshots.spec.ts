@@ -66,7 +66,7 @@ test.describe("NUX Phase 4 visual QA", () => {
       await createCard.first().click();
     }
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics");
     await page.screenshot({ path: shot("02-create-name.png") });
@@ -83,7 +83,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     // Step 2 advances via "Confirm mission" (creates the company + goal);
     // step 3 is the team-lead naming step of the capsule wizard.
     await page.getByRole("button", { name: /Confirm mission/ }).click();
-    await page.waitForSelector('input[placeholder="Chief of staff"]', {
+    await page.waitForSelector("#onboarding-agent-role", {
       timeout: 30_000,
     });
     await page.screenshot({ path: shot("04-hire-team-lead.png") });
@@ -120,7 +120,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.getByRole("button", { name: /Add agents to your org/ }).click();
     // The grow path shares step 1 (company name) before its step-2 intake.
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics Grow");
     await page.getByRole("button", { name: /^Next/ }).click();

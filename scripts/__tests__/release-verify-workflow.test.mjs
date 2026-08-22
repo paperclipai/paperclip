@@ -47,6 +47,42 @@ test("promotion selection guards against sources that predate their channel tool
   assert.match(releaseWorkflow, /git show "\$\{sha\}:scripts\/release\.sh" \| grep -qF 'canary\|nightly\|beta\|stable\)'/);
 });
 
+test("candidate-branch betas are validated and fully verified before publish", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // Candidate heads are new commits: selection must pin the naming
+  // convention and publication must be gated on full verification.
+  assert.match(releaseWorkflow, /candidate\/beta-\*\)/);
+  assert.match(
+    releaseWorkflow,
+    /verify_beta_candidate:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml/,
+  );
+  assert.match(releaseWorkflow, /needs\.verify_beta_candidate\.result == 'success'/);
+});
+
+test("post-publish beta smoke survives the skipped candidate-verification ancestor", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // publish_beta's needs chain contains verify_beta_candidate, which is
+  // skipped on promote-mode betas. An `if:` without a status-check function
+  // gets an implicit success() that evaluates that chain transitively and
+  // silently skips the smoke. The condition must stay explicit.
+  assert.match(
+    releaseWorkflow,
+    /smoke_beta:\n\s+needs: publish_beta\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_beta\.result == 'success' && !inputs\.dry_run \}\}/,
+  );
+});
+
+test("every lane's tag push degrades to recovery instructions when rejected", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // GITHUB_TOKEN may not create refs pointing at workflow-modifying commits
+  // from dispatch or scheduled runs; a rejected tag push after a successful
+  // npm publish must surface runbook recovery commands, not a bare error.
+  const occurrences = releaseWorkflow.match(/## Tag push rejected/g) ?? [];
+  assert.equal(occurrences.length, 3, "nightly, beta, and stable each carry the recovery summary");
+});
+
 test("release smoke workflow extends the container readiness budget for CI", () => {
   const smokeWorkflow = readWorkflow("release-smoke.yml");
   const harness = readFileSync(path.join(repoRoot, "scripts/docker-onboard-smoke.sh"), "utf8");

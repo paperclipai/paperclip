@@ -6,7 +6,7 @@ import { test, expect } from "@playwright/test";
  * The wizard now opens on a front door (path picker) and the "Create a new
  * company" path runs:
  *   Step 0  — Front door (Create a new company / Level up existing)
- *   Step 1a — Name your company
+ *   Step 1a — Name your organization
  *   Step 1b — Define your mission (direct or guided)
  *   Step 2  — Hire your team lead (adapter picker)
  *   Step 3+ — Launch celebration → CEO chat → hiring plan → orientation
@@ -53,9 +53,9 @@ test.describe("Onboarding wizard", () => {
       await createCard.first().click();
     }
 
-    // Step 1 — Name your company.
+    // Step 1 — Name your organization.
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();
@@ -71,7 +71,7 @@ test.describe("Onboarding wizard", () => {
     // "Confirm mission" creates the company + a company-level goal, then
     // advances to the team-lead naming step of the capsule wizard.
     await page.getByRole("button", { name: /Confirm mission/ }).click();
-    await page.waitForSelector('input[placeholder="Chief of staff"]', {
+    await page.waitForSelector("#onboarding-agent-role", {
       timeout: 30_000,
     });
 

@@ -488,4 +488,35 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       }),
     ]));
   });
+
+  it("honors the target user's allowlist for explicit archive and unarchive", async () => {
+    const seeded = await seed();
+    const app = appFor(agentActor(seeded));
+    await db.insert(userInboxAgentPolicies).values({
+      companyId: seeded.companyId,
+      userId: seeded.targetUserId,
+      mode: "allowlist",
+      allowedAgentIds: [seeded.agentId],
+    });
+
+    await request(app)
+      .post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ userId: seeded.targetUserId })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ userId: seeded.targetUserId }));
+    await request(app)
+      .delete(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ userId: seeded.targetUserId })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ userId: seeded.targetUserId }));
+
+    const auditRows = await db.select().from(activityLog);
+    expect(auditRows.map((row) => row.details)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        userId: seeded.targetUserId,
+        targetResolvedFrom: "explicit",
+        policyMode: "allowlist",
+      }),
+    ]));
+  });
 });

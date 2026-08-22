@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as p from "@clack/prompts";
@@ -12,10 +13,24 @@ import type {
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
 } from "@paperclipai/shared";
+import {
+  companyImportTransferApplyPath,
+  companyImportTransferPartPath,
+  companyImportTransferPreviewPath,
+  COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+  type CompanyImportTransferCreated,
+  type CompanyImportTransferDeclaration,
+} from "@paperclipai/shared/company-import-transfer";
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
-import { ApiRequestError } from "../../client/http.js";
+import { ApiRequestError, type PaperclipApiClient } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";
-import { binaryContentTypeByExtension, bytesToPortableFileEntry, isBlobStorePath, readZipArchive } from "./zip.js";
+import {
+  binaryContentTypeByExtension,
+  bytesToPortableFileEntry,
+  createStoredZipArchive,
+  isBlobStorePath,
+  readZipArchive,
+} from "./zip.js";
 import {
   addCommonClientOptions,
   apiPath,
@@ -927,23 +942,23 @@ async function pathExists(inputPath: string): Promise<boolean> {
   }
 }
 
-async function collectPackageFiles(
+async function collectPackageFileBytes(
   root: string,
   current: string,
-  files: Record<string, CompanyPortabilityFileEntry>,
+  files: Record<string, Uint8Array>,
 ): Promise<void> {
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith(".git")) continue;
     const absolutePath = path.join(current, entry.name);
     if (entry.isDirectory()) {
-      await collectPackageFiles(root, absolutePath, files);
+      await collectPackageFileBytes(root, absolutePath, files);
       continue;
     }
     if (!entry.isFile()) continue;
     const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
     if (!shouldIncludePortableFile(relativePath)) continue;
-    files[relativePath] = bytesToPortableFileEntry(relativePath, await readFile(absolutePath));
+    files[relativePath] = await readFile(absolutePath);
   }
 }
 
@@ -965,12 +980,230 @@ export async function resolveInlineSourceFromPath(inputPath: string): Promise<{
   }
 
   const rootDir = resolvedStat.isDirectory() ? resolved : path.dirname(resolved);
-  const files: Record<string, CompanyPortabilityFileEntry> = {};
-  await collectPackageFiles(rootDir, rootDir, files);
+  const fileBytes: Record<string, Uint8Array> = {};
+  await collectPackageFileBytes(rootDir, rootDir, fileBytes);
   return {
     rootPath: path.basename(rootDir),
-    files,
+    files: Object.fromEntries(
+      Object.entries(fileBytes).map(([relativePath, bytes]) => [
+        relativePath,
+        bytesToPortableFileEntry(relativePath, bytes),
+      ]),
+    ),
   };
+}
+
+// ── Chunked transfer flow for large local packages ───────────────────
+//
+// A local package over the threshold is not posted as one inline JSON body:
+// its zip is declared as a chunked transfer (whole-file and per-part sha256),
+// the parts are uploaded individually with per-part retries, and preview and
+// apply run server-side against the assembled spool. Re-declaring the same
+// content — after a failure or an interrupted run — resumes the prior
+// transfer, so only the parts the server is missing are ever re-uploaded.
+
+export const CHUNKED_IMPORT_THRESHOLD_BYTES = 48 * 1024 * 1024;
+// Imports into an EXISTING company post to /api/companies/:id/imports/*,
+// which sits behind the server's default 10 MB JSON parser — only the
+// generic /api/companies/import path carries the 64 MB portable limit. The
+// chunk decision for existing targets therefore uses this lower threshold
+// (margin under 10 MB for the envelope), or the inline body would 413.
+export const EXISTING_COMPANY_CHUNKED_IMPORT_THRESHOLD_BYTES = 8 * 1024 * 1024;
+export const IMPORT_TRANSFER_PART_SIZE_BYTES = 32 * 1024 * 1024;
+const IMPORT_TRANSFER_PART_ATTEMPTS = 3;
+
+// ── Inline request size estimation ───────────────────────────────────
+//
+// Mirrors `estimateInlineImportBytes` in ui/src/lib/import-preflight.ts (the
+// CLI cannot import from ui/) — keep the math on both sides in sync. The
+// server enforces its body limit on raw request bytes, so each entry is
+// measured the way it actually travels: JSON-escaped UTF-8 for text
+// (multi-byte characters and escape sequences both inflate past
+// `String.length`), and the base64 payload plus its object structure for
+// binary entries (base64 and MIME types are ASCII, one byte per character).
+
+const inlineEstimateUtf8 = new TextEncoder();
+
+// Fixed serialization overhead of a base64 entry object around its data and
+// contentType values: {"encoding":"base64","data":"…","contentType":"…"}.
+const BASE64_ENTRY_STRUCTURE_BYTES = '{"encoding":"base64","data":"","contentType":""}'.length;
+
+// Allowance for everything in the request body besides the files map itself
+// (rootPath, include flags, target, collision strategy, adapter overrides,
+// braces and commas). Deliberately generous so the estimate never undercounts.
+const REQUEST_ENVELOPE_ALLOWANCE_BYTES = 256 * 1024;
+
+function fileEntryInlineBytes(entry: CompanyPortabilityFileEntry): number {
+  if (typeof entry === "string") return inlineEstimateUtf8.encode(JSON.stringify(entry)).length;
+  return BASE64_ENTRY_STRUCTURE_BYTES + entry.data.length + (entry.contentType?.length ?? 0);
+}
+
+/**
+ * Approximate JSON request size of an inline import: JSON-escaped UTF-8 text
+ * bytes, base64 payloads with their entry structure, the serialized file-path
+ * keys (thousands of paths are real bytes), and an envelope allowance for the
+ * rest of the request body.
+ */
+function estimateInlineImportBytes(files: Record<string, CompanyPortabilityFileEntry>): number {
+  let total = REQUEST_ENVELOPE_ALLOWANCE_BYTES;
+  for (const [filePath, entry] of Object.entries(files)) {
+    // "path": entry,  → key bytes + colon + comma.
+    total += inlineEstimateUtf8.encode(JSON.stringify(filePath)).length + 2 + fileEntryInlineBytes(entry);
+  }
+  return total;
+}
+
+export interface ImportTransferUploadProgress {
+  uploadedParts: number;
+  totalParts: number;
+  uploadedBytes: number;
+  totalBytes: number;
+}
+
+export function buildImportTransferManifest(zipBytes: Uint8Array): CompanyImportTransferDeclaration {
+  const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const parts: CompanyImportTransferDeclaration["parts"] = [];
+  for (let offset = 0; offset < zipBytes.length; offset += IMPORT_TRANSFER_PART_SIZE_BYTES) {
+    const byteSize = Math.min(IMPORT_TRANSFER_PART_SIZE_BYTES, zipBytes.length - offset);
+    parts.push({
+      index: parts.length,
+      byteSize,
+      sha256: sha256(zipBytes.subarray(offset, offset + byteSize)),
+    });
+  }
+  return {
+    totalBytes: zipBytes.length,
+    zipSha256: sha256(zipBytes),
+    partSizeBytes: IMPORT_TRANSFER_PART_SIZE_BYTES,
+    parts,
+  };
+}
+
+/**
+ * Resolve a local import source into raw zip bytes when its package is too
+ * large to travel as one inline JSON body: a .zip file is read as-is (so its
+ * declared hashes match the file on disk), a folder is packaged as a stored
+ * zip in memory with the same walk filters the inline path uses. Both source
+ * kinds are measured twice — raw bytes as a fast path, then the estimated
+ * inline request size, because base64 inflates binary entries ~4/3 and a
+ * compressed zip can expand far past its file size. Returns null for sources
+ * under the threshold on both measures — those keep the inline JSON path.
+ */
+export async function resolveChunkedImportZip(
+  inputPath: string,
+  thresholdBytes: number = CHUNKED_IMPORT_THRESHOLD_BYTES,
+): Promise<{
+  zipBytes: Uint8Array;
+  rootPath: string;
+} | null> {
+  const resolved = path.resolve(inputPath);
+  const resolvedStat = await stat(resolved);
+  if (resolvedStat.isFile() && path.extname(resolved).toLowerCase() === ".zip") {
+    const zipBytes = new Uint8Array(await readFile(resolved));
+    const rootPath = path.basename(resolved, ".zip");
+    if (resolvedStat.size > thresholdBytes) return { zipBytes, rootPath };
+    // A small compressed zip can still expand past server caps as inline
+    // JSON (text compresses well and binary re-inflates ~4/3 as base64), so
+    // the stay-inline decision uses the estimated request size of the same
+    // entries the inline path would send. An unreadable zip stays inline so
+    // that path surfaces its canonical parse error.
+    let archive: Awaited<ReturnType<typeof readZipArchive>>;
+    try {
+      archive = await readZipArchive(zipBytes);
+    } catch {
+      return null;
+    }
+    if (estimateInlineImportBytes(archive.files) <= thresholdBytes) return null;
+    return { zipBytes, rootPath };
+  }
+  if (!resolvedStat.isDirectory()) return null;
+  const fileBytes: Record<string, Uint8Array> = {};
+  await collectPackageFileBytes(resolved, resolved, fileBytes);
+  const rootPath = path.basename(resolved);
+  // Content bytes alone already past the threshold means the stored zip
+  // (content plus headers) is too.
+  const contentBytes = Object.values(fileBytes).reduce((sum, bytes) => sum + bytes.length, 0);
+  if (contentBytes <= thresholdBytes) {
+    // Raw bytes under the threshold can still blow past server caps once the
+    // inline body is built (binary entries travel base64-inflated), so the
+    // stay-inline decision is made on the estimated request size — the same
+    // entries the inline path would send.
+    const inlineEntries = Object.fromEntries(
+      Object.entries(fileBytes).map(([relativePath, bytes]) => [
+        relativePath,
+        bytesToPortableFileEntry(relativePath, bytes),
+      ]),
+    );
+    if (estimateInlineImportBytes(inlineEntries) <= thresholdBytes) return null;
+  }
+  return { zipBytes: createStoredZipArchive(fileBytes, rootPath), rootPath };
+}
+
+/**
+ * Declare (or resume) the transfer for these zip bytes and upload every part
+ * the server reports missing, sequentially with per-part retries. Resolves
+ * with the transfer id once the server holds every part.
+ */
+export async function uploadCompanyImportTransfer(
+  api: Pick<PaperclipApiClient, "post" | "putRaw">,
+  zipBytes: Uint8Array,
+  opts: { onProgress?: (progress: ImportTransferUploadProgress) => void } = {},
+): Promise<string> {
+  const manifest = buildImportTransferManifest(zipBytes);
+  const created = await api.post<CompanyImportTransferCreated>(
+    `/api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`,
+    manifest,
+  );
+  if (!created) {
+    throw new Error("Import transfer declaration returned no data.");
+  }
+  if (created.alreadyCompleted) {
+    // The server keys transfers by content, and this exact zip already
+    // finished an apply — its spooled parts are gone, so it cannot re-run.
+    throw new Error(
+      "This exact package was already imported by a completed transfer. Re-export the package to import it again.",
+    );
+  }
+  const missing = new Set(created.missingParts);
+  let uploadedParts = manifest.parts.length - missing.size;
+  let uploadedBytes = manifest.parts.reduce(
+    (sum, part) => (missing.has(part.index) ? sum : sum + part.byteSize),
+    0,
+  );
+  for (const part of manifest.parts) {
+    if (!missing.has(part.index)) continue;
+    const offset = part.index * manifest.partSizeBytes;
+    const bytes = zipBytes.subarray(offset, offset + part.byteSize);
+    let lastError: unknown = null;
+    let uploaded = false;
+    for (let attempt = 0; attempt < IMPORT_TRANSFER_PART_ATTEMPTS && !uploaded; attempt += 1) {
+      try {
+        await api.putRaw(
+          `/api/companies${companyImportTransferPartPath(created.transferId, part.index)}`,
+          bytes,
+        );
+        uploaded = true;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!uploaded) {
+      // Parts already uploaded stay spooled server-side; re-running the
+      // import resumes from them instead of starting over.
+      throw lastError instanceof Error
+        ? lastError
+        : new Error(`Import transfer part ${part.index} failed to upload.`);
+    }
+    uploadedParts += 1;
+    uploadedBytes += part.byteSize;
+    opts.onProgress?.({
+      uploadedParts,
+      totalParts: manifest.parts.length,
+      uploadedBytes,
+      totalBytes: manifest.totalBytes,
+    });
+  }
+  return created.transferId;
 }
 
 export async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
@@ -1464,6 +1697,7 @@ export function registerCompanyCommands(program: Command): void {
           let sourcePayload:
             | { type: "inline"; rootPath?: string | null; files: Record<string, CompanyPortabilityFileEntry> }
             | { type: "github"; url: string };
+          let chunkedZip: { zipBytes: Uint8Array; rootPath: string } | null = null;
 
           const treatAsLocalPath = !isHttpUrl(from) && await pathExists(from);
           const isGithubSource = looksLikeRepoUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
@@ -1480,12 +1714,24 @@ export function registerCompanyCommands(program: Command): void {
             if (opts.ref?.trim()) {
               throw new Error("--ref is only supported for GitHub import sources.");
             }
-            const inline = await resolveInlineSourceFromPath(from);
-            sourcePayload = {
-              type: "inline",
-              rootPath: inline.rootPath,
-              files: inline.files,
-            };
+            chunkedZip = await resolveChunkedImportZip(
+              from,
+              target === "existing"
+                ? EXISTING_COMPANY_CHUNKED_IMPORT_THRESHOLD_BYTES
+                : CHUNKED_IMPORT_THRESHOLD_BYTES,
+            );
+            if (chunkedZip) {
+              // Too large for one request: the zip travels as a chunked
+              // transfer, so the inline files map is never built or sent.
+              sourcePayload = { type: "inline", rootPath: chunkedZip.rootPath, files: {} };
+            } else {
+              const inline = await resolveInlineSourceFromPath(from);
+              sourcePayload = {
+                type: "inline",
+                rootPath: inline.rootPath,
+                files: inline.files,
+              };
+            }
           }
 
           const sourceLabel = formatSourceLabel(sourcePayload);
@@ -1496,15 +1742,40 @@ export function registerCompanyCommands(program: Command): void {
             companyId: targetPayload.mode === "existing_company" ? targetPayload.companyId : null,
           });
 
+          // The transfer meta mirrors the inline preview payload minus its
+          // `source` — the source is the assembled zip, spooled server-side.
+          const transferMeta = {
+            include,
+            target: targetPayload,
+            agents,
+            collisionStrategy: collision,
+          };
+          let transferId: string | null = null;
+          if (chunkedZip) {
+            transferId = await uploadCompanyImportTransfer(ctx.api, chunkedZip.zipBytes, {
+              onProgress: ctx.json
+                ? undefined
+                : ({ uploadedParts, totalParts, uploadedBytes, totalBytes }) => {
+                    console.log(
+                      pc.dim(
+                        `Uploaded part ${uploadedParts}/${totalParts} (${Math.round(uploadedBytes / (1024 * 1024))} of ${Math.round(totalBytes / (1024 * 1024))} MB)`,
+                      ),
+                    );
+                  },
+            });
+          }
+          const transferPreviewPath = transferId
+            ? `/api/companies${companyImportTransferPreviewPath(transferId)}`
+            : null;
+
           let selectedFiles: string[] | undefined;
           if (interactiveView && !opts.yes && !opts.include?.trim()) {
-            const initialPreview = await ctx.api.post<CompanyPortabilityPreviewResult>(previewApiPath, {
-              source: sourcePayload,
-              include,
-              target: targetPayload,
-              agents,
-              collisionStrategy: collision,
-            });
+            const initialPreview = transferPreviewPath
+              ? await ctx.api.post<CompanyPortabilityPreviewResult>(transferPreviewPath, transferMeta)
+              : await ctx.api.post<CompanyPortabilityPreviewResult>(previewApiPath, {
+                  source: sourcePayload,
+                  ...transferMeta,
+                });
             if (!initialPreview) {
               throw new Error("Import preview returned no data.");
             }
@@ -1513,13 +1784,15 @@ export function registerCompanyCommands(program: Command): void {
 
           const previewPayload = {
             source: sourcePayload,
-            include,
-            target: targetPayload,
-            agents,
-            collisionStrategy: collision,
+            ...transferMeta,
             selectedFiles,
           };
-          const preview = await ctx.api.post<CompanyPortabilityPreviewResult>(previewApiPath, previewPayload);
+          const preview = transferPreviewPath
+            ? await ctx.api.post<CompanyPortabilityPreviewResult>(transferPreviewPath, {
+                ...transferMeta,
+                selectedFiles,
+              })
+            : await ctx.api.post<CompanyPortabilityPreviewResult>(previewApiPath, previewPayload);
           if (!preview) {
             throw new Error("Import preview returned no data.");
           }
@@ -1576,10 +1849,15 @@ export function registerCompanyCommands(program: Command): void {
             targetMode: targetPayload.mode,
             companyId: targetPayload.mode === "existing_company" ? targetPayload.companyId : null,
           });
-          const imported = await ctx.api.post<CompanyPortabilityImportResult>(importApiPath, {
-            ...previewPayload,
-            adapterOverrides,
-          });
+          const imported = transferId
+            ? await ctx.api.post<CompanyPortabilityImportResult>(
+                `/api/companies${companyImportTransferApplyPath(transferId)}`,
+                { ...transferMeta, selectedFiles, adapterOverrides },
+              )
+            : await ctx.api.post<CompanyPortabilityImportResult>(importApiPath, {
+                ...previewPayload,
+                adapterOverrides,
+              });
           if (!imported) {
             throw new Error("Import request returned no data.");
           }

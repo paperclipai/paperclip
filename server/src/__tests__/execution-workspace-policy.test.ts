@@ -11,6 +11,7 @@ import {
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  ManagedSandboxUnavailableError,
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
@@ -79,6 +80,54 @@ describe("execution workspace policy helpers", () => {
       enabled: true,
       sharedWorkspaceConcurrency: "parallel",
     }).success).toBe(false);
+  });
+
+  it("accepts an existing-branch pin only with isolated mode and a git_worktree strategy", () => {
+    expect(issueExecutionWorkspaceSettingsSchema.parse({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        existingBranch: "PAP-14380-salvage-pap-9514",
+      },
+    }).workspaceStrategy?.existingBranch).toBe("PAP-14380-salvage-pap-9514");
+
+    // Fail closed at the contract layer: an exact-branch pin outside an
+    // isolated git worktree could silently land in the shared checkout.
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      workspaceStrategy: { type: "git_worktree", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "shared_workspace",
+      workspaceStrategy: { type: "git_worktree", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "project_primary", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        existingBranch: "some-branch",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    }).success).toBe(false);
+
+    for (const invalidBranch of ["-leading-dash", "a..b", "has space", "ends/", "back\\slash", "a.lock", "../escape"]) {
+      expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", existingBranch: invalidBranch },
+      }).success).toBe(false);
+    }
+  });
+
+  it("carries the existing-branch pin through issue settings parsing", () => {
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", existingBranch: " PAP-14754-run-redaction " },
+      })?.workspaceStrategy,
+    ).toEqual({ type: "git_worktree", existingBranch: "PAP-14754-run-redaction" });
   });
 
   it("centralizes unrunnable isolated worktree detection", () => {
@@ -412,6 +461,50 @@ describe("execution workspace policy helpers", () => {
       environmentId: "local-env",
       source: "default",
     });
+  });
+
+  it("redirects local-landing selections to the managed sandbox under managed-sandbox-only", () => {
+    // The default fallback and an explicit local selection both land on the
+    // managed environment; a non-local selection stays untouched.
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "managed-env", source: "managed" });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "local-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "managed-env", source: "managed" });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "ssh-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "ssh-env", source: "agent" });
+  });
+
+  it("fails closed — never local — when managed-sandbox-only has no managed environment", () => {
+    expect(() =>
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: null,
+      }),
+    ).toThrow(ManagedSandboxUnavailableError);
   });
 
   it("maps persisted execution workspace modes back to issue settings", () => {

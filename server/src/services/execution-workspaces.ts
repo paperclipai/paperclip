@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -51,7 +52,10 @@ import {
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -61,16 +65,172 @@ import {
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 type RuntimeServiceReadDb = Pick<Db, "select">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+// Return the timestamp when an issue became terminal. A `done` issue uses
+// `completedAt`. A `cancelled` issue uses `cancelledAt`. The reaper cooldown
+// measures the age of the terminal transition from this timestamp. Fall back to
+// `updatedAt` when the terminal timestamp is null, so an old issue that lacks a
+// recorded transition time still gates the cooldown. Return null for a
+// non-terminal issue.
+function issueTerminalTimestamp(issue: {
+  status: string;
+  completedAt: Date | null;
+  cancelledAt: Date | null;
+  updatedAt: Date;
+}): Date | null {
+  if (issue.status === "done") return issue.completedAt ?? issue.updatedAt;
+  if (issue.status === "cancelled") return issue.cancelledAt ?? issue.updatedAt;
+  return null;
+}
+
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+
+// The reopen-failure reason kept on the row when a rebuild does not finish. The
+// value is sanitized: it never contains a repository URL, a host path, or git
+// output.
+export const EXECUTION_WORKSPACE_REOPEN_FAILED_REASON = "reopen_failed";
+
+// How long the terminal reaper waits before it reclaims a stranded reopen-pending
+// flag. A reopen sets the flag while the source issue is still terminal. The
+// consuming request clears the flag within seconds when the request ends. If the
+// server exits first, or every clear retry fails, the flag stays set and both the
+// reaper and the archive route skip the workspace forever. After this grace the
+// reaper reclaims the flag, but only when no run still owns it. The reaper checks
+// for a live consuming run first, so a request that outruns this grace keeps its
+// fence. A run has a heartbeat row the reaper can see. An HTTP consuming request
+// has none, so the route re-stamps the flag on an interval below this grace, and
+// the fresh timestamp keeps the fence. The grace is a backstop for a flag whose
+// consumer is gone, not a hard deadline on the request.
+export const STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS = 5 * 60 * 1000;
+
+// The metadata key that holds the workspace lifecycle generation. The generation
+// is a monotonic integer. Every archive and every reopen increases it by one. A
+// destructive cleanup captures the generation it archived at, then re-reads the
+// generation under the lifecycle lock immediately before it deletes the worktree.
+// A reopen that ran in between raises the generation, so the stale cleanup finds
+// a mismatch and does nothing. This fences a queued or in-flight cleanup against
+// a workspace that a reopen already restored.
+export const EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY = "lifecycleGeneration";
+
+export function readExecutionWorkspaceLifecycleGeneration(
+  metadata: Record<string, unknown> | null | undefined,
+): number {
+  const raw = metadata?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY];
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : 0;
+}
+
+// Return a metadata object with the lifecycle generation increased by one. The
+// caller keeps every other metadata key.
+export function bumpExecutionWorkspaceLifecycleGeneration(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return {
+    ...(metadata ?? {}),
+    [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]:
+      readExecutionWorkspaceLifecycleGeneration(metadata) + 1,
+  };
+}
+
+function isClosedExecutionWorkspaceStatus(status: string | null | undefined): boolean {
+  return status === "archived" || status === "cleanup_failed";
+}
+
+// The metadata key that marks a workspace as reopened for a source issue that is
+// still terminal. A reopen sets this flag in the same write that publishes the
+// row as active. The source issue is still terminal at that moment, because the
+// route changes the issue out of the terminal state only after the reopen
+// returns. Both destructive paths (the terminal reaper and the archive route)
+// exclude a flagged workspace, so neither one archives and destroys a worktree
+// that a reopen rebuilt while the caller has not yet consumed it. The reaper
+// clears the flag on a later pass once the source issue leaves the terminal
+// state, so a normal terminal cycle can reap the workspace again.
+export const EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY = "reopenPendingConsumption";
+
+// The metadata key that holds the time a reopen set the reopen-pending flag. The
+// terminal reaper reads this timestamp to tell a fresh, in-flight reopen from a
+// stranded flag whose consumer never cleared it. A reopen writes this key in the
+// same write that sets the flag, and every clear removes both keys together.
+export const EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY = "reopenPendingConsumptionSince";
+
+export function metadataHasReopenPendingConsumption(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean {
+  return metadata?.[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY] === true;
+}
+
+// Read the time a reopen set the reopen-pending flag. Return null when the flag
+// carries no valid timestamp. The terminal reaper uses this to tell a fresh,
+// in-flight reopen from a stranded flag whose consumer never cleared it.
+export function readMetadataReopenPendingConsumptionSince(
+  metadata: Record<string, unknown> | null | undefined,
+): Date | null {
+  const raw = metadata?.[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY];
+  if (typeof raw !== "string") return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+// Return a metadata object with the reopen-pending flag set. The caller keeps
+// every other metadata key. The `at` timestamp records when the reopen set the
+// flag, so the terminal reaper can reclaim a stranded flag after a grace period.
+export function setMetadataReopenPendingConsumption(
+  metadata: Record<string, unknown> | null | undefined,
+  at: Date,
+): Record<string, unknown> {
+  return {
+    ...(metadata ?? {}),
+    [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+    [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: at.toISOString(),
+  };
+}
+
+// Return a metadata object with the reopen-pending flag removed. The caller
+// keeps every other metadata key. The function removes the flag and its
+// timestamp together, so no orphan timestamp survives a clear.
+export function clearMetadataReopenPendingConsumption(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const next = { ...(metadata ?? {}) };
+  delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY];
+  delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY];
+  return next;
+}
+
+// Acquire the per-workspace, transaction-scoped Postgres advisory lock. Postgres
+// releases the lock when the transaction that holds `tx` commits or rolls back.
+// Both the reopen path and the destructive cleanup path acquire the same lock,
+// so they never run against the same workspace at the same time, even on
+// different server processes.
+async function acquireExecutionWorkspaceLifecycleLock(
+  tx: DbTransaction,
+  workspaceId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
+  );
+}
+
+export type ReopenClosedIsolatedExecutionWorkspaceResult =
+  // `generation` is the lifecycle generation the reopen published the active row
+  // at. It owns the reopen-pending flag. A later clear must present this same
+  // generation, so a stale actor never clears a newer reopen's fence.
+  | { ok: true; workspace: ExecutionWorkspace; reopened: true; generation: number }
+  | { ok: true; workspace: ExecutionWorkspace; reopened: false; generation: number }
+  | { ok: false; code: "not_reopenable" | "rebuild_failed"; message: string };
 
 export type ExecutionWorkspaceServiceOptions = {
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
   beforeTerminalWorkspaceCleanup?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
+  // The terminal-workspace reaper waits this many days after an issue tree
+  // becomes terminal before it archives the workspace. A value of 0 disables
+  // the cooldown. The default is 7 days.
+  workspaceReaperCooldownDays?: number;
 };
 
 function parseGitHubRepository(repoUrl: string | null) {
@@ -238,6 +398,21 @@ async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
+async function runExpensiveGitStatus(input: {
+  args: readonly string[];
+  cwd: string;
+  operation: string;
+  fairnessKeys?: readonly string[];
+}) {
+  return workspaceGitOperationScheduler.run({
+    workspacePath: input.cwd,
+    args: input.args,
+    operation: input.operation,
+    fairnessKeys: input.fairnessKeys,
+    cacheTtlMs: 0,
+  });
+}
+
 async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
   const output = await runGit(args, cwd);
   return output.stdout.trim() || null;
@@ -366,7 +541,15 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
   }
 
-  const status = await runGit(["status", "--porcelain", "--untracked-files=all"], worktreePath)
+  const status = await runExpensiveGitStatus({
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd: worktreePath,
+    operation: "execution_workspaces.branch_reconcile_status",
+    fairnessKeys: [
+      `workspace:${workspace.id}`,
+      ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+    ],
+  })
     .then((output) => output.stdout)
     .catch(() => null);
   const statusLines = status === null
@@ -603,21 +786,24 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
+  statusInspectionSucceeded: boolean;
 }> {
   const warnings: string[] = [];
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-  const createdByRuntime = workspace.metadata?.createdByRuntime === true;
+  const createdByRuntime = workspace.providerType === "git_worktree"
+    ? isRuntimeOwnedGitBranch(workspace.metadata)
+    : workspace.metadata?.createdByRuntime === true;
   const expectsGitInspection =
     workspace.providerType === "git_worktree" ||
     Boolean(workspace.repoUrl || workspace.baseRef || workspace.branchName || workspacePath);
 
   if (!expectsGitInspection) {
-    return { git: null, warnings };
+    return { git: null, warnings, statusInspectionSucceeded: true };
   }
 
   if (!workspacePath) {
     warnings.push("Workspace has no local path, so Paperclip cannot inspect git status before close.");
-    return { git: null, warnings };
+    return { git: null, warnings, statusInspectionSucceeded: false };
   }
 
   if (!(await pathExists(workspacePath))) {
@@ -638,6 +824,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         createdByRuntime,
       },
       warnings,
+      statusInspectionSucceeded: true,
     };
   }
 
@@ -661,9 +848,19 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
+  let statusInspectionSucceeded = false;
   if (repoRoot) {
     try {
-      const statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
+      const statusOutput = (await runExpensiveGitStatus({
+        args: ["status", "--porcelain=v1", "--untracked-files=all"],
+        cwd: workspacePath,
+        operation: "execution_workspaces.close_readiness_status",
+        fairnessKeys: [
+          `company:${workspace.companyId}`,
+          `workspace:${workspace.id}`,
+          ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+        ],
+      })).stdout;
       for (const line of statusOutput.split(/\r?\n/)) {
         if (!line) continue;
         if (line.startsWith("??")) {
@@ -672,6 +869,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         }
         dirtyEntryCount += 1;
       }
+      statusInspectionSucceeded = true;
     } catch (error) {
       warnings.push(
         `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
@@ -726,6 +924,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       createdByRuntime,
     },
     warnings,
+    statusInspectionSucceeded,
   };
 }
 
@@ -845,6 +1044,7 @@ function toRuntimeService(
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    exposure: (row.exposure as WorkspaceRuntimeService["exposure"]) ?? null,
     configIndex: row.configIndex ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -923,6 +1123,7 @@ function toWorkspaceOverviewPrimaryService(
     url: service.url,
     port: service.port,
     healthStatus: service.healthStatus,
+    exposure: service.exposure ?? null,
     updatedAt: service.updatedAt,
   };
 }
@@ -1054,6 +1255,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
+  // The reaper waits this long after an issue tree becomes terminal before it
+  // archives the workspace. A value of 0 disables the cooldown, so the reaper
+  // archives a terminal workspace on the same sweep. A negative value also
+  // disables the cooldown.
+  const workspaceReaperCooldownMs = Math.max(
+    0,
+    (opts.workspaceReaperCooldownDays ?? 7) * 24 * 60 * 60 * 1000,
+  );
   const pullRequestStateCache = new Map<
     string,
     {
@@ -1063,12 +1272,38 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   >();
   const pullRequestStateCacheTtlMs = 5 * 60 * 1000;
 
+  // The terminal-workspace reaper scans the candidate set in fixed-size pages.
+  // It keeps this keyset cursor between sweeps so each sweep continues after the
+  // previous page. A skipped candidate keeps its updatedAt, so a cursor is
+  // required: without it the query re-selects the oldest ineligible rows every
+  // sweep and starves eligible rows behind them. The cursor resets to the start
+  // when a sweep reaches the end of the candidate set.
+  let terminalSweepCursor: { updatedAt: Date; id: string } | null = null;
+  // The reaper freezes an upper bound on updatedAt at the start of each
+  // rotation. The scan only reads candidates at or below the bound, so a steady
+  // stream of newer candidates cannot keep every page full and stop the cursor
+  // from ever reaching the end. A frozen set is finite, so the cursor always
+  // reaches a short page and resets, and older candidates that became eligible
+  // are revisited on the next rotation. The next rotation captures a new bound,
+  // so candidates updated after the previous bound enter the scan then.
+  let terminalSweepBoundary: Date | null = null;
+  // The scheduler starts a sweep on each tick and does not wait for the previous
+  // sweep to finish. A sweep that outlasts the tick interval overlaps the next
+  // sweep. Both sweeps share the cursor and the boundary above. Interleaved
+  // reads and writes can leave a non-null cursor with a null boundary, which
+  // removes the upper bound and makes the scan chase newer churn again. This
+  // flag lets only one sweep run at a time, so one sweep owns the shared state.
+  let terminalSweepInProgress = false;
+
   async function listWorkspaceIssueTree(workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">) {
     if (!workspace.sourceIssueId) return [];
     return db
       .select({
         id: issues.id,
         status: issues.status,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(
@@ -1124,6 +1359,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
     const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
     const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
+    // The cooldown anchor is the most recent terminal timestamp across the whole
+    // issue tree. The reaper compares it against the cooldown window. A null
+    // anchor means no issue in the tree is terminal yet, so the cooldown never
+    // applies (the terminal-tree gates above already block the archive).
+    let cooldownAnchor: Date | null = null;
+    for (const issue of issueTree) {
+      const terminalAt = issueTerminalTimestamp(issue);
+      if (terminalAt && (!cooldownAnchor || terminalAt.getTime() > cooldownAnchor.getTime())) {
+        cooldownAnchor = terminalAt;
+      }
+    }
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
     const workspaceHeadSha = git?.repoRoot && git.workspacePath
@@ -1187,6 +1433,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }),
       sourceIssueTerminal,
       subtreeTerminal,
+      cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
     };
@@ -1207,6 +1454,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
       readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
     ]);
+    if (!current.statusInspectionSucceeded) {
+      throw new Error("Refusing terminal workspace cleanup because the git status could not be verified");
+    }
     if (
       !current.git?.repoRoot
       || current.git.hasDirtyTrackedFiles
@@ -1256,7 +1506,171 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return active.length > 0;
   }
 
-  async function cleanupTerminalWorkspace(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+  type FenceableWorkspaceRow = {
+    status: string;
+    metadata: Record<string, unknown> | null;
+  };
+
+  // The single generation-fenced gateway for a terminal-workspace write. It owns
+  // the whole guarded step. It acquires the per-workspace lifecycle lock, it
+  // re-reads the fresh row, and it compares the current lifecycle generation to
+  // the generation the caller captured. It runs the caller's write body only
+  // when the current generation still equals `expectedGeneration` and the fresh
+  // row still passes the caller's `isWriteTarget` guard. Otherwise it emits the
+  // optional skip log and returns the caller's skip value. Every fenced
+  // terminal-workspace write routes through this function, so no other function
+  // re-derives the lock, the fresh read, or the generation compare.
+  async function fenceLifecycleGenerationWrite<T>(input: {
+    workspaceId: string;
+    expectedGeneration: number;
+    isWriteTarget: (fresh: FenceableWorkspaceRow) => boolean;
+    onSkip: () => T;
+    skipLog?: { event: string; message: string };
+    write: (context: { tx: DbTransaction; fresh: FenceableWorkspaceRow }) => Promise<T>;
+  }): Promise<T> {
+    return db.transaction(async (tx) => {
+      await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+      const row = await tx
+        .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, input.workspaceId))
+        .then((rows) => rows[0] ?? null);
+      const fresh: FenceableWorkspaceRow | null = row
+        ? { status: row.status, metadata: row.metadata as Record<string, unknown> | null }
+        : null;
+      const currentGeneration = fresh ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata) : null;
+      if (
+        !fresh
+        || currentGeneration !== input.expectedGeneration
+        || !input.isWriteTarget(fresh)
+      ) {
+        if (input.skipLog) {
+          logger.info(
+            {
+              event: input.skipLog.event,
+              reason: "reopened",
+              executionWorkspaceId: input.workspaceId,
+              capturedGeneration: input.expectedGeneration,
+              currentGeneration,
+              currentStatus: fresh?.status ?? null,
+            },
+            input.skipLog.message,
+          );
+        }
+        return input.onSkip();
+      }
+      return input.write({ tx, fresh });
+    });
+  }
+
+  // Clear the reopen-pending flag through the lifecycle gateway. Every caller
+  // presents the lifecycle generation that owns the fence it wants to clear. The
+  // gateway removes the flag only when the current generation still equals
+  // `expectedGeneration`. A newer reopen raises the generation and re-sets the
+  // flag, so its fence has a different owner. This check stops a stale actor (a
+  // delayed response cleanup, a retry, or an aged reaper snapshot) from clearing
+  // a newer reopen's live fence.
+  //
+  // A caller that reclaims a stranded flag passes `requireStaleSinceBefore`. The
+  // write-target guard then re-reads the flag timestamp from the fresh row and
+  // clears the flag only when that timestamp is still older than the cutoff. This
+  // re-confirms the strand decision against the live row instead of an aged
+  // snapshot.
+  async function clearReopenPendingConsumptionUnderLock(
+    workspaceId: string,
+    options: { expectedGeneration: number; requireStaleSinceBefore?: Date },
+  ): Promise<boolean> {
+    return fenceLifecycleGenerationWrite<boolean>({
+      workspaceId,
+      expectedGeneration: options.expectedGeneration,
+      isWriteTarget: (fresh) => {
+        if (!metadataHasReopenPendingConsumption(fresh.metadata)) return false;
+        if (options.requireStaleSinceBefore) {
+          const freshSince = readMetadataReopenPendingConsumptionSince(fresh.metadata);
+          const stillStale =
+            freshSince === null
+            || freshSince.getTime() <= options.requireStaleSinceBefore.getTime();
+          // The live row shows a fresh flag, so the consumer is still in flight.
+          if (!stillStale) return false;
+        }
+        return true;
+      },
+      onSkip: () => false,
+      write: async ({ tx, fresh }) => {
+        await tx
+          .update(executionWorkspaces)
+          .set({
+            metadata: clearMetadataReopenPendingConsumption(fresh.metadata),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspaceId));
+        return true;
+      },
+    });
+  }
+
+  // Re-stamp the reopen-pending timestamp for a workspace whose consuming request
+  // is still in flight. The request that reopens and consumes the worktree is an
+  // HTTP request, not a heartbeat run, so `workspaceHasActiveRun` cannot see it.
+  // Without a refresh, a request that runs longer than the stale grace period lets
+  // the terminal reaper clear the live fence, and a later sweep archives and
+  // destroys the worktree under the request. The consuming route calls this on an
+  // interval shorter than the grace period, so the flag never looks stale while the
+  // request lives. The refresh runs under the lifecycle lock and re-stamps the
+  // timestamp only while the flag is still set and the current generation still
+  // equals `expectedGeneration`, so it never revives a cleared flag and never
+  // refreshes a newer reopen's fence. It returns true when it re-stamped the flag.
+  async function refreshReopenPendingConsumptionUnderLock(
+    workspaceId: string,
+    options: { expectedGeneration: number },
+  ): Promise<boolean> {
+    return fenceLifecycleGenerationWrite<boolean>({
+      workspaceId,
+      expectedGeneration: options.expectedGeneration,
+      // A newer reopen or an archive raised the generation. The gateway then
+      // skips, so this refresh never re-stamps another owner's fence.
+      isWriteTarget: (fresh) => metadataHasReopenPendingConsumption(fresh.metadata),
+      onSkip: () => false,
+      write: async ({ tx, fresh }) => {
+        await tx
+          .update(executionWorkspaces)
+          .set({
+            metadata: setMetadataReopenPendingConsumption(fresh.metadata, now()),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspaceId));
+        return true;
+      },
+    });
+  }
+
+  async function cleanupTerminalWorkspace(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+    capturedGeneration: number,
+  ): Promise<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }> {
+    // The gateway holds the per-workspace lifecycle lock across the destructive
+    // actions. A reopen takes the same lock, so a reopen cannot rebuild the
+    // worktree while this cleanup runs, and this cleanup cannot delete a worktree
+    // that a reopen already restored. The advisory lock (not a row FOR UPDATE)
+    // gives the exclusion, so the cleanup body can still update the same row on
+    // the pooled connection without a self-block. A reopen restored this
+    // workspace after it was archived when the guard fails, so the cleanup skips
+    // and does not destroy the rebuilt worktree.
+    return fenceLifecycleGenerationWrite<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }>({
+      workspaceId: workspace.id,
+      expectedGeneration: capturedGeneration,
+      isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+      skipLog: {
+        event: "execution_workspace.cleanup_skipped",
+        message: "execution workspace cleanup skipped because it was reopened",
+      },
+      onSkip: () => ({ cleaned: false, warnings: [], skippedReopened: true }),
+      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha),
+    });
+  }
+
+  async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
     const [
       {
         acquireGitWorktreeCleanupLock,
@@ -1342,6 +1756,46 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     } finally {
       await cleanupLock?.release();
     }
+  }
+
+  // Write the cleanup-failed status under the per-workspace lifecycle lock, but
+  // only while the row is still closed at the generation the reaper captured. The
+  // reaper calls this from its catch handler after a cleanup threw. The cleanup
+  // transaction already rolled back and released the lock, so a reopen can run in
+  // the window before this write. A reopen raises the generation and restores the
+  // row to active. A later archive lowers the row back to closed but keeps the
+  // higher generation. The generation compare then skips this write, so stale
+  // cleanup-failure state never lands on a newer archive lifecycle. The function
+  // returns true when it wrote the status, or false when the fence skipped it.
+  async function markTerminalCleanupFailedFenced(input: {
+    workspaceId: string;
+    capturedGeneration: number;
+    cleanupReason: string;
+  }): Promise<boolean> {
+    // A reopen restored the row after the cleanup threw when the guard fails. The
+    // gateway then skips, so the stale cleanup-failure status never overwrites the
+    // newer lifecycle state.
+    return fenceLifecycleGenerationWrite<boolean>({
+      workspaceId: input.workspaceId,
+      expectedGeneration: input.capturedGeneration,
+      isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+      skipLog: {
+        event: "execution_workspace.cleanup_failed_write_skipped",
+        message: "execution workspace cleanup-failure write skipped because it was reopened",
+      },
+      onSkip: () => false,
+      write: async ({ tx }) => {
+        await tx
+          .update(executionWorkspaces)
+          .set({
+            status: "cleanup_failed",
+            cleanupReason: input.cleanupReason,
+            updatedAt: now(),
+          })
+          .where(eq(executionWorkspaces.id, input.workspaceId));
+        return true;
+      },
+    });
   }
 
   function buildListConditions(
@@ -1767,6 +2221,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
+      const { refreshPersistedRuntimeServiceHealth } = await import("./workspace-runtime.js");
+      await refreshPersistedRuntimeServiceHealth({
+        db,
+        companyId: row.companyId,
+        executionWorkspaceId: row.id,
+        projectWorkspaceId: row.projectWorkspaceId,
+      });
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
       return hydrateWorkspace(
         row,
@@ -1841,10 +2302,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
-      const { git, warnings: gitWarnings } = await inspectGitCloseReadiness(executionWorkspace);
+      const {
+        git,
+        warnings: gitWarnings,
+        statusInspectionSucceeded,
+      } = await inspectGitCloseReadiness(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      if (!statusInspectionSucceeded) {
+        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+      }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
@@ -2033,16 +2501,74 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     sweepTerminalWorkspaces: async (limit = 50) => {
+      // Skip this sweep while another sweep runs. A concurrent sweep would share
+      // the cursor and the boundary and could corrupt the rotation state. A
+      // skipped tick is safe: the next tick runs the sweep with intact state.
+      if (terminalSweepInProgress) {
+        return {
+          checked: 0,
+          eligible: 0,
+          archived: 0,
+          cleanupFailed: 0,
+          skippedActiveRun: 0,
+          skippedNonTerminalTree: 0,
+          skippedUndelivered: 0,
+          skippedRace: 0,
+          skippedReopened: 0,
+          skippedCooldown: 0,
+          clearedStaleReopenPending: 0,
+        };
+      }
+      terminalSweepInProgress = true;
+      try {
+      const baseCandidateFilter = and(
+        inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+        isNull(executionWorkspaces.closedAt),
+        sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
+      );
+      // Continue the scan after the previous sweep's last row. The keyset
+      // predicate uses the same (updatedAt, id) order as the query, so each
+      // sweep advances past the rows it already inspected instead of re-reading
+      // the oldest ineligible candidates.
+      const cursor = terminalSweepCursor;
+      // Freeze an upper bound on updatedAt at the start of each rotation. Without
+      // a bound, a steady stream of newer candidates keeps every page full, so
+      // the cursor never reaches the end and never resets, and older candidates
+      // that became eligible are never revisited. The frozen bound makes the
+      // rotation cover a finite set, so the cursor always reaches a short page.
+      if (!cursor) {
+        terminalSweepBoundary = now();
+      }
+      const boundary = terminalSweepBoundary;
+      const boundaryFilter = boundary
+        ? lte(executionWorkspaces.updatedAt, boundary)
+        : undefined;
+      const cursorFilter = cursor
+        ? or(
+            gt(executionWorkspaces.updatedAt, cursor.updatedAt),
+            and(
+              eq(executionWorkspaces.updatedAt, cursor.updatedAt),
+              gt(executionWorkspaces.id, cursor.id),
+            ),
+          )
+        : undefined;
+      const scanFilter = and(baseCandidateFilter, boundaryFilter, cursorFilter);
       const candidates = await db
         .select()
         .from(executionWorkspaces)
-        .where(and(
-          inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
-          isNull(executionWorkspaces.closedAt),
-          sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
-        ))
+        .where(scanFilter)
         .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
         .limit(limit);
+      // Advance the cursor to this page's last row. A short page means the scan
+      // reached the end of the bounded candidate set, so reset the cursor and
+      // the bound to start a new rotation on the next sweep.
+      if (candidates.length < limit) {
+        terminalSweepCursor = null;
+        terminalSweepBoundary = null;
+      } else {
+        const lastCandidate = candidates[candidates.length - 1]!;
+        terminalSweepCursor = { updatedAt: lastCandidate.updatedAt, id: lastCandidate.id };
+      }
       const result = {
         checked: candidates.length,
         eligible: 0,
@@ -2052,13 +2578,35 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
         skippedRace: 0,
+        skippedReopened: 0,
+        skippedCooldown: 0,
+        clearedStaleReopenPending: 0,
       };
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git } = await inspectGitCloseReadiness(executionWorkspace);
+        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        if (!statusInspectionSucceeded) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
         const assessment = await assessDelivery(workspace, git);
+        const reopenPending = metadataHasReopenPendingConsumption(
+          workspace.metadata as Record<string, unknown> | null,
+        );
         if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
+          if (reopenPending) {
+            // The source issue left the terminal state, so the reopen transition
+            // committed. Clear the reopen-pending flag under the lifecycle lock so
+            // a later terminal cycle can archive the workspace again. Pass the
+            // generation from this snapshot, so the clear skips a newer reopen that
+            // raised the generation and installed its own fence after this read.
+            await clearReopenPendingConsumptionUnderLock(workspace.id, {
+              expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
+                workspace.metadata as Record<string, unknown> | null,
+              ),
+            });
+          }
           result.skippedNonTerminalTree += 1;
           continue;
         }
@@ -2073,64 +2621,180 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedUndelivered += 1;
           continue;
         }
+        // Hold the archive during the cooldown window. The anchor is the most
+        // recent terminal timestamp across the issue tree. A person can reopen
+        // the work inside this window. A cooldown of 0 disables the check, so the
+        // reaper archives the workspace on the same sweep. The archive statement
+        // below re-checks the same cutoff under the lifecycle lock, so the loop
+        // check and the guarded statement agree.
+        const cooldownCutoff = workspaceReaperCooldownMs > 0
+          ? new Date(now().getTime() - workspaceReaperCooldownMs)
+          : null;
+        if (
+          cooldownCutoff
+          && assessment.cooldownAnchor
+          && assessment.cooldownAnchor.getTime() > cooldownCutoff.getTime()
+        ) {
+          result.skippedCooldown += 1;
+          continue;
+        }
+        if (reopenPending) {
+          const pendingSince = readMetadataReopenPendingConsumptionSince(
+            workspace.metadata as Record<string, unknown> | null,
+          );
+          const staleBefore = new Date(now().getTime() - STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS);
+          const stranded =
+            pendingSince === null
+            || pendingSince.getTime() <= staleBefore.getTime();
+          if (!stranded) {
+            // A reopen published this workspace as active while the source issue
+            // is still terminal, and the consuming request is still in flight. Do
+            // not archive it now. The authoritative check is the NOT reopenPending
+            // predicate in the archive statement below; this early skip avoids the
+            // work when the snapshot already shows the flag.
+            result.skippedReopened += 1;
+            continue;
+          }
+          // The flag is older than the grace period, but age alone does not prove
+          // the consuming request ended. An authorized request can run longer than
+          // the grace period. A live consuming run still owns the fence, so keep it
+          // and skip. This stops the sweep from clearing the fence of a slow request
+          // that a later sweep would then archive and destroy under the request.
+          if (await workspaceHasActiveRun(workspace)) {
+            result.skippedReopened += 1;
+            continue;
+          }
+          // The reopen-pending flag outlived its consumption window and no run owns
+          // it. The consuming request ended without moving the issue out of the
+          // terminal state, or the server exited before it cleared the flag. Clear
+          // the stranded flag under the lifecycle lock so a later sweep can reclaim
+          // the workspace. Keep the row active, so a retried resume can still reuse
+          // the rebuilt worktree. Pass this snapshot's generation and re-confirm
+          // staleness against the fresh row under the lock, so a newer reopen that
+          // raised the generation or refreshed the timestamp keeps its live fence.
+          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, {
+            expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
+              workspace.metadata as Record<string, unknown> | null,
+            ),
+            requireStaleSinceBefore: staleBefore,
+          });
+          if (cleared) {
+            result.clearedStaleReopenPending += 1;
+            logger.info(
+              {
+                event: "execution_workspace.reopen",
+                outcome: "stale_reopen_pending_cleared",
+                executionWorkspaceId: workspace.id,
+                sourceIssueId: workspace.sourceIssueId,
+                pendingSince: pendingSince?.toISOString() ?? null,
+              },
+              "cleared a stranded reopen-pending flag on a terminal workspace",
+            );
+          }
+          continue;
+        }
         if (await workspaceHasActiveRun(workspace)) {
           result.skippedActiveRun += 1;
           continue;
         }
         result.eligible += 1;
         const closedAt = now();
-        const archived = await db
-          .update(executionWorkspaces)
-          .set({
-            status: "archived",
-            closedAt,
-            cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
-            cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
-            updatedAt: closedAt,
-          })
-          .where(and(
-            eq(executionWorkspaces.id, workspace.id),
-            eq(executionWorkspaces.companyId, workspace.companyId),
-            inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
-            isNull(executionWorkspaces.closedAt),
-            sql<boolean>`EXISTS (
-              SELECT 1
-              FROM ${issues} source_issue
-              WHERE source_issue.company_id = ${workspace.companyId}
-                AND source_issue.id = ${workspace.sourceIssueId}
-                AND source_issue.status IN ('done', 'cancelled')
-            )`,
-            sql<boolean>`NOT EXISTS (
-              SELECT 1
-              FROM ${issues} linked_issue
-              JOIN ${heartbeatRuns} live_run
-                ON live_run.id = linked_issue.checkout_run_id
-                OR live_run.id = linked_issue.execution_run_id
-              WHERE linked_issue.company_id = ${workspace.companyId}
-                AND (
-                  linked_issue.execution_workspace_id = ${workspace.id}
-                  OR linked_issue.id = ${workspace.sourceIssueId}
+        // Raise the lifecycle generation on archive. The cleanup below captures
+        // this generation and re-checks it before it deletes the worktree, so a
+        // reopen that runs in between fences the cleanup off.
+        const archivedMetadata = bumpExecutionWorkspaceLifecycleGeneration(
+          workspace.metadata as Record<string, unknown> | null,
+        );
+        // Take the per-workspace lifecycle lock before the archive decision, so a
+        // concurrent reopen cannot publish an active row between the predicate
+        // checks and the archive write. The archive statement re-checks the
+        // status, the terminal predicates, and the reopen-pending flag under the
+        // lock, so it never archives a workspace that a reopen just restored.
+        const archived = await db.transaction(async (tx) => {
+          await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+          return tx
+            .update(executionWorkspaces)
+            .set({
+              status: "archived",
+              closedAt,
+              cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
+              cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+              metadata: archivedMetadata,
+              updatedAt: closedAt,
+            })
+            .where(and(
+              eq(executionWorkspaces.id, workspace.id),
+              eq(executionWorkspaces.companyId, workspace.companyId),
+              inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+              isNull(executionWorkspaces.closedAt),
+              sql<boolean>`(${executionWorkspaces.metadata} ->> ${EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY}) IS DISTINCT FROM 'true'`,
+              sql<boolean>`EXISTS (
+                SELECT 1
+                FROM ${issues} source_issue
+                WHERE source_issue.company_id = ${workspace.companyId}
+                  AND source_issue.id = ${workspace.sourceIssueId}
+                  AND source_issue.status IN ('done', 'cancelled')
+              )`,
+              sql<boolean>`NOT EXISTS (
+                SELECT 1
+                FROM ${issues} linked_issue
+                JOIN ${heartbeatRuns} live_run
+                  ON live_run.id = linked_issue.checkout_run_id
+                  OR live_run.id = linked_issue.execution_run_id
+                WHERE linked_issue.company_id = ${workspace.companyId}
+                  AND (
+                    linked_issue.execution_workspace_id = ${workspace.id}
+                    OR linked_issue.id = ${workspace.sourceIssueId}
+                  )
+                  AND live_run.company_id = ${workspace.companyId}
+                  AND live_run.status IN ('queued', 'running')
+              )`,
+              sql<boolean>`NOT EXISTS (
+                WITH RECURSIVE issue_tree(id, status) AS (
+                  SELECT root.id, root.status
+                  FROM ${issues} root
+                  WHERE root.company_id = ${workspace.companyId}
+                    AND root.id = ${workspace.sourceIssueId}
+                  UNION ALL
+                  SELECT child.id, child.status
+                  FROM ${issues} child
+                  JOIN issue_tree parent ON child.parent_id = parent.id
+                  WHERE child.company_id = ${workspace.companyId}
                 )
-                AND live_run.company_id = ${workspace.companyId}
-                AND live_run.status IN ('queued', 'running')
-            )`,
-            sql<boolean>`NOT EXISTS (
-              WITH RECURSIVE issue_tree(id, status) AS (
-                SELECT root.id, root.status
-                FROM ${issues} root
-                WHERE root.company_id = ${workspace.companyId}
-                  AND root.id = ${workspace.sourceIssueId}
-                UNION ALL
-                SELECT child.id, child.status
-                FROM ${issues} child
-                JOIN issue_tree parent ON child.parent_id = parent.id
-                WHERE child.company_id = ${workspace.companyId}
-              )
-              SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
-            )`,
-          ))
-          .returning()
-          .then((rows) => rows[0] ?? null);
+                SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
+              )`,
+              // Re-check the cooldown under the lifecycle lock. This predicate
+              // matches the loop check above: block the archive when any issue in
+              // the tree became terminal after the cutoff. The tree walk mirrors
+              // the terminal-tree walk above. A null cutoff means the cooldown is
+              // disabled, so this predicate drops out of the guard.
+              cooldownCutoff
+                ? sql<boolean>`NOT EXISTS (
+                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at) AS (
+                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at
+                  FROM ${issues} root
+                  WHERE root.company_id = ${workspace.companyId}
+                    AND root.id = ${workspace.sourceIssueId}
+                  UNION ALL
+                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at
+                  FROM ${issues} child
+                  JOIN cooldown_tree parent ON child.parent_id = parent.id
+                  WHERE child.company_id = ${workspace.companyId}
+                )
+                SELECT 1 FROM cooldown_tree
+                WHERE COALESCE(
+                  CASE
+                    WHEN status = 'done' THEN completed_at
+                    WHEN status = 'cancelled' THEN cancelled_at
+                  END,
+                  updated_at
+                ) > ${cooldownCutoff.toISOString()}::timestamptz
+              )`
+                : undefined,
+            ))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        });
         if (!archived) {
           result.skippedRace += 1;
           continue;
@@ -2151,21 +2815,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           },
         });
 
+        const capturedGeneration = readExecutionWorkspaceLifecycleGeneration(
+          archived.metadata as Record<string, unknown> | null,
+        );
         try {
-          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha);
-          if (!cleanup.cleaned) result.cleanupFailed += 1;
+          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration);
+          if (cleanup.skippedReopened) result.skippedReopened += 1;
+          else if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;
         } catch (error) {
           result.cleanupFailed += 1;
           const failure = error instanceof Error ? error.message : String(error);
-          await db
-            .update(executionWorkspaces)
-            .set({
-              status: "cleanup_failed",
-              cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${failure}`,
-              updatedAt: now(),
-            })
-            .where(eq(executionWorkspaces.id, archived.id));
+          // Mark cleanup_failed only while the row is still closed at the
+          // generation this sweep captured. A reopen that raced after the failure
+          // raises the generation and restores the row; a later archive keeps the
+          // higher generation. The fenced write then skips, so stale
+          // cleanup-failure state never lands on a newer archive lifecycle.
+          await markTerminalCleanupFailedFenced({
+            workspaceId: archived.id,
+            capturedGeneration,
+            cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${failure}`,
+          });
           await logActivity(db, {
             companyId: archived.companyId,
             actorType: "system",
@@ -2178,6 +2848,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
       }
       return result;
+      } finally {
+        terminalSweepInProgress = false;
+      }
     },
 
     create: async (data: typeof executionWorkspaces.$inferInsert) => {
@@ -2197,6 +2870,491 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    // Reopen one closed isolated execution workspace so an authorized issue can
+    // use it again. The caller must first authorize the request on the issue.
+    // The whole operation runs under the per-workspace lifecycle lock: it reads
+    // the row in the issue scope, rebuilds the worktree, and only then publishes
+    // the row as "active". A rebuild failure keeps the row closed and returns an
+    // error, so the caller never dispatches a run against a broken workspace.
+    reopenClosedIsolatedExecutionWorkspaceForIssue: async (input: {
+      workspaceId: string;
+      issue: { id: string; companyId: string; projectId: string | null };
+      actor: { agentId: string | null; actorType: string };
+    }): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
+      const { issue, actor } = input;
+      // Bind the workspace to the issue company and project. A null project on
+      // the issue must match a null project on the row (IS NOT DISTINCT FROM).
+      const projectIdCondition =
+        issue.projectId == null
+          ? sql`${executionWorkspaces.projectId} IS NULL`
+          : eq(executionWorkspaces.projectId, issue.projectId);
+
+      return db.transaction(async (tx): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
+        await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+        const row = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(and(
+            eq(executionWorkspaces.id, input.workspaceId),
+            eq(executionWorkspaces.companyId, issue.companyId),
+            projectIdCondition,
+            eq(executionWorkspaces.mode, "isolated_workspace"),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!row) {
+          // Wrong company, wrong project, wrong mode, or missing. Fail closed and
+          // disclose no workspace detail.
+          return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
+        }
+        if (!isClosedExecutionWorkspaceStatus(row.status)) {
+          // A concurrent reopen already restored the row. Report success without a
+          // second rebuild so the caller continues normally. The other request
+          // owns the reopen-pending flag, so return its generation and let the
+          // caller skip the consumption guard.
+          return {
+            ok: true,
+            reopened: false,
+            workspace: toExecutionWorkspace(row),
+            generation: readExecutionWorkspaceLifecycleGeneration(row.metadata as Record<string, unknown> | null),
+          };
+        }
+
+        const [
+          { ensurePersistedExecutionWorkspaceAvailable },
+          { workspaceOperationService },
+          { ensureManagedProjectWorkspace },
+        ] = await Promise.all([
+          import("./workspace-runtime.js"),
+          import("./workspace-operations.js"),
+          // heartbeat.js imports this module, so a static import creates a
+          // cycle. Load ensureManagedProjectWorkspace dynamically instead.
+          import("./heartbeat.js"),
+        ]);
+        const [projectWorkspace, projectPolicy] = await Promise.all([
+          row.projectWorkspaceId
+            ? db
+                .select({ cwd: projectWorkspaces.cwd })
+                .from(projectWorkspaces)
+                .where(and(
+                  eq(projectWorkspaces.companyId, row.companyId),
+                  eq(projectWorkspaces.id, row.projectWorkspaceId),
+                ))
+                .then((rows) => rows[0] ?? null)
+            : null,
+          db
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId)))
+            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
+        ]);
+        // Resolve the base checkout that the rebuild spawns git in. A
+        // local-folder project stores its base path in projectWorkspaces.cwd.
+        // A managed_checkout project stores null there, so resolve its live
+        // managed checkout instead. Never use row.cwd for a git_worktree
+        // rebuild: row.cwd is the archived worktree path, which the reaper
+        // already removed from disk. A spawn in that missing directory fails
+        // with "spawn git ENOENT" and hides the real cause.
+        let resolvedBaseCwd = projectWorkspace?.cwd ?? null;
+        if (resolvedBaseCwd == null && row.strategyType === "git_worktree" && row.projectId) {
+          const managedWorkspace = await ensureManagedProjectWorkspace({
+            companyId: row.companyId,
+            projectId: row.projectId,
+            repoUrl: row.repoUrl,
+            resolveGitAuth: createGitRemoteAuthProvider(db, row.companyId, {
+              issueId: row.sourceIssueId ?? issue.id,
+            }),
+          });
+          resolvedBaseCwd = managedWorkspace.cwd;
+        }
+        const config = readExecutionWorkspaceConfig(row.metadata as Record<string, unknown> | null);
+        const nextGeneration = readExecutionWorkspaceLifecycleGeneration(
+          row.metadata as Record<string, unknown> | null,
+        ) + 1;
+        const nextMetadata = bumpExecutionWorkspaceLifecycleGeneration(
+          row.metadata as Record<string, unknown> | null,
+        );
+        const recorder = workspaceOperationService(db).createRecorder({
+          companyId: row.companyId,
+          executionWorkspaceId: row.id,
+        });
+
+        let rebuildError: string | null = null;
+        try {
+          const realized = await ensurePersistedExecutionWorkspaceAvailable({
+            db: tx as unknown as Db,
+            base: {
+              baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
+              source: "task_session",
+              projectId: row.projectId,
+              workspaceId: row.projectWorkspaceId,
+              repoUrl: row.repoUrl,
+              repoRef: row.baseRef,
+            },
+            workspace: {
+              id: row.id,
+              mode: row.mode,
+              strategyType: row.strategyType,
+              cwd: row.cwd,
+              providerRef: row.providerRef,
+              projectId: row.projectId,
+              projectWorkspaceId: row.projectWorkspaceId,
+              repoUrl: row.repoUrl,
+              baseRef: row.baseRef,
+              branchName: row.branchName,
+              metadata: row.metadata as Record<string, unknown> | null,
+              config: {
+                ...config,
+                provisionCommand:
+                  config?.provisionCommand
+                  ?? projectPolicy?.workspaceStrategy?.provisionCommand
+                  ?? null,
+              },
+            },
+            issue: row.sourceIssueId
+              ? { id: row.sourceIssueId, identifier: null, title: row.name }
+              : null,
+            agent: {
+              id: actor.agentId ?? null,
+              name: actor.actorType === "user" ? "Board" : "Agent",
+              companyId: row.companyId,
+            },
+            recorder,
+          });
+          if (!realized) {
+            rebuildError = "Execution workspace could not be rebuilt";
+          }
+        } catch (error) {
+          rebuildError = error instanceof Error ? error.message : String(error);
+        }
+
+        if (rebuildError) {
+          // The rebuild failed. Keep the row closed and retryable. Raise the
+          // generation so a queued cleanup that captured the old generation does
+          // nothing. Clear cleanupEligibleAt so the reaper does not destroy the
+          // half-built worktree while a later reopen retries.
+          await tx
+            .update(executionWorkspaces)
+            .set({
+              cleanupReason: EXECUTION_WORKSPACE_REOPEN_FAILED_REASON,
+              cleanupEligibleAt: null,
+              metadata: nextMetadata,
+              updatedAt: new Date(),
+            })
+            .where(eq(executionWorkspaces.id, row.id));
+          // The server log carries the underlying cause for diagnosis. The audit
+          // event and the returned message stay free of repo URLs, host paths,
+          // and git output.
+          logger.warn(
+            {
+              event: "execution_workspace.reopen",
+              outcome: "rebuild_failed",
+              executionWorkspaceId: row.id,
+              issueId: issue.id,
+              companyId: row.companyId,
+              actorType: actor.actorType,
+              actorAgentId: actor.agentId ?? null,
+              generation: nextGeneration,
+              error: rebuildError,
+            },
+            "execution workspace reopen rebuild failed",
+          );
+          await logActivity(tx as unknown as Db, {
+            companyId: row.companyId,
+            actorType: actor.actorType === "user" ? "user" : "agent",
+            actorId: actor.agentId ?? "system",
+            agentId: actor.actorType === "user" ? null : actor.agentId,
+            action: "execution_workspace.reopen_failed",
+            entityType: "execution_workspace",
+            entityId: row.id,
+            details: {
+              issueId: issue.id,
+              outcome: "rebuild_failed",
+              generation: nextGeneration,
+            },
+          });
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+
+        // The rebuild succeeded. Publish the row as active in one write, and clear
+        // the closed markers. Set the reopen-pending flag in the same write. The
+        // source issue is still terminal at this point, because the route changes
+        // the issue out of the terminal state only after this reopen returns. The
+        // flag stops the terminal reaper and the archive route from archiving and
+        // destroying the rebuilt worktree in that window.
+        const activeMetadata = setMetadataReopenPendingConsumption(nextMetadata, now());
+        const activeRow = await tx
+          .update(executionWorkspaces)
+          .set({
+            status: "active",
+            closedAt: null,
+            cleanupReason: null,
+            cleanupEligibleAt: null,
+            metadata: activeMetadata,
+            lastUsedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, row.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!activeRow) {
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+        logger.info(
+          {
+            event: "execution_workspace.reopen",
+            outcome: "reopened",
+            executionWorkspaceId: row.id,
+            issueId: issue.id,
+            companyId: row.companyId,
+            actorType: actor.actorType,
+            actorAgentId: actor.agentId ?? null,
+            generation: nextGeneration,
+          },
+          "execution workspace reopened",
+        );
+        await logActivity(tx as unknown as Db, {
+          companyId: row.companyId,
+          actorType: actor.actorType === "user" ? "user" : "agent",
+          actorId: actor.agentId ?? "system",
+          agentId: actor.actorType === "user" ? null : actor.agentId,
+          action: "execution_workspace.reopened",
+          entityType: "execution_workspace",
+          entityId: row.id,
+          details: {
+            issueId: issue.id,
+            outcome: "reopened",
+            generation: nextGeneration,
+          },
+        });
+        return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow), generation: nextGeneration };
+      });
+    },
+
+    // Clear the reopen-pending flag after a caller failed to consume a reopened
+    // workspace. A reopen publishes the rebuilt worktree as active and sets the
+    // flag while the source issue is still terminal. The route then moves the
+    // issue out of the terminal state, and the terminal reaper clears the flag
+    // once it observes the non-terminal issue. If that move never lands (the
+    // route mutation returns null, throws, or leaves the issue terminal), the
+    // issue stays terminal and the flag stays set. The terminal reaper and the
+    // archive route both skip a reopen-pending row, so the rebuilt worktree leaks
+    // and no path can reclaim it. This method clears the flag under the lifecycle
+    // lock, so the reaper can archive and reclaim the worktree. It keeps the row
+    // active, so a retried resume can still reuse the rebuilt worktree. The
+    // method is idempotent: it does nothing when the flag is already clear.
+    // Re-stamp the reopen-pending timestamp while a consuming request is still in
+    // flight. The consuming route calls this on an interval shorter than the stale
+    // grace period, so the terminal reaper never treats the live fence as stranded.
+    // The refresh runs only while the flag is still set and the generation still
+    // matches `expectedGeneration`, so it never revives a cleared flag and never
+    // refreshes a newer reopen's fence. It returns { refreshed } so the caller can
+    // stop the interval once the fence is no longer its own.
+    refreshReopenPendingConsumption: async (input: {
+      workspaceId: string;
+      expectedGeneration: number;
+    }): Promise<{ refreshed: boolean }> => {
+      const refreshed = await refreshReopenPendingConsumptionUnderLock(input.workspaceId, {
+        expectedGeneration: input.expectedGeneration,
+      });
+      return { refreshed };
+    },
+
+    clearReopenPendingConsumptionForUnconsumedReopen: async (input: {
+      workspaceId: string;
+      issue: { id: string; companyId: string };
+      actor: { agentId: string | null; actorType: string };
+      // The generation the reopen published the active row at. It owns the flag.
+      // The clear runs only while the current generation still matches, so it never
+      // clears a newer reopen's fence.
+      expectedGeneration: number;
+    }): Promise<{ cleared: boolean }> => {
+      const cleared = await clearReopenPendingConsumptionUnderLock(input.workspaceId, {
+        expectedGeneration: input.expectedGeneration,
+      });
+      if (cleared) {
+        logger.info(
+          {
+            event: "execution_workspace.reopen",
+            outcome: "unconsumed_reopen_cleared",
+            executionWorkspaceId: input.workspaceId,
+            issueId: input.issue.id,
+            companyId: input.issue.companyId,
+            actorType: input.actor.actorType,
+            actorAgentId: input.actor.agentId ?? null,
+          },
+          "execution workspace reopen-pending flag cleared after an unconsumed reopen",
+        );
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: input.actor.actorType === "user" ? "user" : "agent",
+          actorId: input.actor.agentId ?? "system",
+          agentId: input.actor.actorType === "user" ? null : input.actor.agentId,
+          action: "execution_workspace.reopen_unconsumed",
+          entityType: "execution_workspace",
+          entityId: input.workspaceId,
+          details: {
+            issueId: input.issue.id,
+            outcome: "unconsumed_reopen_cleared",
+          },
+        });
+      }
+      return { cleared };
+    },
+
+    // Archive one workspace under the per-workspace lifecycle lock. The archive
+    // route calls this so the transition to archived and the destruction fence
+    // both run under the same lock as a reopen. The lock stops a concurrent
+    // reopen from publishing an active row between the status re-check and the
+    // archive write. The archive runs only while the row is still open (not
+    // already archived by a race) and clears the reopen-pending flag.
+    //
+    // The method refuses to archive a row that carries the reopen-pending flag.
+    // A reopen sets that flag when it publishes a rebuilt worktree as active
+    // while the source issue is still terminal. The method returns a distinct
+    // "reopen_pending" outcome for that row. It does not clear the flag and does
+    // not archive. The route maps that outcome to HTTP 409 and returns before any
+    // destructive cleanup, so the archive control never removes a rebuilt
+    // worktree during the reopen consumption window.
+    archiveWorkspaceUnderLifecycleLock: async (input: {
+      id: string;
+      patch: Partial<typeof executionWorkspaces.$inferInsert>;
+      closedAt: Date;
+    }): Promise<
+      | { outcome: "archived"; workspace: ExecutionWorkspace; capturedGeneration: number }
+      | { outcome: "reopen_pending" }
+      | null
+    > => {
+      return db.transaction(async (tx) => {
+        await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+        const fresh = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, input.id))
+          .then((rows) => rows[0] ?? null);
+        if (!fresh || isClosedExecutionWorkspaceStatus(fresh.status)) {
+          // The row is missing or already closed by a concurrent path. Do not
+          // archive again.
+          return null;
+        }
+        if (metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
+          // A reopen published this row as active while its source issue is still
+          // terminal. A caller will consume the rebuilt worktree. Refuse the
+          // archive and keep the flag, so the destructive path never removes the
+          // rebuilt worktree. The route maps this to HTTP 409.
+          return { outcome: "reopen_pending" };
+        }
+        const baseMetadata =
+          (input.patch.metadata as Record<string, unknown> | null | undefined)
+          ?? (fresh.metadata as Record<string, unknown> | null);
+        const archiveMetadata = clearMetadataReopenPendingConsumption(
+          bumpExecutionWorkspaceLifecycleGeneration(baseMetadata),
+        );
+        const archived = await tx
+          .update(executionWorkspaces)
+          .set({
+            ...input.patch,
+            status: "archived",
+            closedAt: input.closedAt,
+            cleanupReason: null,
+            metadata: archiveMetadata,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(executionWorkspaces.id, input.id),
+            // Defense in depth: never archive a reopen-pending row even if the
+            // flag appears between the read above and this write. The lifecycle
+            // lock already serializes reopen and archive, so this predicate only
+            // adds a second, authoritative guard at the write.
+            sql<boolean>`(${executionWorkspaces.metadata} ->> ${EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY}) IS DISTINCT FROM 'true'`,
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!archived) return null;
+        return {
+          outcome: "archived",
+          workspace: toExecutionWorkspace(archived),
+          capturedGeneration: readExecutionWorkspaceLifecycleGeneration(archiveMetadata),
+        };
+      });
+    },
+
+    // Apply the terminal cleanup outcome to a workspace row through the lifecycle
+    // gateway. The archive route calls this after the destruction fence ran, to
+    // record cleanup warnings and, when the destroy failed, the cleanup_failed
+    // status. A reopen that raced after the fence returned restores the row to an
+    // open status and raises the generation. The gateway re-reads the fresh row
+    // under the lock and writes only while the row is still closed at
+    // `capturedGeneration`. So a stale cleanup patch never overwrites the closedAt,
+    // the cleanup reason, or the status of a freshly rebuilt worktree. The method
+    // returns the updated row, or null when the guard skipped the write.
+    applyClosedWorkspaceCleanupOutcome: async (input: {
+      id: string;
+      closedAt: Date;
+      capturedGeneration: number;
+      cleanupReason: string | null;
+      markCleanupFailed: boolean;
+    }): Promise<ExecutionWorkspace | null> => {
+      // A reopen restored the row after the destruction fence returned when the
+      // guard fails. The gateway then skips, so the write never overwrites the
+      // newly active lifecycle state.
+      return fenceLifecycleGenerationWrite<ExecutionWorkspace | null>({
+        workspaceId: input.id,
+        expectedGeneration: input.capturedGeneration,
+        isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+        onSkip: () => null,
+        write: async ({ tx }) => {
+          const row = await tx
+            .update(executionWorkspaces)
+            .set({
+              closedAt: input.closedAt,
+              cleanupReason: input.cleanupReason,
+              ...(input.markCleanupFailed ? { status: "cleanup_failed" as const } : {}),
+              updatedAt: new Date(),
+            })
+            .where(eq(executionWorkspaces.id, input.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return row ? toExecutionWorkspace(row) : null;
+        },
+      });
+    },
+
+    // Read the lifecycle generation of a workspace row. The archive route captures
+    // this before it destroys, so it can hand the value to the destruction fence.
+    readLifecycleGeneration: async (id: string): Promise<number | null> => {
+      const row = await db
+        .select({ metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id))
+        .then((rows) => rows[0] ?? null);
+      return row ? readExecutionWorkspaceLifecycleGeneration(row.metadata as Record<string, unknown> | null) : null;
+    },
+
+    // Run a destructive workspace cleanup through the lifecycle gateway. The
+    // caller passes the generation it captured at archive time. If a reopen raised
+    // the generation or restored the row to an open status, the gateway skips the
+    // destroy callback, so a cleanup never deletes a worktree that a reopen
+    // rebuilt.
+    fenceClosedWorkspaceDestruction: async <T>(input: {
+      workspaceId: string;
+      capturedGeneration: number;
+      destroy: () => Promise<T>;
+    }): Promise<{ skippedReopened: true } | { skippedReopened: false; result: T }> => {
+      return fenceLifecycleGenerationWrite<
+        { skippedReopened: true } | { skippedReopened: false; result: T }
+      >({
+        workspaceId: input.workspaceId,
+        expectedGeneration: input.capturedGeneration,
+        isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+        skipLog: {
+          event: "execution_workspace.cleanup_skipped",
+          message: "execution workspace cleanup skipped because it was reopened",
+        },
+        onSkip: () => ({ skippedReopened: true as const }),
+        write: async () => ({ skippedReopened: false as const, result: await input.destroy() }),
+      });
     },
 
     reconcileExecutionWorkspaceBranch: async (

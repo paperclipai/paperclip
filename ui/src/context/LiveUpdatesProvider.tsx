@@ -10,7 +10,7 @@ import {
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
 import { patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
-import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
@@ -868,6 +868,26 @@ function applyRunLifecycleToCompanyLiveRuns(
   const status = readString(payload.status);
   if (!runId || !status) return false;
 
+  queryClient.setQueryData(
+    queryKeys.runDetail(runId),
+    (current: HeartbeatRun | undefined) => {
+      if (!current) return current;
+      const has = (key: string) => Object.prototype.hasOwnProperty.call(payload, key);
+      return {
+        ...current,
+        status: status as HeartbeatRun["status"],
+        ...(has("invocationSource")
+          ? { invocationSource: readString(payload.invocationSource) ?? current.invocationSource }
+          : {}),
+        ...(has("triggerDetail") ? { triggerDetail: readString(payload.triggerDetail) } : {}),
+        ...(has("error") ? { error: readString(payload.error) } : {}),
+        ...(has("errorCode") ? { errorCode: readString(payload.errorCode) } : {}),
+        ...(has("startedAt") ? { startedAt: readString(payload.startedAt) } : {}),
+        ...(has("finishedAt") ? { finishedAt: readString(payload.finishedAt) } : {}),
+      };
+    },
+  );
+
   if (TERMINAL_RUN_STATUSES.has(status)) {
     queryClient.setQueryData(
       queryKeys.liveRuns(companyId),
@@ -908,6 +928,10 @@ function invalidateHeartbeatQueries(
   if (agentId) {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+  }
+  const runId = readString(payload.runId);
+  if (runId) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
   }
 }
 
@@ -1287,6 +1311,7 @@ export const __liveUpdatesTestUtils = {
   applyRunLiveStatusPatchToCaches,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
+  invalidateHeartbeatQueries,
   invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
   readRunLiveStatusPatchFromPayload,

@@ -517,6 +517,7 @@ describe("company portability", () => {
         agents: true,
         projects: false,
         issues: false,
+        skills: true,
       },
     });
 
@@ -549,6 +550,25 @@ describe("company portability", () => {
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
+  });
+
+  it("does not load or emit skills when agents are included but skills are disabled", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+        skills: false,
+      },
+    });
+
+    expect(companySkillSvc.listFull).not.toHaveBeenCalled();
+    expect(Object.keys(exported.files).some((filePath) => filePath.startsWith("skills/"))).toBe(false);
+    expect(exported.manifest.skills).toEqual([]);
+    expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain(`- "${paperclipKey}"`);
   });
 
   it("exports agent permission grants through the Paperclip extension and manifest", async () => {
@@ -757,6 +777,7 @@ describe("company portability", () => {
         agents: true,
         projects: false,
         issues: false,
+        skills: true,
       },
       expandReferencedSkills: true,
     });
@@ -1023,6 +1044,7 @@ describe("company portability", () => {
         agents: true,
         projects: false,
         issues: false,
+        skills: true,
       },
     });
 
@@ -1075,6 +1097,79 @@ describe("company portability", () => {
 
     expect(preview.counts.issues).toBe(0);
     expect(preview.fileInventory.some((entry) => entry.path.startsWith("tasks/"))).toBe(false);
+    expect(preview.fileInventory.some((entry) => entry.path === "images/org-chart.png")).toBe(false);
+
+    const downloaded = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: false,
+      },
+    });
+    expect(downloaded.files["images/org-chart.png"]).toMatchObject({
+      encoding: "base64",
+      contentType: "image/png",
+    });
+  });
+
+  it("prefetches task export records with bounded concurrency", async () => {
+    const portability = companyPortabilityService({} as any);
+    const issues = ["issue-1", "issue-2", "issue-3"].map((id, index) => ({
+      id,
+      identifier: `PAP-${index + 1}`,
+      title: `Task ${index + 1}`,
+      description: null,
+      projectId: null,
+      projectWorkspaceId: null,
+      parentId: null,
+      assigneeAgentId: null,
+      status: "todo",
+      priority: "medium",
+      labelIds: [],
+      billingCode: null,
+      executionWorkspaceSettings: null,
+      assigneeAdapterOverrides: null,
+    }));
+    issueSvc.list.mockResolvedValue(issues);
+
+    let releaseFirstWave!: (comments: never[]) => void;
+    const firstWave = new Promise<never[]>((resolve) => {
+      releaseFirstWave = resolve;
+    });
+    issueSvc.listComments.mockImplementation(async (issueId: string) => {
+      if (issueId === "issue-1" || issueId === "issue-2") return firstWave;
+      return [];
+    });
+
+    const exportPromise = portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: true,
+        skills: false,
+      },
+    });
+
+    let waitError: unknown;
+    try {
+      await vi.waitFor(() => {
+        expect(issueSvc.listComments).toHaveBeenCalledTimes(2);
+      }, { timeout: 500 });
+      expect(issueSvc.listComments.mock.calls.map(([issueId]) => issueId)).toEqual([
+        "issue-1",
+        "issue-2",
+      ]);
+    } catch (error) {
+      waitError = error;
+    } finally {
+      releaseFirstWave([]);
+    }
+
+    await exportPromise;
+    if (waitError) throw waitError;
+    expect(issueSvc.listComments).toHaveBeenCalledTimes(3);
   });
 
   it("exports portable project workspace metadata and remaps it on import", async () => {
