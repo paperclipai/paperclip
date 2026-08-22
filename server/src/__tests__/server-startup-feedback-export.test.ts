@@ -29,6 +29,7 @@ const {
   issueThreadInteractionServiceFactoryMock,
   issueThreadInteractionServiceMock,
   loadConfigMock,
+  loggerInfoMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
@@ -123,6 +124,7 @@ const {
     close: vi.fn(),
   };
   const loadConfigMock = vi.fn();
+  const loggerInfoMock = vi.fn();
 
   return {
     createAppMock,
@@ -144,6 +146,7 @@ const {
     issueThreadInteractionServiceFactoryMock,
     issueThreadInteractionServiceMock,
     loadConfigMock,
+    loggerInfoMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
@@ -227,7 +230,7 @@ vi.mock("../middleware/logger.js", () => ({
     child: vi.fn(function child() {
       return this;
     }),
-    info: vi.fn(),
+    info: loggerInfoMock,
     warn: vi.fn(),
     error: vi.fn(),
   },
@@ -363,6 +366,35 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("logs structured timing for each blocking startup phase", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    await startServer();
+
+    const phaseTimings = loggerInfoMock.mock.calls
+      .filter(([, message]) => message === "Paperclip startup phase completed")
+      .map(([timing]) => timing as { startupPhase: string; durationMs: number; elapsedMs: number });
+
+    expect(phaseTimings.map(({ startupPhase }) => startupPhase)).toEqual([
+      "instrumentation",
+      "configuration",
+      "database-and-migrations",
+      "principal-and-credential-backfills",
+      "authentication",
+      "create-app",
+      "execution-policy-bootstrap",
+      "plugin-load-and-managed-environments",
+      "heartbeat-startup-reconciliation",
+      "startup-maintenance-sweeps",
+      "external-adapters",
+      "listen",
+    ]);
+    expect(phaseTimings).toHaveLength(12);
+    for (const timing of phaseTimings) {
+      expect(timing.durationMs).toBeGreaterThanOrEqual(0);
+      expect(timing.elapsedMs).toBeGreaterThanOrEqual(timing.durationMs);
+    }
   });
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {

@@ -144,11 +144,26 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  const startupStartedAt = performance.now();
+  let startupPhaseStartedAt = startupStartedAt;
+  const completeStartupPhase = (phase: string) => {
+    const now = performance.now();
+    logger.info(
+      {
+        startupPhase: phase,
+        durationMs: Math.round(now - startupPhaseStartedAt),
+        elapsedMs: Math.round(now - startupStartedAt),
+      },
+      "Paperclip startup phase completed",
+    );
+    startupPhaseStartedAt = now;
+  };
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
 
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
+  completeStartupPhase("instrumentation");
   ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
@@ -161,13 +176,14 @@ export async function startServer(): Promise<StartedServer> {
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
-  
+  completeStartupPhase("configuration");
+
   type MigrationSummary =
     | "skipped"
     | "already applied"
     | "applied (empty database)"
     | "applied (pending migrations)";
-  
+
   function formatPendingMigrationSummary(migrations: string[]): string {
     if (migrations.length === 0) return "none";
     return migrations.length > 3
@@ -553,7 +569,8 @@ export async function startServer(): Promise<StartedServer> {
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
-  
+  completeStartupPhase("database-and-migrations");
+
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
@@ -609,6 +626,7 @@ export async function startServer(): Promise<StartedServer> {
   if (confirmationSweep.expired > 0) {
     logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
   }
+  completeStartupPhase("principal-and-credential-backfills");
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,
@@ -642,6 +660,7 @@ export async function startServer(): Promise<StartedServer> {
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
+  completeStartupPhase("authentication");
 
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
@@ -802,6 +821,10 @@ export async function startServer(): Promise<StartedServer> {
     decisionServiceOptions,
     managedPluginAutoInstall,
   });
+  // createApp starts plugin loading in the background and exposes its settled
+  // promise through app.locals. The later managed-environment phase awaits it,
+  // so these two timings distinguish app construction from plugin startup.
+  completeStartupPhase("create-app");
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
@@ -958,6 +981,7 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to apply forced execution policy from environment");
     throw err;
   }
+  completeStartupPhase("execution-policy-bootstrap");
 
   // Ensure sandbox environments declared in the managed-config document
   // (`environments` section) before the heartbeat resumes queued runs. The
@@ -983,6 +1007,7 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to apply managed environments from managed config");
     throw err;
   }
+  completeStartupPhase("plugin-load-and-managed-environments");
 
   let drainHeartbeatRunsForShutdown: ((
     signal: "SIGINT" | "SIGTERM",
@@ -1312,6 +1337,7 @@ export async function startServer(): Promise<StartedServer> {
       trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
       await startupHeartbeatRecovery;
     }
+    completeStartupPhase("heartbeat-startup-reconciliation");
 
     const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
     if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
@@ -1364,6 +1390,7 @@ export async function startServer(): Promise<StartedServer> {
       return { archived, ...notifications };
     };
     await runRetentionSweep();
+    completeStartupPhase("startup-maintenance-sweeps");
 
     startHeartbeatSchedulerInterval(() => {
       // Track the outer async callback as well as the work it starts. Shutdown
@@ -1590,6 +1617,7 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
     throw err;
   }
+  completeStartupPhase("external-adapters");
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
@@ -1600,6 +1628,7 @@ export async function startServer(): Promise<StartedServer> {
     server.once("error", onError);
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
+      completeStartupPhase("listen");
       logger.info(`Server listening on ${config.host}:${listenPort}`);
       void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
         if (notified) logger.info("Notified systemd that Paperclip is ready");
