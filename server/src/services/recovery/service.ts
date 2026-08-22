@@ -790,6 +790,27 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
+function buildLivenessSourceBlockingComment(input: {
+  sourceIssueIdentifier: string | null;
+  sourceIssueId: string;
+  recoveryIssueIdentifier: string | null;
+  recoveryIssueId: string;
+  finding: IssueLivenessFinding;
+  prefix: string;
+}) {
+  return [
+    "Paperclip detected a harness-level issue graph liveness incident in this dependency chain.",
+    "",
+    `- Source issue: ${issueUiLink({ identifier: input.sourceIssueIdentifier, id: input.sourceIssueId }, input.prefix)}`,
+    `- Recovery target issue: ${issueUiLink({ identifier: input.recoveryIssueIdentifier, id: input.recoveryIssueId }, input.prefix)}`,
+    `- Incident key: \`${input.finding.incidentKey}\``,
+    `- State: \`${input.finding.state}\``,
+    "",
+    "Manager action requested: recovery is continuing directly on this source issue; no dedicated recovery child was created.",
+    "Add a reviewer or interaction, return the issue to active work with a change request, or mark it done if accepted.",
+  ].join("\n");
+}
+
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -6143,6 +6164,55 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
     if (!ownerSelection) return { kind: "skipped" as const };
+    if (
+      input.finding.state === "in_review_without_action_path"
+      && input.finding.recoveryIssueId === input.finding.issueId
+    ) {
+      const updated = await issuesSvc.update(issue.id, {
+        status: "blocked",
+        assigneeAgentId: ownerSelection.agentId,
+      });
+      if (!updated) return { kind: "skipped" as const };
+
+      const prefix = await getCompanyIssuePrefix(issue.companyId);
+      await issuesSvc.addComment(
+        issue.id,
+        buildLivenessSourceBlockingComment({
+          sourceIssueIdentifier: updated.identifier,
+          sourceIssueId: updated.id,
+          recoveryIssueIdentifier: recoveryIssue.identifier,
+          recoveryIssueId: recoveryIssue.id,
+          finding: input.finding,
+          prefix,
+        }),
+        { runId: input.runId ?? null },
+      );
+
+      await deps.enqueueWakeup(ownerSelection.agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint({
+          issueId: issue.id,
+          sourceIssueId: issue.id,
+          recoveryIssueId: recoveryIssue.id,
+          incidentKey: input.finding.incidentKey,
+        }, "normal_model"),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "issue_assigned",
+          source: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+          sourceIssueId: issue.id,
+          recoveryIssueId: recoveryIssue.id,
+          incidentKey: input.finding.incidentKey,
+        }, "normal_model"),
+      });
+
+      return { kind: "skipped" as const };
+    }
     const reuseRecoveryExecutionWorkspace = shouldReuseRecoveryExecutionWorkspace({
       finding: input.finding,
       recoveryIssue,

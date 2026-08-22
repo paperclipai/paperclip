@@ -583,8 +583,9 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       recoveryIssue: reviewIssue,
       recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
       recommendedOwnerCandidates: ownerCandidates,
-      recommendedAction:
-        `Review ${issueLabel(reviewIssue)} and make the next action explicit: add a reviewer/interaction, return it to active work with a change request, mark it done if accepted, or open a bounded recovery issue.`,
+      recommendedAction: source.id === reviewIssue.id
+        ? `Review ${issueLabel(reviewIssue)} and make the next action explicit: add a reviewer/interaction, return it to active work with a change request, or mark it done if accepted.`
+        : `Review ${issueLabel(reviewIssue)} and make the next action explicit: add a reviewer/interaction, return it to active work with a change request, mark it done if accepted, or open a bounded recovery issue.`,
       blockerIssueId: reviewIssue.id,
     });
   }
