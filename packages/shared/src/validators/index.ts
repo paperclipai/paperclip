@@ -609,11 +609,13 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  cancelApprovalSchema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type CancelApproval,
 } from "./approval.js";
 
 export {

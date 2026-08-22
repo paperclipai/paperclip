@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
+  cancelApprovalSchema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
@@ -578,6 +579,40 @@ export function approvalRoutes(
       details: { type: approval.type },
     });
     res.json(redactApprovalPayload(approval));
+  });
+
+  router.post("/approvals/:id/cancel", validate(cancelApprovalSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
+    if (!existing) return;
+
+    // Only the requesting agent or a board member may cancel.
+    if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
+      res.status(403).json({ error: "Only the requesting agent can cancel this approval" });
+      return;
+    }
+
+    const reason: string | null = req.body.reason ?? null;
+    const updated = await svc.cancel(id, reason);
+    if (!updated) {
+      // Already resolved — return current state without error (idempotent).
+      res.json(redactApprovalPayload(existing));
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "approval.cancelled",
+      entityType: "approval",
+      entityId: updated.id,
+      details: { type: updated.type, reason },
+    });
+
+    res.json(redactApprovalPayload(updated));
   });
 
   router.get("/approvals/:id/comments", async (req, res) => {
