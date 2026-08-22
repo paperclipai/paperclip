@@ -42,6 +42,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../services/execution-workspace-policy.ts";
+import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "../services/productivity-review.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -6862,5 +6863,141 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     const comment = await svc.addComment(issueId, "hello from a live run", { runId });
 
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
+  });
+});
+
+describeEmbeddedPostgres("issueService.update productivity review auto-cancel", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+  let issuePrefix!: string;
+  let issueCounter = 0;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-pr-autocancel-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+
+    companyId = randomUUID();
+    issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip PR Auto-cancel",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function insertSourceIssue(status: "todo" | "in_progress" = "in_progress") {
+    issueCounter += 1;
+    const id = randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: `Source issue ${issueCounter}`,
+      status,
+      priority: "medium",
+      issueNumber: issueCounter,
+      identifier: `${issuePrefix}-${issueCounter}`,
+    });
+    return id;
+  }
+
+  async function insertProductivityReview(sourceIssueId: string, status: "todo" | "backlog" | "in_progress" | "in_review") {
+    issueCounter += 1;
+    const id = randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: `Productivity review for source`,
+      status,
+      priority: "high",
+      originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+      originId: sourceIssueId,
+      originFingerprint: `productivity-review:${sourceIssueId}:${id}`,
+      parentId: sourceIssueId,
+      issueNumber: issueCounter,
+      identifier: `${issuePrefix}-${issueCounter}`,
+    });
+    return id;
+  }
+
+  async function getIssueStatus(id: string) {
+    return db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, id))
+      .then((rows) => rows[0]?.status ?? null);
+  }
+
+  async function getProductivityReviewCancelledActivities(reviewId: string) {
+    return db
+      .select()
+      .from(activityLog)
+      .where(
+        eq(activityLog.entityId, reviewId),
+      )
+      .then((rows) => rows.filter((r) => r.action === "issue.productivity_review_cancelled"));
+  }
+
+  it("cancels todo productivity review tasks when source issue transitions to done", async () => {
+    const sourceId = await insertSourceIssue();
+    const todoReviewId = await insertProductivityReview(sourceId, "todo");
+
+    await svc.update(sourceId, { status: "done", actorUserId: "test-board" });
+
+    expect(await getIssueStatus(todoReviewId)).toBe("cancelled");
+    const activities = await getProductivityReviewCancelledActivities(todoReviewId);
+    expect(activities).toHaveLength(1);
+    expect((activities[0]!.details as Record<string, unknown>).sourceIssueId).toBe(sourceId);
+    expect((activities[0]!.details as Record<string, unknown>).sourceIssueStatus).toBe("done");
+  });
+
+  it("cancels backlog productivity review tasks when source issue transitions to cancelled", async () => {
+    const sourceId = await insertSourceIssue();
+    const backlogReviewId = await insertProductivityReview(sourceId, "backlog");
+
+    await svc.update(sourceId, { status: "cancelled", actorUserId: "test-board" });
+
+    expect(await getIssueStatus(backlogReviewId)).toBe("cancelled");
+    const activities = await getProductivityReviewCancelledActivities(backlogReviewId);
+    expect(activities).toHaveLength(1);
+    expect((activities[0]!.details as Record<string, unknown>).sourceIssueStatus).toBe("cancelled");
+  });
+
+  it("does not cancel in_progress productivity review tasks when source issue closes", async () => {
+    const sourceId = await insertSourceIssue();
+    const inProgressReviewId = await insertProductivityReview(sourceId, "in_progress");
+
+    await svc.update(sourceId, { status: "done", actorUserId: "test-board" });
+
+    expect(await getIssueStatus(inProgressReviewId)).toBe("in_progress");
+  });
+
+  it("does not cancel in_review productivity review tasks when source issue closes", async () => {
+    const sourceId = await insertSourceIssue();
+    const inReviewId = await insertProductivityReview(sourceId, "in_review");
+
+    await svc.update(sourceId, { status: "done", actorUserId: "test-board" });
+
+    expect(await getIssueStatus(inReviewId)).toBe("in_review");
+  });
+
+  it("does not cancel productivity review tasks for an unrelated source issue", async () => {
+    const sourceA = await insertSourceIssue();
+    const sourceB = await insertSourceIssue();
+    const reviewForA = await insertProductivityReview(sourceA, "todo");
+    const reviewForB = await insertProductivityReview(sourceB, "todo");
+
+    // Only close source B — review for A must remain untouched.
+    await svc.update(sourceB, { status: "done", actorUserId: "test-board" });
+
+    expect(await getIssueStatus(reviewForA)).toBe("todo");
+    expect(await getIssueStatus(reviewForB)).toBe("cancelled");
   });
 });

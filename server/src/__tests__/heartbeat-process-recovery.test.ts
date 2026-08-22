@@ -7241,6 +7241,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("injects a blocked-on capacity marker into the description for budget_blocked escalations", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "budget_blocked",
+      runError: "Budget exceeded; refusing to dispatch.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.description).toContain('<!-- blocked-on: {"kind":"capacity","ref":"quota","recheck":"budget cleared","owner":"platform"} -->');
+  });
+
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

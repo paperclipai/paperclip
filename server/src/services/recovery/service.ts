@@ -376,6 +376,15 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "issue_dependencies_blocked",
 ]);
 
+const BUDGET_BLOCKED_MARKER =
+  '<!-- blocked-on: {"kind":"capacity","ref":"quota","recheck":"budget cleared","owner":"platform"} -->';
+
+function appendBudgetBlockedMarker(description: string | null | undefined): string {
+  const base = description?.trim() ?? "";
+  if (base.includes(BUDGET_BLOCKED_MARKER)) return base;
+  return base ? `${base}\n\n---\n\n${BUDGET_BLOCKED_MARKER}` : BUDGET_BLOCKED_MARKER;
+}
+
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
 // issue has a real waiting target we convert it into a normal dependency wait rather
@@ -5358,6 +5367,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           if (updated) {
             result.escalated += 1;
             result.issueIds.push(issue.id);
+            // For budget_blocked, inject a machine-readable blocked-on marker so
+            // stall-recovery can classify it as a capacity blocker and re-enqueue
+            // when quota clears — instead of escalating to Inspector as "intent-unparseable".
+            if (classification.errorCode === "budget_blocked") {
+              await issuesSvc.update(issue.id, {
+                description: appendBudgetBlockedMarker(updated.description),
+              });
+            }
           } else {
             result.skipped += 1;
           }

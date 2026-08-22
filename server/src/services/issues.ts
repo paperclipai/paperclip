@@ -7909,6 +7909,40 @@ export function issueService(db: Db) {
                 },
               });
             }
+            // Cancel unstarted productivity review tasks generated for this issue;
+            // once the source is terminal, there is no valid actor to resolve them.
+            const openProductivityReviews = await tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, updated.companyId),
+                  eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueProductivityReview),
+                  eq(issues.originId, updated.id),
+                  inArray(issues.status, ["todo", "backlog"]),
+                  visibleIssueCondition(),
+                ),
+              );
+            for (const review of openProductivityReviews) {
+              const reviewCancelledAt = new Date();
+              await tx
+                .update(issues)
+                .set({ status: "cancelled", cancelledAt: reviewCancelledAt, updatedAt: reviewCancelledAt })
+                .where(eq(issues.id, review.id));
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: "system",
+                actorId: "system",
+                action: "issue.productivity_review_cancelled",
+                entityType: "issue",
+                entityId: review.id,
+                details: {
+                  source: "issue_terminal_productivity_review_cleanup",
+                  sourceIssueId: updated.id,
+                  sourceIssueStatus: updated.status,
+                },
+              });
+            }
           }
           // A status-card generation task that goes done/cancelled/blocked stops
           // making progress; release the card's generation claim so the board tile
