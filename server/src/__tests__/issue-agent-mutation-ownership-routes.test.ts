@@ -1603,7 +1603,6 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["done", "todo", 403, "Agent cannot request follow-up for another agent's issue"],
     ["cancelled", "todo", 409, "Cancelled issues must be restored through the dedicated restore flow"],
-    ["blocked", "done", 403, "Agent cannot request follow-up for another agent's issue"],
   ])(
     "rejects peer agent direct status transitions from %s to %s",
     async (status, nextStatus, expectedStatus, expectedError) => {
@@ -1618,6 +1617,114 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["done", "cancelled"] as const)(
+    "allows an authorized control-plane owner to apply an accepted %s disposition with evidence",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+        ...patch,
+      }));
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed:
+          input.action === "issue:mutate" ||
+          input.action === "issue:read" ||
+          input.action === "company_scope:read",
+        action: input.action,
+        reason:
+          input.action === "issue:mutate"
+            ? "allow_manager_chain"
+            : input.action === "tasks:manage_active_checkouts"
+              ? "deny_missing_grant"
+              : "allow_company_member",
+        explanation:
+          input.action === "tasks:manage_active_checkouts"
+            ? "No active-checkout management grant."
+            : "Allowed because the actor owns the accepted control-plane disposition.",
+      }));
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status, comment: `Accepted terminal disposition: ${status}. Evidence verified.` });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ status }),
+      );
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(
+        issueId,
+        expect.stringContaining("Evidence verified"),
+        expect.anything(),
+        expect.anything(),
+      );
+    },
+  );
+
+  it.each(["done", "cancelled"] as const)(
+    "denies an in-boundary low-trust agent from applying a blocked %s disposition",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) {
+          return makeAgent(peerAgentId, {
+            permissions: {
+              trustPreset: "low_trust_review",
+              authorizationPolicy: {
+                managedBy: "core-trust-preset",
+                trustBoundary: { mode: "low_trust_review", companyId, issueIds: [issueId] },
+              },
+            },
+          });
+        }
+        return id === ownerAgentId ? makeAgent(ownerAgentId) : null;
+      });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status, comment: `Low-trust terminal disposition attempt: ${status}.` });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Low-trust actors cannot use this control-plane surface");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["todo", "in_progress"] as const)(
+    "keeps a blocked-to-%s transition behind explicit follow-up authority",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an unrelated agent denied from applying a terminal disposition", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "company_scope:read",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_company_member",
+      explanation: input.action === "issue:mutate" ? "Missing mutation authority." : "Visible company issue.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Unrelated terminal disposition attempt." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
