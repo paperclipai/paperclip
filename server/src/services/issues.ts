@@ -7055,7 +7055,6 @@ export function issueService(db: Db) {
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -7661,7 +7660,6 @@ export function issueService(db: Db) {
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
 
