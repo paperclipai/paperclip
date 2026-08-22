@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, like, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
@@ -16,6 +16,17 @@ const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overa
 
 function sumAsNumber(column: typeof costEvents.costCents | typeof costEvents.inputTokens | typeof costEvents.cachedInputTokens | typeof costEvents.outputTokens) {
   return sql<number>`coalesce(sum(${column}), 0)::double precision`;
+}
+
+function hoursFromMinutes(minutes: number) {
+  return Number((minutes / 60).toFixed(2));
+}
+
+function isNotDisplayOnlyTimeMarker() {
+  return sql<boolean>`not (
+    ${costEvents.costCents} = 0
+    and coalesce(${costEvents.billingCode} like 'time:%', false)
+  )`;
 }
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -247,6 +258,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             and(
               eq(costEvents.companyId, companyId),
               eq(costEvents.issueId, issues.id),
+              isNotDisplayOnlyTimeMarker(),
             ),
           )
           .where(
@@ -278,7 +290,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byAgent: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions = [eq(costEvents.companyId, companyId), isNotDisplayOnlyTimeMarker()];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
@@ -310,7 +322,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions = [eq(costEvents.companyId, companyId), isNotDisplayOnlyTimeMarker()];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
@@ -342,7 +354,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byBiller: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions = [eq(costEvents.companyId, companyId), isNotDisplayOnlyTimeMarker()];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
@@ -370,6 +382,98 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.biller)
         .orderBy(desc(sumAsNumber(costEvents.costCents)));
+    },
+
+    timeAllocation: async (companyId: string, range?: CostDateRange) => {
+      const makeConditions = () => {
+        const conditions = [
+          eq(costEvents.companyId, companyId),
+          like(costEvents.billingCode, "time:%"),
+          eq(costEvents.costCents, 0),
+        ];
+        if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+        if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+        return conditions;
+      };
+      const minutesExpr = sumAsNumber(costEvents.inputTokens);
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+
+      const [totalRows, projectRows, agentRows] = await Promise.all([
+        db
+          .select({
+            totalMinutes: minutesExpr,
+            eventCount: sql<number>`count(*)::int`,
+            costCents: costCentsExpr,
+          })
+          .from(costEvents)
+          .where(and(...makeConditions())),
+        db
+          .select({
+            projectId: projects.id,
+            projectName: projects.name,
+            minutes: minutesExpr,
+            eventCount: sql<number>`count(*)::int`,
+            costCents: costCentsExpr,
+          })
+          .from(costEvents)
+          .leftJoin(
+            projects,
+            and(eq(costEvents.projectId, projects.id), eq(costEvents.companyId, projects.companyId)),
+          )
+          .where(and(...makeConditions()))
+          .groupBy(projects.id, projects.name)
+          .orderBy(desc(minutesExpr)),
+        db
+          .select({
+            agentId: agents.id,
+            agentName: agents.name,
+            agentStatus: agents.status,
+            minutes: minutesExpr,
+            eventCount: sql<number>`count(*)::int`,
+            costCents: costCentsExpr,
+          })
+          .from(costEvents)
+          .leftJoin(
+            agents,
+            and(eq(costEvents.agentId, agents.id), eq(costEvents.companyId, agents.companyId)),
+          )
+          .where(and(...makeConditions()))
+          .groupBy(agents.id, agents.name, agents.status)
+          .orderBy(desc(minutesExpr)),
+      ]);
+
+      const total = totalRows[0];
+      const totalMinutes = Number(total?.totalMinutes ?? 0);
+      return {
+        companyId,
+        totalMinutes,
+        totalHours: hoursFromMinutes(totalMinutes),
+        eventCount: Number(total?.eventCount ?? 0),
+        costCents: Number(total?.costCents ?? 0),
+        byProject: projectRows.map((row) => {
+          const minutes = Number(row.minutes ?? 0);
+          return {
+            projectId: row.projectId,
+            projectName: row.projectName,
+            minutes,
+            hours: hoursFromMinutes(minutes),
+            eventCount: Number(row.eventCount ?? 0),
+            costCents: Number(row.costCents ?? 0),
+          };
+        }),
+        byAgent: agentRows.map((row) => {
+          const minutes = Number(row.minutes ?? 0);
+          return {
+            agentId: row.agentId,
+            agentName: row.agentName,
+            agentStatus: row.agentStatus,
+            minutes,
+            hours: hoursFromMinutes(minutes),
+            eventCount: Number(row.eventCount ?? 0),
+            costCents: Number(row.costCents ?? 0),
+          };
+        }),
+      };
     },
 
     /**
@@ -401,6 +505,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               and(
                 eq(costEvents.companyId, companyId),
                 gte(costEvents.occurredAt, since),
+                isNotDisplayOnlyTimeMarker(),
               ),
             )
             .groupBy(costEvents.provider)
@@ -423,7 +528,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byAgentModel: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions = [eq(costEvents.companyId, companyId), isNotDisplayOnlyTimeMarker()];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
@@ -485,7 +590,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .as("run_project_links");
 
       const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, ${runProjectLinks.projectId})`;
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions = [eq(costEvents.companyId, companyId), isNotDisplayOnlyTimeMarker()];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
