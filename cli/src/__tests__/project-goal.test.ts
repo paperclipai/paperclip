@@ -2,6 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerGoalCommands } from "../commands/client/goal.js";
 import { registerProjectCommands } from "../commands/client/project.js";
@@ -9,6 +12,7 @@ import { registerProjectCommands } from "../commands/client/project.js";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const GOAL_ID = "44444444-4444-4444-8444-444444444444";
+const ORIGINAL_ENV = { ...process.env };
 
 function createProgram(): Command {
   const program = new Command();
@@ -23,7 +27,14 @@ function createProgram(): Command {
 }
 
 describe("project and goal commands", () => {
+  let tempContextDir: string | undefined;
+
   beforeEach(() => {
+    tempContextDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-project-goal-cli-"));
+    process.env = {
+      ...ORIGINAL_ENV,
+      PAPERCLIP_CONTEXT: path.join(tempContextDir, "context.json"),
+    };
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_API_URL;
@@ -32,6 +43,11 @@ describe("project and goal commands", () => {
   });
 
   afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    if (tempContextDir) {
+      fs.rmSync(tempContextDir, { recursive: true, force: true });
+      tempContextDir = undefined;
+    }
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_CONTEXT;
   });
