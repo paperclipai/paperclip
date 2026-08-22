@@ -70,6 +70,7 @@ function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): Da
     database_backup_last_failure: "Database backup failure marker is present.",
     database_backup_missing: "No recent database backup was found.",
     database_backup_stale: "Latest database backup is stale.",
+    database_backup_too_small: "Latest database backup is implausibly small.",
   };
   return {
     code: warning.code,

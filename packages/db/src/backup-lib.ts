@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -34,6 +34,13 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  sweptOrphans: string[];
+};
+
+export type SweepBackupOrphansOptions = {
+  nowMs?: number;
+  minGzBytes?: number;
+  minAgeMs?: number;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -70,6 +77,8 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const BACKUP_ORPHAN_MIN_GZ_BYTES = 1024;
+const BACKUP_ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -114,13 +123,98 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 }
 
 /**
+ * True when the pid recorded in a `.sql.pid` ownership marker still names a
+ * running process. EPERM means the process exists but belongs to another
+ * user, so it counts as alive.
+ */
+function isMarkedByLiveProcess(markerPath: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(markerPath, "utf8");
+  } catch {
+    return false;
+  }
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes crash orphans left behind when a backup process dies mid-run
+ * (e.g. SIGTERM): bare `${prefix}-*.sql` working files, which the normal flow
+ * always deletes after compression, `.sql.gz` files too small to be a
+ * plausible backup (a killed gzip pipeline leaves a header-only file), and
+ * stray `.sql.pid` ownership markers.
+ * Files modified within `minAgeMs` are left alone, and files whose `.sql.pid`
+ * marker names a live process are never swept — a stalled-but-alive backup in
+ * another process (e.g. the server while a CLI backup runs) must not have its
+ * working files unlinked out from under it.
+ */
+export function sweepBackupOrphans(
+  backupDir: string,
+  filenamePrefix: string,
+  opts: SweepBackupOrphansOptions = {},
+): string[] {
+  if (!existsSync(backupDir)) return [];
+
+  const nowMs = opts.nowMs ?? Date.now();
+  const minGzBytes = opts.minGzBytes ?? BACKUP_ORPHAN_MIN_GZ_BYTES;
+  const minAgeMs = opts.minAgeMs ?? BACKUP_ORPHAN_MIN_AGE_MS;
+  const swept: string[] = [];
+
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    const isGz = name.endsWith(".sql.gz");
+    const isPidMarker = !isGz && name.endsWith(".sql.pid");
+    const isWorkingSql = !isGz && !isPidMarker && name.endsWith(".sql");
+    if (!isGz && !isPidMarker && !isWorkingSql) continue;
+
+    const fullPath = resolve(backupDir, name);
+    let stat;
+    try {
+      stat = statSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (nowMs - stat.mtimeMs < minAgeMs) continue;
+    if (isGz && stat.size >= minGzBytes) continue;
+
+    const markerPath = isPidMarker
+      ? fullPath
+      : isGz
+        ? `${fullPath.slice(0, -".gz".length)}.pid`
+        : `${fullPath}.pid`;
+    if (isMarkedByLiveProcess(markerPath)) continue;
+
+    try {
+      unlinkSync(fullPath);
+      swept.push(fullPath);
+    } catch {
+      // A file that vanished or cannot be removed must not fail the backup run.
+    }
+  }
+
+  return swept;
+}
+
+/**
  * Tiered backup pruning:
  * - Daily tier: keep ALL backups from the last `dailyDays` days
  * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
+ *
+ * Only completed `.sql.gz` backups participate. Bare `.sql` working files are
+ * never backups — counting one as its bucket's newest entry would retain a
+ * crash orphan while the last complete backup of that week gets pruned; the
+ * orphan sweep owns their removal instead.
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+export function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
@@ -133,7 +227,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
 
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
-    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    if (!name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
     entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
@@ -540,8 +634,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
+  const sweptOrphans = sweepBackupOrphans(opts.backupDir, filenamePrefix);
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
+  const pidMarkerFile = `${sqlFile}.pid`;
+  try {
+    // Ownership marker: a concurrent caller's orphan sweep must be able to
+    // tell this live run's working files apart from crash leftovers.
+    writeFileSync(pidMarkerFile, `${process.pid}\n`);
+  } catch {
+    // The marker is advisory; failing to write it must not block the backup.
+  }
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
@@ -561,6 +664,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           sizeBytes,
           prunedCount,
+          sweptOrphans,
         };
       } catch (error) {
         if (existsSync(backupFile)) {
@@ -974,6 +1078,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       backupFile,
       sizeBytes,
       prunedCount,
+      sweptOrphans,
     };
   } catch (error) {
     await writer.abort();
@@ -985,6 +1090,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
     throw error;
   } finally {
+    try { unlinkSync(pidMarkerFile); } catch { /* ignore */ }
     await closeSql();
   }
 }
@@ -1030,5 +1136,6 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 export function formatDatabaseBackupResult(result: RunDatabaseBackupResult): string {
   const size = formatBackupSize(result.sizeBytes);
   const pruned = result.prunedCount > 0 ? `; pruned ${result.prunedCount} old backup(s)` : "";
-  return `${result.backupFile} (${size}${pruned})`;
+  const swept = result.sweptOrphans.length > 0 ? `; swept ${result.sweptOrphans.length} crash-orphaned file(s)` : "";
+  return `${result.backupFile} (${size}${pruned}${swept})`;
 }

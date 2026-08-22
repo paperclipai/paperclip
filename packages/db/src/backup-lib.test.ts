@@ -1,10 +1,17 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  pruneOldBackups,
+  runDatabaseBackup,
+  runDatabaseRestore,
+  sweepBackupOrphans,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -74,7 +81,169 @@ describe("createBufferedTextFileWriter", () => {
   });
 });
 
+describe("sweepBackupOrphans", () => {
+  it("removes stale working .sql files and header-only .sql.gz files, sparing healthy and fresh files", () => {
+    const backupDir = createTempDir("paperclip-backup-orphan-sweep-");
+    const nowMs = Date.UTC(2026, 6, 31, 22, 0, 0);
+    const staleTime = new Date(nowMs - 3 * 60 * 60 * 1000);
+    const freshTime = new Date(nowMs - 5 * 60 * 1000);
+
+    const orphanSql = path.join(backupDir, "paperclip-20260731-152400.sql");
+    const orphanGz = path.join(backupDir, "paperclip-20260731-152400.sql.gz");
+    const healthyGz = path.join(backupDir, "paperclip-20260731-092400.sql.gz");
+    const liveSql = path.join(backupDir, "paperclip-20260731-215500.sql");
+    const freshTinyGz = path.join(backupDir, "paperclip-20260731-215500.sql.gz");
+    const foreignSql = path.join(backupDir, "other-20260731-152400.sql");
+
+    fs.writeFileSync(orphanSql, "x".repeat(4096));
+    fs.writeFileSync(orphanGz, "x".repeat(20));
+    fs.writeFileSync(healthyGz, "x".repeat(4096));
+    fs.writeFileSync(liveSql, "x".repeat(64));
+    fs.writeFileSync(freshTinyGz, "x".repeat(20));
+    fs.writeFileSync(foreignSql, "x".repeat(16));
+    for (const file of [orphanSql, orphanGz, healthyGz, foreignSql]) {
+      fs.utimesSync(file, staleTime, staleTime);
+    }
+    for (const file of [liveSql, freshTinyGz]) {
+      fs.utimesSync(file, freshTime, freshTime);
+    }
+
+    const swept = sweepBackupOrphans(backupDir, "paperclip", { nowMs });
+
+    expect([...swept].sort()).toEqual([orphanGz, orphanSql].sort());
+    expect(fs.existsSync(orphanSql)).toBe(false);
+    expect(fs.existsSync(orphanGz)).toBe(false);
+    expect(fs.existsSync(healthyGz)).toBe(true);
+    // Files younger than the age guard may belong to a live run.
+    expect(fs.existsSync(liveSql)).toBe(true);
+    expect(fs.existsSync(freshTinyGz)).toBe(true);
+    // Files outside the configured prefix are not ours to remove.
+    expect(fs.existsSync(foreignSql)).toBe(true);
+  });
+
+  it("returns an empty list for a missing directory", () => {
+    const missingDir = path.join(os.tmpdir(), "paperclip-missing-sweep-dir");
+    expect(sweepBackupOrphans(missingDir, "paperclip")).toEqual([]);
+  });
+
+  it("never sweeps files whose pid marker names a live process, even past the age guard", () => {
+    const backupDir = createTempDir("paperclip-backup-sweep-live-pid-");
+    const nowMs = Date.UTC(2026, 6, 31, 22, 0, 0);
+    const staleTime = new Date(nowMs - 3 * 60 * 60 * 1000);
+
+    // A stalled-but-alive run in another process: working .sql plus a tiny
+    // in-progress .sql.gz, both idle past the age guard, marker pid = us.
+    const stalledSql = path.join(backupDir, "paperclip-20260731-152400.sql");
+    const stalledGz = path.join(backupDir, "paperclip-20260731-152400.sql.gz");
+    const marker = path.join(backupDir, "paperclip-20260731-152400.sql.pid");
+    fs.writeFileSync(stalledSql, "x".repeat(4096));
+    fs.writeFileSync(stalledGz, "x".repeat(20));
+    fs.writeFileSync(marker, `${process.pid}\n`);
+    for (const file of [stalledSql, stalledGz, marker]) {
+      fs.utimesSync(file, staleTime, staleTime);
+    }
+
+    expect(sweepBackupOrphans(backupDir, "paperclip", { nowMs })).toEqual([]);
+    expect(fs.existsSync(stalledSql)).toBe(true);
+    expect(fs.existsSync(stalledGz)).toBe(true);
+    expect(fs.existsSync(marker)).toBe(true);
+  });
+
+  it("sweeps orphans and their marker once the owning process is gone", () => {
+    const backupDir = createTempDir("paperclip-backup-sweep-dead-pid-");
+    const nowMs = Date.UTC(2026, 6, 31, 22, 0, 0);
+    const staleTime = new Date(nowMs - 3 * 60 * 60 * 1000);
+
+    // A real-but-exited pid, so liveness is checked against the OS.
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+    const orphanSql = path.join(backupDir, "paperclip-20260731-152400.sql");
+    const orphanGz = path.join(backupDir, "paperclip-20260731-152400.sql.gz");
+    const marker = path.join(backupDir, "paperclip-20260731-152400.sql.pid");
+    const strayMarker = path.join(backupDir, "paperclip-20260730-092400.sql.pid");
+    fs.writeFileSync(orphanSql, "x".repeat(4096));
+    fs.writeFileSync(orphanGz, "x".repeat(20));
+    fs.writeFileSync(marker, `${deadPid}\n`);
+    fs.writeFileSync(strayMarker, "not-a-pid\n");
+    for (const file of [orphanSql, orphanGz, marker, strayMarker]) {
+      fs.utimesSync(file, staleTime, staleTime);
+    }
+
+    const swept = sweepBackupOrphans(backupDir, "paperclip", { nowMs });
+
+    expect([...swept].sort()).toEqual([marker, orphanGz, orphanSql, strayMarker].sort());
+    expect(fs.readdirSync(backupDir)).toEqual([]);
+  });
+});
+
+describe("pruneOldBackups", () => {
+  it("ignores bare .sql working files so an orphan cannot displace the last good weekly backup", () => {
+    const backupDir = createTempDir("paperclip-backup-prune-orphan-");
+    const realDateNow = Date.now;
+    Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+    const goodGz = path.join(backupDir, "paperclip-test-20260317-120000.sql.gz");
+    const orphanSql = path.join(backupDir, "paperclip-test-20260319-120000.sql");
+
+    try {
+      fs.writeFileSync(goodGz, "x".repeat(4096));
+      fs.writeFileSync(orphanSql, "x".repeat(64));
+      // Same ISO week (2026-W12), orphan newer than the good backup.
+      fs.utimesSync(goodGz, new Date("2026-03-17T12:00:00Z"), new Date("2026-03-17T12:00:00Z"));
+      fs.utimesSync(orphanSql, new Date("2026-03-19T12:00:00Z"), new Date("2026-03-19T12:00:00Z"));
+
+      const pruned = pruneOldBackups(
+        backupDir,
+        { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        "paperclip-test",
+      );
+
+      expect(pruned).toBe(0);
+      expect(fs.existsSync(goodGz)).toBe(true);
+      expect(fs.existsSync(orphanSql)).toBe(true);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+});
+
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it(
+    "sweeps crash-orphaned partial files before backing up",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-sweep-");
+
+      const orphanSql = path.join(backupDir, "paperclip-test-20260729-152400.sql");
+      const orphanGz = path.join(backupDir, "paperclip-test-20260729-152400.sql.gz");
+      const healthyGz = path.join(backupDir, "paperclip-test-20260730-152400.sql.gz");
+      fs.writeFileSync(orphanSql, "x".repeat(617));
+      fs.writeFileSync(orphanGz, "x".repeat(20));
+      fs.writeFileSync(healthyGz, "x".repeat(4096));
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      fs.utimesSync(orphanSql, threeDaysAgo, threeDaysAgo);
+      fs.utimesSync(orphanGz, threeDaysAgo, threeDaysAgo);
+      fs.utimesSync(healthyGz, twoDaysAgo, twoDaysAgo);
+
+      const result = await runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-test",
+      });
+
+      expect([...result.sweptOrphans].sort()).toEqual([orphanGz, orphanSql].sort());
+      expect(fs.existsSync(orphanSql)).toBe(false);
+      expect(fs.existsSync(orphanGz)).toBe(false);
+      expect(fs.existsSync(healthyGz)).toBe(true);
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(result.prunedCount).toBe(0);
+      // The run's own pid ownership marker must not outlive the run.
+      expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".pid"))).toEqual([]);
+    },
+    30_000,
+  );
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {
@@ -88,9 +257,10 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
 
       try {
-        fs.writeFileSync(janNewest, "jan-newest");
-        fs.writeFileSync(janOlder, "jan-older");
-        fs.writeFileSync(decOld, "dec-old");
+        // Plausible backup sizes so the crash-orphan sweep leaves the fixtures alone.
+        fs.writeFileSync(janNewest, "jan-newest".padEnd(2048, "x"));
+        fs.writeFileSync(janOlder, "jan-older".padEnd(2048, "x"));
+        fs.writeFileSync(decOld, "dec-old".padEnd(2048, "x"));
 
         fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
         fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));

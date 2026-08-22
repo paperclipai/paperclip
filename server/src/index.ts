@@ -687,6 +687,10 @@ export async function startServer(): Promise<StartedServer> {
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
       Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
   );
+  const databaseBackupMinSizeBytes = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_DB_BACKUP_MIN_SIZE_BYTES) || 1024,
+  );
   const databaseBackupAlertFile =
     process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
     resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
@@ -739,6 +743,7 @@ export async function startServer(): Promise<StartedServer> {
           backupFile: result.backupFile,
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
+          sweptOrphans: result.sweptOrphans,
           backupDir: config.databaseBackupDir,
           retention,
           trigger,
@@ -784,6 +789,7 @@ export async function startServer(): Promise<StartedServer> {
           enabled: config.databaseBackupEnabled,
           backupDir: config.databaseBackupDir,
           maxAgeHours: databaseBackupMaxAgeHours,
+          minSizeBytes: databaseBackupMinSizeBytes,
           alertFile: databaseBackupAlertFile,
           alertFiles: databaseBackupAlertFiles,
         }
