@@ -38,7 +38,7 @@ describe("git workspace sync", () => {
     }
   });
 
-  it("delegates every host-side full-tree enumeration to the registered scheduler", async () => {
+  it("delegates metadata probes and full-tree enumeration to the registered scheduler", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scheduler-hook-"));
     cleanupDirs.push(rootDir);
     const repo = await createRepo(rootDir);
@@ -46,10 +46,11 @@ describe("git workspace sync", () => {
     const operations: string[] = [];
     setExpensiveWorkspaceGitExecutor(async (input) => {
       operations.push(input.operation);
-      return await runLocalGit(input.localDir, [...input.args], {
+      const result = await execFile("git", ["-C", input.localDir, ...input.args], {
         timeout: input.timeout,
         maxBuffer: input.maxBuffer,
       });
+      return { stdout: result.stdout, stderr: result.stderr };
     });
 
     const snapshot = await readGitWorkspaceSnapshot(repo);
@@ -57,6 +58,9 @@ describe("git workspace sync", () => {
     expect(snapshot?.overlayPaths).toContain("untracked.txt");
     expect(operations.sort()).toEqual([
       "adapter_sync.deleted_files",
+      "adapter_sync.git",
+      "adapter_sync.git",
+      "adapter_sync.git",
       "adapter_sync.ignored_files",
       "adapter_sync.overlay_diff",
       "adapter_sync.untracked_files",

@@ -69,15 +69,27 @@ export async function runLocalGit(
   options: {
     timeout?: number;
     maxBuffer?: number;
+    operation?: string;
   } = {},
 ): Promise<GitCommandResult> {
+  const timeout = options.timeout ?? 15_000;
+  const maxBuffer = options.maxBuffer ?? 1024 * 128;
+  if (expensiveWorkspaceGitExecutor) {
+    return await expensiveWorkspaceGitExecutor({
+      localDir,
+      args,
+      operation: options.operation ?? "adapter_sync.git",
+      timeout,
+      maxBuffer,
+    });
+  }
   return await new Promise<GitCommandResult>((resolve, reject) => {
     execFile(
       "git",
       ["-C", localDir, ...args],
       {
-        timeout: options.timeout ?? 15_000,
-        maxBuffer: options.maxBuffer ?? 1024 * 128,
+        timeout,
+        maxBuffer,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -99,16 +111,7 @@ async function runExpensiveWorkspaceGit(
   operation: string,
   options: { timeout: number; maxBuffer: number },
 ): Promise<GitCommandResult> {
-  if (expensiveWorkspaceGitExecutor) {
-    return await expensiveWorkspaceGitExecutor({
-      localDir,
-      args,
-      operation,
-      timeout: options.timeout,
-      maxBuffer: options.maxBuffer,
-    });
-  }
-  return await runLocalGit(localDir, args, options);
+  return await runLocalGit(localDir, args, { ...options, operation });
 }
 
 export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWorkspaceSnapshot | null> {
