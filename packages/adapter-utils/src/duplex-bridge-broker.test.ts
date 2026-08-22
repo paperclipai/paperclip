@@ -461,6 +461,83 @@ describe("duplex bridge broker request limits", () => {
     expect(broker.state).toBe("open");
   });
 
+  it("substitutes a bounded terminal response for an oversized response and keeps the channel open", async () => {
+    const harness = createFakeChannelHarness();
+    const { telemetry, capture } = createTelemetryCapture();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      telemetry,
+      // A small frame bound makes a legitimately large response body exceed the
+      // bound, so the test exercises the encode guard without a megabyte body.
+      maxFrameBytes: 1000,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // Two requests are in flight at the same time. One resolves with a normal
+    // body; the other resolves with a body that pushes the response frame over
+    // the bound. The host produced both results, so both requests reached the
+    // host.
+    harness.feed(requestFrame("small-1", "POST"));
+    harness.feed(requestFrame("big-1", "POST"));
+
+    const smallForward = harness.forwards.find((entry) => entry.id === "small-1" && !entry.settled);
+    if (!smallForward) throw new Error("The broker did not forward the small request.");
+    smallForward.settled = true;
+    smallForward.resolve({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ok: true }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const bigForward = harness.forwards.find((entry) => entry.id === "big-1" && !entry.settled);
+    if (!bigForward) throw new Error("The broker did not forward the big request.");
+    bigForward.settled = true;
+    bigForward.resolve({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: "y".repeat(2000) }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The other in-flight request delivered its full response, unaffected by the
+    // oversized one.
+    expect(harness.responses).toHaveLength(2);
+    const delivered = harness.responses.find((entry) => entry.id === "small-1")!;
+    expect(delivered.status).toBe(200);
+    expect(delivered.outcome).toBe("completed");
+    expect(JSON.parse(delivered.body)).toEqual({ ok: true });
+
+    // The oversized response became one bounded terminal response marked
+    // indeterminate and non-retryable, so a caller does not retry a possible
+    // mutation. The broker did not write the oversized frame.
+    const terminal = harness.responses.find((entry) => entry.id === "big-1")!;
+    expect(terminal.status).toBe(502);
+    expect(terminal.outcome).toBe("indeterminate");
+    expect(terminal.headers["x-paperclip-bridge-outcome"]).toBe("indeterminate");
+    expect(JSON.parse(terminal.body)).toEqual({
+      error: "upstream response too large to deliver",
+      outcome: "indeterminate",
+      retryable: false,
+    });
+
+    // The oversized body never crossed the wire. The broker did not truncate it or
+    // pass it through.
+    const writtenText = harness.responses.map((entry) => encodeDuplexFrame(entry)).join("");
+    expect(writtenText).not.toContain("yyyy");
+
+    // The broker recorded the oversized request as an error outcome, never a loss.
+    // The channel stays open and the run does not fail.
+    const errorSpans = capture.spans.filter((span) => span.dimensions.outcome === "error");
+    expect(errorSpans).toHaveLength(1);
+    expect(errorSpans[0]!.name).toBe(DUPLEX_SPAN_REQUEST);
+    expect(broker.lossRecord).toBeNull();
+    expect(broker.state).toBe("open");
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
   it("maps a forward rejection for a safe method to a retryable response", async () => {
     const harness = createFakeChannelHarness();
     const broker = createDuplexBridgeBroker({

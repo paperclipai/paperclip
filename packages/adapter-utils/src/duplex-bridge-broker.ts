@@ -43,10 +43,12 @@
 
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 import {
+  DEFAULT_MAX_DUPLEX_FRAME_BYTES,
   DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES,
   DUPLEX_FRAME_VERSION,
   DuplexFrameDecoder,
   encodeDuplexFrame,
+  encodeDuplexFrameChecked,
   type DuplexFrame,
   type DuplexRequestFrame,
   type DuplexResponseFrame,
@@ -376,9 +378,12 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_DUPLEX_BROKER_HEARTBEAT_INTERVAL_MS;
   const closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_DUPLEX_BROKER_CLOSE_TIMEOUT_MS;
   const now = options.now ?? (() => Date.now());
-  const decoder = new DuplexFrameDecoder(
-    options.maxFrameBytes ? { maxFrameBytes: options.maxFrameBytes } : undefined,
-  );
+  // The one frame size bound the broker enforces on both sides. The decoder
+  // rejects an inbound frame over this bound, and the encode guard refuses to
+  // write an outbound frame over it. Encode and decode share one value, so a
+  // frame the broker writes always decodes on the peer.
+  const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_DUPLEX_FRAME_BYTES;
+  const decoder = new DuplexFrameDecoder({ maxFrameBytes });
 
   let state: DuplexBrokerState = "opening";
   let stopped = false;
@@ -491,14 +496,29 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     options.telemetry?.recordLoss(lossClass, BROKER_LOSS_REASON_TO_TYPED[reason] ?? "other");
   };
 
-  const writeFrame = (frame: DuplexFrame): boolean => {
+  const writeLine = (line: string): boolean => {
     try {
-      channel.write(encodeDuplexFrame(frame));
+      channel.write(line);
       return true;
     } catch (error) {
       recordLoss("stream_failure", errorMessage(error));
       return false;
     }
+  };
+
+  const writeFrame = (frame: DuplexFrame): boolean => {
+    // Enforce the frame size bound on every broker write. A control frame and the
+    // bounded terminal responses are always small, so the guard is a no-op for
+    // them. The large-response path checks the size before it builds a frame and
+    // substitutes a bounded terminal response, so an oversized frame never reaches
+    // this guard. Drop an oversized frame here without a channel loss; a broker-
+    // built frame over the bound is a defect, not a transport failure.
+    const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
+    if (!encoded.ok) {
+      options.logger?.(`Duplex broker dropped an oversized ${frame.type} frame.`);
+      return false;
+    }
+    return writeLine(encoded.line);
   };
 
   const respond = (
@@ -516,12 +536,6 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // Do not write on a lost or closed channel. The gateway answers its own
     // outstanding request on loss, so a late write would go to a dead channel.
     if (state !== "open") return;
-    // Record the request span for the delivered request. The span carries the
-    // latency and the outcome only; no route, query, body, or token rides it.
-    options.telemetry?.recordRequest({
-      latencyMs: now() - entry.dispatchStartMs,
-      outcome: telemetryOutcome,
-    });
     const frame: DuplexResponseFrame = {
       version: DUPLEX_FRAME_VERSION,
       type: "response",
@@ -531,7 +545,43 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       body: result.body ?? "",
       outcome,
     };
-    writeFrame(frame);
+    const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
+    if (!encoded.ok) {
+      // The host produced a result, but the response frame exceeds the size
+      // bound. Do not write the oversized frame and do not record a channel loss.
+      // The request reached the host and may have changed state, so the caller
+      // must not retry a possible mutation. Send a bounded, non-retryable terminal
+      // response marked `indeterminate` in its place. Record the request outcome
+      // as an error, never a loss. The channel stays open for every other request.
+      options.telemetry?.recordRequest({
+        latencyMs: now() - entry.dispatchStartMs,
+        outcome: "error",
+      });
+      writeFrame({
+        version: DUPLEX_FRAME_VERSION,
+        type: "response",
+        id,
+        status: 502,
+        headers: {
+          "content-type": "application/json",
+          "x-paperclip-bridge-outcome": "indeterminate",
+        },
+        body: JSON.stringify({
+          error: "upstream response too large to deliver",
+          outcome: "indeterminate",
+          retryable: false,
+        }),
+        outcome: "indeterminate",
+      });
+      return;
+    }
+    // Record the request span for the delivered request. The span carries the
+    // latency and the outcome only; no route, query, body, or token rides it.
+    options.telemetry?.recordRequest({
+      latencyMs: now() - entry.dispatchStartMs,
+      outcome: telemetryOutcome,
+    });
+    writeLine(encoded.line);
   };
 
   const respondSaturated = (id: string, retryable: boolean): void => {

@@ -147,6 +147,15 @@ export type DuplexDecodeResult =
   | { ok: true; frame: DuplexFrame }
   | { ok: false; error: DuplexProtocolError };
 
+/**
+ * One size-checked encode result: one line, or a `frame_too_large` error. The
+ * shape mirrors {@link DuplexDecodeResult}, so the encode side reports the
+ * over-limit case as a typed outcome, not an exception.
+ */
+export type DuplexEncodeResult =
+  | { ok: true; line: string }
+  | { ok: false; error: { code: "frame_too_large"; message: string } };
+
 const RESPONSE_OUTCOMES: ReadonlySet<string> = new Set<DuplexResponseOutcome>([
   "completed",
   "indeterminate",
@@ -185,6 +194,30 @@ function idWithinLimit(id: string): boolean {
  */
 export function encodeDuplexFrame(frame: DuplexFrame): string {
   return `${JSON.stringify(frame)}\n`;
+}
+
+/**
+ * Encode one frame to a single line and enforce the maximum frame size. The
+ * function measures the encoded JSON in bytes, without the trailing newline, so
+ * it matches the decoder bound exactly: a line the decoder accepts encodes, and a
+ * line the decoder rejects returns a `frame_too_large` result. The function never
+ * throws; it reports the over-limit case as a typed outcome.
+ *
+ * The size bound follows request and response bodies the host does not control,
+ * so an over-limit frame is an expected condition, not a programming error. Every
+ * write path that can carry a large body uses this function, so no path emits a
+ * frame the peer decoder rejects. The bound applies to every frame type; the
+ * guard is a no-op for a small control frame.
+ */
+export function encodeDuplexFrameChecked(
+  frame: DuplexFrame,
+  maxFrameBytes: number = DEFAULT_MAX_DUPLEX_FRAME_BYTES,
+): DuplexEncodeResult {
+  const json = JSON.stringify(frame);
+  if (Buffer.byteLength(json, "utf8") > maxFrameBytes) {
+    return { ok: false, error: { code: "frame_too_large", message: "frame exceeds the maximum size" } };
+  }
+  return { ok: true, line: `${json}\n` };
 }
 
 /**

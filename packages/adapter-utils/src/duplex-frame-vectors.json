@@ -414,5 +414,55 @@
         }
       ]
     }
+  ],
+  "encodeDescription": "Encode-bound vectors. Each codec copy runs the size-checked encode against the frame with the maxFrameBytes limit, then asserts the same result. An ok result must decode back to the same frame. This proves both copies enforce the same bound on encode.",
+  "encodeVectors": [
+    {
+      "name": "encode-within-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 1,
+        "type": "request",
+        "id": "req-enc-1",
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {},
+        "body": "small"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-control-frame-never-rejected",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 1,
+        "type": "heartbeat"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-over-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 1,
+        "type": "response",
+        "id": "req-enc-2",
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "outcome": "completed"
+      },
+      "expected": {
+        "ok": false,
+        "error": "frame_too_large"
+      }
+    }
   ]
 }

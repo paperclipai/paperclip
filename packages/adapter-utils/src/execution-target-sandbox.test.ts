@@ -4842,8 +4842,13 @@ interface EmbeddedDecodeResult {
 
 // The names the embedded codec source declares. A test wraps the source and
 // reads these names back.
+type EmbeddedEncodeResult =
+  | { ok: true; line: string }
+  | { ok: false; error: { code: string; message: string } };
+
 interface EmbeddedCodec {
   encodeDuplexFrame: (frame: unknown) => string;
+  encodeDuplexFrameChecked: (frame: unknown, maxFrameBytes?: number) => EmbeddedEncodeResult;
   decodeDuplexLine: (line: string | Buffer) => EmbeddedDecodeResult;
   DuplexFrameDecoder: new (options?: { maxFrameBytes?: number }) => {
     push: (chunk: Buffer) => EmbeddedDecodeResult[];
@@ -4864,10 +4869,18 @@ interface DuplexFrameVector {
   expected: ExpectedVectorResult[];
 }
 
+interface DuplexEncodeVector {
+  name: string;
+  maxFrameBytes: number;
+  frame: unknown;
+  expected: { ok: true } | { ok: false; error: string };
+}
+
 interface DuplexFrameFixture {
   frameVersion: number;
   defaultMaxFrameBytes: number;
   vectors: DuplexFrameVector[];
+  encodeVectors: DuplexEncodeVector[];
 }
 
 describe("sandbox duplex gateway", () => {
@@ -5086,7 +5099,7 @@ describe("sandbox duplex gateway", () => {
 
   it("embedded gateway codec passes every vector in the shared fixture", async () => {
     const codecFactory = new Function(
-      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES };`,
+      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, encodeDuplexFrameChecked, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES };`,
     ) as unknown as () => EmbeddedCodec;
     const codec = codecFactory();
 
@@ -5152,6 +5165,38 @@ describe("sandbox duplex gateway", () => {
       expect(decoded.ok).toBe(true);
       expect(decoded.frame).toEqual(want.frame);
     }
+
+    // The embedded copy enforces the same encode bound as the host copy. It runs
+    // every shared encode vector and matches the expected result, so both copies
+    // reject the same oversized frame with the same `frame_too_large` code.
+    expect(fixture.encodeVectors.length).toBeGreaterThanOrEqual(3);
+    const encodeFailures: string[] = [];
+    for (const vector of fixture.encodeVectors) {
+      const result = codec.encodeDuplexFrameChecked(vector.frame, vector.maxFrameBytes);
+      if (result.ok !== vector.expected.ok) {
+        encodeFailures.push(`${vector.name}: ok=${result.ok}, want ${vector.expected.ok}`);
+        continue;
+      }
+      if (result.ok) {
+        if (!result.line.endsWith("\n") || result.line.slice(0, -1).includes("\n")) {
+          encodeFailures.push(`${vector.name}: line is not exactly one frame line`);
+          continue;
+        }
+        const decoded = codec.decodeDuplexLine(result.line.slice(0, -1));
+        if (!decoded.ok) {
+          encodeFailures.push(`${vector.name}: an ok encode did not decode back`);
+          continue;
+        }
+        try {
+          expect(decoded.frame).toEqual(vector.frame);
+        } catch {
+          encodeFailures.push(`${vector.name}: decoded frame does not match`);
+        }
+      } else if (!vector.expected.ok && result.error.code !== vector.expected.error) {
+        encodeFailures.push(`${vector.name}: error ${result.error.code} != ${vector.expected.error}`);
+      }
+    }
+    expect(encodeFailures).toEqual([]);
   });
 
   it("returns the same HTTP response as the file gateway for a forwarded request", async () => {
@@ -5212,6 +5257,55 @@ describe("sandbox duplex gateway", () => {
     });
     const indeterminate = await indeterminatePromise;
     expect(indeterminate.status).toBe(409);
+
+    await gateway.stop();
+  }, 20000);
+
+  it("fails a request that exceeds the frame size bound with a local 413 and keeps the channel open", async () => {
+    const token = "duplex-token-oversize-request";
+    // Raise the body limit above the frame bound, so `readBody` accepts the body
+    // and the encode guard is the only limit the request meets. The default frame
+    // bound is 1,000,000 bytes.
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_MAX_BODY_BYTES: "3000000",
+    });
+
+    // A body over the frame bound makes the request frame exceed the bound. The
+    // gateway must fail this one local request with a clean 413 and forward no
+    // frame.
+    const oversizeBody = JSON.stringify({ body: "x".repeat(1_100_000) });
+    const tooLarge = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: oversizeBody,
+    });
+    expect(tooLarge.status).toBe(413);
+    await expect(tooLarge.json()).resolves.toEqual({ error: "request_too_large" });
+
+    // The oversized request forwarded no frame. It never left the gateway.
+    expect(gateway.frames.filter((frame) => frame.type === "request")).toHaveLength(0);
+    // The gateway did not lose the channel: no close frame and the process runs.
+    expect(gateway.frames.some((frame) => frame.type === "close")).toBe(false);
+
+    // The channel stays open, so a normal request after the oversized one still
+    // forwards and completes.
+    const okPromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: requestFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ok: true }),
+      outcome: "completed",
+    });
+    const okResponse = await okPromise;
+    expect(okResponse.status).toBe(200);
+    await expect(okResponse.json()).resolves.toEqual({ ok: true });
 
     await gateway.stop();
   }, 20000);

@@ -1774,6 +1774,15 @@ function encodeDuplexFrame(frame) {
   return JSON.stringify(frame) + "\\n";
 }
 
+function encodeDuplexFrameChecked(frame, maxFrameBytes) {
+  const limit = maxFrameBytes != null ? maxFrameBytes : DEFAULT_MAX_DUPLEX_FRAME_BYTES;
+  const json = JSON.stringify(frame);
+  if (Buffer.byteLength(json, "utf8") > limit) {
+    return { ok: false, error: { code: "frame_too_large", message: "frame exceeds the maximum size" } };
+  }
+  return { ok: true, line: json + "\\n" };
+}
+
 function decodeDuplexLine(line) {
   const text = typeof line === "string" ? line : line.toString("utf8");
   let parsed;
@@ -1915,9 +1924,10 @@ class DuplexFrameDecoder {
  * Return the exact zero-dependency codec source the generated duplex gateway
  * embeds. A test runs every fixture vector against this source, so it proves the
  * embedded copy decodes the same bytes as the host codec. The source declares
- * `encodeDuplexFrame`, `decodeDuplexLine`, `DuplexFrameDecoder`,
- * `DUPLEX_FRAME_VERSION`, and `DEFAULT_MAX_DUPLEX_FRAME_BYTES`, but exports none
- * of them; a caller wraps it to read those names.
+ * `encodeDuplexFrame`, `encodeDuplexFrameChecked`, `decodeDuplexLine`,
+ * `DuplexFrameDecoder`, `DUPLEX_FRAME_VERSION`, and
+ * `DEFAULT_MAX_DUPLEX_FRAME_BYTES`, but exports none of them; a caller wraps it to
+ * read those names.
  */
 export function getSandboxDuplexGatewayCodecSource(): string {
   return DUPLEX_GATEWAY_CODEC_SOURCE;
@@ -2273,6 +2283,16 @@ function runDuplexGateway() {
         headers: normalizeHeaders(req.headers),
         body: requestBody,
       };
+      // Enforce the frame size bound on encode. When the request body makes the
+      // frame exceed the bound, fail this one local request with a clean 413. Do
+      // not write the frame and do not trigger loss. The frame never leaves the
+      // gateway, so no other in-flight request is affected and the channel stays
+      // open.
+      const encodedRequest = encodeDuplexFrameChecked(requestFrame);
+      if (!encodedRequest.ok) {
+        writeJsonResponse(res, 413, { error: "request_too_large" });
+        return;
+      }
       const response = await new Promise((resolve) => {
         const timer = setTimeout(() => {
           if (pending.delete(requestId)) {
@@ -2284,7 +2304,7 @@ function runDuplexGateway() {
           }
         }, responseTimeoutMs);
         pending.set(requestId, { resolve: resolve, timer: timer });
-        writeFrame(requestFrame);
+        process.stdout.write(encodedRequest.line);
       });
       res.statusCode = typeof response.status === "number" ? response.status : 200;
       for (const [key, value] of Object.entries(response.headers || {})) {
