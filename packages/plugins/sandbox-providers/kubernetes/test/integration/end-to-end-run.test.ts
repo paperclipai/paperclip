@@ -9,7 +9,7 @@
  *        docker tag alpine:3.20 localhost/paperclip-agent:latest
  *        kind load docker-image localhost/paperclip-agent:latest --name paperclip
  *   3. For the sandbox-cr backend test, the agent-sandbox controller must be installed:
- *        kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/install.yaml
+ *        kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/sandbox.yaml
  *      And a tini-bearing image pre-loaded (e.g. the same localhost/paperclip-agent:latest
  *      if it includes /usr/bin/tini and /bin/sh).
  *   4. Set the env var and run:
@@ -21,9 +21,10 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import plugin from "../../src/plugin.js";
-import { createKubeConfig } from "../../src/kube-client.js";
+import { apiServerUrl, createKubeConfig } from "../../src/kube-client.js";
 import { execInPod } from "../../src/pod-exec.js";
-import { sandboxCrOrchestrator } from "../../src/sandbox-cr-orchestrator.js";
+import { resolveSandboxApiVersion } from "../../src/sandbox-api-version.js";
+import { makeSandboxCrOrchestrator } from "../../src/sandbox-cr-orchestrator.js";
 import { deleteNamespaceIfExists, kubectl, readKindKubeconfig } from "./_kind-harness.js";
 
 const NAMESPACE = "paperclip-spike-e2e";
@@ -111,7 +112,7 @@ describe("plugin-kubernetes end-to-end", () => {
     180_000,
   );
 
-  // ── Sandbox-CR backend (alpha, requires agent-sandbox controller) ──────────
+  // ── Sandbox-CR backend (requires the agent-sandbox controller) ─────────────
 
   it.runIf(process.env.RUN_K8S_INTEGRATION_TESTS === "1")(
     "[sandbox-cr backend] acquireLease creates Sandbox CR + supporting resources; pod becomes Ready; execInPod runs echo hello; releaseLease deletes CR",
@@ -152,6 +153,11 @@ describe("plugin-kubernetes end-to-end", () => {
       const kc = createKubeConfig({ inCluster: false, kubeconfig });
       const { makeKubeClients } = await import("../../src/kube-client.js");
       const clients = makeKubeClients(kc);
+      // Address the CR through whichever version this cluster's controller
+      // serves, exactly as the plugin itself did when it created the object.
+      const sandboxCrOrchestrator = makeSandboxCrOrchestrator(
+        await resolveSandboxApiVersion(clients, apiServerUrl(kc)),
+      );
 
       await sandboxCrOrchestrator.waitForCompletion(
         clients,

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { KubeConfig } from "@kubernetes/client-node";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
@@ -23,7 +24,12 @@ import {
   type KubernetesProviderConfig,
   type KubernetesLeaseMetadata,
 } from "./types.js";
-import { createKubeConfig, makeKubeClients } from "./kube-client.js";
+import {
+  apiServerUrl,
+  createKubeConfig,
+  makeKubeClients,
+  type KubeClients,
+} from "./kube-client.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
@@ -33,9 +39,15 @@ import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
-  sandboxCrOrchestrator,
+  makeSandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
+import {
+  isSandboxApiVersion,
+  resolveSandboxApiVersion,
+  SANDBOX_GROUP,
+  type SandboxApiVersion,
+} from "./sandbox-api-version.js";
 import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
@@ -119,6 +131,28 @@ const readySandboxesByLease = new Set<string>();
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
 
+/**
+ * The Sandbox API version to address an EXISTING lease's CR with.
+ *
+ * Prefer the version recorded on the lease at acquisition: a worker that
+ * restarts mid-lease, or an operator who upgrades the agent-sandbox controller
+ * while a lease is live, must still address the object through the version it
+ * was created with rather than whatever discovery now prefers. Leases acquired
+ * before this field existed carry nothing, so fall back to discovery — the
+ * cluster still serves the version those CRs were created with (agent-sandbox
+ * keeps `v1alpha1` served and convertible), and discovery is cached per API
+ * server, so this costs at most one request per worker.
+ */
+async function resolveLeaseSandboxApiVersion(
+  clients: KubeClients,
+  kc: KubeConfig,
+  leaseMetadata: Record<string, unknown> | null | undefined,
+): Promise<SandboxApiVersion> {
+  const recorded = leaseMetadata?.sandboxApiVersion;
+  if (isSandboxApiVersion(recorded)) return recorded;
+  return await resolveSandboxApiVersion(clients, apiServerUrl(kc));
+}
+
 // The workspace remote dir is the confinement root for native file sync. It is
 // recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
 // it so a sync can never run without a concrete root to confine every sandbox
@@ -169,12 +203,15 @@ async function resolveSyncPodExec(
     kubeconfig: config.kubeconfig,
   });
   const clients = makeKubeClients(kc);
+  const orchestrator = makeSandboxCrOrchestrator(
+    await resolveLeaseSandboxApiVersion(clients, kc, lease.metadata),
+  );
   const timeoutMs = config.podActivityDeadlineSec * 1000;
 
   // Ensure the Sandbox pod is Ready (wait only the first time for this lease),
   // then resolve the pod name — mirrors the onEnvironmentExecute resolution.
   if (!readySandboxesByLease.has(lease.providerLeaseId)) {
-    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
+    await orchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
       timeoutMs,
       pollMs: 2000,
     });
@@ -184,7 +221,7 @@ async function resolveSyncPodExec(
   const podName =
     typeof lease.metadata?.podName === "string" && lease.metadata.podName
       ? lease.metadata.podName
-      : await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId);
+      : await orchestrator.findPod(clients, namespace, lease.providerLeaseId);
   if (!podName) {
     throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
   }
@@ -332,6 +369,18 @@ const plugin = definePlugin({
     });
     const clients = makeKubeClients(kc);
 
+    // Which Sandbox API version this cluster serves, resolved once per API
+    // server and reused for the lease's whole lifetime (recorded on the lease
+    // metadata below). Resolved BEFORE any tenant resource is created so a
+    // cluster without the agent-sandbox controller fails with "install the
+    // controller, or set backend: job" instead of leaving a provisioned
+    // namespace behind. Null for the `job` backend, which addresses `batch/v1`
+    // and must never require the CRD to be present.
+    const sandboxApiVersion: SandboxApiVersion | null =
+      config.backend === "sandbox-cr"
+        ? await resolveSandboxApiVersion(clients, apiServerUrl(kc))
+        : null;
+
     // Ensure the tenant namespace and all its RBAC / network policy resources
     // exist before we try to create the Job.
     const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
@@ -366,11 +415,16 @@ const plugin = definePlugin({
     );
 
     // Pick the orchestrator and build the appropriate manifest based on backend.
-    const isSandboxCrBackend = config.backend === "sandbox-cr";
-    const orchestrator = isSandboxCrBackend ? sandboxCrOrchestrator : jobOrchestrator;
+    // Branching on `sandboxApiVersion` rather than the backend string keeps the
+    // resolved version and the sandbox-cr path inseparable: there is no way to
+    // reach a CR call site without one.
+    const orchestrator = sandboxApiVersion
+      ? makeSandboxCrOrchestrator(sandboxApiVersion)
+      : jobOrchestrator;
 
-    const manifest = isSandboxCrBackend
+    const manifest = sandboxApiVersion
       ? buildSandboxCrManifest({
+          apiVersion: sandboxApiVersion,
           namespace,
           sandboxName: jobName,
           adapterType: effectiveAdapterType,
@@ -407,8 +461,10 @@ const plugin = definePlugin({
         runId: params.runId,
         workloadName: jobName,
         ownerReference: {
-          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
-          kind: isSandboxCrBackend ? "Sandbox" : "Job",
+          // An ownerReference is matched on apiVersion + kind + uid, so it has
+          // to name the version the object was created through.
+          apiVersion: sandboxApiVersion ? `${SANDBOX_GROUP}/${sandboxApiVersion}` : "batch/v1",
+          kind: sandboxApiVersion ? "Sandbox" : "Job",
           name: jobName,
           uid: ownerUid,
           controller: false,
@@ -437,8 +493,8 @@ const plugin = definePlugin({
       namespace,
       secretName,
       runId: params.runId,
-      ownerKind: isSandboxCrBackend ? "Sandbox" : "Job",
-      ownerApiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+      ownerKind: sandboxApiVersion ? "Sandbox" : "Job",
+      ownerApiVersion: sandboxApiVersion ? `${SANDBOX_GROUP}/${sandboxApiVersion}` : "batch/v1",
       ownerName: jobName,
       ownerUid,
       bootstrapToken,
@@ -454,6 +510,10 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // Recorded so every later call on this lease addresses the CR through the
+      // version it was created with, even if the worker restarts or the
+      // controller is upgraded mid-lease.
+      sandboxApiVersion: sandboxApiVersion ?? undefined,
       scopedNetworkPolicyName,
       scopedNetworkEgress,
       // Native file sync streams over a pod exec; only the sandbox-cr backend
@@ -493,10 +553,17 @@ const plugin = definePlugin({
     });
     const clients = makeKubeClients(kc);
 
+    const sandboxApiVersion =
+      leaseBackend === "sandbox-cr"
+        ? await resolveLeaseSandboxApiVersion(clients, kc, params.leaseMetadata)
+        : null;
+
     const check = await checkLeaseResumable(clients, {
       namespace,
       name: params.providerLeaseId,
-      backend: leaseBackend,
+      ...(sandboxApiVersion
+        ? { backend: "sandbox-cr" as const, sandboxApiVersion }
+        : { backend: "job" as const }),
       readyTimeoutMs: RESUME_READY_TIMEOUT_MS,
       pollMs: RESUME_READY_POLL_MS,
     });
@@ -529,6 +596,9 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+      // Carried forward so the resumed lease keeps addressing the CR through
+      // the version it was created with (see resolveLeaseSandboxApiVersion).
+      sandboxApiVersion: sandboxApiVersion ?? undefined,
       scopedNetworkPolicyName:
         typeof params.leaseMetadata?.scopedNetworkPolicyName === "string"
           ? params.leaseMetadata.scopedNetworkPolicyName
@@ -590,7 +660,11 @@ const plugin = definePlugin({
         ? (params.leaseMetadata.backend as "sandbox-cr" | "job")
         : config.backend;
     const releaseOrchestrator =
-      leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
+      leaseBackend === "sandbox-cr"
+        ? makeSandboxCrOrchestrator(
+            await resolveLeaseSandboxApiVersion(clients, kc, params.leaseMetadata),
+          )
+        : jobOrchestrator;
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -642,12 +716,19 @@ const plugin = definePlugin({
     });
     const clients = makeKubeClients(kc);
 
+    const sandboxApiVersion =
+      leaseBackend === "sandbox-cr"
+        ? await resolveLeaseSandboxApiVersion(clients, kc, params.leaseMetadata)
+        : null;
+
     // Forcibly delete everything acquireLease created (Sandbox CR / Job, pod,
     // per-run Secret). 404s are success — destroy must be idempotent.
     await destroyLeaseResources(clients, {
       namespace,
       name: params.providerLeaseId,
-      backend: leaseBackend,
+      ...(sandboxApiVersion
+        ? { backend: "sandbox-cr" as const, sandboxApiVersion }
+        : { backend: "job" as const }),
       podName,
       secretName,
     });
@@ -695,9 +776,14 @@ const plugin = definePlugin({
 
     if (leaseBackend === "sandbox-cr") {
       // ── Sandbox-CR backend ──────────────────────────────────────────────────
+      // 0. Address the CR through the version it was created with.
       // 1. Ensure the Sandbox pod is Ready (wait only on first exec for this lease).
       // 2. Exec the command into the running pod.
       // 3. Return exec result directly (no log scraping needed).
+
+      const sandboxCrOrchestrator = makeSandboxCrOrchestrator(
+        await resolveLeaseSandboxApiVersion(clients, kc, lease.metadata),
+      );
 
       let podName =
         typeof lease.metadata?.podName === "string" && lease.metadata.podName
