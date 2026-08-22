@@ -86,7 +86,7 @@ services:
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         DOCKER_GID: ${DOCKER_GID:-992}
-        APP_VERSION: ${PAPERCLIP_IMAGE_VERSION:-v2026.707.0}
+#        APP_VERSION: ${PAPERCLIP_IMAGE_VERSION:-v2026.707.0}
     container_name: paperclip
     restart: unless-stopped
     depends_on:
@@ -105,6 +105,8 @@ services:
       - "${PAPERCLIP_PORT:-3100}:3100"
     volumes:
       - ${PAPERCLIP_DATA_DIR:-./data/docker-paperclip}:/paperclip
+    cap_add:
+      - SYS_ADMIN
     environment:
       HOST: 0.0.0.0
       PORT: 3100
