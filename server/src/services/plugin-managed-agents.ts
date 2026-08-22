@@ -17,6 +17,10 @@ import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  activeReviewInstructionPolicyService,
+  isActiveReviewInstructionMutationDenied,
+} from "./active-review-instruction-policy.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
@@ -331,6 +335,16 @@ export function pluginManagedAgentService(
     const variables = await optionsForInstructionVariables(companyId);
     const declared = declaredInstructionFiles(declaration, variables);
     if (!declared) return agent;
+
+    try {
+      await activeReviewInstructionPolicyService(db).assertManagedInstructionMutationAllowed({
+        companyId,
+        targetAgentId: agent.id,
+      });
+    } catch (err) {
+      if (isActiveReviewInstructionMutationDenied(err)) return agent;
+      throw err;
+    }
 
     const materialized = await instructions.materializeManagedBundle(
       agent,

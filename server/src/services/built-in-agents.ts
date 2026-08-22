@@ -11,6 +11,10 @@ import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrig
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  activeReviewInstructionPolicyService,
+  isActiveReviewInstructionMutationDenied,
+} from "./active-review-instruction-policy.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import {
@@ -969,10 +973,25 @@ export function builtInAgentService(db: Db) {
       changedFiles: changedFileList(currentFiles, bundle.instructions.files),
     });
 
-    const shouldWrite =
+    let shouldWrite =
       mode === "reset"
       || currentState.stockStatus === "missing"
       || currentState.stockStatus === "stock_update_available";
+    if (shouldWrite) {
+      try {
+        await activeReviewInstructionPolicyService(db).assertManagedInstructionMutationAllowed({
+          companyId: agent.companyId,
+          targetAgentId: agent.id,
+        });
+      } catch (err) {
+        if (isActiveReviewInstructionMutationDenied(err)) {
+          shouldWrite = false;
+        } else {
+          throw err;
+        }
+      }
+    }
+
     if (!shouldWrite) {
       if (!binding && currentHash === stock) {
         await upsertManagedResourceBinding({

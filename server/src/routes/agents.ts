@@ -170,6 +170,7 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+import { activeReviewInstructionPolicyService } from "../services/active-review-instruction-policy.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -2056,6 +2057,10 @@ export function agentRoutes(
       targetAgent,
       [agentInstructionsChangeTargetKey(targetAgent.id)],
     );
+    await activeReviewInstructionPolicyService(db).assertManagedInstructionMutationAllowed({
+      companyId: targetAgent.companyId,
+      targetAgentId: targetAgent.id,
+    });
   }
 
   async function assertCanApplyAgentProfileChange(

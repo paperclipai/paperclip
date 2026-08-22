@@ -156,6 +156,14 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  applyPinnedReviewRuntimePolicyToAdapterConfig,
+  activeReviewInstructionPolicyService,
+  isActiveReviewIssue,
+  readPinnedReviewRuntimePolicy,
+  writeReviewRuntimePolicySnapshot,
+} from "./active-review-instruction-policy.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
@@ -5938,6 +5946,10 @@ export async function buildPaperclipWakePayload(input: {
       ? input.contextSnapshot.unresolvedBlockerSummaries
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
+    reviewRuntimePolicy: (() => {
+      const policy = parseObject(input.contextSnapshot.reviewRuntimePolicy);
+      return Object.keys(policy).length > 0 ? policy : null;
+    })(),
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
@@ -14406,6 +14418,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSkillTest;
     }
+    let pinnedReviewRuntimePolicy = issueContext
+      ? readPinnedReviewRuntimePolicy(issueContext.executionWorkspaceSettings)
+      : null;
+    if (
+      issueContext
+      && isActiveReviewIssue({
+        status: issueContext.status,
+        title: issueContext.title,
+        originKind: issueContext.originKind,
+        executionState: issueContext.executionState,
+      })
+    ) {
+      try {
+        const exported = await agentInstructionsService().exportFiles(agent);
+        let snapshotRootPath: string | null = pinnedReviewRuntimePolicy?.snapshotRootPath ?? null;
+        if (!pinnedReviewRuntimePolicy) {
+          try {
+            snapshotRootPath = await writeReviewRuntimePolicySnapshot({
+              companyId: agent.companyId,
+              agentId: agent.id,
+              issueId: issueContext.id,
+              files: exported.files,
+            });
+          } catch (error) {
+            logger.warn(
+              { err: error, companyId: agent.companyId, agentId: agent.id, issueId: issueContext.id },
+              "Failed to write immutable review instruction snapshot; pinning policy flags only",
+            );
+          }
+          pinnedReviewRuntimePolicy = await activeReviewInstructionPolicyService(db).pinReviewRuntimePolicy({
+            companyId: agent.companyId,
+            issueId: issueContext.id,
+            agentId: agent.id,
+            files: exported.files,
+            snapshotRootPath,
+            entryFile: exported.entryFile,
+          });
+        }
+        context.reviewRuntimePolicy = {
+          contentHash: pinnedReviewRuntimePolicy.contentHash,
+          requireTrustedSourceTrust: pinnedReviewRuntimePolicy.requireTrustedSourceTrust,
+          repositoryAccessRequired: pinnedReviewRuntimePolicy.repositoryAccessRequired,
+          immutable: true,
+        };
+      } catch (error) {
+        logger.warn(
+          { err: error, companyId: agent.companyId, agentId: agent.id, issueId: issueContext.id },
+          "Failed to pin immutable review runtime policy",
+        );
+      }
+    } else {
+      delete context.reviewRuntimePolicy;
+    }
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
@@ -14790,6 +14855,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    if (pinnedReviewRuntimePolicy?.snapshotRootPath) {
+      runtimeConfig = applyPinnedReviewRuntimePolicyToAdapterConfig(
+        runtimeConfig,
+        pinnedReviewRuntimePolicy,
+      );
+    }
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
