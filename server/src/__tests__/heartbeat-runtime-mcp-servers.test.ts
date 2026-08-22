@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   toolAccessAuditEvents,
   toolApplications,
+  toolCatalogEntries,
   toolConnectionInstalls,
   toolConnections,
   toolMcpGateways,
@@ -21,7 +22,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
+import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -239,5 +241,167 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       reasonCode: "permitted_connections_not_installed",
       details: expect.objectContaining({ runId, deliveredServerCount: 0 }),
     });
+  });
+
+  it("uses canonical gateway profile semantics before injecting installed gateways", async () => {
+    const [company] = await db.insert(companies).values({
+      name: `Managed gateway installs ${randomUUID()}`,
+      issuePrefix: `MG${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Managed Gateway Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `managed-gateway-${randomUUID().slice(0, 8)}`,
+      name: "Managed Gateway App",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const connections = await db.insert(toolConnections).values([
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Installed gateway connection",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "active",
+        enabled: true,
+        healthStatus: "healthy",
+        config: { url: "https://installed-gateway.example.test/mcp" },
+      },
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Uninstalled gateway connection",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "active",
+        enabled: true,
+        healthStatus: "healthy",
+        config: { url: "https://uninstalled-gateway.example.test/mcp" },
+      },
+    ]).returning();
+    await db.insert(toolCatalogEntries).values(connections.map((connection, index) => ({
+      companyId: company!.id,
+      applicationId: application!.id,
+      connectionId: connection.id,
+      entryKind: "tool" as const,
+      name: `gateway-tool-${index}`,
+      toolName: index === 0 ? "installed_tool" : "uninstalled_tool",
+      versionHash: randomUUID(),
+    })));
+    const profiles = await db.insert(toolProfiles).values([
+      {
+        companyId: company!.id,
+        profileKey: `gateway:allow-excluding-uninstalled:${randomUUID()}`,
+        name: "Allow installed tools",
+        defaultAction: "allow" as const,
+      },
+      {
+        companyId: company!.id,
+        profileKey: `gateway:namespaced-uninstalled:${randomUUID()}`,
+        name: "Allow one uninstalled tool",
+        defaultAction: "deny" as const,
+      },
+      {
+        companyId: company!.id,
+        profileKey: `gateway:mixed-allow:${randomUUID()}`,
+        name: "Allow both connections by default",
+        defaultAction: "allow" as const,
+      },
+      {
+        companyId: company!.id,
+        profileKey: `gateway:mixed-deny:${randomUUID()}`,
+        name: "Explicitly allow both connections",
+        defaultAction: "deny" as const,
+      },
+    ]).returning();
+    const uninstalledGatewayToolName = [
+      `mcp.${application!.applicationKey}`,
+      `${connections[1]!.id.replaceAll("-", "").slice(0, 8)}:uninstalled-tool`,
+    ].join("-");
+    await db.insert(toolProfileEntries).values([
+      {
+        companyId: company!.id,
+        profileId: profiles[0]!.id,
+        selectorType: "connection",
+        effect: "exclude",
+        connectionId: connections[1]!.id,
+      },
+      {
+        companyId: company!.id,
+        profileId: profiles[1]!.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: uninstalledGatewayToolName,
+      },
+      ...connections.map((connection) => ({
+        companyId: company!.id,
+        profileId: profiles[3]!.id,
+        selectorType: "connection" as const,
+        effect: "include" as const,
+        connectionId: connection.id,
+      })),
+    ]);
+    const gateways = await db.insert(toolMcpGateways).values(profiles.map((profile, index) => ({
+      companyId: company!.id,
+      name: `${profile.name} gateway`,
+      slug: `gateway-${index}-${randomUUID().slice(0, 8)}`,
+      profileId: profile.id,
+      status: "active" as const,
+    }))).returning();
+    await db.insert(toolProfileBindings).values(gateways.map((gateway, index) => ({
+      companyId: company!.id,
+      profileId: profiles[index]!.id,
+      targetType: "gateway" as const,
+      targetId: gateway.id,
+    })));
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connections[0]!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      contextSnapshot: {},
+    });
+    const config = await createManagedMcpRunConfig({
+      db,
+      agent: agent!,
+      runId,
+      config: {},
+      projectId: null,
+      issueId: null,
+    });
+
+    expect(config?.gateways).toHaveLength(3);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[0]!.id)).toBe(true);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[1]!.id)).toBe(false);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[2]!.id)).toBe(true);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[3]!.id)).toBe(true);
+
+    const mixedGateway = config?.gateways.find((gateway) => gateway.id === gateways[2]!.id);
+    const visibleTools = await createToolGatewayService(db).listToolsForNamedGateway({
+      gatewayId: mixedGateway!.id,
+      bearerToken: mixedGateway!.bearerToken,
+    });
+    expect(visibleTools.some((tool) => tool.connectionId === connections[0]!.id)).toBe(true);
+    expect(visibleTools.some((tool) => tool.connectionId === connections[1]!.id)).toBe(false);
+    await expect(createToolGatewayService(db).executeTool({
+      sessionToken: mixedGateway!.bearerToken,
+      gatewayId: mixedGateway!.id,
+      tool: uninstalledGatewayToolName,
+    })).rejects.toMatchObject({ status: 403, reasonCode: "installation_required" });
   });
 });

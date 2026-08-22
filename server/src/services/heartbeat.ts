@@ -65,6 +65,7 @@ import {
   routines,
   toolMcpGateways,
   toolMcpGatewayTokens,
+  toolConnectionInstalls,
   toolConnections,
   toolProfiles,
   workspaceOperations,
@@ -3518,7 +3519,29 @@ function gatewayAppliesToRun(input: {
   return true;
 }
 
-async function createManagedMcpRunConfig(input: {
+async function gatewayConnectionIds(input: {
+  db: Db;
+  companyId: string;
+  agentId: string;
+  runId: string;
+  issueId: string | null;
+  projectId: string | null;
+  gateway: typeof toolMcpGateways.$inferSelect;
+}): Promise<Set<string>> {
+  const managedRuntimeConnectionId = readNonEmptyString(input.gateway.metadata?.managedRuntimeConnectionId);
+  if (managedRuntimeConnectionId) return new Set([managedRuntimeConnectionId]);
+  const service = createToolGatewayService(input.db);
+  return new Set(await service.listAccessibleConnectionIdsForGatewayContext({
+    companyId: input.companyId,
+    gatewayId: input.gateway.id,
+    agentId: input.agentId,
+    runId: input.runId,
+    issueId: input.issueId,
+    projectId: input.projectId,
+  }));
+}
+
+export async function createManagedMcpRunConfig(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType">;
   runId: string;
@@ -3539,12 +3562,37 @@ async function createManagedMcpRunConfig(input: {
     ))
     .orderBy(asc(toolMcpGateways.name));
 
-  const gateways = rows.filter((gateway) => gatewayAppliesToRun({
+  const installRows = await input.db
+    .select({ connectionId: toolConnectionInstalls.connectionId })
+    .from(toolConnectionInstalls)
+    .where(and(
+      eq(toolConnectionInstalls.companyId, input.agent.companyId),
+      sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${input.agent.companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${input.agent.id}))`,
+    ));
+  const installedConnectionIds = new Set(installRows.map((install) => install.connectionId));
+
+  const applicableGateways = rows.filter((gateway) => gatewayAppliesToRun({
     gateway,
     agentId: input.agent.id,
     projectId: input.projectId,
     issueId: input.issueId,
   }));
+  const gateways = (await Promise.all(applicableGateways.map(async (gateway) => ({
+    gateway,
+    connectionIds: await gatewayConnectionIds({
+      db: input.db,
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      runId: input.runId,
+      issueId: input.issueId,
+      projectId: input.projectId,
+      gateway,
+    }),
+  }))))
+    .filter(({ connectionIds }) =>
+      connectionIds.size > 0
+      && [...connectionIds].some((connectionId) => installedConnectionIds.has(connectionId)))
+    .map(({ gateway }) => gateway);
   if (gateways.length === 0) return null;
 
   const service = createToolGatewayService(input.db);
