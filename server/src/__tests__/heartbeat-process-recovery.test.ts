@@ -694,6 +694,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    executionPolicy?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -796,6 +797,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
         monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+        executionPolicy: input.executionPolicy ?? null,
         responsibleUserId: "responsible-user",
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
@@ -1449,6 +1451,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+    const monitorDeadline = new Date("2099-03-19T00:00:00.000Z");
     const { companyId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
@@ -1460,7 +1463,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await db
       .update(issues)
-      .set({ monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z") })
+      .set({
+        monitorNextCheckAt: monitorDeadline,
+        executionPolicy: { monitor: { nextCheckAt: monitorDeadline.toISOString() } },
+      })
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
 
     const heartbeat = heartbeatService(db);
@@ -2507,17 +2513,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
     });
+    if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
+    const settledContinuationRun = await waitForRunToSettle(heartbeat, continuationRun.id, 5_000);
+    expect(settledContinuationRun?.status).toBe("failed");
 
-    const blockedIssue = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+    const blockedIssue = await waitForValue(
+      () => db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
         return issue?.status === "blocked" ? issue : null;
-      })
+      }),
+      5_000,
     );
     expect(blockedIssue?.status).toBe("blocked");
     expect(blockedIssue?.executionRunId).toBeNull();
     expect(blockedIssue?.checkoutRunId).toBeNull();
-    if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -2530,10 +2539,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
-    const comments = await waitForValue(async () => {
-      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-      return rows.length > 0 ? rows : null;
-    });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
@@ -7614,11 +7620,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("preserves a persisted issue monitor as the durable external-wait path", async () => {
+    const monitorDeadline = new Date("2099-03-19T01:00:00.000Z");
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       livenessState: "advanced",
-      monitorNextCheckAt: new Date("2026-03-19T01:00:00.000Z"),
+      monitorNextCheckAt: monitorDeadline,
+      executionPolicy: {
+        monitor: { nextCheckAt: monitorDeadline.toISOString() },
+      },
       resultJson: {
         summary: "Waiting for the deploy to settle; monitor is scheduled.",
         externalWait: { kind: "issue_monitor", durable: true },
@@ -7633,7 +7643,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
-    expect(issue?.monitorNextCheckAt?.toISOString()).toBe("2026-03-19T01:00:00.000Z");
+    expect(issue?.monitorNextCheckAt?.toISOString()).toBe(monitorDeadline.toISOString());
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);

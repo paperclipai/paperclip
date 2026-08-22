@@ -150,19 +150,27 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import {
+  executionLockAcquisitionFields,
+  issueService,
+} from "./issues.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  buildIssueBlockersResolvedWakeIdempotencyKey,
+  findExistingIssueBlockersResolvedWake,
+} from "./issue-dependency-wakeups.js";
+import {
   readManagedWorktreeInstanceOwnership,
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
-import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
+  activeTypedIssueMonitorDeadline,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
@@ -9613,7 +9621,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
-      hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasPersistedMonitor: issue
+        ? activeTypedIssueMonitorDeadline(issue) !== null
+        : false,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
@@ -10069,9 +10079,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await tx
         .update(issues)
         .set({
-          executionRunId: queuedRun.id,
+          ...executionLockAcquisitionFields(queuedRun.id, now),
           executionAgentNameKey: normalizeAgentNameKey(agent.name),
-          executionLockedAt: now,
           updatedAt: now,
         })
         .where(eq(issues.id, issue.id));
@@ -10337,9 +10346,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .update(issues)
           .set({
             checkoutRunId: null,
-            executionRunId: retryRun.id,
+            ...executionLockAcquisitionFields(retryRun.id, now),
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
-            executionLockedAt: now,
             updatedAt: now,
           })
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
@@ -11839,9 +11847,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
-            executionRunId: scheduledRun.id,
+            ...executionLockAcquisitionFields(scheduledRun.id, now),
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
-            executionLockedAt: now,
             ...(detachWorkspaceFromIssue
               ? {
                   executionWorkspaceId: null,
@@ -12755,9 +12762,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await db
         .update(issues)
         .set({
-          executionRunId: claimed.id,
+          ...executionLockAcquisitionFields(claimed.id, claimedAt),
           executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
           updatedAt: claimedAt,
         })
         .where(
@@ -17352,9 +17358,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
-            executionRunId: newRun.id,
+            ...executionLockAcquisitionFields(newRun.id, now),
             executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
             updatedAt: now,
           })
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
@@ -17383,7 +17388,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-      const issueHasPersistedMonitor = Boolean(issue.monitorNextCheckAt);
+      const issueHasPersistedMonitor = activeTypedIssueMonitorDeadline(issue) !== null;
       const findExplicitBlockerPath = () =>
         tx
           .select({ id: issueRelations.issueId })
@@ -17512,9 +17517,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
-            executionRunId: queuedRun.id,
+            ...executionLockAcquisitionFields(queuedRun.id, now),
             executionAgentNameKey: recoveryAgentNameKey,
-            executionLockedAt: now,
             updatedAt: now,
           })
           .where(eq(issues.id, issue.id));
@@ -17674,9 +17678,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await tx
         .update(issues)
         .set({
-          executionRunId: queuedRun.id,
+          ...executionLockAcquisitionFields(queuedRun.id, now),
           executionAgentNameKey: recoveryAgentNameKey,
-          executionLockedAt: now,
           updatedAt: now,
         })
         .where(eq(issues.id, issue.id));
@@ -18295,13 +18298,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .from(agents)
                 .where(eq(agents.id, legacyRun.agentId))
                 .then((rows) => rows[0] ?? null);
+              const now = new Date();
               await tx
                 .update(issues)
                 .set({
-                  executionRunId: legacyRun.id,
+                  ...executionLockAcquisitionFields(legacyRun.id, now),
                   executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
-                  executionLockedAt: new Date(),
-                  updatedAt: new Date(),
+                  updatedAt: now,
                 })
                 .where(eq(issues.id, issue.id));
             }

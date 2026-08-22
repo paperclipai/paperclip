@@ -87,7 +87,7 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { activeTypedIssueMonitorDeadline, buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -777,8 +777,41 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+export const ISSUE_EXECUTION_LOCK_TTL_MS = 5 * 60 * 1000;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
+
+function issueExecutionLockMonitorNextCheckAt(now: Date) {
+  return new Date(now.getTime() + ISSUE_EXECUTION_LOCK_TTL_MS);
+}
+
+export function executionLockAcquisitionFields(
+  runId: string,
+  now: Date,
+  activeReviewMonitorDeadline: Date | null = null,
+) {
+  const lockDeadline = issueExecutionLockMonitorNextCheckAt(now);
+  const monitorNextCheckAt = activeReviewMonitorDeadline && activeReviewMonitorDeadline.getTime() < lockDeadline.getTime()
+    ? activeReviewMonitorDeadline
+    : lockDeadline;
+
+  return {
+    executionRunId: runId,
+    executionLockedAt: now,
+    monitorNextCheckAt,
+    monitorWakeRequestedAt: null,
+  };
+}
+
+function heartbeatRunIsDead(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "updatedAt"> | null,
+  now = new Date(),
+) {
+  if (!run) return true;
+  if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+  const updatedAt = run.updatedAt instanceof Date ? run.updatedAt : new Date(run.updatedAt);
+  return Number.isFinite(updatedAt.getTime()) && updatedAt.getTime() <= now.getTime() - ISSUE_EXECUTION_LOCK_TTL_MS;
+}
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -5195,7 +5228,26 @@ export function issueService(db: Db) {
   }
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
-    return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
+    const run = await dbOrTx
+      .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return heartbeatRunIsDead(run);
+  }
+
+  async function lockHeartbeatRuns(runIds: Array<string | null>, dbOrTx: any = db) {
+    const ids = [...new Set(runIds.filter((id): id is string => Boolean(id)))].sort();
+    if (ids.length === 0) return;
+
+    // Liveness is checked immediately after this lock. Without it, a live run
+    // can refresh updatedAt between the check and the issue lock mutation.
+    await dbOrTx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, ids))
+      .orderBy(asc(heartbeatRuns.id))
+      .for("update");
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -5212,6 +5264,8 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, input.issueId))
@@ -5239,18 +5293,18 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      const stale = heartbeatRunIsDead(existingRun);
+      const actorLive = actorRun && !heartbeatRunIsDead(actorRun);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
@@ -5260,8 +5314,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
+          ...executionLockAcquisitionFields(input.actorRunId, now, activeTypedIssueMonitorDeadline(lockedIssue, now)),
           updatedAt: now,
         })
         .where(
@@ -5309,19 +5362,23 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
       const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.actorRunId))
         .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
+      if (!actorRun || heartbeatRunIsDead(actorRun)) return null;
 
       const now = new Date();
+      const issue = await tx
+        .select({ executionPolicy: issues.executionPolicy, executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
       const adopted = await tx
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
+          ...executionLockAcquisitionFields(input.actorRunId, now, activeTypedIssueMonitorDeadline(issue ?? {}, now)),
           updatedAt: now,
         })
         .where(
@@ -5362,11 +5419,11 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!heartbeatRunIsDead(run)) return false;
 
       const updated = await tx
         .update(issues)
@@ -5410,22 +5467,22 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!heartbeatRunIsDead(run)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        if (!heartbeatRunIsDead(executionRun)) return false;
       }
 
       const updated = await tx
@@ -8134,9 +8191,14 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+    ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, executionPolicy: issues.executionPolicy, executionState: issues.executionState })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -8144,6 +8206,7 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
+      const initialActiveMonitorDeadline = activeTypedIssueMonitorDeadline(issueCompany, now);
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
         activePauseHold &&
@@ -8192,7 +8255,9 @@ export function issueService(db: Db) {
           assigneeAgentId: agentId,
           assigneeUserId: null,
           checkoutRunId,
-          executionRunId: checkoutRunId,
+          ...(checkoutRunId
+            ? executionLockAcquisitionFields(checkoutRunId, now, initialActiveMonitorDeadline)
+            : { executionRunId: null }),
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -8220,6 +8285,8 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -8238,7 +8305,9 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             checkoutRunId,
-            executionRunId: checkoutRunId,
+            ...(checkoutRunId
+              ? executionLockAcquisitionFields(checkoutRunId, now, activeTypedIssueMonitorDeadline(current, now))
+              : { executionRunId: null }),
             updatedAt: new Date(),
           })
           .where(
@@ -8291,9 +8360,8 @@ export function issueService(db: Db) {
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
             checkoutRunId,
-            executionRunId: checkoutRunId,
+            ...executionLockAcquisitionFields(checkoutRunId, now, activeTypedIssueMonitorDeadline(current, now)),
             executionAgentNameKey: null,
-            executionLockedAt: now,
             status: "in_progress",
             updatedAt: now,
           };
@@ -8485,7 +8553,12 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
+    release: async (
+      id: string,
+      actorAgentId?: string,
+      actorRunId?: string | null,
+      options: { force?: boolean } = {},
+    ) =>
       db.transaction(async (tx) => {
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
@@ -8497,10 +8570,11 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
-        if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+        if (!options.force && actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
           throw conflict("Only assignee can release issue");
         }
         if (
+          !options.force &&
           actorAgentId &&
           existing.status === "in_progress" &&
           existing.assigneeAgentId === actorAgentId &&
@@ -8513,6 +8587,24 @@ export function issueService(db: Db) {
               issueId: existing.id,
               assigneeAgentId: existing.assigneeAgentId,
               checkoutRunId: existing.checkoutRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
+        if (options.force && (existing.checkoutRunId || existing.executionRunId)) {
+          await lockHeartbeatRuns([existing.checkoutRunId, existing.executionRunId], tx);
+          const [checkoutDead, executionDead] = await Promise.all([
+            existing.checkoutRunId ? isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx) : Promise.resolve(true),
+            existing.executionRunId ? isTerminalOrMissingHeartbeatRun(existing.executionRunId, tx) : Promise.resolve(true),
+          ]);
+          if (!checkoutDead || !executionDead) {
+            throw conflict("Issue run ownership conflict", {
+              issueId: existing.id,
+              status: existing.status,
+              assigneeAgentId: existing.assigneeAgentId,
+              checkoutRunId: existing.checkoutRunId,
+              executionRunId: existing.executionRunId,
+              actorAgentId: actorAgentId ?? null,
               actorRunId: actorRunId ?? null,
             });
           }
