@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  decideEmbeddedPostgresStart,
   inspectPostmasterLock,
   probeProcessLiveness,
   readPostmasterLockFile,
@@ -184,5 +185,71 @@ describe("inspectPostmasterLock", () => {
 
     const status = inspectPostmasterLock(dataDir, { probeLiveness: () => "alive" });
     expect(status.status).toBe("indeterminate");
+  });
+});
+
+describe("decideEmbeddedPostgresStart", () => {
+  const dataDir = "/var/paperclip/db";
+  const configuredPort = 54329;
+
+  it("adopts our own cluster on the configured port", () => {
+    expect(
+      decideEmbeddedPostgresStart({
+        configuredPort,
+        detectedPort: 54330,
+        identity: { kind: "ours" },
+        dataDir,
+      }),
+    ).toEqual({ action: "adopt", port: configuredPort });
+  });
+
+  it("starts on the configured port when nothing holds it", () => {
+    // The probe failed because the socket was refused: nothing is listening, so
+    // the directory really is free.
+    expect(
+      decideEmbeddedPostgresStart({
+        configuredPort,
+        detectedPort: configuredPort,
+        identity: { kind: "unidentified" },
+        dataDir,
+      }),
+    ).toEqual({ action: "start", port: configuredPort });
+  });
+
+  it("refuses to fall back to another port when the holder could not be identified", () => {
+    // The bug this guards. A connect timeout means something accepted the socket
+    // and then went quiet -- our own postmaster replaying WAL looks exactly like
+    // this. The old code read the failed probe as "nothing is there", took the
+    // free port detectPort offered, and started a second postmaster over the
+    // same data directory, which fatals with "pre-existing shared memory block
+    // is still in use". A fallback changes the port, never the directory, so an
+    // unidentified holder has to be fatal rather than routed around.
+    const decision = decideEmbeddedPostgresStart({
+      configuredPort,
+      detectedPort: 54330,
+      identity: { kind: "unidentified" },
+      dataDir,
+    });
+
+    expect(decision.action).toBe("refuse");
+    expect(decision).toMatchObject({
+      reason: expect.stringContaining("could not be identified"),
+    });
+    expect(decision).toMatchObject({ reason: expect.stringContaining(dataDir) });
+  });
+
+  it("still falls back when the holder is proven to be a different cluster", () => {
+    // Ownership established in the other direction: somebody else's cluster has
+    // the port, so our directory is unowned and moving ports starts nothing over
+    // live data. This path has to keep working -- refusing here would break every
+    // machine that runs an unrelated PostgreSQL on the same port.
+    expect(
+      decideEmbeddedPostgresStart({
+        configuredPort,
+        detectedPort: 54330,
+        identity: { kind: "other-cluster", dataDir: "/somewhere/else" },
+        dataDir,
+      }),
+    ).toEqual({ action: "start", port: 54330 });
   });
 });

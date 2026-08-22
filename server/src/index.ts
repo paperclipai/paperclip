@@ -15,6 +15,8 @@ import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
   canonicalizeDataDirectory,
+  decideEmbeddedPostgresStart,
+  type PortHolderIdentity,
   createDb,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
@@ -473,7 +475,7 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
-      let adoptedExistingServer = false;
+      let portHolder: PortHolderIdentity = { kind: "unidentified" };
       try {
         // Wait the cluster out before concluding the data directory is unowned.
         // A postmaster replaying WAL answers 57P03, and getPostgresDataDirectory
@@ -492,37 +494,52 @@ export async function startServer(): Promise<StartedServer> {
           connectTimeoutSeconds: EMBEDDED_POSTGRES_PROBE_CONNECT_TIMEOUT_SECONDS,
         });
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
-        if (
-          typeof actualDataDir === "string" &&
-          canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir)
-        ) {
-          port = configuredPort;
-          adoptedExistingServer = true;
+        if (typeof actualDataDir !== "string") {
+          // Answered readiness but would not name its directory. Unidentified is
+          // not the same as unowned, so this must not license a port fallback.
           logger.warn(
-            `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
+            `A PostgreSQL server holds port ${configuredPort} but would not report its data directory`,
           );
+        } else if (canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir)) {
+          portHolder = { kind: "ours" };
         } else {
-          logger.warn(
-            { actualDataDir },
-            "A PostgreSQL server holds the configured port but serves a different data directory; starting our cluster on another port",
-          );
+          portHolder = { kind: "other-cluster", dataDir: actualDataDir };
         }
       } catch (err) {
-        // Only "absent" and "stale" reach here, and both mean the lock file
-        // records no live owner. Nothing answering the probe therefore means the
-        // directory really is free to start over.
+        // Two very different failures land here, and only the port check below
+        // tells them apart: ECONNREFUSED, where nothing is listening and the
+        // directory really is free, and CONNECT_TIMEOUT, where something IS
+        // there and merely would not finish the handshake — possibly our own
+        // postmaster replaying WAL. Concluding "free to start over" from this
+        // alone is what kept the original bug reachable from this path.
         logger.info(
           { err },
-          `No PostgreSQL server reachable on port ${configuredPort}; starting the embedded cluster`,
+          `Could not identify any PostgreSQL server on port ${configuredPort}`,
+        );
+      }
+
+      const startDecision = decideEmbeddedPostgresStart({
+        configuredPort,
+        detectedPort:
+          portHolder.kind === "ours" ? configuredPort : await detectPort(configuredPort),
+        identity: portHolder,
+        dataDir,
+      });
+      if (startDecision.action === "refuse") throw new Error(startDecision.reason);
+      port = startDecision.port;
+      const adoptedExistingServer = startDecision.action === "adopt";
+      if (adoptedExistingServer) {
+        logger.warn(
+          `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
+        );
+      } else if (port !== configuredPort) {
+        logger.warn(
+          { actualDataDir: portHolder.kind === "other-cluster" ? portHolder.dataDir : undefined },
+          `Embedded PostgreSQL port is held by a different cluster; using next free port (requestedPort=${configuredPort}, selectedPort=${port})`,
         );
       }
 
       if (!adoptedExistingServer) {
-        const detectedPort = await detectPort(configuredPort);
-        if (detectedPort !== configuredPort) {
-          logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
-        }
-        port = detectedPort;
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         const createEmbeddedPostgres = () => new EmbeddedPostgres({
           databaseDir: dataDir,

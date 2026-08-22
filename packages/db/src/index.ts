@@ -24,9 +24,12 @@ export {
   probeProcessLiveness,
   canonicalizeDataDirectory,
   inspectPostmasterLock,
+  decideEmbeddedPostgresStart,
   type PostmasterLockFile,
   type PostmasterLockStatus,
   type ProcessLiveness,
+  type PortHolderIdentity,
+  type EmbeddedPostgresStartDecision,
 } from "./embedded-postgres-lock.js";
 export {
   getEmbeddedPostgresTestSupport,

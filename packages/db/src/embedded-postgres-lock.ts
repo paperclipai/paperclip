@@ -187,6 +187,69 @@ export function inspectPostmasterLock(
   };
 }
 
+/**
+ * What the server holding the configured port turned out to be.
+ *
+ * `unidentified` covers two situations that look different but license the same
+ * decision: the identify probe failed outright -- a refused connection, or a
+ * connect timeout from a postmaster that accepted the socket and then went quiet
+ * replaying WAL -- and a server that answered readiness but would not name its
+ * data directory.
+ */
+export type PortHolderIdentity =
+  | { kind: "ours" }
+  | { kind: "other-cluster"; dataDir: string }
+  | { kind: "unidentified" };
+
+export type EmbeddedPostgresStartDecision =
+  | { action: "adopt"; port: number }
+  | { action: "start"; port: number }
+  | { action: "refuse"; reason: string };
+
+/**
+ * Decide where -- or whether -- to start a postmaster for `dataDir`.
+ *
+ * The rule: a port fallback is safe only once the holder of the configured port
+ * has been positively identified as a *different* cluster, because the fallback
+ * changes the port but not the data directory. An unidentified holder may be our
+ * own postmaster still replaying WAL, and starting a second one over its
+ * directory fatals on the shared memory block at best.
+ *
+ * "Nothing answered the probe" is therefore not the same claim as "the directory
+ * is free" -- only a genuinely idle port proves that. Callers pass what
+ * detectPort reported so the two can be told apart here rather than at the call
+ * site, where conflating them is what kept the original bug reachable.
+ */
+export function decideEmbeddedPostgresStart(input: {
+  configuredPort: number;
+  detectedPort: number;
+  identity: PortHolderIdentity;
+  dataDir: string;
+}): EmbeddedPostgresStartDecision {
+  const { configuredPort, detectedPort, identity, dataDir } = input;
+
+  if (identity.kind === "ours") return { action: "adopt", port: configuredPort };
+
+  // The configured port is idle, so whatever the probe failed to reach is gone
+  // and the directory is ours to start over.
+  if (detectedPort === configuredPort) return { action: "start", port: configuredPort };
+
+  if (identity.kind === "unidentified") {
+    return {
+      action: "refuse",
+      reason:
+        `Port ${configuredPort} is in use, but the server there could not be identified, so ownership ` +
+        `of ${dataDir} could not be established. Refusing to start a second postmaster over ` +
+        `possibly-live data. Stop whatever is using port ${configuredPort}, or point the instance ` +
+        `at a different port, then retry.`,
+    };
+  }
+
+  // Proven to be somebody else's cluster, so our directory is unowned and moving
+  // to a free port starts nothing over live data.
+  return { action: "start", port: detectedPort };
+}
+
 // NOTE: this module deliberately provides no way to delete postmaster.pid.
 // PostgreSQL removes a genuinely stale lock file itself in CreateLockFile,
 // atomically, inside the process about to take ownership. Any check-then-delete
