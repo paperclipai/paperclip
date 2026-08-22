@@ -76,6 +76,16 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] `AGENTS.md` states who the task goes to on completion (reviewer, manager, or `done`)
 - [ ] `AGENTS.md` ends with the "always update your task with a comment" rule
 
+## I-bis. Post-hire bundle verification (REQUIRED)
+
+This block runs after the hire is approved (or immediately if no approval is required). Skipping it is how agents ship as empty shells — see SKILL.md Step 10.
+
+- [ ] After the hire is active, `GET /api/agents/{agentId}/instructions-bundle` returned `files.length >= 1` AND `resolvedEntryPath` is non-null AND `entryFile` matches what was sent
+- [ ] Every file listed in the original `instructionsBundle.files` appears in `files[].path` on the response
+- [ ] If the GET came back empty or incomplete, the fallback `PUT /api/agents/{agentId}/instructions-bundle/file` was run for each missing file (`path` and `content` go in the **request body**, not the query string), and the GET was re-asserted afterwards
+- [ ] The hire close-out comment records the verification result explicitly (e.g. `Verified: files=1, resolvedEntryPath set, entryFile=AGENTS.md`)
+- [ ] No source/hire issue was marked `done` until this block fully passed
+
 ## J. Choice of instruction source was explicit
 
 - [ ] The hire comment states which path was used: exact template, adjacent template, or generic fallback
@@ -93,3 +103,4 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - **No confidential path for sensitive work.** Roles that may receive private advisories or incident details need a private workflow, not normal issue comments.
 - **Missing governance fields.** A hire without `sourceIssueId`, `icon`, or a resolvable reporting line is hard to audit later.
 - **Unreplaced placeholders.** `{{companyName}}`, `{{managerTitle}}`, and URL stubs in a submitted draft are the most common rejected-hire defect — grep the draft for `{{` before submitting.
+- **Empty-shell hires (Step 10 skipped).** `POST /agent-hires` normally materializes `instructionsBundle.files` to disk, but the materialization path is silently skipped when `adapterConfig` already contains any of `instructionsBundleMode`, `instructionsRootPath`, `instructionsEntryFile`, `instructionsFilePath`, or `agentsMdPath`. In that case the bundle config persists but the file content is dropped, and the agent ships with `files: []` and `resolvedEntryPath: null` — heartbeats then run with no prompt. Because these conflict keys can be injected by adapter defaults, templates, runtime-config merges, or human edits without the caller noticing, the post-hire `GET /instructions-bundle` is the only reliable signal. Treat it as mandatory, not optional.
