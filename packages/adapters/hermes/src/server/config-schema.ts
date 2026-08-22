@@ -21,6 +21,20 @@ export function getConfigSchema(): AdapterConfigSchema {
   return {
     fields: [
       {
+        key: "profile",
+        label: "Hermes profile",
+        type: "text",
+        default: "default",
+        meta: { pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", maxLength: 64 },
+        hint: "Authoritative Hermes profile. Extra args cannot override it.",
+      },
+      {
+        key: "moaProfileBindings",
+        label: "Profile-scoped MOA bindings",
+        type: "textarea",
+        hint: 'Optional JSON object mapping exact Hermes profiles to existing presets, for example { "planner": "LagunaS-Qwen" }. Unbound profiles stay on their configured single model.',
+      },
+      {
         key: "provider",
         label: "Provider",
         type: "select",

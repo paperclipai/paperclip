@@ -52,6 +52,11 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import {
+  HERMES_PROFILE_INVALID_MESSAGE,
+  resolveHermesProfile,
+} from "./profile.js";
+import { resolveHermesModelSelection } from "./moa-profile.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -70,6 +75,25 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+
+const RESERVED_HERMES_PASSTHROUGH_FLAGS = new Set(["--profile", "-p", "--model", "-m", "--provider"]);
+
+function sanitizeHermesExtraArgs(extraArgs: string[] | undefined): string[] {
+  if (!extraArgs?.length) return [];
+
+  const sanitized: string[] = [];
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index]!;
+    const equalsIndex = arg.indexOf("=");
+    const flag = equalsIndex >= 0 ? arg.slice(0, equalsIndex) : arg;
+    if (RESERVED_HERMES_PASSTHROUGH_FLAGS.has(flag)) {
+      if (equalsIndex < 0) index += 1;
+      continue;
+    }
+    sanitized.push(arg);
+  }
+  return sanitized;
 }
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
@@ -337,12 +361,26 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
-  const model = cfgString(config.model) || DEFAULT_MODEL;
+  const profile = resolveHermesProfile(config);
+  if (!profile) {
+    const model = cfgString(config.model) || DEFAULT_MODEL;
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_local_profile_invalid",
+      errorMessage: HERMES_PROFILE_INVALID_MESSAGE,
+      model,
+    };
+  }
+  const modelSelection = resolveHermesModelSelection(config, profile);
+  const model = modelSelection.model;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
+  const sanitizedExtraArgs = sanitizeHermesExtraArgs(extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -363,7 +401,7 @@ export async function execute(
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
+  if (!explicitProvider && !modelSelection.moaPreset) {
     try {
       detectedConfig = await detectModel();
     } catch {
@@ -371,15 +409,17 @@ export async function execute(
     }
   }
 
-  const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
-    explicitProvider,
-    detectedProvider: detectedConfig?.provider,
-    detectedModel: detectedConfig?.model,
-    detectedBaseUrl: detectedConfig?.baseUrl,
-    detectedHasApiKey: detectedConfig?.hasApiKey,
-    detectedApiMode: detectedConfig?.apiMode,
-    model,
-  });
+  const { provider: resolvedProvider, resolvedFrom } = modelSelection.moaPreset
+    ? { provider: "moa", resolvedFrom: "profileMoaBinding" }
+    : resolveProvider({
+        explicitProvider,
+        detectedProvider: detectedConfig?.provider,
+        detectedModel: detectedConfig?.model,
+        detectedBaseUrl: detectedConfig?.baseUrl,
+        detectedHasApiKey: detectedConfig?.hasApiKey,
+        detectedApiMode: detectedConfig?.apiMode,
+        model,
+      });
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
   // Paperclip can materialize managed instructions into instructionsFilePath;
@@ -417,7 +457,7 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
+  const args: string[] = ["--profile", profile, "chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
   if (model) {
@@ -457,8 +497,8 @@ export async function execute(
     args.push("--resume", prevSessionId);
   }
 
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
+  if (sanitizedExtraArgs.length) {
+    args.push(...sanitizedExtraArgs);
   }
 
   // ── Build environment ──────────────────────────────────────────────────
