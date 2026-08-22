@@ -9,7 +9,7 @@ import {
   updateToolMcpGatewaySchema,
 } from "@paperclipai/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
 
@@ -55,6 +55,32 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+function pluginToolSuffix(toolName: string): string | null {
+  const separator = toolName.lastIndexOf(":");
+  if (separator < 0 || separator === toolName.length - 1) return null;
+  return toolName.slice(separator + 1);
+}
+
+export function mcpPresentedToolNames(tools: ToolGatewayDescriptor[]): Map<string, string> {
+  const suffixCounts = new Map<string, number>();
+  for (const tool of tools) {
+    if (tool.providerType !== "paperclip_plugin") continue;
+    const suffix = pluginToolSuffix(tool.name);
+    if (suffix) suffixCounts.set(suffix, (suffixCounts.get(suffix) ?? 0) + 1);
+  }
+  return new Map(tools.map((tool) => {
+    if (tool.providerType !== "paperclip_plugin") return [tool.name, tool.name];
+    const suffix = pluginToolSuffix(tool.name);
+    if (suffix && suffixCounts.get(suffix) === 1) return [tool.name, suffix];
+    return [tool.name, tool.name.replace(/[^a-zA-Z0-9_-]/g, "_")];
+  }));
+}
+
+export function canonicalMcpToolName(tools: ToolGatewayDescriptor[], presentedName: string): string {
+  const presentedNames = mcpPresentedToolNames(tools);
+  return tools.find((tool) => presentedNames.get(tool.name) === presentedName)?.name ?? presentedName;
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -97,12 +123,13 @@ async function handleMcpGatewayProtocol(
         bearerToken: token,
         callerHeaders: headers,
       });
+      const presentedNames = mcpPresentedToolNames(tools);
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
           tools: tools.map((tool) => ({
-            name: tool.name,
+            name: presentedNames.get(tool.name) ?? tool.name,
             title: tool.displayName,
             description: tool.description,
             inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },

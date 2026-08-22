@@ -38,11 +38,30 @@ import {
   secretAccessEvents,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
+import { canonicalMcpToolName, mcpGatewayProtocolRoutes, mcpPresentedToolNames, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { secretService } from "../services/secrets.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
+
+describe("MCP tool presentation", () => {
+  it("presents unique plugin tools by their stable declared name and keeps collisions unambiguous", () => {
+    const descriptors = [
+      { name: "gtm-clip:gtm_company_profile", providerType: "paperclip_plugin" },
+      { name: "alpha:shared_tool", providerType: "paperclip_plugin" },
+      { name: "beta:shared_tool", providerType: "paperclip_plugin" },
+      { name: "builtin_status", providerType: "paperclip_self" },
+    ] as Parameters<typeof mcpPresentedToolNames>[0];
+    expect(Object.fromEntries(mcpPresentedToolNames(descriptors))).toEqual({
+      "gtm-clip:gtm_company_profile": "gtm_company_profile",
+      "alpha:shared_tool": "alpha_shared_tool",
+      "beta:shared_tool": "beta_shared_tool",
+      builtin_status: "builtin_status",
+    });
+    expect(canonicalMcpToolName(descriptors, "gtm_company_profile")).toBe("gtm-clip:gtm_company_profile");
+    expect(canonicalMcpToolName(descriptors, "alpha_shared_tool")).toBe("alpha:shared_tool");
+  });
+});
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -4096,6 +4115,12 @@ rl.on("line", (line) => {
     await expect(gateway.listPluginToolsForAgent({ companyId: company.id, agentId: agent.id })).resolves.toEqual([
       expect.objectContaining({ name: "demo-plugin:read_status" }),
     ]);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "read_status",
+      parameters: { id: "alias" },
+    })).resolves.toMatchObject({ result: { result: { content: "plugin ok", data: { ok: true } } } });
     await expect(gateway.executePluginTool({
       actor: { type: "agent", companyId: company.id, agentId: agent.id, runId: run.id },
       tool: "demo-plugin:read_status",
@@ -4106,12 +4131,17 @@ rl.on("line", (line) => {
       toolName: "read_status",
       result: { content: "plugin ok", data: { ok: true } },
     });
-    expect(calls).toEqual([
+    expect(calls).toHaveLength(2);
+    expect(calls).toEqual(expect.arrayContaining([
       expect.objectContaining({
         tool: "demo-plugin:read_status",
         parameters: { id: "1" },
       }),
-    ]);
+      expect.objectContaining({
+        tool: "demo-plugin:read_status",
+        parameters: { id: "alias" },
+      }),
+    ]));
   });
 
   it("rejects caller-supplied issue context outside the run company", async () => {

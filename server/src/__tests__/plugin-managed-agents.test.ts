@@ -15,6 +15,10 @@ import {
   pluginCompanySettings,
   pluginManagedResources,
   plugins,
+  toolProfileBindings,
+  toolProfileEntries,
+  toolProfiles,
+  toolMcpGateways,
 } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -50,8 +54,12 @@ function manifest(): PaperclipPluginManifestV1 {
     description: "Test plugin",
     author: "Paperclip",
     categories: ["automation"],
-    capabilities: ["agents.managed"],
+    capabilities: ["agents.managed", "agent.tools.register"],
     entrypoints: { worker: "./dist/worker.js" },
+    tools: [
+      { name: "wiki_search", displayName: "Search wiki", description: "Search the managed wiki.", parametersSchema: { type: "object", properties: {} } },
+      { name: "wiki_write", displayName: "Write wiki", description: "Write a managed wiki page.", parametersSchema: { type: "object", properties: {} } },
+    ],
     agents: [
       {
         agentKey: "wiki-maintainer",
@@ -62,7 +70,7 @@ function manifest(): PaperclipPluginManifestV1 {
         adapterType: "process",
         adapterConfig: { command: "pnpm wiki:maintain" },
         runtimeConfig: { modelProfiles: { cheap: { enabled: true, adapterConfig: { model: "small" } } } },
-        permissions: { canCreateAgents: false },
+        permissions: { canCreateAgents: false, pluginTools: ["paperclip.managed-agents-test"] },
         budgetMonthlyCents: 1234,
       },
     ],
@@ -85,6 +93,10 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(toolMcpGateways);
+    await db.delete(toolProfileBindings);
+    await db.delete(toolProfileEntries);
+    await db.delete(toolProfiles);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(pluginEntities);
@@ -159,6 +171,34 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
       resourceKey: "wiki-maintainer",
       agentId: created.agentId,
     });
+  });
+
+  it("creates and binds an effective profile for declared plugin tools", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin();
+    const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    expect(created.agentId).toBeTruthy();
+
+    const [profile] = await db.select().from(toolProfiles);
+    const entries = await db.select().from(toolProfileEntries);
+    const bindings = await db.select().from(toolProfileBindings);
+    const [gateway] = await db.select().from(toolMcpGateways);
+    expect(profile).toMatchObject({
+      profileKey: "plugin-managed:paperclip.managed-agents-test:wiki-maintainer",
+      status: "active",
+      defaultAction: "deny",
+    });
+    expect(entries.map((entry) => entry.toolName).sort()).toEqual([
+      "paperclip.managed-agents-test:wiki_search",
+      "paperclip.managed-agents-test:wiki_write",
+    ]);
+    expect(bindings).toContainEqual(expect.objectContaining({ profileId: profile!.id, targetType: "agent", targetId: created.agentId }));
+    expect(bindings).toContainEqual(expect.objectContaining({ profileId: profile!.id, targetType: "gateway", targetId: gateway!.id }));
+    expect(gateway).toMatchObject({ profileId: profile!.id, agentId: created.agentId, contextScopeType: "agent", contextScopeId: created.agentId });
+
+    await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    expect(await db.select().from(toolProfiles)).toHaveLength(1);
+    expect(await db.select().from(toolProfileBindings)).toHaveLength(2);
+    expect(await db.select().from(toolMcpGateways)).toHaveLength(1);
   });
 
   it("preserves user edits during reconcile and resets only on explicit reset", async () => {
