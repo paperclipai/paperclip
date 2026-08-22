@@ -811,32 +811,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
   }
 
-  async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
-    return db
-      .select({
-        id: heartbeatRuns.id,
-        agentId: heartbeatRuns.agentId,
-        status: heartbeatRuns.status,
-        error: heartbeatRuns.error,
-        errorCode: heartbeatRuns.errorCode,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-        livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
-        startedAt: heartbeatRuns.startedAt,
-        createdAt: heartbeatRuns.createdAt,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-        ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-  }
-
   async function getLatestIssueRunForAgent(
     companyId: string,
     issueId: string,
@@ -3198,7 +3172,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await updateIssueToBlockedIfStatusUnchanged({
+      issueId: input.issue.id,
+      expectedStatus: input.previousStatus,
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3259,6 +3236,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return updated;
+  }
+
+  async function updateIssueToBlockedIfStatusUnchanged(input: {
+    issueId: string;
+    expectedStatus: StrandedPreviousStatus;
+    blockedByIssueIds?: string[];
+    assigneeAgentId?: string | null;
+  }) {
+    return db.transaction(async (tx) => {
+      const current = await tx
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !current ||
+        (current.status !== input.expectedStatus && current.status !== "blocked")
+      ) return null;
+
+      return issuesSvc.update(input.issueId, {
+        status: "blocked",
+        ...(input.blockedByIssueIds !== undefined
+          ? { blockedByIssueIds: input.blockedByIssueIds }
+          : {}),
+        ...(input.assigneeAgentId !== undefined
+          ? { assigneeAgentId: input.assigneeAgentId }
+          : {}),
+      }, tx);
+    });
   }
 
   async function existingBlockerIssueIds(companyId: string, issueId: string) {
@@ -4393,8 +4400,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+    const updated = await updateIssueToBlockedIfStatusUnchanged({
+      issueId: input.issue.id,
+      expectedStatus: input.previousStatus,
       blockedByIssueIds: blockerIds,
       // Recovery-action ownership is intentionally separate from deliverable
       // ownership. Automatic escalation must never transfer the source task.
@@ -4552,8 +4560,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         (currentIssue.status !== "blocked" ||
           currentIssue.assigneeAgentId !== input.issue.assigneeAgentId)
       ) {
-        const reblocked = await issuesSvc.update(input.issue.id, {
-          status: "blocked",
+        const reblocked = await updateIssueToBlockedIfStatusUnchanged({
+          issueId: input.issue.id,
+          expectedStatus: input.previousStatus,
           blockedByIssueIds: blockerIds,
           assigneeAgentId: input.issue.assigneeAgentId,
         });
@@ -4749,7 +4758,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      let latestRun = await getLatestIssueRunForAgent(issue.companyId, issue.id, agentId);
 
       const agent = await getAgent(agentId);
       const agentInvokable = agent && agent.companyId === issue.companyId
@@ -4777,7 +4786,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (await hasActiveExecutionPath(
         issue.companyId,
         issue.id,
-        issue.status === "in_review" ? agentId : null,
+        agentId,
       )) {
         result.skipped += 1;
         continue;
@@ -4803,7 +4812,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       const recoveryNow = new Date();
       const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
-        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        ? latestRun
         : null;
       const providerQuotaMonitorRun = issue.status === "in_review"
         ? participantLatestRunForRecovery
@@ -5138,7 +5147,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (issue.status === "todo") {
         if (!latestRun) {
-          if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) {
             result.skipped += 1;
             continue;
           }
