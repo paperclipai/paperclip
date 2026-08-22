@@ -104,6 +104,22 @@ const NARRATION_OPENERS =
   /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
 const FALLBACK_WITHHELD_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
+// Appended to a summary the agent really did write, when only its length was the problem.
+// It must read as an elision, never as an error — the run succeeded and the text is genuine.
+const TRUNCATION_MARKER =
+  "_(summary truncated at the comment length limit — see the run log for the full text.)_";
+
+/**
+ * Cut to at most `limit` characters, preferring the last line or word break in the final
+ * fifth of the budget. A cut through the middle of a word reads as corruption rather than
+ * as an elision, which invites the reader to distrust the part that did survive.
+ */
+function truncateToBoundary(text: string, limit: number): string {
+  const head = text.slice(0, limit);
+  const earliestBreak = Math.floor(limit * 0.8);
+  const boundary = Math.max(head.lastIndexOf("\n"), head.lastIndexOf(" "));
+  return (boundary >= earliestBreak ? head.slice(0, boundary) : head).trimEnd();
+}
 
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
@@ -120,8 +136,22 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  if (text.length > MAX_FALLBACK_COMMENT_CHARS || NARRATION_OPENERS.test(text)) {
+  // Narration is withheld on content, at any length (BRO-1507 / BRO-1516). Nothing in a
+  // stream of inter-tool narration becomes publishable by being shorter.
+  if (NARRATION_OPENERS.test(text)) {
     return FALLBACK_WITHHELD_COMMENT;
+  }
+
+  // Length is not a content judgement, and BRO-2310 is what it cost to treat it as one.
+  // A long declarative status report is what a productive run produces. Discarding it told
+  // the board the agent had reported nothing, so the disposition check found nothing, moved
+  // the issue to `missing_disposition`, and blocked it on a recovery owner that was the same
+  // stalled agent. On BRO-2300 that hid finished work across four runs and five hours.
+  //
+  // Truncate instead. A status report states its conclusion first, so the head of the message
+  // is the part worth keeping; the marker sends the reader to the run log for the remainder.
+  if (text.length > MAX_FALLBACK_COMMENT_CHARS) {
+    return `${truncateToBoundary(text, MAX_FALLBACK_COMMENT_CHARS)}\n\n${TRUNCATION_MARKER}`;
   }
 
   return text;
