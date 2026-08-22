@@ -5104,14 +5104,26 @@ export async function waitForRuntimeServiceReadiness(input: {
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
   const deadline = now() + timeoutSec * 1000;
   let lastError = "service did not become ready";
+  let sawServiceFailure = false;
   while (now() < deadline) {
-    const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, deadline - now()));
+    const remainingMs = deadline - now();
+    // When the readiness budget is what bounds this probe, aborting it only means we ran out of
+    // time — it is not an observation about the service, so it must not replace one we already have.
+    const boundedByDeadline = remainingMs <= RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS;
+    const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, remainingMs));
+    let probeSignal: AbortSignal | undefined;
     try {
-      const response = await fetchImpl(readinessUrl, { signal: AbortSignal.timeout(probeBudgetMs) });
+      probeSignal = AbortSignal.timeout(probeBudgetMs);
+      const response = await fetchImpl(readinessUrl, { signal: probeSignal });
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
+      sawServiceFailure = true;
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      const abortedByDeadline = Boolean(probeSignal?.aborted) && boundedByDeadline;
+      if (!abortedByDeadline || !sawServiceFailure) {
+        lastError = err instanceof Error ? err.message : String(err);
+        sawServiceFailure = true;
+      }
     }
     if (now() >= deadline) break;
     await delay(Math.min(intervalMs, Math.max(0, deadline - now())));
