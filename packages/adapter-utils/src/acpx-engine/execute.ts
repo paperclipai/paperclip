@@ -84,6 +84,7 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import { resolveAcpxEffectiveModel } from "./model-attribution.js";
 import type {
   AcpRunContext,
   AcquiredRunResources,
@@ -3885,6 +3886,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // scoped hoisted local, so the settlement `endSession` step can cancel it.
       let runPrompt = "";
       let preTurnStatus: AcpRuntimeStatus | null = null;
+      // The model this run is billed against, resolved from the session rather
+      // than echoed from the request so runs that leave `config.model` unset are
+      // still attributable. Seeded with the request so a failure before the
+      // pre-turn snapshot still reports what it can.
+      let effectiveModel = resolveAcpxEffectiveModel({ requestedModel: prepared.requestedModel });
       // Phase-timing markers for the prepare_turn and turn phases. The prepare
       // phase covers the prompt build and the pre-turn usage snapshot; the turn
       // phase covers the started turn and the event relay.
@@ -3954,6 +3960,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
         preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        // The same snapshot carries the session's advertised model state, so a
+        // turn that fails before the post-turn read still attributes correctly.
+        effectiveModel = resolveAcpxEffectiveModel({
+          preStatus: preTurnStatus,
+          requestedModel: prepared.requestedModel,
+        });
         // The prepare phase (prompt build + usage snapshot) finished; the turn
         // phase starts next.
         await emitPhase("prepare_turn", preparePhaseStart, "ok");
@@ -4005,6 +4017,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const timedOut = input.timedOut;
         // Read usage before the settlement can discard runtime state.
         const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        // Re-resolve against the post-turn snapshot: a mid-run model switch
+        // lands here, and this is the model the completed turn actually ran on.
+        effectiveModel = resolveAcpxEffectiveModel({
+          postStatus: postTurnStatus,
+          preStatus: preTurnStatus,
+          requestedModel: prepared.requestedModel,
+        });
         const turnUsage = summarizeAcpxTurnUsage({
           preStatus: preTurnStatus,
           postStatus: postTurnStatus,
@@ -4059,7 +4078,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           ...billingFields,
           ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
+          model: effectiveModel.model,
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
@@ -4067,6 +4086,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
+            modelSource: effectiveModel.source,
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
@@ -4169,9 +4189,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           errorMeta: emitted?.classified.errorMeta,
           ...billingFields,
           ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
+          model: effectiveModel.model,
           clearSession: clearSession || timedOut,
-          resultJson: { phase },
+          resultJson: { phase, modelSource: effectiveModel.source },
           summary: message,
         };
         // Return a typed failed completion so the coordinator settles for a cause

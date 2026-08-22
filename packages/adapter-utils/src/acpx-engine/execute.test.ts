@@ -1068,6 +1068,84 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(statusLine?.text).toContain('"cost"');
   });
 
+  it.each([
+    {
+      name: "attributes the run to the model the ACP session reports when no model is configured",
+      currentModelId: "claude-fable-5[1m]",
+      configModel: undefined as string | undefined,
+      expectedModel: "claude-fable-5[1m]" as string | null,
+      expectedSource: "session",
+    },
+    {
+      name: "prefers the session model over a configured model that was not honored",
+      currentModelId: "claude-sonnet-4-6",
+      configModel: "claude-sonnet-5" as string | undefined,
+      expectedModel: "claude-sonnet-4-6" as string | null,
+      expectedSource: "session",
+    },
+    {
+      name: "falls back to the configured model when the session only offers the picker placeholder",
+      currentModelId: "default",
+      configModel: "claude-opus-5" as string | undefined,
+      expectedModel: "claude-opus-5" as string | null,
+      expectedSource: "requested",
+    },
+    {
+      name: "reports no model rather than the placeholder when nothing resolves",
+      currentModelId: "default",
+      configModel: undefined as string | undefined,
+      expectedModel: null as string | null,
+      expectedSource: "unknown",
+    },
+  ])("$name", async ({ currentModelId, configModel, expectedModel, expectedSource }) => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        getStatus: async () => ({
+          models: { currentModelId, availableModelIds: ["default", currentModelId] },
+        }),
+        // A configured model reaches a non-claude/codex agent through
+        // set_config_option, so the runtime must advertise the control.
+        setConfigOption: async () => {},
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-model-attribution",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        ...(configModel ? { model: configModel } : {}),
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe(expectedModel);
+    expect((result.resultJson as Record<string, unknown>)?.modelSource).toBe(expectedSource);
+    // The request stays recorded separately so a request/actual mismatch is auditable.
+    expect((result.resultJson as Record<string, unknown>)?.requestedModel).toBe(configModel ?? null);
+  });
+
   it("falls back to usage_update events when the runtime lacks getStatus", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
