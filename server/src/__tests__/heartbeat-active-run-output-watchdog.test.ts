@@ -131,9 +131,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    /** When true, also seed a CEO and leave the running agent with no reportsTo (role fallback). */
+    preferRoleFallbackOwner?: boolean;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
+    const ceoId = randomUUID();
     const coderId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
@@ -162,13 +165,26 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         runtimeConfig: {},
         permissions: {},
       },
+      ...(opts.preferRoleFallbackOwner
+        ? [{
+            id: ceoId,
+            companyId,
+            name: "CEO",
+            role: "ceo" as const,
+            status: "idle" as const,
+            adapterType: "codex_local",
+            adapterConfig: {},
+            runtimeConfig: {},
+            permissions: {},
+          }]
+        : []),
       {
         id: coderId,
         companyId,
         name: "Coder",
         role: "engineer",
         status: "running",
-        reportsTo: managerId,
+        reportsTo: opts.preferRoleFallbackOwner ? null : managerId,
         adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: {},
@@ -253,7 +269,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         updatedAt: terminalEvidenceAt,
       });
     }
-    return { companyId, managerId, coderId, issueId, runId, issuePrefix };
+    return { companyId, managerId, ceoId, coderId, issueId, runId, issuePrefix };
   }
 
   it("creates one medium-priority evaluation issue for a suspicious silent run", async () => {
@@ -923,6 +939,58 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .where(and(eq(heartbeatRunWatchdogDecisions.runId, runId), eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive")));
     expect(decisions).toHaveLength(1);
     expect(decisions[0].evaluationIssueId).toBe(evaluationIssueId);
+  });
+
+  it("suppresses repeat alerts when evaluation is cancelled without a watchdog decision", async () => {
+    // SAT-9895: cancel-fast previously re-created a card every scan (~1/min floods).
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, evaluationIssueId));
+
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(third.created).toBe(0);
+    expect(third.skipped).toBe(1);
+
+    const decisions = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(and(eq(heartbeatRunWatchdogDecisions.runId, runId), eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive")));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].evaluationIssueId).toBe(evaluationIssueId);
+  });
+
+  it("assigns silent-run evaluation to CEO when no nearer manager applies", async () => {
+    // SAT-9895: role fallback prefers ceo before cto.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, ceoId, managerId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      preferRoleFallbackOwner: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.created).toBe(1);
+    const [evaluation] = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.assigneeAgentId).toBe(ceoId);
+    expect(evaluation?.assigneeAgentId).not.toBe(managerId);
   });
 
   it("still allows re-arm after continue decision even when issue was closed on board", async () => {

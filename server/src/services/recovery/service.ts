@@ -1412,15 +1412,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
-  // Returns a `done` stale-run evaluation issue for this run if one exists.
-  // Used to detect when a reviewer closed an alert directly on the board without going through
-  // the watchdog decision API — which would not leave a dismissed_false_positive decision record.
+  // Returns a terminal (done/cancelled) stale-run evaluation issue for this run if one exists.
+  // Used to detect when a reviewer closed or cancelled an alert without going through the
+  // watchdog decision API — which would not leave a dismissed_false_positive decision record.
   //
-  // Scoped to `done` only (not `cancelled`): cancellation is used by other system code paths
-  // and does not imply a reviewer's "false positive" verdict. `done` is the explicit
-  // board-close path used by reviewers acknowledging the alert. A cancelled evaluation is
-  // allowed to re-fire on the next scan; if a reviewer wants permanent suppression they
-  // should mark the alert done or record a watchdog decision.
+  // Both `done` and `cancelled` suppress re-fire for this origin. Cancel-fast agents previously
+  // re-created a card every scan (~1/min floods). Permanent suppression still auto-records
+  // dismissed_false_positive on the next scan (same path as board `done` closes).
   async function findClosedStaleRunEvaluation(companyId: string, runId: string) {
     const [row] = await db
       .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
@@ -1431,7 +1429,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
           eq(issues.originId, runId),
           visibleIssueCondition(),
-          eq(issues.status, "done"),
+          inArray(issues.status, ["done", "cancelled"]),
         ),
       )
       .orderBy(desc(issues.updatedAt))
@@ -1846,11 +1844,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);
     }
     if (input.runningAgent.reportsTo) candidateIds.push(input.runningAgent.reportsTo);
+    // Prefer CEO over CTO for silent-run evaluation ownership when no nearer manager applies.
     const roleCandidates = await db
       .select()
       .from(agents)
-      .where(and(eq(agents.companyId, input.run.companyId), inArray(agents.role, ["cto", "ceo"])))
-      .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
+      .where(and(eq(agents.companyId, input.run.companyId), inArray(agents.role, ["ceo", "cto"])))
+      .orderBy(sql`case when ${agents.role} = 'ceo' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
 
     const seen = new Set<string>();
@@ -2140,7 +2139,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "skipped" as const };
     }
 
-    // Dedup: if a prior evaluation issue for this run was closed `done` on the board
+    // Dedup: if a prior evaluation issue for this run was closed `done` or `cancelled` on the board
     // without going through the watchdog decision API, no dismissed_false_positive record exists
     // and the watchdog would re-fire every cycle. Auto-record the suppression now so future
     // cycles skip immediately via hasDismissedFalsePositiveDecision.
