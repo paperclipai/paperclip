@@ -71,8 +71,12 @@ function firstNonEmptyLine(text: string): string {
 function parseModelProvider(model: string | null): string | null {
   if (!model) return null;
   const trimmed = model.trim();
-  if (!trimmed.includes("/")) return null;
-  return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
+  // Explicit "provider/model" format takes precedence.
+  if (trimmed.includes("/")) return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
+  // Infer provider from well-known unprefixed model name patterns.
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("gemini-")) return "google";
+  return null;
 }
 
 function parseModelId(model: string | null): string | null {
