@@ -338,4 +338,70 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
   });
 
+  it("starts fresh when a remote SSH agent selects a different Claude profile", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-profile-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-profile/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    const result = await execute({
+      runId: "run-ssh-profile",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "12345678-1234-4abc-9def-123456789012",
+        sessionParams: {
+          sessionId: "12345678-1234-4abc-9def-123456789012",
+          cwd: managedRemoteWorkspace,
+          claudeConfigDir: "/profiles/account-a/.claude",
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+        env: { CLAUDE_CONFIG_DIR: "/profiles/account-b/.claude" },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
+    expect(result.sessionParams).toEqual(expect.objectContaining({
+      claudeConfigDir: "/profiles/account-b/.claude",
+    }));
+  });
+
 });

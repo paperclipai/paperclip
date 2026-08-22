@@ -4,8 +4,11 @@ import {
   classifyJsonlText,
   classifyRow,
   encodeClaudeCwd,
+  extractSessionParams,
+  hasKnownSessionClaudeConfigDir,
   jsonlPathFor,
   resolveClaudeConfigDir,
+  resolveSessionClaudeConfigDir,
 } from "./clean-poisoned-claude-sessions.js";
 
 describe("classifyJsonlText", () => {
@@ -105,6 +108,57 @@ describe("resolveClaudeConfigDir", () => {
   });
 });
 
+describe("resolveSessionClaudeConfigDir", () => {
+  it("uses the profile persisted with the session", () => {
+    expect(resolveSessionClaudeConfigDir(
+      { claudeConfigDir: "/profiles/account-b/.claude" },
+      "/profiles/default/.claude",
+    )).toBe(path.resolve("/profiles/account-b/.claude"));
+  });
+
+  it("keeps old session rows on the default profile", () => {
+    expect(resolveSessionClaudeConfigDir(
+      { claudeConfigDir: null },
+      "/profiles/default/.claude",
+    )).toBe("/profiles/default/.claude");
+  });
+
+  it("lets an explicit maintenance override win", () => {
+    expect(resolveSessionClaudeConfigDir(
+      { claudeConfigDir: "/profiles/account-b/.claude" },
+      "/profiles/default/.claude",
+      "/profiles/recovery/.claude",
+    )).toBe(path.resolve("/profiles/recovery/.claude"));
+  });
+});
+
+describe("hasKnownSessionClaudeConfigDir", () => {
+  it("does not treat the fallback directory as proof for a legacy row", () => {
+    expect(hasKnownSessionClaudeConfigDir({ claudeConfigDir: null })).toBe(false);
+  });
+
+  it("accepts a persisted profile or an explicit maintenance override", () => {
+    expect(hasKnownSessionClaudeConfigDir({ claudeConfigDir: "/profiles/account-b/.claude" })).toBe(true);
+    expect(hasKnownSessionClaudeConfigDir({ claudeConfigDir: null }, "/profiles/default/.claude")).toBe(true);
+  });
+});
+
+describe("extractSessionParams", () => {
+  it("normalizes legacy aliases before cleanup classification", () => {
+    expect(extractSessionParams({
+      session_id: "11111111-1111-4111-8111-111111111111",
+      workdir: "/workspace",
+      remote_execution: { transport: "ssh" },
+      claude_config_dir: "/profiles/account-a/.claude",
+    })).toEqual({
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      cwd: "/workspace",
+      isRemote: true,
+      claudeConfigDir: "/profiles/account-a/.claude",
+    });
+  });
+});
+
 describe("classifyRow", () => {
   const claudeConfigDir = "/tmp/.claude";
   const cwd = "/Users/dj/work";
@@ -113,7 +167,7 @@ describe("classifyRow", () => {
 
   it("returns skipped_no_session_id when sessionId is null", () => {
     const result = classifyRow(
-      { sessionId: null, cwd, isRemote: false },
+      { sessionId: null, cwd, isRemote: false, claudeConfigDir: null },
       { claudeConfigDir, readJsonl: () => null },
     );
     expect(result.kind).toBe("skipped_no_session_id");
@@ -121,7 +175,7 @@ describe("classifyRow", () => {
 
   it("returns skipped_remote when the row has remoteExecution params", () => {
     const result = classifyRow(
-      { sessionId, cwd, isRemote: true },
+      { sessionId, cwd, isRemote: true, claudeConfigDir: null },
       { claudeConfigDir, readJsonl: () => null },
     );
     expect(result.kind).toBe("skipped_remote");
@@ -129,7 +183,7 @@ describe("classifyRow", () => {
 
   it("returns missing_jsonl with the expected path when the file does not exist", () => {
     const result = classifyRow(
-      { sessionId, cwd, isRemote: false },
+      { sessionId, cwd, isRemote: false, claudeConfigDir: null },
       { claudeConfigDir, readJsonl: () => null },
     );
     expect(result.kind).toBe("missing_jsonl");
@@ -144,7 +198,7 @@ describe("classifyRow", () => {
       JSON.stringify({ type: "assistant", message: { id: "synthetic-uuid" } }),
     ].join("\n");
     const result = classifyRow(
-      { sessionId, cwd, isRemote: false },
+      { sessionId, cwd, isRemote: false, claudeConfigDir: null },
       { claudeConfigDir, readJsonl: () => jsonl },
     );
     expect(result.kind).toBe("poisoned");
@@ -158,7 +212,7 @@ describe("classifyRow", () => {
       JSON.stringify({ type: "assistant", message: { id: "msg_only" } }),
     ].join("\n");
     const result = classifyRow(
-      { sessionId, cwd, isRemote: false },
+      { sessionId, cwd, isRemote: false, claudeConfigDir: null },
       { claudeConfigDir, readJsonl: () => jsonl },
     );
     expect(result.kind).toBe("healthy");
