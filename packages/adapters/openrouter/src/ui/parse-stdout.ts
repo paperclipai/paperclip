@@ -1,112 +1,109 @@
 // ─────────────────────────────────────────────────────────────────
 // @paperclipai/adapter-openrouter — UI Parse Stdout
-// Converts raw stdout into transcript entries for the run viewer
+// Converts raw OpenRouter SSE stdout lines into Paperclip's shared
+// transcript entry shape for the run viewer.
 // ─────────────────────────────────────────────────────────────────
 
-export interface TranscriptEntry {
-  type: "text" | "thinking" | "tool_call" | "tool_result" | "error" | "info";
-  content: string;
-  timestamp?: number;
-  metadata?: Record<string, unknown>;
+import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
-/**
- * Parse stdout lines from an OpenRouter adapter run into
- * transcript entries for Paperclip's run viewer UI.
- */
-export function parseStdout(stdout: string): TranscriptEntry[] {
-  const entries: TranscriptEntry[] = [];
-  const lines = stdout.split("\n");
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
 
-  let currentBlock = "";
-  let inCodeBlock = false;
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
 
-  for (const line of lines) {
-    // Track code blocks to avoid splitting them
-    if (line.trim().startsWith("```")) {
-      inCodeBlock = !inCodeBlock;
-    }
-
-    // SSE stream data lines
-    if (line.startsWith("data: ")) {
-      const data = line.slice(6).trim();
-      if (data === "[DONE]") {
-        if (currentBlock.trim()) {
-          entries.push({ type: "text", content: currentBlock.trim() });
-          currentBlock = "";
-        }
-        continue;
-      }
-
-      try {
-        const parsed = JSON.parse(data);
-
-        // Reasoning / thinking content
-        const reasoning =
-          parsed.choices?.[0]?.delta?.reasoning_content ||
-          parsed.choices?.[0]?.delta?.reasoning;
-        if (reasoning) {
-          entries.push({
-            type: "thinking",
-            content: reasoning,
-            metadata: { model: parsed.model },
-          });
-          continue;
-        }
-
-        // Regular content
-        const content = parsed.choices?.[0]?.delta?.content;
-        if (content) {
-          currentBlock += content;
-        }
-
-        // Tool calls
-        const toolCalls = parsed.choices?.[0]?.delta?.tool_calls;
-        if (toolCalls?.length) {
-          for (const tc of toolCalls) {
-            entries.push({
-              type: "tool_call",
-              content: `${tc.function?.name || "tool"}(${tc.function?.arguments || ""})`,
-              metadata: { toolCallId: tc.id },
-            });
-          }
-        }
-      } catch {
-        // Not JSON — treat as raw text
-        if (data) currentBlock += data;
-      }
-      continue;
-    }
-
-    // Error lines
-    if (
-      line.includes("OpenRouter API error") ||
-      line.includes("Error:") ||
-      line.includes("error")
-    ) {
-      entries.push({ type: "error", content: line });
-      continue;
-    }
-
-    // Info lines (model selection, cost)
-    if (
-      line.includes("[openrouter]") ||
-      line.includes("model:") ||
-      line.includes("tokens:") ||
-      line.includes("cost:")
-    ) {
-      entries.push({ type: "info", content: line });
-      continue;
-    }
-
-    // Regular output
-    currentBlock += line + "\n";
+function parseSseData(data: string, ts: string): TranscriptEntry[] {
+  if (data === "[DONE]") {
+    return [{ kind: "system", ts, text: "run completed" }];
   }
 
-  // Flush remaining
-  if (currentBlock.trim()) {
-    entries.push({ type: "text", content: currentBlock.trim() });
+  const parsed = asRecord(safeJsonParse(data));
+  if (!parsed) {
+    return data ? [{ kind: "stdout", ts, text: data }] : [];
+  }
+
+  const choice = asRecord((parsed.choices as unknown[] | undefined)?.[0]);
+  const delta = asRecord(choice?.delta);
+  const entries: TranscriptEntry[] = [];
+
+  const reasoning = asString(delta?.reasoning_content) || asString(delta?.reasoning);
+  if (reasoning) {
+    entries.push({ kind: "thinking", ts, text: reasoning, delta: true });
+  }
+
+  const content = asString(delta?.content);
+  if (content) {
+    entries.push({ kind: "assistant", ts, text: content, delta: true });
+  }
+
+  const toolCalls = delta?.tool_calls as unknown[] | undefined;
+  if (toolCalls?.length) {
+    for (const raw of toolCalls) {
+      const tc = asRecord(raw);
+      const fn = asRecord(tc?.function);
+      const argsText = asString(fn?.arguments);
+      entries.push({
+        kind: "tool_call",
+        ts,
+        name: asString(fn?.name, "tool"),
+        input: safeJsonParse(argsText) ?? argsText,
+        toolUseId: asString(tc?.id) || undefined,
+      });
+    }
   }
 
   return entries;
+}
+
+function parseLineInternal(line: string, ts: string): TranscriptEntry[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("data: ")) {
+    return parseSseData(trimmed.slice(6).trim(), ts);
+  }
+
+  if (trimmed.includes("OpenRouter API error") || /error/i.test(trimmed)) {
+    return [{ kind: "stderr", ts, text: line }];
+  }
+
+  if (
+    trimmed.startsWith("[openrouter]") ||
+    trimmed.startsWith("model:") ||
+    trimmed.startsWith("tokens:") ||
+    trimmed.startsWith("cost:")
+  ) {
+    return [{ kind: "system", ts, text: line }];
+  }
+
+  return [{ kind: "stdout", ts, text: line }];
+}
+
+export function createOpenRouterStdoutParser() {
+  return {
+    parseLine(line: string, ts: string): TranscriptEntry[] {
+      return parseLineInternal(line, ts);
+    },
+    reset() {
+      // Stateless line-by-line parser today — nothing to reset. Kept as a
+      // factory (matching the other streaming adapters) so buffering state
+      // can be added later without changing the registration shape.
+    },
+  };
+}
+
+// Stateless fallback for callers that haven't migrated to the stateful factory.
+export function parseOpenRouterStdoutLine(line: string, ts: string): TranscriptEntry[] {
+  return parseLineInternal(line, ts);
 }

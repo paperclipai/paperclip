@@ -127,6 +127,17 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
+import {
+  execute as openrouterExecute,
+  testEnvironment as openrouterTestEnvironment,
+  sessionCodec as openrouterSessionCodec,
+  detectModel as openrouterDetectModel,
+  listSkills as openrouterListSkills,
+  syncSkills as openrouterSyncSkills,
+  listOpenRouterModels,
+  getConfigSchema as getOpenRouterConfigSchema,
+} from "@paperclipai/adapter-openrouter/server";
+import { agentConfigurationDoc as openrouterAgentConfigurationDoc, models as openrouterModels } from "@paperclipai/adapter-openrouter";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -466,6 +477,24 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const openrouterAdapter: ServerAdapterModule = {
+  type: "openrouter",
+  execute: openrouterExecute,
+  testEnvironment: openrouterTestEnvironment,
+  sessionCodec: openrouterSessionCodec,
+  detectModel: openrouterDetectModel,
+  listSkills: openrouterListSkills,
+  syncSkills: openrouterSyncSkills,
+  models: openrouterModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  listModels: listOpenRouterModels,
+  getConfigSchema: getOpenRouterConfigSchema,
+  agentConfigurationDoc: openrouterAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -484,6 +513,7 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    openrouterAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
