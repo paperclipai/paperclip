@@ -1854,7 +1854,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("explicit same-agent resume works through the PATCH comment path", async () => {
+  it("reopens without waking on explicit same-agent resume through the PATCH comment path", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
@@ -1884,20 +1884,8 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        requestedByActorType: "agent",
-        requestedByActorId: "22222222-2222-4222-8222-222222222222",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "done",
-          resumeIntent: true,
-          followUpRequested: true,
-        }),
-      }),
-    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("keeps generic same-agent comments on closed issues inert", async () => {
@@ -1912,7 +1900,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("explicit same-agent resume comments reopen closed issues and mark the wake payload", async () => {
+  it("reopens without waking on explicit same-agent resume through POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -1939,23 +1927,8 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "done",
-          resumeIntent: true,
-          followUpRequested: true,
-        }),
-        contextSnapshot: expect.objectContaining({
-          wakeReason: "issue_reopened_via_comment",
-          resumeIntent: true,
-          followUpRequested: true,
-        }),
-      }),
-    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("honors explicit agent resume intent from a default-open peer as an agent-class wake", async () => {
@@ -2240,7 +2213,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("honors explicit resume intent on cancelled issues", async () => {
+  it("reopens cancelled issues without waking on explicit same-agent resume", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("cancelled"),
@@ -2257,14 +2230,8 @@ describe.sequential("issue comment reopen routes", () => {
       { status: "todo" },
     );
     expect(mockIssueService.addComment).toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        requestedByActorType: "agent",
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({ reopenedFrom: "cancelled", resumeIntent: true }),
-      }),
-    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("interrupts an active run before a combined comment update", async () => {

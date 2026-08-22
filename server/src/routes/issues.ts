@@ -10671,9 +10671,7 @@ export function issueRoutes(
         // Re-derive closed-ness from the post-update issue so a status change
         // like in_progress -> done with a closure comment does not enqueue a
         // stale issue_commented wake for an already-completed issue.
-        const skipAssigneeCommentWake = selfComment || isClosedIssueStatus(issue.status);
-
-        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+        if (assigneeId && !assigneeChanged && !selfComment && (reopened || !isClosedIssueStatus(issue.status))) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -12678,8 +12676,7 @@ export function issueRoutes(
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(wakeIssueSnapshot.status);
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && !selfComment && (reopened || !isClosedIssueStatus(wakeIssueSnapshot.status))) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",
