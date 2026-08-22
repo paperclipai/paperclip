@@ -39,6 +39,23 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 /** How many recent terminal runs to sample when computing the streak. */
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
+/** Dependency-blocked wakeups required before the cooldown engages. */
+export const ISSUE_DEPENDENCY_WAKEUP_THROTTLE_THRESHOLD = 3;
+
+/** Initial cooldown for repeated wakes of the same blocked dependency state. */
+export const ISSUE_DEPENDENCY_WAKEUP_BASE_COOLDOWN_MS = 60_000;
+
+/** Upper bound for the dependency-blocked wake cooldown. */
+export const ISSUE_DEPENDENCY_WAKEUP_MAX_COOLDOWN_MS = 60 * 60_000;
+
+/** A dependency that has remained unresolved this long deserves a human row. */
+export const ISSUE_STALE_BLOCKER_ATTENTION_AGE_MS = 72 * 60 * 60_000;
+
+export function isStaleBlockedIssueAttention(input: { now: Date; blockerUpdatedAt: Date | null; unresolved: boolean }) {
+  return input.unresolved && input.blockerUpdatedAt != null
+    && input.now.getTime() - input.blockerUpdatedAt.getTime() >= ISSUE_STALE_BLOCKER_ATTENTION_AGE_MS;
+}
+
 /**
  * Wake reasons that assert issue state rather than deliver a new event.
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
@@ -150,6 +167,53 @@ export function computeIssueRewakeCooldownMs(noProgressStreak: number): number {
   // Guard the exponent so an absurd streak can't overflow into Infinity.
   const factor = 2 ** Math.min(doublings, 16);
   return Math.min(ISSUE_REWAKE_BASE_COOLDOWN_MS * factor, ISSUE_REWAKE_MAX_COOLDOWN_MS);
+}
+
+export function computeIssueDependencyWakeupCooldownMs(blockedWakeupCount: number): number {
+  const doublings = Math.max(0, blockedWakeupCount - ISSUE_DEPENDENCY_WAKEUP_THROTTLE_THRESHOLD);
+  const factor = 2 ** Math.min(doublings, 16);
+  return Math.min(ISSUE_DEPENDENCY_WAKEUP_BASE_COOLDOWN_MS * factor, ISSUE_DEPENDENCY_WAKEUP_MAX_COOLDOWN_MS);
+}
+
+export interface IssueDependencyWakeupThrottleInput {
+  now: Date;
+  blockedWakeupCount: number;
+  lastBlockedWakeRequestedAt: Date | null;
+}
+
+export type IssueDependencyWakeupThrottleDecision =
+  | { blocked: false; blockedWakeupCount: number }
+  | {
+      blocked: true;
+      blockedWakeupCount: number;
+      cooldownMs: number;
+      lastBlockedWakeRequestedAt: Date;
+      nextAllowedAt: Date;
+    };
+
+export function evaluateIssueDependencyWakeupThrottle(
+  input: IssueDependencyWakeupThrottleInput,
+): IssueDependencyWakeupThrottleDecision {
+  if (
+    input.blockedWakeupCount <= ISSUE_DEPENDENCY_WAKEUP_THROTTLE_THRESHOLD ||
+    !input.lastBlockedWakeRequestedAt
+  ) {
+    return { blocked: false, blockedWakeupCount: input.blockedWakeupCount };
+  }
+
+  const cooldownMs = computeIssueDependencyWakeupCooldownMs(input.blockedWakeupCount);
+  const nextAllowedAt = new Date(input.lastBlockedWakeRequestedAt.getTime() + cooldownMs);
+  if (input.now.getTime() < nextAllowedAt.getTime()) {
+    return {
+      blocked: true,
+      blockedWakeupCount: input.blockedWakeupCount,
+      cooldownMs,
+      lastBlockedWakeRequestedAt: input.lastBlockedWakeRequestedAt,
+      nextAllowedAt,
+    };
+  }
+
+  return { blocked: false, blockedWakeupCount: input.blockedWakeupCount };
 }
 
 export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): IssueRewakeThrottleDecision {

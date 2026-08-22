@@ -24,6 +24,10 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
+import {
+  computeIssueDependencyWakeupCooldownMs,
+  evaluateIssueDependencyWakeupThrottle,
+} from "../services/issue-rewake-throttle.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -108,6 +112,21 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("exponentially backs off repeated dependency-blocked wakeups", () => {
+    const lastWake = new Date("2026-08-20T00:00:00.000Z");
+    const throttled = evaluateIssueDependencyWakeupThrottle({
+      now: new Date("2026-08-20T00:01:30.000Z"),
+      blockedWakeupCount: 5,
+      lastBlockedWakeRequestedAt: lastWake,
+    });
+
+    expect(computeIssueDependencyWakeupCooldownMs(5)).toBe(4 * 60_000);
+    expect(throttled.blocked).toBe(true);
+    if (throttled.blocked) {
+      expect(throttled.nextAllowedAt.toISOString()).toBe("2026-08-20T00:04:00.000Z");
+    }
   });
 
   async function seedCompanyAgentIssue() {

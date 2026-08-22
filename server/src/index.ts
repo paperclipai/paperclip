@@ -49,6 +49,7 @@ import {
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
+  environmentService,
   decisionService,
   decisionRetentionService,
   externalObjectService,
@@ -1224,6 +1225,17 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        // Lease reconciliation keeps its own guard. It is a cleanup step, and a
+        // failure in it must not stop hot-restart adoption from running.
+        try {
+          const leases = await environmentService(db as any).reconcileOrphanedLeases();
+          if (leases.released > 0 || leases.expired > 0 || leases.failed > 0) {
+            logger.warn(leases, "startup environment lease reconciliation changed stale lease state");
+          }
+        } catch (err) {
+          logger.error({ err }, "startup environment lease reconciliation failed - periodic reconciliation will serve as backstop");
+        }
+
         try {
           const hotRestart = await heartbeat.reconcileHotRestartAdoption();
           if (hotRestart.mode === "reported") {
@@ -1533,6 +1545,19 @@ export async function startServer(): Promise<StartedServer> {
               const reviewed = await heartbeat.reconcileProductivityReviews();
               if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
                 logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+              }
+            })
+            // Last in the chain, and with its own guard, so this step cannot
+            // stop any step that came before it. One shared catch ends the
+            // chain at the first rejection.
+            .then(async () => {
+              try {
+                const leases = await environmentService(db as any).reconcileOrphanedLeases();
+                if (leases.released > 0 || leases.expired > 0 || leases.failed > 0) {
+                  logger.warn(leases, "periodic environment lease reconciliation changed stale lease state");
+                }
+              } catch (err) {
+                logger.error({ err }, "periodic environment lease reconciliation failed");
               }
             })
             .catch((err) => {

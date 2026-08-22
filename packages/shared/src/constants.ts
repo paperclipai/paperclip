@@ -593,6 +593,13 @@ export const ENVIRONMENT_LEASE_POLICIES = [
 ] as const;
 export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
 
+/**
+ * How long an ephemeral lease with no attested expiry can stay active before
+ * reconciliation takes it back. Measured from `acquiredAt`, because the
+ * `expires_at` column records only an expiry the provider attested.
+ */
+export const DEFAULT_EPHEMERAL_LEASE_TTL_MS = 6 * 60 * 60 * 1000;
+
 export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
 export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
 
@@ -926,6 +933,21 @@ export const HEARTBEAT_RUN_STATUSES = [
   "timed_out",
 ] as const;
 export type HeartbeatRunStatus = (typeof HEARTBEAT_RUN_STATUSES)[number];
+
+/**
+ * A run in one of these states has stopped. Nothing it held is still in use.
+ * Keep this list in one place: a caller that decides "the run is over" from a
+ * copy of the list can disagree with a caller that reads the list, and the two
+ * then classify the same row differently.
+ */
+export const HEARTBEAT_RUN_TERMINAL_STATUSES = [
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const satisfies readonly HeartbeatRunStatus[];
+export type HeartbeatRunTerminalStatus = (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number];
 
 export const RUN_LIVENESS_STATES = [
   "completed",

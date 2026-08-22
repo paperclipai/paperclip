@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte,
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  HEARTBEAT_RUN_TERMINAL_STATUSES,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   MODEL_PROFILE_KEYS,
@@ -122,6 +123,7 @@ import {
 } from "./run-liveness.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
+  evaluateIssueDependencyWakeupThrottle,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
@@ -438,7 +440,6 @@ const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
-const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
@@ -18335,6 +18336,66 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+          const dependencyWakeRows = await tx
+            .select({
+              requestedAt: agentWakeupRequests.requestedAt,
+              payload: agentWakeupRequests.payload,
+            })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              ),
+            )
+            .orderBy(desc(agentWakeupRequests.requestedAt))
+            .limit(64);
+          const currentBlockerState = [...dependencyReadiness.unresolvedBlockerIssueIds].sort().join(",");
+          const matchingDependencyWakeRows = dependencyWakeRows.filter((row) => {
+            const rowPayload = parseObject(row.payload);
+            const rowBlockerState = Array.isArray(rowPayload.unresolvedBlockerIssueIds)
+              ? rowPayload.unresolvedBlockerIssueIds
+                .filter((value): value is string => typeof value === "string")
+                .sort()
+                .join(",")
+              : "";
+            return rowBlockerState === currentBlockerState;
+          });
+          const dependencyThrottleDecision = evaluateIssueDependencyWakeupThrottle({
+            now: new Date(),
+            blockedWakeupCount: matchingDependencyWakeRows.length,
+            lastBlockedWakeRequestedAt: matchingDependencyWakeRows[0]?.requestedAt ?? null,
+          });
+          if (dependencyThrottleDecision.blocked) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_dependencies_blocked",
+              payload: {
+                ...(payload ?? {}),
+                issueId,
+                unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+                heartbeatSkip: {
+                  reason: "issue_dependencies_blocked",
+                  throttle: "exponential_cooldown",
+                  blockedWakeupCount: dependencyThrottleDecision.blockedWakeupCount,
+                  cooldownMs: dependencyThrottleDecision.cooldownMs,
+                  lastBlockedWakeRequestedAt: dependencyThrottleDecision.lastBlockedWakeRequestedAt.toISOString(),
+                  nextAllowedAt: dependencyThrottleDecision.nextAllowedAt.toISOString(),
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
