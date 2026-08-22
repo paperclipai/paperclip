@@ -25,6 +25,7 @@ import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { getIssueDetailCacheRefs } from "../../lib/issueDetailCache";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
@@ -924,7 +925,13 @@ export function IssueProperties({
     if (watchdogOpen) return;
     setWatchdogAgentInput(issue.watchdog?.watchdogAgentId ?? "");
     setWatchdogInstructionsInput(issue.watchdog?.instructions ?? "");
-  }, [issue.watchdog?.watchdogAgentId, issue.watchdog?.instructions, watchdogOpen]);
+  }, [
+    issue.watchdog?.watchdogAgentId,
+    issue.watchdog?.instructions,
+    issue.watchdog?.status,
+    issue.watchdog?.id,
+    watchdogOpen,
+  ]);
 
   const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -941,20 +948,30 @@ export function IssueProperties({
     mutationFn: (data: { agentId: string; instructions: string | null }) =>
       issuesApi.upsertWatchdog(issue.id, data),
     onSuccess: (watchdog) => {
-      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
-        current ? { ...current, watchdog } : current,
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      const refs = getIssueDetailCacheRefs(issue);
+      for (const ref of refs) {
+        queryClient.setQueryData<Issue>(queryKeys.issues.detail(ref), (current) =>
+          current ? { ...current, watchdog } : current,
+        );
+        void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+      }
+      setWatchdogAgentInput(watchdog.watchdogAgentId);
+      setWatchdogInstructionsInput(watchdog.instructions ?? "");
       setWatchdogOpen(false);
     },
   });
   const deleteWatchdog = useMutation({
     mutationFn: () => issuesApi.deleteWatchdog(issue.id),
     onSuccess: () => {
-      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
-        current ? { ...current, watchdog: null } : current,
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      const refs = getIssueDetailCacheRefs(issue);
+      for (const ref of refs) {
+        queryClient.setQueryData<Issue>(queryKeys.issues.detail(ref), (current) =>
+          current ? { ...current, watchdog: null } : current,
+        );
+        void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+      }
+      setWatchdogAgentInput("");
+      setWatchdogInstructionsInput("");
       setWatchdogOpen(false);
     },
   });
