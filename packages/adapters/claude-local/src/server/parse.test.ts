@@ -241,6 +241,35 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies the usage-credits refusal for the 1M context window as provider quota", () => {
+    // Verbatim wording from a real refused run: the account has no usage credits
+    // enabled for the 1M context window, so the CLI refuses before doing work.
+    const errorMessage =
+      "API Error: Usage credits required for 1M context · turn on usage credits at " +
+      "claude.ai/settings/usage?from=cc_cli_limit_message, or use --model to switch to standard context";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+  });
+
+  it("does not widen the quota classifier onto deterministic failures that mention limits", () => {
+    // The alternation must stay anchored on credit/limit wording the CLI only
+    // emits when it refuses a run — not on any error that says "limit".
+    expect(isClaudeProviderQuotaError({ errorMessage: "Prompt is too long" })).toBe(false);
+    expect(
+      isClaudeProviderQuotaError({
+        errorMessage:
+          "API Error: Claude's response exceeded the 32000 output token maximum. To configure " +
+          "this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeProviderQuotaError({
+        errorMessage: "Credits required to continue: purchase usage credits.",
+      }),
+    ).toBe(false);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
