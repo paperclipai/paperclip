@@ -3496,7 +3496,7 @@ function createAdapterRuntimeMcpAccess(
   });
 }
 
-const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
+const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local", "claude_local"]);
 
 function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
   return MANAGED_MCP_LOCAL_ADAPTERS.has(adapterType);
