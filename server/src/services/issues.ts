@@ -1412,6 +1412,7 @@ const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
   "issue.scheduled_retry_retry_now",
   "issue.successful_run_handoff_resolved",
   "issue.task_watchdog_fingerprint_reviewed",
+  "issue.task_watchdog_run_restamped",
   "issue.thread_interaction_accepted",
   "issue.thread_interaction_answered",
   "issue.thread_interaction_cancelled",
