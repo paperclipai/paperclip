@@ -1,3 +1,4 @@
+import { grokModelSupportsXhigh } from "@paperclipai/adapter-grok-local";
 import type { AdapterModel } from "../../api/agents";
 import type { Issue, Project } from "@paperclipai/shared";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
@@ -76,6 +77,13 @@ export const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
+  grok_local: [
+    { value: "", label: "Default" },
+    { value: "xhigh", label: "X-High" },
+    { value: "high", label: "High" },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ],
 } as const;
 
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -90,15 +98,23 @@ export function compactRecord(record: Record<string, unknown>) {
   );
 }
 
-export function thinkingEffortOptionsFor(adapterType: string | null | undefined) {
+export function thinkingEffortOptionsFor(
+  adapterType: string | null | undefined,
+  model?: string | null,
+) {
   if (adapterType === "codex_local") return ISSUE_THINKING_EFFORT_OPTIONS.codex_local;
   if (adapterType === "opencode_local") return ISSUE_THINKING_EFFORT_OPTIONS.opencode_local;
+  if (adapterType === "grok_local") {
+    if (grokModelSupportsXhigh(model)) return ISSUE_THINKING_EFFORT_OPTIONS.grok_local;
+    return ISSUE_THINKING_EFFORT_OPTIONS.grok_local.filter((option) => option.value !== "xhigh");
+  }
   return ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
 }
 
 export function thinkingEffortKeyFor(adapterType: string | null | undefined) {
   if (adapterType === "codex_local") return "modelReasoningEffort";
   if (adapterType === "opencode_local") return "variant";
+  if (adapterType === "grok_local") return "reasoningEffort";
   return "effort";
 }
 
@@ -108,6 +124,9 @@ export function thinkingEffortValueFor(adapterType: string | null | undefined, a
   }
   if (adapterType === "opencode_local") {
     return String(adapterConfig.variant ?? "");
+  }
+  if (adapterType === "grok_local") {
+    return String(adapterConfig.reasoningEffort ?? adapterConfig.effort ?? "");
   }
   return String(adapterConfig.effort ?? "");
 }

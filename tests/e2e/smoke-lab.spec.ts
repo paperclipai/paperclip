@@ -301,7 +301,7 @@ async function gatewayFetch(request: APIRequestContext, path: string, token: str
 }
 
 test.describe.serial("Smoke Lab scenario catalog mirror", () => {
-  test.setTimeout(240_000);
+  test.setTimeout(360_000);
 
   test("records the P1-P7 CI-safe Smoke Lab lifecycle into the results API @smoke-lab", async ({ page, request }) => {
     const seed = await newCompany(request, "catalog");

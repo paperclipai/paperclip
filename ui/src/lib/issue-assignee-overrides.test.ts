@@ -93,5 +93,16 @@ describe("buildAssigneeAdapterOverrides", () => {
     ).toEqual({
       adapterConfig: { variant: "max" },
     });
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "grok_local",
+        lane: "custom",
+        modelOverride: "grok-4.6",
+        thinkingEffortOverride: "xhigh",
+        chrome: false,
+      }),
+    ).toEqual({
+      adapterConfig: { model: "grok-4.6", reasoningEffort: "xhigh" },
+    });
   });
 });

@@ -31,6 +31,22 @@ describe("parseGrokModelsOutput", () => {
       models: ["grok-build", "grok-code"],
     });
   });
+
+  it("extracts grok-4.6 as the current CLI default", () => {
+    expect(parseGrokModelsOutput([
+      "You are logged in with grok.com.",
+      "",
+      "Default model: grok-4.6",
+      "",
+      "Available models:",
+      "  * grok-4.6 (default)",
+      "  - grok-4.5",
+    ].join("\n"))).toEqual({
+      authenticated: true,
+      defaultModel: "grok-4.6",
+      models: ["grok-4.6", "grok-4.5"],
+    });
+  });
 });
 
 describe("grok_local testEnvironment", () => {
@@ -49,10 +65,11 @@ describe("grok_local testEnvironment", () => {
         stdout: [
           "You are logged in with grok.com.",
           "",
-          "Default model: grok-build",
+          "Default model: grok-4.6",
           "",
           "Available models:",
-          "  * grok-build (default)",
+          "  * grok-4.6 (default)",
+          "  - grok-4.5",
         ].join("\n"),
         stderr: "",
       })
@@ -98,6 +115,8 @@ describe("grok_local testEnvironment", () => {
         "--permission-mode",
         "dontAsk",
         "--disable-web-search",
+        "--model",
+        "grok-4.6",
         "--single",
         "Respond with exactly hello.",
       ]),

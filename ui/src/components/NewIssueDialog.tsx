@@ -167,6 +167,7 @@ type StagedIssueFile = {
 };
 
 import { Badge } from "@/components/ui/badge";
+import { grokModelSupportsXhigh } from "@paperclipai/adapter-grok-local";
 import {
   buildAssigneeAdapterOverrides,
   ISSUE_OVERRIDE_ADAPTER_TYPES,
@@ -199,7 +200,32 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
+  grok_local: [
+    { value: "", label: "Default" },
+    { value: "xhigh", label: "X-High" },
+    { value: "high", label: "High" },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ],
 } as const;
+
+function thinkingEffortOptionsForAssignee(
+  adapterType: string | null,
+  model?: string | null,
+) {
+  const options =
+    adapterType === "codex_local"
+      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+      : adapterType === "opencode_local"
+        ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
+        : adapterType === "grok_local"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.grok_local
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+  if (adapterType === "grok_local" && !grokModelSupportsXhigh(model)) {
+    return options.filter((option) => option.value !== "xhigh");
+  }
+  return options;
+}
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -586,7 +612,12 @@ export function NewIssueDialog() {
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
+  const assigneeAgent = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null;
+  const assigneeAdapterType = assigneeAgent?.adapterType ?? null;
+  const assigneePrimaryModel = typeof assigneeAgent?.adapterConfig?.model === "string"
+    ? assigneeAgent.adapterConfig.model
+    : "";
+  const assigneeEffectiveModel = assigneeModelOverride || assigneePrimaryModel;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -951,19 +982,18 @@ export function NewIssueDialog() {
       setAssigneeModelLane("primary");
     }
 
-    const validThinkingValues =
-      assigneeAdapterType === "codex_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-        : assigneeAdapterType === "opencode_local"
-          ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+    const validThinkingValues = thinkingEffortOptionsForAssignee(
+      assigneeAdapterType,
+      assigneeEffectiveModel,
+    );
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
-      setAssigneeThinkingEffort("");
+      setAssigneeThinkingEffort(assigneeThinkingEffort === "xhigh" ? "high" : "");
     }
   }, [
     supportsAssigneeOverrides,
     assigneeAdapterType,
     assigneeThinkingEffort,
+    assigneeEffectiveModel,
     assigneeSupportsCheapLane,
     assigneeModelLane,
   ]);
@@ -1215,12 +1245,10 @@ export function NewIssueDialog() {
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
         : "Agent options";
-  const thinkingEffortOptions =
-    assigneeAdapterType === "codex_local"
-      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
-      : assigneeAdapterType === "opencode_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+  const thinkingEffortOptions = thinkingEffortOptionsForAssignee(
+    assigneeAdapterType,
+    assigneeEffectiveModel,
+  );
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentAssigneeOptionIds = useMemo(
     () => recentAssigneeIds.map((id) => assigneeValueFromSelection({ assigneeAgentId: id })),
