@@ -90,6 +90,7 @@ export async function observeCrossIssueInfluence(
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
         responsibleUserId: heartbeatRuns.responsibleUserId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
@@ -104,7 +105,10 @@ export async function observeCrossIssueInfluence(
     if (
       !run ||
       run.companyId !== input.companyId ||
-      run.agentId !== input.agentId
+      run.agentId !== input.agentId ||
+      // A finished run is a spent credential: its heartbeat is over, so it can
+      // no longer be the thing making this write (FAI-9983).
+      run.status !== "running"
     ) {
       throw crossIssueInfluenceRunContextError();
     }

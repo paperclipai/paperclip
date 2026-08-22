@@ -4006,6 +4006,98 @@ export function issueRoutes(
     return null;
   }
 
+  /**
+   * Fail-closed run-context authorization for checkout and release (FAI-9983).
+   *
+   * `X-Paperclip-Run-Id` is a claim, never an authority. Comment, PATCH and
+   * interaction-resolution writes already prove the run through
+   * `observeCrossIssueInfluence`, which locks the persisted run row before it
+   * derives the source issue. Checkout and release had no equivalent gate: an
+   * unknown, terminal, forged, mismatched-agent, mismatched-company or
+   * context-less run id reached durable state, and checkout could bootstrap its
+   * own authority by writing the target issue into the run it was authenticating
+   * with. Both routes act on one canonical target, so this guard requires the
+   * run to exist, be `running`, match the actor agent, match the issue's
+   * company, and already name *this* issue in the context Paperclip wrote when
+   * it started the run. Nothing here ever *writes* run context: authority is
+   * only read, never minted by the request that wants to use it.
+   *
+   * The run row is read, not locked. The check is monotonic in the attacker's
+   * favour only — a run that passes here was authorized at check time, and a run
+   * that becomes terminal a moment later loses authority rather than gaining it,
+   * so there is no window a caller can drive to widen its own authority.
+   */
+  async function assertCanonicalAgentRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+
+    const run = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    const context = run?.contextSnapshot && typeof run.contextSnapshot === "object"
+      && !Array.isArray(run.contextSnapshot)
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    const contextIssueId = readNonEmptyString(context?.issueId) ?? readNonEmptyString(context?.taskId);
+
+    if (
+      !run
+      || run.companyId !== issue.companyId
+      || run.agentId !== req.actor.agentId
+      || run.status !== "running"
+      || contextIssueId !== issue.id
+    ) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        // A run id that is not persisted cannot be referenced by the audit row;
+        // the claimed value is preserved in `details.runId` either way.
+        runId: run ? actor.runId : null,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.agent_run_context_denied",
+        entityType: "issue",
+        entityId: issue.id,
+        issueId: issue.id,
+        details: {
+          runId,
+          runExists: Boolean(run),
+          runStatus: run?.status ?? null,
+          runAgentMatch: run ? run.agentId === req.actor.agentId : false,
+          runCompanyMatch: run ? run.companyId === issue.companyId : false,
+          contextIssueId,
+        },
+      });
+      res.status(403).json({
+        error: "Agent writes require a live heartbeat run whose context targets this issue",
+        code: "agent_run_context_invalid",
+        details: {
+          issueId: issue.id,
+          runId,
+          securityPrinciples: ["Complete Mediation", "Secure Defaults", "Fail Securely"],
+          remediation:
+            "Retry from the Paperclip-created heartbeat run for this issue instead of supplying a run id by hand.",
+        },
+      });
+      return false;
+    }
+    return true;
+  }
+
   async function hasActiveCheckoutManagementOverride(
     actorAgentId: string,
     companyId: string,
@@ -10985,6 +11077,9 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent can only checkout as itself" });
       return;
     }
+    // Checkout must not bootstrap its own authority: the run has to already be
+    // bound to this issue before it can take the execution lock.
+    if (!(await assertCanonicalAgentRunContext(req, res, issue))) return;
 
     if (issue.assigneeAgentId !== req.body.agentId) {
       await assertCanAssignTasks(req, issue.companyId, {
@@ -11094,6 +11189,7 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertCanonicalAgentRunContext(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
