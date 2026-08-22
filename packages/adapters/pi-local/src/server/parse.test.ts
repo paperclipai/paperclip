@@ -237,6 +237,59 @@ describe("parsePiJsonl", () => {
     expect(parsed.errors).toEqual([]);
   });
 
+  it("surfaces a turn-level error (e.g. insufficient provider credits) even with empty content", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: '402: {"message":"Insufficient credits. Add more using https://openrouter.ai/settings/credits","code":402}',
+          usage: { input: 0, output: 0, cacheRead: 0, cost: { total: 0 } },
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual([
+      '402: {"message":"Insufficient credits. Add more using https://openrouter.ai/settings/credits","code":402}',
+    ]);
+    expect(parsed.finalMessage).toBeNull();
+  });
+
+  it("still surfaces a turn-level error with a generic fallback when errorMessage is absent", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual(["Pi reported a turn-level error with no message."]);
+  });
+
+  it("does not treat a normal completed turn as an error", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "All good" }],
+          stopReason: "completed",
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual([]);
+  });
+
   it("surfaces standalone error events", () => {
     const stdout = [
       JSON.stringify({
