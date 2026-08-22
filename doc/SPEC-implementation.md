@@ -492,7 +492,7 @@ Allowed transitions:
 - `backlog -> todo | cancelled`
 - `todo -> in_progress | blocked | cancelled`
 - `in_progress -> in_review | blocked | done | cancelled`
-- `in_review -> in_progress | done | cancelled`
+- `in_review -> in_progress | todo | done | cancelled`
 - `blocked -> todo | in_progress | cancelled`
 - terminal: `done`, `cancelled`
 
@@ -501,6 +501,7 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- a user or board transition of an agent-assigned issue from `in_review` to `todo` is a send-back that expresses resume intent; it enqueues the `issue_status_changed` dispatch wake, subject to the normal rewake throttle
 
 V1 non-terminal liveness rule:
 

@@ -418,10 +418,16 @@ This is dispatch state: ready to start, not yet actively claimed.
 A healthy dispatch state means at least one of these is true:
 
 - the issue already has a queued wake path
-- the issue is intentionally resting in `todo` after a completed agent heartbeat, with no interrupted dispatch evidence
+- the issue is intentionally resting in `todo` after a completed agent heartbeat, with no interrupted dispatch evidence and no unserviced resume-intent transition (see below)
 - the issue has been explicitly surfaced as stranded through a visible blocked/recovery path
 
 An assigned `todo` issue is stalled when dispatch was interrupted, no wake remains queued or running, and no recovery path has been opened.
+
+#### Resume-intent transitions
+
+A user or board transition of an agent-assigned issue from `in_review` to `todo` expresses resume intent: the human is sending the work back to the agent, not parking it. That transition MUST enqueue the same `issue_status_changed` dispatch wake that the `blocked`, `backlog`, and closed-to-`todo` transitions produce, subject to the normal rewake throttle.
+
+"Intentionally resting" never describes this state. An agent-assigned `todo` issue that arrived via a user `in_review -> todo` transition and has no queued wake is a missed handoff — stalled dispatch, not healthy rest — even though the last agent heartbeat completed normally. A reviewer sending work back to `todo` with no wake fired is exactly how issues die while looking calm.
 
 ### Agent-assigned `backlog`
 
@@ -450,6 +456,8 @@ An agent-owned `in_progress` issue is stalled when it has no active run, no queu
 
 This is review/approval state: execution is paused because the next move belongs to a reviewer, approver, board user, or recovery owner.
 
+For agent-owned issues, the review path is a maintained invariant, not an entry check. Passing the entry gate once does not keep the issue healthy: every later event that consumes the issue's last review path — a pending interaction expiring, being superseded, or resolving without a status change; a linked approval resolving; a monitor exhausting its bounds; a participant run reaching a terminal state — must either restore a valid review path or route the issue onward.
+
 A healthy `in_review` issue has at least one valid action path:
 
 - a typed execution-policy participant who can approve or request changes
@@ -461,7 +469,15 @@ A healthy `in_review` issue has at least one valid action path:
 
 Agent-assigned `in_review` with no typed participant is only healthy when one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
 
-An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
+An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip must not silently complete the issue or leave blocker chains parked indefinitely.
+
+When the last review path of an agent-owned `in_review` issue is consumed and nothing restores or replaces it, recovery is bounded and idempotent:
+
+1. Paperclip queues at most one `issue_review_path_lost` recovery wake for the assignee, fingerprinted on the consumed path id (the interaction, approval, monitor, or participant run that evaporated), so repeated evaluation of the same loss cannot fan out into a wake loop. When the issue became pathless without a consumed path — for example, it entered `in_review` and no review path was ever created — the fingerprint is the id of the finalizing run or status-change event that left it pathless, so the recovery key is always stable. The wake payload tells the assignee it must restore a waiting path or choose a disposition.
+2. If that recovery run also finishes with the issue `in_review` and zero paths, no further wakes are queued for that fingerprint. The issue enters a visible stalled-review state: surfaced as needs-attention on the issue page and fed to the decisions desk as a decide-now item, rather than drifting silently.
+3. A new consumed-path fingerprint — a later interaction, approval, or monitor that itself evaporates — may start one new bounded cycle; unchanged evidence must not.
+
+`in_review` with zero paths is never a terminal-OK state for recovery accounting; it is stalled work awaiting routing.
 
 When an execution-policy review stage has a pending agent participant, the participant's run is part of the review path only while it is live or queued. If that participant run reaches a terminal state while `executionState.status` remains `pending`, no decision has been recorded. Paperclip should queue one bounded normal-model recovery wake for the same participant when the agent is invokable and no other review path exists. If that recovery run also finishes while the stage remains pending, or the participant cannot be invoked, Paperclip must move the source issue to an explicit blocked/recovery path instead of leaving `in_review` to drift silently.
 
@@ -565,7 +581,24 @@ An accepted interaction supersedes a continuation park recorded before that acce
 
 This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
 
-### 9.3 Recovery model-profile lane
+### 9.3 Stranded assigned `in_review`
+
+Example:
+
+- issue is assigned to an agent
+- status is `in_review`
+- a run finalizes while that issue is still checked out to it, and the issue has zero valid review paths under §8 (no typed participant, pending interaction or approval, user owner, active monitor, active run, queued wake, or open recovery action)
+
+Run finalization must validate the review disposition, not just the run's own exit status. A run that enters or leaves an issue `in_review` without a surviving review path has stranded a handoff even when the run itself ended successfully — for example, a run woken by review feedback that replies in a comment and ends without restoring a waiting path.
+
+Recovery rule:
+
+- Paperclip queues one bounded `issue_review_path_lost` recovery wake for the assignee, fingerprinted on the consumed path id or, when no path was consumed, on the id of the finalizing run that left the issue pathless (§8 `in_review`)
+- if that recovery run also finalizes with the issue `in_review` and zero paths, no further wakes are queued for that fingerprint; the issue surfaces as a stalled review on the issue page and the decisions desk
+
+This is a review-handoff continuity recovery. It mirrors §9.1 and §9.2: one bounded wake per fingerprint, then visible escalation instead of a requeue loop.
+
+### 9.4 Recovery model-profile lane
 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
 
