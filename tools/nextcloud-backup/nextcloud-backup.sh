@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Auswaerts-Sicherung nach Hetzner/Nextcloud: Paperclip-Datenbank + Claude-Code-Ordner.
 #
-# Usage: nextcloud-backup.sh [--nur-db] [--nur-code] [--kein-versand]
+# Usage: nextcloud-backup.sh [--nur-db] [--nur-code] [--nur-vault] [--kein-versand]
 #
 # WICHTIG: Nicht direkt per launchd starten. macOS verweigert einem launchd-Job
 # aus zsh/bash den Zugriff auf CloudStorage (SynologyDrive) UND auf
@@ -28,6 +28,7 @@ PG_DUMP="/opt/homebrew/bin/pg_dump"
 PG_RESTORE="/opt/homebrew/bin/pg_restore"
 
 CODE_DIR="$HOME/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC"
+VAULT_DIR="$HOME/Obsidian/WHITESTAG-Vault"
 AUSSCHLUSS="$DIR/ausschluss-claude-code.txt"
 ARBEIT="$HOME/.paperclip/backups/nextcloud"
 LOG="$HOME/.paperclip/logs/nextcloud-backup.log"
@@ -36,6 +37,7 @@ LOCK="$ARBEIT/backup.lock"
 
 TAG_DB="paperclip-db"
 TAG_CODE="claude-code"
+TAG_VAULT="obsidian-vault"
 HOST="MacStudio"
 
 # Restic wartet auf eine fremde Repo-Sperre, statt abzubrechen: das
@@ -49,11 +51,12 @@ MAILHUB_URL="http://127.0.0.1:5678/webhook/mailhub/send"
 MAILHUB_ENV="$HOME/.paperclip/instances/default/secrets/mailhub.env"
 VON="cto@whitestag.ai"; AN="ws@whitestag.ai"
 
-MACH_DB=1; MACH_CODE=1; VERSAND=1
+MACH_DB=1; MACH_CODE=1; MACH_VAULT=1; VERSAND=1
 while [ $# -gt 0 ]; do
   case "$1" in
-    --nur-db)       MACH_CODE=0; shift ;;
-    --nur-code)     MACH_DB=0; shift ;;
+    --nur-db)       MACH_CODE=0; MACH_VAULT=0; shift ;;
+    --nur-code)     MACH_DB=0; MACH_VAULT=0; shift ;;
+    --nur-vault)    MACH_DB=0; MACH_CODE=0; shift ;;
     --kein-versand) VERSAND=0; shift ;;
     *) echo "unbekanntes Argument: $1" >&2; exit 2 ;;
   esac
@@ -161,9 +164,40 @@ if [ "$MACH_CODE" -eq 1 ]; then
   log "Claude-Code-Ordner gesichert (Schlagwort $TAG_CODE)."
 fi
 
-# --- 3. Aufbewahrung -------------------------------------------------------
+# --- 3. Obsidian-Vault -----------------------------------------------------
+# Seit 22.08.2026 TAEGLICH statt sonntags. Vorher lag zwischen zwei Sonntagen
+# im schlimmsten Fall eine Woche Arbeit nur auf dem Mac und der NAS — beide im
+# selben Gebaeude. Uebernommen aus ~/.restic/backup-vault.sh; Schlagworte und
+# Host bleiben gleich, damit die Snapshot-Historie ab Mai 2026 fortlaeuft.
+#
+# Ausschluesse wie beim NAS-Spiegel: der Vault enthaelt Code-Projekte mit
+# `.venv` (0,7 GB, darunter ein 572-MB-Sprachmodell), `__pycache__` und
+# `node_modules` — ein Viertel aller Dateien, alles wiederherstellbar.
+# `.git` bleibt drin.
+if [ "$MACH_VAULT" -eq 1 ]; then
+  [ -d "$VAULT_DIR" ] || melde_fehler "Vault nicht erreichbar: $VAULT_DIR"
+  log "Sichere $VAULT_DIR ..."
+  if ! "$RESTIC" backup "$VAULT_DIR" --tag "$TAG_VAULT" --tag automated \
+        --host "$HOST" $WARTEN \
+        --exclude ".trash" \
+        --exclude ".obsidian/workspace*.json" \
+        --exclude ".obsidian/cache" \
+        --exclude ".DS_Store" \
+        --exclude "*/.DS_Store" \
+        --exclude ".venv" \
+        --exclude "venv" \
+        --exclude "node_modules" \
+        --exclude "__pycache__" \
+        --exclude "*.pyc" \
+        >>"$LOG" 2>&1; then
+    melde_fehler "restic-Sicherung des Vaults fehlgeschlagen"
+  fi
+  log "Vault gesichert (Schlagwort $TAG_VAULT)."
+fi
+
+# --- 4. Aufbewahrung -------------------------------------------------------
 # Je Schlagwort getrennt. NIEMALS ohne --tag: im selben Repo liegt der Vault.
-for T in "$TAG_DB" "$TAG_CODE"; do
+for T in "$TAG_DB" "$TAG_CODE" "$TAG_VAULT"; do
   if ! "$RESTIC" forget --tag "$T" --keep-daily 14 --keep-weekly 8 \
         --keep-monthly 12 $WARTEN >>"$LOG" 2>&1; then
     log "WARNUNG: Aufbewahrung fuer $T fehlgeschlagen (Sicherung selbst ist durch)."
@@ -175,7 +209,7 @@ if ! "$RESTIC" prune $WARTEN >>"$LOG" 2>&1; then
   log "WARNUNG: prune fehlgeschlagen (Sicherungen sind unversehrt)."
 fi
 
-# --- 4. Stand --------------------------------------------------------------
+# --- 5. Stand --------------------------------------------------------------
 N_DB="$("$RESTIC" snapshots --tag "$TAG_DB" --json 2>/dev/null | /usr/bin/python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
 N_CODE="$("$RESTIC" snapshots --tag "$TAG_CODE" --json 2>/dev/null | /usr/bin/python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
 printf '{"stand":"ok","zeit":"%s","snapshots_db":%s,"snapshots_code":%s}\n' \

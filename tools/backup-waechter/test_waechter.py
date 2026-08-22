@@ -84,3 +84,31 @@ def test_kaputte_statusdatei_ergibt_unbekannt(tmp_path):
     s = tmp_path / "status.json"
     s.write_text("kein json")
     assert waechter.status_stand(str(s)) is None
+
+
+def test_synology_spiegel_alter_aus_der_obersten_ebene(tmp_path):
+    """Sechster Prueffall: der Synology-Drive-Spiegel von `Claude Code MAC`.
+
+    Sein Alter wird aus den Eintraegen der OBERSTEN EBENE bestimmt, nicht
+    durch einen Vollscan: der Ordner hat 15 GB, und ein rekursiver Durchlauf
+    ueber SMB dauert Minuten. Synology Drive aktualisiert die Zeitstempel der
+    Elternordner mit, das reicht als Lebenszeichen."""
+    import os, time
+    (tmp_path / "Paperclip").mkdir()
+    (tmp_path / "CCC-Film").mkdir()
+    (tmp_path / "datei.txt").write_text("x")
+    alt = time.time() - 400000
+    os.utime(tmp_path / "CCC-Film", (alt, alt))
+    stand = waechter.ordner_stand(str(tmp_path))
+    assert stand is not None
+    assert stand.timestamp() > time.time() - 120, "juengster Eintrag zaehlt"
+
+
+def test_fehlender_synology_spiegel_ergibt_unbekannt(tmp_path):
+    """NAS weg oder Ordner verschwunden — beides ist ein Alarm, kein 'gut'."""
+    assert waechter.ordner_stand(str(tmp_path / "gibtsnicht")) is None
+
+
+def test_leerer_synology_spiegel_ergibt_unbekannt(tmp_path):
+    """Ein leerer Spiegelordner bedeutet, dass der Sync nichts abgelegt hat."""
+    assert waechter.ordner_stand(str(tmp_path)) is None

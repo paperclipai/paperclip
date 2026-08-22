@@ -34,6 +34,11 @@ NAS = "/Volumes/WHITESTAG-ARCHIV/Backup Mac Studio M4 Max/paperclip-db"
 # Lauf mittendrin abgebrochen ist.
 VAULT_SYNC_STATUS = os.path.expanduser(
     "~/.paperclip/logs/vault-nas-sync-last.json")
+# Synology-Drive-Spiegel von "Claude Code MAC". Kein eigener Dienst von uns —
+# der Synology-Client spiegelt fortlaufend. Genau deshalb faellt sein Ausfall
+# ohne Pruefung niemandem auf.
+SYNOLOGY_SPIEGEL = ("/Volumes/WHITESTAG-ARCHIV/Mac Studio M4 Max 128GB/"
+                    "Claude Code MAC")
 RESTIC = "/opt/homebrew/bin/restic"
 RESTIC_REPO = "rclone:hetzner-nc:Backups/MacStudio-WHITESTAG/restic-mac-studio"
 RESTIC_PASS = os.path.expanduser("~/.restic/repo.pass")
@@ -49,6 +54,9 @@ TAG = timedelta(days=1)
 # Nacht ausfällt. Der Vault läuft nur sonntags, daher 9 Tage.
 GRENZE_TAEGLICH = 30 * STD
 GRENZE_VAULT = 9 * TAG
+# Synology-Spiegel grosszuegig: der Ordner darf auch mal ein Wochenende ruhig
+# sein. Passiert dort eine Woche lang nichts, stimmt aber etwas nicht.
+GRENZE_SYNOLOGY = 7 * TAG
 
 # Gebuchter Speicher des Hetzner-Tarifs, VON HAND eingetragen: weder OCS-API
 # noch WebDAV verraten ihn — Nextcloud meldet fuer das Konto nur „unbegrenzt"
@@ -111,6 +119,31 @@ def db_stand(ordner=None):
         return None, 0
     juengste = max(dumps, key=os.path.getmtime)
     return datetime.fromtimestamp(os.path.getmtime(juengste)), len(dumps)
+
+
+def ordner_stand(pfad):
+    """Juengster Zeitstempel der OBERSTEN EBENE eines Ordners, oder None.
+
+    Bewusst kein Vollscan: der Spiegel ist 15 GB gross, ein rekursiver
+    Durchlauf ueber SMB dauert Minuten und wuerde den Waechter blockieren.
+    Synology Drive aktualisiert die Zeitstempel der Elternordner mit — das
+    genuegt als Lebenszeichen.
+    """
+    try:
+        eintraege = [os.path.join(pfad, n) for n in os.listdir(pfad)]
+    except OSError as exc:
+        log(f"Synology-Spiegel nicht lesbar: {exc}")
+        return None
+    zeiten = []
+    for e in eintraege:
+        try:
+            zeiten.append(os.path.getmtime(e))
+        except OSError:
+            continue
+    if not zeiten:
+        log(f"Synology-Spiegel ist leer: {pfad}")
+        return None
+    return datetime.fromtimestamp(max(zeiten))
 
 
 def status_stand(pfad):
@@ -256,6 +289,9 @@ def main():
         pruefung.Pruefling("Vault-Spiegel (NAS)",
                            status_stand(VAULT_SYNC_STATUS),
                            GRENZE_TAEGLICH, "Statusdatei"),
+        pruefung.Pruefling("Claude-Code-Spiegel (NAS)",
+                           ordner_stand(SYNOLOGY_SPIEGEL),
+                           GRENZE_SYNOLOGY, "Synology Drive"),
         pruefung.Pruefling("Vault (Nextcloud)", aus_repo(TAG_VAULT),
                            GRENZE_VAULT, "restic"),
     ]
