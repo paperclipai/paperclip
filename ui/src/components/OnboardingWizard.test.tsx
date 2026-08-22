@@ -283,6 +283,41 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("creates one company however many times Enter repeats", async () => {
+      // Holding Enter down fires keydown repeatedly. Each one is a separate
+      // event, so `defaultPrevented` says nothing about the others, and neither
+      // `loading` nor `createdCompanyId` has been written by the time the next
+      // arrives — the first is state, the second is not set until the request
+      // it guards resolves. Only a ref written before the request goes out is
+      // visible to the caller behind it.
+      let resolveCreate: (c: { id: string; issuePrefix: string }) => void = () => {};
+      mockCompaniesApi.create.mockReturnValue(
+        new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      const { root } = await openStepOne("create");
+
+      const nameInput = document.body.querySelector(
+        'input[placeholder="Acme Corp"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        for (let i = 0; i < 4; i++) {
+          nameInput.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+          );
+        }
+      });
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+
+      await act(async () => resolveCreate({ id: "company-new", issuePrefix: "INI" }));
+      await flushReact();
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await act(async () => root.unmount());
+    });
+
     it("sends Back to the screen the run actually came from", async () => {
       // A create run reached the agent step from step 1, so Back owes it step 1 —
       // not the mission screen it never saw.

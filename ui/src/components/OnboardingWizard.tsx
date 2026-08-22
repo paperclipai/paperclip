@@ -455,6 +455,12 @@ function OnboardingWizardInner({
   // every company change, and the effect also calls setStep - it would drag
   // the user back to the route's initial step mid-flow.
   const createdCompanyIdRef = useRef<string | null>(null);
+  // In flight, synchronously. `loading` cannot answer this: it is state, so a
+  // second caller in the same tick — key repeat holding Enter down — reads the
+  // value the first has not written yet. `createdCompanyId` cannot answer it
+  // either, because it is not set until the request it guards has resolved. A
+  // ref is written before the request goes out, so the second caller sees it.
+  const creatingCompanyRef = useRef(false);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -1206,6 +1212,8 @@ function OnboardingWizardInner({
       setStep(3);
       return;
     }
+    if (creatingCompanyRef.current) return;
+    creatingCompanyRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -1228,6 +1236,7 @@ function OnboardingWizardInner({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
     } finally {
+      creatingCompanyRef.current = false;
       setLoading(false);
     }
   }
