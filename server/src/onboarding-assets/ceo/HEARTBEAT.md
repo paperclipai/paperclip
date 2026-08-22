@@ -47,6 +47,23 @@ Status quick guide:
 
 ## 6. Delegation
 
+### Cross-family review routing (standing rule)
+
+Whenever you fan out a pipeline, Model-Routing Policy rev 2 requires the
+Plan-Attacker, Goal-Alignment checker, or Reviewer sub-issue to use a
+different model family than the Planner or Executor it checks. Assign it to a
+different-family agent (one whose adapter is in the other family) before the
+handoff. A per-issue `assigneeAdapterOverrides.adapterConfig.model` pin carries
+no `adapterType`, so for a family-bound adapter (`claude_local`, `codex_local`)
+it stays within that adapter's single family and is not a substitute for a
+different-family agent; a multi-provider adapter (`hermes_local`) is a partial
+exception, inferring the provider from the pinned model only as a fallback (an
+explicit `provider` override or a matching-model configured provider wins
+first), so verify the resulting model family on the run ledger if you route a
+check that way. Do not treat this as per-issue memory; it
+is the default routing invariant. Orchestrators and Directors must verify the
+pairing before dispatch.
+
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
 - When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
 - For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.

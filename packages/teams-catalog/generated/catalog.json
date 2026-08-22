@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-04T18:03:41.262Z",
+  "generatedAt": "2026-08-01T20:40:02.470Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -102,14 +102,14 @@
         {
           "path": "agents/ceo/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 2492,
-          "sha256": "50f580c51807762265f09c6fe7bf32d7701d64caeb30595bfd577b2f5087c21b"
+          "sizeBytes": 3560,
+          "sha256": "dcb895a6d316614793ed4693a033e05f2a80c87bbce4adddd4e2fa6f1a59bf8a"
         },
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1449,
-          "sha256": "596e2e9fe08d7368b3b0cfe72c2635ea80444d92a2c0414157bfb0a17773fcaf"
+          "sizeBytes": 2482,
+          "sha256": "728da7814950ca0eb247b555ee7f5bd676f04eb20e0c40da90bd64a0b17e7a1f"
         },
         {
           "path": "agents/qa/AGENTS.md",
@@ -132,7 +132,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1"
+      "contentHash": "sha256:c85048d4e87111f7a734b88c418b96f9a0ccc54ff782911d7bd45ada7727e67d"
     },
     {
       "id": "paperclipai:bundled:product:product-design",
@@ -343,8 +343,8 @@
         {
           "path": "agents/cto/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1499,
-          "sha256": "0a1a73ec9e5008056bca0a26325131ded2fcf4c4680a5014ba1e13400b32c173"
+          "sizeBytes": 2532,
+          "sha256": "61d09045174537a73484ec6a34b111ebb981da351c7bf07ccb5a998cd5b34388"
         },
         {
           "path": "agents/qa/AGENTS.md",
@@ -373,7 +373,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:74ddeaeb11805835a4a67fc4530b048ab7f8aa1dc7d2b80acea139a933d158d3"
+      "contentHash": "sha256:d74b2b390d796877f095909737e0943c9c836b7d1194bed4ff6aade8c7c28942"
     },
     {
       "id": "paperclipai:optional:content:content-machine",
