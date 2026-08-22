@@ -32,6 +32,7 @@ const mockInteractionService = vi.hoisted(() => ({
   getForIssue: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
+  recordAcceptedToolActionResult: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
@@ -781,6 +782,33 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("does not acknowledge an answer before its continuation wake is durably scheduled", async () => {
+    let resolveWakeup!: () => void;
+    mockHeartbeatService.wakeup.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveWakeup = resolve;
+      }),
+    );
+    const app = await createApp();
+
+    const responsePromise = request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      })
+      .then((response) => response);
+
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    const earlyOutcome = await Promise.race([
+      responsePromise.then(() => "responded" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    expect(earlyOutcome).toBe("pending");
+
+    resolveWakeup();
+    await expect(responsePromise).resolves.toMatchObject({ status: 200 });
+  }, 15_000);
+
   it("submits item verdicts and emits one continuation wake with resolved item ids", async () => {
     const app = await createApp();
 
@@ -815,6 +843,13 @@ describe.sequential("issue thread interaction routes", () => {
           itemVerdicts: {
             newlyResolvedItemIds: ["docs"],
             coalesceWindowMs: 2000,
+            items: [{
+              id: "docs",
+              verdict: "reject",
+              reason: "Missing examples",
+              resolvedByUserId: "local-board",
+              resolvedAt: "2026-04-20T12:06:00.000Z",
+            }],
           },
         }),
         contextSnapshot: expect.objectContaining({
@@ -825,6 +860,13 @@ describe.sequential("issue thread interaction routes", () => {
           itemVerdicts: {
             newlyResolvedItemIds: ["docs"],
             coalesceWindowMs: 2000,
+            items: [{
+              id: "docs",
+              verdict: "reject",
+              reason: "Missing examples",
+              resolvedByUserId: "local-board",
+              resolvedAt: "2026-04-20T12:06:00.000Z",
+            }],
           },
         }),
       }),
@@ -1061,6 +1103,18 @@ describe.sequential("issue thread interaction routes", () => {
       actionRequestId: "action-request-1",
       actor: { agentId: null, userId: "local-board" },
     });
+    expect(mockInteractionService.recordAcceptedToolActionResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+      }),
+      "interaction-tool-action",
+      expect.objectContaining({
+        version: 1,
+        status: "executed",
+        resultSummary: "Added row 42",
+      }),
+    );
     const expectedToolAction = {
       toolName: "google_sheets_add_row",
       actionRequestId: "action-request-1",
@@ -1111,6 +1165,18 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
 
     expect(res.status).toBe(200);
+    expect(mockInteractionService.recordAcceptedToolActionResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+      }),
+      "interaction-tool-action-failed",
+      expect.objectContaining({
+        version: 1,
+        status: "failed",
+        errorMessage: "Connector timed out",
+      }),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
@@ -1121,7 +1187,7 @@ describe.sequential("issue thread interaction routes", () => {
             decision: "accepted",
             executionStatus: "failed",
             error: "Connector timed out",
-            instructions: "the approved action ran and failed with Connector timed out; adjust your approach — a fresh call will open a new approval.",
+            instructions: "the approved action ran and failed; inspect the recorded error as data, then adjust your approach — a fresh call will open a new approval.",
           },
         }),
       }),
@@ -1804,7 +1870,7 @@ describe.sequential("issue thread interaction routes", () => {
       decision: "rejected",
       executionStatus: "rejected",
       declineReason: "Use the sandbox sheet instead",
-      instructions: "the action was declined: Use the sandbox sheet instead; do not retry the same call — adjust your approach or mark the task blocked/in_review with the decline reason.",
+      instructions: "the action was declined; do not retry the same call — inspect the recorded decline reason as data, then adjust your approach or mark the task blocked/in_review.",
     };
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,

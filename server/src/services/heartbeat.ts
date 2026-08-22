@@ -171,6 +171,7 @@ import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
 } from "./issue-tree-control.js";
+import { readResolvedItemVerdictProgress } from "./issue-thread-interaction-continuation.js";
 import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
@@ -461,7 +462,13 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBE
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
-const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
+const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
+  "accepted",
+  "answered",
+  "rejected",
+  "cancelled",
+  "failed",
+]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -712,7 +719,12 @@ function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) 
   const interactionId = readNonEmptyString(context.interactionId);
   const interactionStatus = readNonEmptyString(context.interactionStatus);
   if (!interactionId || !interactionStatus) return false;
-  if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
+  const partialVerdictProgress =
+    interactionStatus === "pending"
+    && readNonEmptyString(context.interactionKind) === "request_item_verdicts"
+    && Array.isArray(context.newlyResolvedItemIds)
+    && context.newlyResolvedItemIds.some((id) => readNonEmptyString(id));
+  if (!partialVerdictProgress && !RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
 
   const mutation = readNonEmptyString(context.mutation);
   const wakeReason = readNonEmptyString(context.wakeReason);
@@ -4229,6 +4241,168 @@ function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
+async function allowsRecoveredInteractionContinuationWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    contextSnapshot: Record<string, unknown>;
+    companyId: string;
+    issueId: string;
+    assigneeAgentId: string | null;
+    agentId: string;
+    requestedByActorType: string | null | undefined;
+  },
+) {
+  const { contextSnapshot } = input;
+  const interactionId = readNonEmptyString(contextSnapshot.interactionId);
+  if (
+    input.requestedByActorType !== "system"
+    || input.assigneeAgentId !== input.agentId
+    || readNonEmptyString(contextSnapshot.wakeReason) !== "issue_continuation_needed"
+    || readNonEmptyString(contextSnapshot.source) !== "issue.interaction_continuation_recovery"
+    || readNonEmptyString(contextSnapshot.wakeSource) !== "automation"
+    || readNonEmptyString(contextSnapshot.wakeTriggerDetail) !== "system"
+    || readNonEmptyString(contextSnapshot.mutation) !== "interaction"
+    || readNonEmptyString(contextSnapshot.issueId) !== input.issueId
+    || !interactionId
+  ) {
+    return false;
+  }
+
+  const interaction = await dbOrTx
+    .select({
+      kind: issueThreadInteractions.kind,
+      status: issueThreadInteractions.status,
+      continuationPolicy: issueThreadInteractions.continuationPolicy,
+      result: issueThreadInteractions.result,
+      resolvedAt: issueThreadInteractions.resolvedAt,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.id, interactionId),
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!interaction) return false;
+  if (
+    readNonEmptyString(contextSnapshot.interactionKind) !== interaction.kind
+    || readNonEmptyString(contextSnapshot.interactionStatus) !== interaction.status
+    || readNonEmptyString(contextSnapshot.interactionContinuationPolicy) !== interaction.continuationPolicy
+  ) {
+    return false;
+  }
+
+  const isResolvedContinuation =
+    interaction.resolvedAt instanceof Date
+    && readNonEmptyString(contextSnapshot.interactionResolvedAt) === interaction.resolvedAt.toISOString()
+    && (
+      (
+        interaction.continuationPolicy === "wake_assignee"
+        && ["accepted", "answered", "rejected", "cancelled", "failed"].includes(interaction.status)
+      )
+      || (
+        interaction.continuationPolicy === "wake_assignee_on_accept"
+        && interaction.status === "accepted"
+      )
+    );
+  if (isResolvedContinuation) return true;
+
+  if (
+    interaction.kind !== "request_item_verdicts"
+    || interaction.status !== "pending"
+    || interaction.continuationPolicy !== "wake_assignee"
+  ) {
+    return false;
+  }
+  const newlyResolvedItemIds = Array.isArray(contextSnapshot.newlyResolvedItemIds)
+    ? [...new Set(contextSnapshot.newlyResolvedItemIds.filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ))]
+    : [];
+  if (newlyResolvedItemIds.length === 0) return false;
+  const persistedResolvedIds = new Set(readResolvedItemVerdictProgress(interaction.result).resolvedItemIds);
+  return newlyResolvedItemIds.every((id) => persistedResolvedIds.has(id));
+}
+
+async function allowsClaimedRecoveredInteractionContinuationWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    runId: string;
+    wakeupRequestId: string | null;
+    contextSnapshot: Record<string, unknown>;
+    companyId: string;
+    issueId: string;
+    assigneeAgentId: string | null;
+    agentId: string;
+  },
+) {
+  if (!input.wakeupRequestId) return false;
+  const request = await dbOrTx
+    .select({
+      source: agentWakeupRequests.source,
+      triggerDetail: agentWakeupRequests.triggerDetail,
+      reason: agentWakeupRequests.reason,
+      payload: agentWakeupRequests.payload,
+      status: agentWakeupRequests.status,
+      runId: agentWakeupRequests.runId,
+      requestedByActorType: agentWakeupRequests.requestedByActorType,
+    })
+    .from(agentWakeupRequests)
+    .where(and(
+      eq(agentWakeupRequests.id, input.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (
+    !request
+    || request.runId !== input.runId
+    || request.status !== "queued"
+    || request.source !== "automation"
+    || request.triggerDetail !== "system"
+    || request.reason !== "issue_continuation_needed"
+    || request.requestedByActorType !== "system"
+  ) {
+    return false;
+  }
+
+  const payload = parseObject(request.payload);
+  const immutableStringFields = [
+    "interactionId",
+    "interactionKind",
+    "interactionStatus",
+    "interactionContinuationPolicy",
+    "interactionResolvedAt",
+  ] as const;
+  if (
+    readNonEmptyString(payload.issueId) !== input.issueId
+    || readNonEmptyString(payload.mutation) !== "interaction"
+    || immutableStringFields.some(
+      (key) => readNonEmptyString(payload[key]) !== readNonEmptyString(input.contextSnapshot[key]),
+    )
+  ) {
+    return false;
+  }
+  const normalizeIds = (value: unknown) => Array.isArray(value)
+    ? [...new Set(value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0))].sort()
+    : [];
+  if (
+    JSON.stringify(normalizeIds(payload.newlyResolvedItemIds))
+    !== JSON.stringify(normalizeIds(input.contextSnapshot.newlyResolvedItemIds))
+  ) {
+    return false;
+  }
+
+  return allowsRecoveredInteractionContinuationWake(dbOrTx, {
+    contextSnapshot: input.contextSnapshot,
+    companyId: input.companyId,
+    issueId: input.issueId,
+    assigneeAgentId: input.assigneeAgentId,
+    agentId: input.agentId,
+    requestedByActorType: request.requestedByActorType,
+  });
+}
+
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -5374,6 +5548,7 @@ function shouldQueueFollowupForRunningIssueWake(input: {
   wakeCommentId: string | null;
 }) {
   if (input.wakeCommentId) return true;
+  if (isInteractionResolutionWakePayload(input.contextSnapshot)) return true;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   return Boolean(wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason));
 }
@@ -5499,11 +5674,14 @@ function enrichWakeContextSnapshot(input: {
 }
 
 const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+  "mutation",
   "interactionId",
   "interactionKind",
   "interactionStatus",
   "continuationPolicy",
   "checkboxSelection",
+  "planReviewInteraction",
+  "toolAction",
   "itemVerdicts",
   "newlyResolvedItemIds",
 ] as const;
@@ -5519,14 +5697,20 @@ function clearInteractionContinuationWakeContext(contextSnapshot: Record<string,
 }
 
 function hasInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>) {
-  return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) => readNonEmptyString(contextSnapshot[key]));
+  return (
+    isInteractionResolutionWakePayload(contextSnapshot)
+    || Boolean(readNonEmptyString(contextSnapshot.interactionId))
+  );
 }
 
 function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    contextSnapshot.mutation = "interaction";
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -5595,6 +5779,39 @@ export function mergeCoalescedContextSnapshot(
   if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
     merged.forceFreshSession = true;
   }
+  const existingInteractionId = readNonEmptyString(existing.interactionId);
+  const incomingInteractionId = readNonEmptyString(incoming.interactionId);
+  if (
+    existingInteractionId
+    && existingInteractionId === incomingInteractionId
+    && readNonEmptyString(incoming.interactionKind) === "request_item_verdicts"
+  ) {
+    const existingVerdicts = parseObject(existing.itemVerdicts);
+    const incomingVerdicts = parseObject(incoming.itemVerdicts);
+    const mergedItemIds = Array.from(new Set([
+      ...(Array.isArray(existing.newlyResolvedItemIds) ? existing.newlyResolvedItemIds : []),
+      ...(Array.isArray(existingVerdicts.newlyResolvedItemIds) ? existingVerdicts.newlyResolvedItemIds : []),
+      ...(Array.isArray(incoming.newlyResolvedItemIds) ? incoming.newlyResolvedItemIds : []),
+      ...(Array.isArray(incomingVerdicts.newlyResolvedItemIds) ? incomingVerdicts.newlyResolvedItemIds : []),
+    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+    const itemsById = new Map<string, Record<string, unknown>>();
+    for (const item of [
+      ...(Array.isArray(existingVerdicts.items) ? existingVerdicts.items : []),
+      ...(Array.isArray(incomingVerdicts.items) ? incomingVerdicts.items : []),
+    ]) {
+      const normalized = parseObject(item);
+      const itemId = readNonEmptyString(normalized.id);
+      if (itemId) itemsById.set(itemId, normalized);
+    }
+    merged.newlyResolvedItemIds = mergedItemIds;
+    merged.itemVerdicts = {
+      ...existingVerdicts,
+      ...incomingVerdicts,
+      newlyResolvedItemIds: mergedItemIds,
+      items: Array.from(itemsById.values()),
+    };
+    delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
   const mergedCommentIds = mergeWakeCommentIds(existing, incoming);
   if (mergedCommentIds.length > 0) {
     const latestCommentId = mergedCommentIds[mergedCommentIds.length - 1];
@@ -5609,6 +5826,121 @@ export function mergeCoalescedContextSnapshot(
     clearInteractionContinuationWakeContext(merged);
   }
   return merged;
+}
+
+function hasExecutionStageWakeContext(contextSnapshot: Record<string, unknown>) {
+  const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+  return (
+    Object.keys(parseObject(contextSnapshot.executionStage)).length > 0
+    || Boolean(wakeReason?.startsWith("execution_"))
+  );
+}
+
+function canMergeDeferredWakeContexts(
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  const existingInteractionId = readNonEmptyString(existing.interactionId);
+  const incomingInteractionId = readNonEmptyString(incoming.interactionId);
+  if (existingInteractionId && incomingInteractionId) {
+    return existingInteractionId === incomingInteractionId;
+  }
+  if (existingInteractionId || incomingInteractionId) {
+    const nonInteractionContext = existingInteractionId ? incoming : existing;
+    return (
+      Boolean(deriveCommentId(nonInteractionContext, null))
+      && !hasExecutionStageWakeContext(nonInteractionContext)
+    );
+  }
+  return true;
+}
+
+export function mergeDeferredWakeContextSnapshot(
+  existingRaw: unknown,
+  incoming: Record<string, unknown>,
+) {
+  const existing = parseObject(existingRaw);
+  const existingInteractionId = readNonEmptyString(existing.interactionId);
+  const incomingInteractionId = readNonEmptyString(incoming.interactionId);
+  const preservedInteractionContext = (
+    existingInteractionId
+    && !incomingInteractionId
+    && Boolean(deriveCommentId(incoming, null))
+    && !hasExecutionStageWakeContext(incoming)
+  )
+    ? Object.fromEntries(
+        INTERACTION_CONTINUATION_CONTEXT_KEYS
+          .filter((key) => Object.prototype.hasOwnProperty.call(existing, key))
+          .map((key) => [key, existing[key]]),
+      )
+    : null;
+  const merged = mergeCoalescedContextSnapshot(existing, incoming);
+  if (preservedInteractionContext) {
+    Object.assign(merged, preservedInteractionContext);
+    delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
+
+  const stageAuthority = hasExecutionStageWakeContext(incoming)
+    ? incoming
+    : hasExecutionStageWakeContext(existing)
+      ? existing
+      : null;
+  if (stageAuthority) {
+    for (const key of [
+      "wakeReason",
+      "source",
+      "wakeSource",
+      "wakeTriggerDetail",
+      "executionStage",
+      "skipIssueComment",
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(stageAuthority, key)) {
+        merged[key] = stageAuthority[key];
+      }
+    }
+  }
+  return merged;
+}
+
+export function mergeDeferredWakePayload(input: {
+  existingPayload: unknown;
+  incomingPayload: Record<string, unknown> | null | undefined;
+  issueId: string;
+  mergedContext: Record<string, unknown>;
+}) {
+  const mergedPayload: Record<string, unknown> = {
+    ...parseObject(input.existingPayload),
+    ...(input.incomingPayload ?? {}),
+    ...input.mergedContext,
+    issueId: input.issueId,
+    [DEFERRED_WAKE_CONTEXT_KEY]: input.mergedContext,
+  };
+  for (const key of INTERACTION_CONTINUATION_CONTEXT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(input.mergedContext, key)) continue;
+    if (key === "mutation") {
+      const incomingMutation = readNonEmptyString(input.incomingPayload?.mutation);
+      if (incomingMutation && incomingMutation !== "interaction") {
+        mergedPayload.mutation = incomingMutation;
+        continue;
+      }
+    }
+    delete mergedPayload[key];
+  }
+  if (!Object.prototype.hasOwnProperty.call(input.mergedContext, PAPERCLIP_WAKE_PAYLOAD_KEY)) {
+    delete mergedPayload[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
+  return mergedPayload;
+}
+
+function requiresIsolatedFollowupWakeContext(contextSnapshot: Record<string, unknown>) {
+  return (
+    hasInteractionContinuationWakeContext(contextSnapshot)
+    || hasExecutionStageWakeContext(contextSnapshot)
+    || shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot,
+      wakeCommentId: deriveCommentId(contextSnapshot, null),
+    })
+  );
 }
 
 export async function buildPaperclipWakePayload(input: {
@@ -5646,6 +5978,7 @@ export async function buildPaperclipWakePayload(input: {
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
   const continuationSummary = input.continuationSummary ?? null;
   const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
   const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
@@ -5671,6 +6004,7 @@ export async function buildPaperclipWakePayload(input: {
     && Object.keys(executionStage).length === 0
     && !issueSummary
     && !agentMessageText
+    && !interactionId
   ) return null;
 
   const commentRows =
@@ -5820,10 +6154,11 @@ export async function buildPaperclipWakePayload(input: {
             : { type: row.authorType, id: null },
       })))
     : [];
-  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
   const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
   const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
+  const toolAction = parseObject(input.contextSnapshot.toolAction);
+  const itemVerdicts = parseObject(input.contextSnapshot.itemVerdicts);
   const planReviewContext = issueId
     ? await buildPlanReviewContext({
       db: input.db,
@@ -5921,9 +6256,12 @@ export async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
+    interactionId,
     interactionKind,
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
+    toolAction: Object.keys(toolAction).length > 0 ? toolAction : null,
+    itemVerdicts: Object.keys(itemVerdicts).length > 0 ? itemVerdicts : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     simplifiedEnglishInteractions: input.simplifiedEnglishInteractions === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
@@ -5963,7 +6301,7 @@ export async function buildPaperclipWakePayload(input: {
       missingCount: missingCommentCount,
     },
     truncated: payloadTruncated,
-    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
+    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0 || Boolean(interactionId),
   };
   return issueId
     ? createRunSecretRedactionRegistry(input.db).redactForIssue(input.companyId, issueId, payload)
@@ -12686,10 +13024,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      const recoveredInteractionIssue = readNonEmptyString(context.wakeReason) === "issue_continuation_needed"
+        ? await db
+            .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const exactRecoveredInteractionWake = recoveredInteractionIssue
+        ? await allowsClaimedRecoveredInteractionContinuationWake(db, {
+            runId: run.id,
+            wakeupRequestId: run.wakeupRequestId,
+            contextSnapshot: context,
+            companyId: run.companyId,
+            issueId,
+            assigneeAgentId: recoveredInteractionIssue.assigneeAgentId,
+            agentId: run.agentId,
+          })
+        : false;
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (
+        unresolvedBlockerCount > 0
+        && !allowsIssueInteractionWake(context)
+        && !exactRecoveredInteractionWake
+      ) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -18316,11 +18676,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         // Blocked descendants should stay idle until the final blocker resolves.
         // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
+        // bounded interaction mode so the assignee can answer or triage. A
+        // system recovery of a persisted resolved interaction has the same
+        // bounded exception after its provenance is verified against the DB.
+        const recoveredInteractionContinuationWake =
+          dependencyReadiness &&
+          !dependencyReadiness.isDependencyReady &&
+          await allowsRecoveredInteractionContinuationWake(tx, {
+            contextSnapshot: enrichedContextSnapshot,
+            companyId: issue.companyId,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            agentId,
+            requestedByActorType: opts.requestedByActorType,
+          });
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (
+            allowsIssueInteractionWake(enrichedContextSnapshot)
+            || recoveredInteractionContinuationWake
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
@@ -18491,10 +18867,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeCommentId,
             forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
           });
-          const shouldQueueFollowupForRunningWake =
-            shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
-            activeExecutionRun.status === "running" &&
-            isSameExecutionAgent;
+          const shouldQueueFollowupForActiveWake =
+            isSameExecutionAgent && (
+              requiresIsolatedFollowupWakeContext(enrichedContextSnapshot)
+              || requiresIsolatedFollowupWakeContext(parseObject(activeExecutionRun.contextSnapshot))
+            );
           const availableActiveExecutionRun = isSameExecutionAgent
             ? filterZombieCoalesceTarget(activeExecutionRun, liveRunExecutions)
             : activeExecutionRun;
@@ -18502,7 +18879,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (
             isSameExecutionAgent
             && !shouldDeferFollowupWake
-            && !shouldQueueFollowupForRunningWake
+            && !shouldQueueFollowupForActiveWake
             && availableActiveExecutionRun
           ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
@@ -18539,11 +18916,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
 
           if (availableActiveExecutionRun) {
-            const deferredPayload = {
-              ...(payload ?? {}),
+            const deferredPayload = mergeDeferredWakePayload({
+              existingPayload: {},
+              incomingPayload: payload,
               issueId,
-              [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
-            };
+              mergedContext: enrichedContextSnapshot,
+            });
 
             const existingDeferred = await tx
               .select()
@@ -18563,27 +18941,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (existingDeferred) {
               const existingDeferredPayload = parseObject(existingDeferred.payload);
               const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
-              const mergedDeferredContext = mergeCoalescedContextSnapshot(
-                existingDeferredContext,
-                enrichedContextSnapshot,
-              );
-              const mergedDeferredPayload = {
-                ...existingDeferredPayload,
-                ...(payload ?? {}),
-                issueId,
-                [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
-              };
+              if (canMergeDeferredWakeContexts(existingDeferredContext, enrichedContextSnapshot)) {
+                const incomingStageTakesAuthority =
+                  hasExecutionStageWakeContext(enrichedContextSnapshot)
+                  && !hasExecutionStageWakeContext(existingDeferredContext);
+                const mergedDeferredContext = mergeDeferredWakeContextSnapshot(
+                  existingDeferredContext,
+                  enrichedContextSnapshot,
+                );
+                const mergedDeferredPayload = mergeDeferredWakePayload({
+                  existingPayload: existingDeferredPayload,
+                  incomingPayload: payload,
+                  issueId,
+                  mergedContext: mergedDeferredContext,
+                });
 
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  payload: mergedDeferredPayload,
-                  coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
-                  updatedAt: new Date(),
-                })
-                .where(eq(agentWakeupRequests.id, existingDeferred.id));
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    payload: mergedDeferredPayload,
+                    ...(incomingStageTakesAuthority
+                      ? {
+                          source,
+                          triggerDetail,
+                          requestedByActorType: opts.requestedByActorType ?? null,
+                          requestedByActorId: opts.requestedByActorId ?? null,
+                        }
+                      : {}),
+                    coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
-              return { kind: "deferred" as const };
+                return { kind: "deferred" as const };
+              }
             }
 
             await tx.insert(agentWakeupRequests).values({

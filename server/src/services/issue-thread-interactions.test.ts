@@ -313,6 +313,63 @@ describe("issueThreadInteractionService", () => {
     expect(state.interactionUpdates).toHaveLength(0);
   });
 
+  it("persists an accepted tool-action execution result for continuation recovery", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-tool-executed", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "accepted", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: "local-board",
+      payload: {
+        version: 1,
+        prompt: "Run the approved tool call?",
+        toolAction: {
+          version: 1,
+          actionRequestId: "33333333-3333-4333-8333-333333333333",
+          invocationId: "44444444-4444-4444-8444-444444444444",
+          toolName: "deploy",
+          toolDisplayName: "Deploy",
+          connectionId: null,
+          applicationId: null,
+          appDisplayName: null,
+          risk: "write",
+          previewMarkdown: "Deploy the current build.",
+          argumentsSummaryJson: "{}",
+          argumentsHash: "hash-1",
+          expiresAt: "2026-07-25T11:00:00.000Z",
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedAt: new Date("2026-07-25T10:05:00.000Z"),
+      createdAt: new Date("2026-07-25T10:00:00.000Z"),
+      updatedAt: new Date("2026-07-25T10:05:00.000Z"),
+    };
+    const state = createFakeDb({ interactionRow });
+    const svc = issueThreadInteractionService(state.db as never);
+    const updated = await svc.recordAcceptedToolActionResult(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      interactionRow.id,
+      {
+        version: 1,
+        status: "executed",
+        resultSummary: "Deployment completed",
+        errorMessage: null,
+        updatedAt: "2026-07-25T10:06:00.000Z",
+      },
+    );
+
+    expect(updated.result).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      toolAction: {
+        version: 1,
+        status: "executed",
+        resultSummary: "Deployment completed",
+      },
+    });
+    expect(state.interactionUpdates).toHaveLength(1);
+  });
+
   it("expires pending interactions when the issue is terminal", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {

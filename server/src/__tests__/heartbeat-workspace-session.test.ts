@@ -21,6 +21,8 @@ import {
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
+  mergeDeferredWakeContextSnapshot,
+  mergeDeferredWakePayload,
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -2611,6 +2613,167 @@ describe("comment wake batching", () => {
     );
 
     expect(merged.forceFreshSession).toBe(true);
+  });
+
+  it("clears stale plan and tool-action decisions when an unrelated wake is coalesced", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-1",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        planReviewInteraction: { id: "interaction-1", status: "accepted" },
+        toolAction: {
+          actionRequestId: "action-1",
+          decision: "accepted",
+          executionStatus: "executed",
+        },
+      },
+      {
+        issueId: "issue-1",
+        wakeReason: "timer",
+      },
+    );
+
+    expect(merged).not.toHaveProperty("mutation");
+    expect(merged).not.toHaveProperty("planReviewInteraction");
+    expect(merged).not.toHaveProperty("toolAction");
+  });
+
+  it("preserves every coalesced partial item verdict for the same interaction", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-1",
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
+        newlyResolvedItemIds: ["item-a"],
+        itemVerdicts: {
+          newlyResolvedItemIds: ["item-a"],
+          items: [{ id: "item-a", verdict: "accept", reason: "ready" }],
+        },
+      },
+      {
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-1",
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
+        newlyResolvedItemIds: ["item-b"],
+        itemVerdicts: {
+          newlyResolvedItemIds: ["item-b"],
+          items: [{ id: "item-b", verdict: "reject", reason: "revise" }],
+        },
+      },
+    );
+
+    expect(merged).toMatchObject({
+      newlyResolvedItemIds: ["item-a", "item-b"],
+      itemVerdicts: {
+        newlyResolvedItemIds: ["item-a", "item-b"],
+        items: [
+          { id: "item-a", verdict: "accept", reason: "ready" },
+          { id: "item-b", verdict: "reject", reason: "revise" },
+        ],
+      },
+    });
+  });
+
+  it("keeps a deferred interaction aligned with its immutable receipt when a comment is batched", () => {
+    const existingContext = {
+      issueId: "issue-1",
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      toolAction: {
+        actionRequestId: "action-1",
+        decision: "accepted",
+        executionStatus: "executed",
+      },
+    };
+    const mergedContext = mergeDeferredWakeContextSnapshot(existingContext, {
+      issueId: "issue-1",
+      mutation: "comment",
+      wakeReason: "issue_commented",
+      source: "issue.comment",
+      wakeCommentId: "comment-2",
+    });
+    const mergedPayload = mergeDeferredWakePayload({
+      existingPayload: {
+        ...existingContext,
+        _paperclipWakeContext: existingContext,
+      },
+      incomingPayload: {
+        issueId: "issue-1",
+        mutation: "comment",
+        commentId: "comment-2",
+      },
+      issueId: "issue-1",
+      mergedContext,
+    });
+
+    expect(mergedContext).toMatchObject({
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      wakeCommentId: "comment-2",
+      toolAction: { actionRequestId: "action-1", executionStatus: "executed" },
+    });
+    expect(mergedPayload).toMatchObject({
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      _paperclipWakeContext: {
+        mutation: "interaction",
+        interactionId: "interaction-1",
+      },
+    });
+  });
+
+  it.each([
+    {
+      existing: {
+        issueId: "issue-1",
+        wakeReason: "execution_review_requested",
+        source: "issue.execution_stage",
+        wakeSource: "issue.execution_stage",
+        executionStage: { id: "stage-1", status: "review_pending" },
+      },
+      incoming: {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+        wakeSource: "issue.comment",
+        wakeCommentId: "comment-1",
+      },
+    },
+    {
+      existing: {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+        wakeSource: "issue.comment",
+        wakeCommentId: "comment-1",
+      },
+      incoming: {
+        issueId: "issue-1",
+        wakeReason: "execution_review_requested",
+        source: "issue.execution_stage",
+        wakeSource: "issue.execution_stage",
+        executionStage: { id: "stage-1", status: "review_pending" },
+      },
+    },
+  ])("preserves execution-stage authority regardless of deferred merge order", ({ existing, incoming }) => {
+    const merged = mergeDeferredWakeContextSnapshot(existing, incoming);
+
+    expect(merged).toMatchObject({
+      wakeReason: "execution_review_requested",
+      source: "issue.execution_stage",
+      wakeSource: "issue.execution_stage",
+      executionStage: { id: "stage-1", status: "review_pending" },
+      wakeCommentId: "comment-1",
+    });
   });
 });
 

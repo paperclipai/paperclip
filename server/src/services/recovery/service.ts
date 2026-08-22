@@ -53,6 +53,13 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
+import {
+  readCheckboxSelectionForWake,
+  readItemVerdictContinuationContext,
+  readPlanReviewInteractionForWake,
+  readResolvedItemVerdictProgress,
+  readToolActionContinuationContext,
+} from "../issue-thread-interaction-continuation.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import { getRunLogStore } from "../run-log-store.js";
@@ -1029,13 +1036,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function getLatestAcceptedContinuationInteraction(companyId: string, issueId: string) {
+
+  function readLatestResolvedItemVerdictUserId(result: unknown) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+    const items = (result as Record<string, unknown>).items;
+    if (!Array.isArray(items)) return null;
+    let latest: { userId: string; resolvedAt: number } | null = null;
+    for (const item of items) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const row = item as Record<string, unknown>;
+      const userId = typeof row.resolvedByUserId === "string" ? row.resolvedByUserId.trim() : "";
+      if (!userId) continue;
+      const resolvedAt = row.resolvedAt instanceof Date
+        ? row.resolvedAt.getTime()
+        : typeof row.resolvedAt === "string"
+          ? Date.parse(row.resolvedAt)
+          : Number.NaN;
+      if (!latest) {
+        latest = { userId, resolvedAt: Number.isFinite(resolvedAt) ? resolvedAt : 0 };
+      } else if (Number.isFinite(resolvedAt) && resolvedAt >= latest.resolvedAt) {
+        latest = { userId, resolvedAt };
+      }
+    }
+    return latest?.userId ?? null;
+  }
+
+  async function listContinuationProgressInteractions(companyId: string, issueId: string) {
     return db
       .select({
         id: issueThreadInteractions.id,
         kind: issueThreadInteractions.kind,
         status: issueThreadInteractions.status,
         continuationPolicy: issueThreadInteractions.continuationPolicy,
+        payload: issueThreadInteractions.payload,
+        result: issueThreadInteractions.result,
+        resolvedByUserId: issueThreadInteractions.resolvedByUserId,
         sourceRunId: issueThreadInteractions.sourceRunId,
         resolvedAt: issueThreadInteractions.resolvedAt,
         updatedAt: issueThreadInteractions.updatedAt,
@@ -1045,39 +1080,99 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issueThreadInteractions.companyId, companyId),
           eq(issueThreadInteractions.issueId, issueId),
-          eq(issueThreadInteractions.status, "accepted"),
-          inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+          or(
+            and(
+              eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+              inArray(issueThreadInteractions.status, [
+                "accepted",
+                "answered",
+                "rejected",
+                "cancelled",
+                "failed",
+              ]),
+            ),
+            and(
+              eq(issueThreadInteractions.continuationPolicy, "wake_assignee_on_accept"),
+              eq(issueThreadInteractions.status, "accepted"),
+            ),
+            and(
+              eq(issueThreadInteractions.kind, "request_item_verdicts"),
+              eq(issueThreadInteractions.status, "pending"),
+              eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+              sql`${issueThreadInteractions.result} @> '{"items": [{}]}'::jsonb`,
+            ),
+          ),
         ),
       )
-      .orderBy(desc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), desc(issueThreadInteractions.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .orderBy(asc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), asc(issueThreadInteractions.id));
   }
 
-  async function hasSuccessfulIssueRunSince(
+  async function readSuccessfulInteractionDeliverySince(
     companyId: string,
     issueId: string,
     agentId: string,
     since: Date,
     interactionId?: string | null,
+    progress: {
+      resolvedItemIds?: string[];
+      toolActionExecutionStatus?: string | null;
+    } = {},
   ) {
-    return db
-      .select({ id: heartbeatRuns.id })
+    const resolvedItemIds = progress.resolvedItemIds ?? [];
+    const toolActionExecutionStatus = progress.toolActionExecutionStatus ?? null;
+    const rows = await db
+      .select({
+        wakeupPayload: agentWakeupRequests.payload,
+        wakeupStatus: agentWakeupRequests.status,
+      })
       .from(heartbeatRuns)
+      .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.runId, heartbeatRuns.id))
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           eq(heartbeatRuns.status, "succeeded"),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
           interactionId
-            ? sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`
+            ? or(
+              sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`,
+              sql`${agentWakeupRequests.payload} ->> 'interactionId' = ${interactionId}`,
+            )
             : sql`true`,
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
+      );
+
+    const contexts = rows.flatMap((row) => {
+      const wakeupPayload = parseObject(row.wakeupPayload);
+      return (
+        (row.wakeupStatus === "claimed" || row.wakeupStatus === "completed")
+        && readNonEmptyString(wakeupPayload.interactionId) === interactionId
       )
-      .limit(1)
-      .then((rows) => Boolean(rows[0]));
+        ? [wakeupPayload]
+        : [];
+    });
+    const coveredItemIds = new Set(
+      contexts.flatMap((context) => (
+        Array.isArray(context.newlyResolvedItemIds)
+          ? context.newlyResolvedItemIds.filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          )
+          : []
+      )),
+    );
+    const hasRequiredToolActionStatus = !toolActionExecutionStatus || contexts.some((context) => (
+      readNonEmptyString(parseObject(context.toolAction).executionStatus) === toolActionExecutionStatus
+    ));
+    return {
+      successful: contexts.length > 0
+        && resolvedItemIds.every((id) => coveredItemIds.has(id))
+        && hasRequiredToolActionStatus,
+      coveredItemIds,
+    };
   }
 
   async function getLatestIssueRunSince(companyId: string, issueId: string, agentId: string, since: Date): Promise<LatestIssueRun> {
@@ -4704,7 +4799,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
           or(
             sql`${issues.assigneeAgentId} is not null`,
             eq(issues.status, "in_review"),
@@ -4783,7 +4878,49 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+      const continuationInteractions = await listContinuationProgressInteractions(issue.companyId, issue.id);
+      let resolvedContinuationInteraction: (typeof continuationInteractions)[number] | null = null;
+      let resolvedContinuationItemIds: string[] = [];
+      let interactionResolvedAt: Date | null = null;
+      let successfulRunSinceResolution = false;
+      if (!pendingExecutionState) {
+        for (const interaction of continuationInteractions) {
+          const itemVerdictProgress = interaction.kind === "request_item_verdicts"
+            ? readResolvedItemVerdictProgress(interaction.result)
+            : null;
+          const progressAt = itemVerdictProgress?.firstResolvedAt
+            ?? interaction.resolvedAt
+            ?? interaction.updatedAt;
+          const resolvedItemIds = itemVerdictProgress?.resolvedItemIds ?? [];
+          const toolActionExecutionStatus =
+            readToolActionContinuationContext(interaction)?.executionStatus ?? null;
+          const delivery = await readSuccessfulInteractionDeliverySince(
+            issue.companyId,
+            issue.id,
+            agentId,
+            progressAt,
+            interaction.id,
+            { resolvedItemIds, toolActionExecutionStatus },
+          );
+          if (delivery.successful) {
+            successfulRunSinceResolution = true;
+            continue;
+          }
+          resolvedContinuationInteraction = interaction;
+          resolvedContinuationItemIds = resolvedItemIds.filter((id) => !delivery.coveredItemIds.has(id));
+          interactionResolvedAt = progressAt;
+          successfulRunSinceResolution = false;
+          break;
+        }
+      }
+      const hasMissingResolvedContinuation = Boolean(
+        resolvedContinuationInteraction
+        && interactionResolvedAt
+        && !pendingExecutionState
+        && !successfulRunSinceResolution,
+      );
+
+      if (await hasPendingWakeInteraction(issue.companyId, issue.id) && !hasMissingResolvedContinuation) {
         result.skipped += 1;
         continue;
       }
@@ -4797,7 +4934,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.operatorCancelExempted += 1;
         continue;
       }
-      if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
+      if (
+        !hasMissingResolvedContinuation
+        && latestRun?.status === "succeeded"
+        && await hasPersistedDurableWaitPath(issue)
+      ) {
         result.skipped += 1;
         continue;
       }
@@ -4872,24 +5013,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
       }
 
-      const acceptedContinuationInteraction = await getLatestAcceptedContinuationInteraction(issue.companyId, issue.id);
-      const acceptedInteractionResolvedAt = acceptedContinuationInteraction
-        ? acceptedContinuationInteraction.resolvedAt ?? acceptedContinuationInteraction.updatedAt
-        : null;
-      if (acceptedContinuationInteraction && acceptedInteractionResolvedAt && !pendingExecutionState) {
+      if (resolvedContinuationInteraction && interactionResolvedAt && !pendingExecutionState) {
         const legacyReviewParkAttempts = await summarizeRecentContinuationRetries(
           issue.companyId,
           issue.id,
           agentId,
           CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
-          acceptedInteractionResolvedAt,
-        );
-        const successfulRunSinceResolution = await hasSuccessfulIssueRunSince(
-          issue.companyId,
-          issue.id,
-          agentId,
-          acceptedInteractionResolvedAt,
-          acceptedContinuationInteraction.id,
+          interactionResolvedAt,
         );
 
         if (!successfulRunSinceResolution) {
@@ -4912,7 +5042,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue.companyId,
             issue.id,
             agentId,
-            acceptedInteractionResolvedAt,
+            interactionResolvedAt,
           );
           if (
             classifyContinuationFailure(latestPostResolutionRun).kind ===
@@ -4953,7 +5083,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               previousStatus: issue.status as StrandedPreviousStatus,
               latestRun: latestPostResolutionRun,
               comment:
-                `Paperclip stopped requeueing accepted interaction \`${acceptedContinuationInteraction.id}\` after ` +
+                `Paperclip stopped requeueing resolved interaction \`${resolvedContinuationInteraction.id}\` after ` +
                 `${consecutive} consecutive continuation wakes were cancelled while waiting on review. ` +
                 "Moving the issue to `blocked` so the missing execution path is visible for intervention.",
             });
@@ -4966,20 +5096,54 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
 
+          const interactionResponsibleUserId =
+            resolvedContinuationInteraction.resolvedByUserId
+            ?? readLatestResolvedItemVerdictUserId(resolvedContinuationInteraction.result);
+          const planReviewInteraction = readPlanReviewInteractionForWake({
+            issueId: issue.id,
+            interaction: resolvedContinuationInteraction,
+          });
+          const checkboxSelection = readCheckboxSelectionForWake(resolvedContinuationInteraction);
+          const toolAction = readToolActionContinuationContext(resolvedContinuationInteraction);
+          const itemVerdicts = readItemVerdictContinuationContext({
+            result: resolvedContinuationInteraction.result,
+            newlyResolvedItemIds: resolvedContinuationItemIds,
+          });
+          const acceptedPlanConfirmation = Boolean(
+            planReviewInteraction?.status === "accepted"
+            && planReviewInteraction.acceptedTargetRevision,
+          );
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.interaction_continuation_recovery",
-            retryOfRunId: latestPostResolutionRun?.id ?? acceptedContinuationInteraction.sourceRunId ?? latestRun?.id ?? null,
+            retryOfRunId: latestPostResolutionRun?.id ?? resolvedContinuationInteraction.sourceRunId ?? latestRun?.id ?? null,
             extraContext: {
               mutation: "interaction",
-              interactionId: acceptedContinuationInteraction.id,
-              interactionKind: acceptedContinuationInteraction.kind,
-              interactionStatus: acceptedContinuationInteraction.status,
-              interactionContinuationPolicy: acceptedContinuationInteraction.continuationPolicy,
-              interactionResolvedAt: acceptedInteractionResolvedAt.toISOString(),
+              interactionId: resolvedContinuationInteraction.id,
+              interactionKind: resolvedContinuationInteraction.kind,
+              interactionStatus: resolvedContinuationInteraction.status,
+              interactionContinuationPolicy: resolvedContinuationInteraction.continuationPolicy,
+              interactionResolvedAt: interactionResolvedAt.toISOString(),
+              ...(planReviewInteraction ? { planReviewInteraction } : {}),
+              ...(checkboxSelection ? { checkboxSelection } : {}),
+              ...(toolAction ? { toolAction } : {}),
+              ...(itemVerdicts ? {
+                itemVerdicts,
+                newlyResolvedItemIds: itemVerdicts.newlyResolvedItemIds,
+              } : {}),
+              ...(acceptedPlanConfirmation
+                ? {
+                    forceFreshSession: true,
+                    workspaceRefreshReason: "accepted_plan_confirmation",
+                  }
+                : {}),
+              ...(interactionResponsibleUserId
+                ? { responsibleUserId: interactionResponsibleUserId }
+                : {}),
+
             },
           });
           if (queued) {
@@ -4990,6 +5154,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         }
+      }
+
+      if (issue.status === "backlog" || issue.status === "blocked") {
+        result.skipped += 1;
+        continue;
       }
 
       if (issue.status === "in_review") {

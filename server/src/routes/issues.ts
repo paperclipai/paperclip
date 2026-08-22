@@ -186,6 +186,13 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../services/issue-dependency-wakeups.js";
+import {
+  readCheckboxSelectionForWake,
+  readItemVerdictContinuationContext,
+  readPlanReviewInteractionForWake,
+  readToolActionContinuationContext,
+  readToolActionExecutionStatus,
+} from "../services/issue-thread-interaction-continuation.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
   executionWorkspaceService as executionWorkspaceServiceDirect,
@@ -645,29 +652,6 @@ function issueWriteAuthorizationReason(
 ) {
   if (decision !== true && decision.reason) return decision.reason;
   return req.actor.type === "agent" ? "allow_scoped_agent_write" : "allow_board_actor";
-}
-
-function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
-  const target = readObject(readObject(payload).target);
-  if (target.type !== "issue_document" || target.key !== "plan") return null;
-  if (readNonEmptyString(target.issueId) !== issueId) return null;
-  return {
-    issueId,
-    documentId: readNonEmptyString(target.documentId),
-    key: "plan",
-    revisionId: readNonEmptyString(target.revisionId),
-    revisionNumber: typeof target.revisionNumber === "number" ? target.revisionNumber : null,
-  };
-}
-
-function readConfirmationResultForWake(result: unknown) {
-  const parsed = readObject(result);
-  if (Object.keys(parsed).length === 0) return null;
-  return {
-    outcome: readNonEmptyString(parsed.outcome),
-    reason: readNonEmptyString(parsed.reason) ?? readNonEmptyString(parsed.rejectionReason),
-    commentId: readNonEmptyString(parsed.commentId),
-  };
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -1919,88 +1903,12 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
-function readToolActionExecutionStatus(value: unknown) {
-  return value === "approved"
-    || value === "executing"
-    || value === "executed"
-    || value === "failed"
-    || value === "expired"
-    ? value
-    : null;
-}
-
 function secretProposalExecutionErrorCode(error: unknown) {
   if (error instanceof HttpError) {
     const details = readObject(error.details);
     return readNonEmptyString(details.code) ?? `http_${error.status}`;
   }
   return "secret_proposal_execution_failed";
-}
-
-function readToolActionContinuationContext(interaction: {
-  status: string;
-  payload?: unknown;
-  result?: unknown;
-}) {
-  const payload = readObject(interaction.payload);
-  const toolActionPayload = readObject(payload.toolAction);
-  const toolName = readNonEmptyString(toolActionPayload.toolName);
-  const actionRequestId = readNonEmptyString(toolActionPayload.actionRequestId);
-  if (!toolName || !actionRequestId) return null;
-
-  const result = readObject(interaction.result);
-  const toolActionResult = readObject(result.toolAction);
-  const declineReason = interaction.status === "rejected"
-    ? readNonEmptyString(result.reason)
-    : null;
-  const error = readNonEmptyString(toolActionResult.errorMessage);
-  const resultSummary = readNonEmptyString(toolActionResult.resultSummary);
-
-  if (interaction.status === "rejected") {
-    return {
-      toolName,
-      actionRequestId,
-      decision: "rejected",
-      executionStatus: "rejected",
-      ...(declineReason ? { declineReason } : {}),
-      instructions: `the action was declined${declineReason ? `: ${declineReason}` : ""}; do not retry the same call — adjust your approach or mark the task blocked/in_review with the decline reason.`,
-    };
-  }
-
-  if (interaction.status !== "accepted") return null;
-  const executionStatus = readToolActionExecutionStatus(toolActionResult.status);
-  if (!executionStatus) return null;
-
-  if (executionStatus === "executed") {
-    return {
-      toolName,
-      actionRequestId,
-      decision: "accepted",
-      executionStatus,
-      ...(resultSummary ? { resultSummary } : {}),
-      instructions: `the approved ${toolName} action already ran — do not call the tool again; continue with this result.`,
-    };
-  }
-
-  if (executionStatus === "failed") {
-    const failureMessage = error ?? "an unknown error";
-    return {
-      toolName,
-      actionRequestId,
-      decision: "accepted",
-      executionStatus,
-      ...(error ? { error } : {}),
-      instructions: `the approved action ran and failed with ${failureMessage}; adjust your approach — a fresh call will open a new approval.`,
-    };
-  }
-
-  return {
-    toolName,
-    actionRequestId,
-    decision: "accepted",
-    executionStatus,
-    instructions: `the approved ${toolName} action is ${executionStatus}; do not call the tool again while this approval is being processed.`,
-  };
 }
 
 function readSecretProposalContinuationContext(interaction: {
@@ -2051,6 +1959,7 @@ function readSecretProposalContinuationContext(interaction: {
   };
 }
 
+
 const REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
 
 function buildRequestItemVerdictsWakeIdempotencyKey(args: {
@@ -2084,7 +1993,24 @@ async function queueResolvedInteractionContinuationWakeup(input: {
   newlyResolvedItemIds?: string[];
   idempotencyKey?: string | null;
 }) {
-  if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
+  const logSkipped = (reason: string) => logger.info({
+    issueId: input.issue.id,
+    issueStatus: input.issue.status,
+    interactionId: input.interaction.id,
+    interactionKind: input.interaction.kind,
+    interactionStatus: input.interaction.status,
+    continuationPolicy: input.interaction.continuationPolicy,
+    assigneeAgentId: input.issue.assigneeAgentId,
+    reason,
+  }, "interaction continuation wake skipped");
+  if (!input.issue.assigneeAgentId) {
+    logSkipped("issue_unassigned");
+    return;
+  }
+  if (isClosedIssueStatus(input.issue.status)) {
+    logSkipped("issue_terminal");
+    return;
+  }
 
   const reviewPathLost = input.issue.status === "in_review"
     && (await issueService(input.db)
@@ -2103,8 +2029,18 @@ async function queueResolvedInteractionContinuationWakeup(input: {
       input.interaction.continuationPolicy === "wake_assignee_on_accept"
       && input.interaction.status === "accepted"
     );
-  if (!continuationPolicyAllowsWake && !reviewPathLost) return;
-  if (input.interaction.status === "expired" && !reviewPathLost) return;
+  if (!continuationPolicyAllowsWake && !reviewPathLost) {
+    logSkipped(
+      input.interaction.continuationPolicy === "wake_assignee_on_accept"
+        ? "interaction_not_accepted"
+        : "continuation_policy_disabled",
+    );
+    return;
+  }
+  if (input.interaction.status === "expired" && !reviewPathLost) {
+    logSkipped("interaction_expired");
+    return;
+  }
   const reviewPathContext = reviewPathLost
     ? {
         reviewPathLost: true,
@@ -2115,111 +2051,80 @@ async function queueResolvedInteractionContinuationWakeup(input: {
 
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
-  const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
-  const interactionResult = readConfirmationResultForWake(input.interaction.result);
+  const planReviewInteraction = readPlanReviewInteractionForWake({
+    issueId: input.issue.id,
+    interaction: input.interaction,
+  });
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
   const toolAction = readToolActionContinuationContext(input.interaction);
   const secretProposal = readSecretProposalContinuationContext(input.interaction);
   const newlyResolvedItemIds = input.newlyResolvedItemIds?.filter((value) => value.length > 0) ?? [];
-  const itemVerdicts = newlyResolvedItemIds.length > 0
-    ? {
-        newlyResolvedItemIds,
-        coalesceWindowMs: REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
-      }
-    : null;
-  const planReviewInteraction =
-    planTarget && input.interaction.kind === "request_confirmation"
-      ? {
-          id: input.interaction.id,
-          kind: input.interaction.kind,
-          status: input.interaction.status,
-          target: planTarget,
-          acceptedTargetRevision: input.interaction.status === "accepted" ? planTarget : null,
-          result: interactionResult,
-        }
-      : null;
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
+  const itemVerdicts = readItemVerdictContinuationContext({
+    result: input.interaction.result,
+    newlyResolvedItemIds,
+  });
+  try {
+    const run = await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(reviewPathContext ?? {}),
+        mutation: "interaction",
+      },
+      idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(reviewPathContext ?? {}),
+        wakeReason: "issue_commented",
+        source: input.source,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
+        ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
+      },
+    });
+    logger.info({
       issueId: input.issue.id,
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      mutation: "interaction",
-    },
-    idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
+      continuationPolicy: input.interaction.continuationPolicy,
+      reviewPathLost: Boolean(reviewPathLost),
+      agentId: input.issue.assigneeAgentId,
+      schedulerOutcome: run ? "run_returned" : "deferred_or_skipped",
+      runId: run?.id ?? null,
+    }, "interaction continuation wake scheduling completed");
+  } catch (err) {
+    logger.warn({
+      err,
       issueId: input.issue.id,
-      taskId: input.issue.id,
       interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      wakeReason: "issue_commented",
-      source: input.source,
-      ...(forceFreshSession ? { forceFreshSession: true } : {}),
-      ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
-}
-
-function readCheckboxSelectionForWake(input: {
-  kind: string;
-  payload?: unknown;
-  result?: unknown;
-}) {
-  if (input.kind !== "request_checkbox_confirmation") return null;
-  const result = readObject(input.result);
-  if (result.outcome !== "accepted") return null;
-  const selectedOptionIds = Array.isArray(result.selectedOptionIds)
-    ? result.selectedOptionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-    : [];
-  const payload = readObject(input.payload);
-  const options = Array.isArray(payload.options)
-    ? payload.options
-        .map((value) => {
-          const option = readObject(value);
-          const id = readNonEmptyString(option.id);
-          if (!id) return null;
-          return {
-            id,
-            label: readNonEmptyString(option.label) ?? id,
-            description: readNonEmptyString(option.description),
-          };
-        })
-        .filter((value): value is { id: string; label: string; description: string | null } => Boolean(value))
-    : [];
-  const optionById = new Map(options.map((option) => [option.id, option]));
-
-  return {
-    prompt: readNonEmptyString(payload.prompt),
-    selectedOptionIds,
-    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
-  };
+      agentId: input.issue.assigneeAgentId,
+    }, "failed to wake assignee on issue interaction resolution");
+  }
 }
 
 function diffExecutionParticipants(
@@ -11381,17 +11286,23 @@ export function issueRoutes(
         const executionStatus = readToolActionExecutionStatus(approval.status);
         if (executionStatus) {
           const currentResult = readObject(interaction.result);
+          const persistedToolActionResult = {
+            version: 1 as const,
+            status: executionStatus,
+            errorMessage: readNonEmptyString(approval.error),
+            resultSummary: readNonEmptyString(approval.resultSummary),
+            updatedAt: new Date().toISOString(),
+          };
+          await issueThreadInteractionsSvc.recordAcceptedToolActionResult(
+            issue,
+            interaction.id,
+            persistedToolActionResult,
+          );
           continuationInteraction = {
             ...interaction,
             result: {
               ...currentResult,
-              toolAction: {
-                version: 1,
-                status: executionStatus,
-                errorMessage: readNonEmptyString(approval.error),
-                resultSummary: readNonEmptyString(approval.resultSummary),
-                updatedAt: new Date().toISOString(),
-              },
+              toolAction: persistedToolActionResult,
             } as typeof interaction.result,
           };
         }

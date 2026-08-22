@@ -414,6 +414,252 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(runs[0]?.id).toBe(runId);
   });
 
+  it("defers interaction-resolution wakes for a running issue so the assignee observes the answer", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    runningProcesses.set(runId, {
+      child: {} as never,
+      graceSec: 0,
+      processGroupId: null,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Answer a user question",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      executionAgentNameKey: "ceo",
+      executionLockedAt: new Date(),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const followupRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        interactionId: "interaction-1",
+        interactionStatus: "answered",
+        mutation: "interaction",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        interactionId: "interaction-1",
+        interactionStatus: "answered",
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(followupRun).toBeNull();
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(deferred?.payload).toMatchObject({
+      issueId,
+      interactionId: "interaction-1",
+      interactionStatus: "answered",
+    });
+    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      interactionStatus: "answered",
+      wakeReason: "issue_commented",
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+  });
+
+  it.each(["interaction", "ordinary assignment"] as const)(
+    "does not overwrite a queued interaction continuation with a later %s wake",
+    async (followupKind) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const firstWake = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          interactionId: "interaction-a",
+          interactionStatus: "answered",
+          mutation: "interaction",
+        },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: firstWake.id,
+      responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        interactionId: "interaction-a",
+        interactionStatus: "answered",
+        mutation: "interaction",
+        wakeReason: "issue_commented",
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Preserve queued interaction context",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      executionAgentNameKey: "ceo",
+      executionLockedAt: new Date(),
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const isInteractionFollowup = followupKind === "interaction";
+    const followupRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: isInteractionFollowup ? "issue_commented" : "issue_assigned",
+      payload: {
+        issueId,
+        ...(isInteractionFollowup
+          ? {
+              interactionId: "interaction-b",
+              interactionStatus: "accepted",
+              mutation: "interaction",
+            }
+          : {}),
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        ...(isInteractionFollowup
+          ? {
+              interactionId: "interaction-b",
+              interactionStatus: "accepted",
+              mutation: "interaction",
+            }
+          : {}),
+        wakeReason: isInteractionFollowup ? "issue_commented" : "issue_assigned",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(followupRun).toBeNull();
+    const persistedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(persistedRun.contextSnapshot).toMatchObject({ interactionId: "interaction-a" });
+
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const expectedDeferredContext = isInteractionFollowup
+      ? { interactionId: "interaction-b", interactionStatus: "accepted" }
+      : { wakeReason: "issue_assigned" };
+    expect(deferred?.payload).toMatchObject({ issueId, ...expectedDeferredContext });
+    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject(
+      expectedDeferredContext,
+    );
+    },
+  );
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
