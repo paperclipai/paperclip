@@ -632,10 +632,23 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  /**
+   * 2026-08-22 (operator: end the recurring disposition disease): a run that
+   * STATES continuation — structured `disposition.status: "continuing"`, a
+   * `continuing:`/`next step:` marker in its final report, or an explicit
+   * nextAction — has given a disposition. The productive-run continuation and
+   * the sweep own the re-offer; firing a corrective "choose a next step"
+   * handoff at it burned ~348 status-only runs/day asking for what was
+   * already stated.
+   */
+  statedContinuation: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
+  if (input.statedContinuation) {
+    return { kind: "skip", reason: "stated continuation disposition owns the next action" };
+  }
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };

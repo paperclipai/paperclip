@@ -11043,7 +11043,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // `blocked` is only safe to apply when the adapter has affirmatively
     // identified a blocker as well as named it. A status-only recovery has no
     // authority to manufacture a wait state from a bare status or prose.
-    const statedVerifiedBlocker = statedDisposition?.hasBlocker === true && statedBlocker;
+    //
+    // 2026-08-22 (operator: the disposition disease keeps recurring): NAMED
+    // blocker text IS the affirmative identification. Requiring the redundant
+    // `hasBlocker: true` boolean alongside it silently discarded real
+    // dispositions — 122 of the 470 daily "missing disposition" handoffs were
+    // runs that DID state `{status:"blocked", blocker:"<named>"}` but omitted
+    // the boolean, so the blocked apply was skipped, the issue stayed
+    // in_progress, and the corrective handoff asked the agent for what it had
+    // already provided. Text is sufficient; an explicit `hasBlocker: false`
+    // still vetoes; a bare `hasBlocker: true` with no text still fails (there
+    // is nothing to name an Unblock card from).
+    const statedVerifiedBlocker = statedBlocker && statedDisposition?.hasBlocker !== false
+      ? statedBlocker
+      : null;
     const statedReviewer =
       statedDisposition && typeof statedDisposition.reviewer === "string" && statedDisposition.reviewer.trim()
         ? statedDisposition.reviewer.trim()
@@ -11309,6 +11322,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // 2026-08-22 disposition-disease fix, part 2: recognize STATED continuation
+    // before firing a corrective "choose a next step" wake. Structured
+    // `disposition.status: "continuing"/"continue"/"in_progress"`, the fleet
+    // convention markers in the final report (`continuing:` / `next step:` —
+    // the exact form the Run Disposition Law teaches), or an explicit
+    // nextAction all mean the agent already answered the question the handoff
+    // would ask. The productive-run continuation re-offer and the sweep's
+    // parked-in-progress pass own the actual next run.
+    const statedContinuation = Boolean(
+      (statedStatus && ["continuing", "continue", "in_progress"].includes(statedStatus))
+      || (typeof finalReport === "string"
+        && /(^|\n)\s*(continuing|next step)\s*[:\-]/i.test(finalReport))
+      || readNonEmptyString(nextAction),
+    );
+
     const decision = decideSuccessfulRunHandoff({
       run,
       issue,
@@ -11328,6 +11356,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      statedContinuation,
     });
 
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {

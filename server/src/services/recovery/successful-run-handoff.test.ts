@@ -62,6 +62,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasActiveRoutineContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
+    statedContinuation: false,
     ...overrides,
   });
 }
@@ -487,5 +488,35 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+});
+
+describe("stated continuation suppression (2026-08-22 disposition-disease fix)", () => {
+  it("skips the corrective handoff when the run stated a continuation", async () => {
+    const { decideSuccessfulRunHandoff } = await import("./successful-run-handoff.js");
+    const base = {
+      run: { id: "run-1", status: "succeeded", agentId: "agent-1", companyId: "company-1", contextSnapshot: {}, issueCommentStatus: null } as any,
+      issue: { id: "issue-1", companyId: "company-1", identifier: "PAP-1", title: "t", description: "d", status: "in_progress", assigneeAgentId: "agent-1", assigneeUserId: null, executionState: null } as any,
+      agent: { id: "agent-1", companyId: "company-1", status: "idle" } as any,
+      livenessState: "advanced" as any,
+      detectedProgressSummary: "progress",
+      finalReport: "continuing: render the remaining cards",
+      nextAction: null,
+      taskKey: "issue-1",
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasPersistedMonitor: false,
+      hasExplicitBlockerPath: false,
+      hasOpenRecoveryIssue: false,
+      hasPauseHold: false,
+      hasActiveRoutineContinuation: false,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+      statedContinuation: true,
+    };
+    const decision = decideSuccessfulRunHandoff(base);
+    expect(decision.kind).toBe("skip");
+    expect((decision as { reason?: string }).reason).toContain("stated continuation");
   });
 });
