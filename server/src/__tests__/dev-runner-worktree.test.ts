@@ -157,6 +157,7 @@ describe("dev-runner worktree env bootstrap", () => {
     const root = createTempRoot("paperclip-dev-runner-primary-");
     fs.mkdirSync(path.join(root, ".git"), { recursive: true });
     fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".paperclip", "config.json"), "{}\n", "utf8");
     const pinnedHome = path.join(root, "pinned-home");
     fs.writeFileSync(
       resolveWorktreeEnvFilePath(root),
@@ -179,6 +180,7 @@ describe("dev-runner worktree env bootstrap", () => {
     const root = createTempRoot("paperclip-dev-runner-primary-override-");
     fs.mkdirSync(path.join(root, ".git"), { recursive: true });
     fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".paperclip", "config.json"), "{}\n", "utf8");
     fs.writeFileSync(
       resolveWorktreeEnvFilePath(root),
       `PAPERCLIP_HOME=${path.join(root, "pinned-home")}\n`,
@@ -189,6 +191,28 @@ describe("dev-runner worktree env bootstrap", () => {
     bootstrapDevRunnerWorktreeEnv(root, env);
 
     expect(env.PAPERCLIP_HOME).toBe(path.join(root, "explicit-home"));
+  });
+
+  it("ignores a primary checkout's orphaned env file", () => {
+    // A .env with no config.json beside it is debris: left behind when a
+    // worktree's instance was removed, or carried along when a worktree
+    // directory was copied into a clone. Applying it would point every spawned
+    // child at an instance that no longer exists.
+    const root = createTempRoot("paperclip-dev-runner-primary-orphan-");
+    fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    fs.writeFileSync(
+      resolveWorktreeEnvFilePath(root),
+      `PAPERCLIP_HOME=${path.join(root, "removed-instance")}\n`,
+      "utf8",
+    );
+
+    const env: NodeJS.ProcessEnv = {};
+    expect(bootstrapDevRunnerWorktreeEnv(root, env)).toEqual({
+      envPath: null,
+      missingEnv: false,
+    });
+    expect(env.PAPERCLIP_HOME).toBeUndefined();
   });
 
   it("leaves a primary checkout without a pin untouched", () => {

@@ -140,6 +140,18 @@ export function bootstrapDevRunnerWorktreeEnv(
     return { envPath: null, missingEnv: false };
   }
 
+  // A primary checkout's pin is honoured only when it is coherent: the config
+  // file the env file accompanies has to exist beside it. A lone .env is debris
+  // — left behind when a worktree's instance was removed, or carried along when
+  // a worktree directory was copied into a clone — and applying it would point
+  // every spawned child at an instance that no longer exists. A linked worktree
+  // is exempt because repairStaleMigratedWorktreeEnvEntries below exists to
+  // rewrite precisely that case for it; a primary checkout has no such repair,
+  // so the coherence check is what stands in for it.
+  if (!linkedWorktree && !existsSync(path.resolve(rootDir, ".paperclip", "config.json"))) {
+    return { envPath: null, missingEnv: false };
+  }
+
   const parsedEntries = parseEnvFile(readFileSync(envPath, "utf8"));
   // The stale-config repair rewrites paths against the worktree home layout, so
   // it stays scoped to linked worktrees; a primary checkout's pin is used as
