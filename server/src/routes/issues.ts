@@ -1852,6 +1852,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorSource: "agent_key" | "agent_jwt" | "local_implicit" | "session" | "board_key" | "cloud_tenant";
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
@@ -1879,6 +1880,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+  if (input.actorSource !== "session") return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -9530,6 +9532,7 @@ export function issueRoutes(
             assigneeAgentId: requestedAssigneeAgentId,
             actorType: actor.actorType,
             actorId: actor.actorId,
+            actorSource: actor.actorSource,
             actorRunId: actor.runId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
@@ -12213,6 +12216,7 @@ export function issueRoutes(
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorSource: actor.actorSource,
           actorRunId: actor.runId,
           checkoutRunId: issue.checkoutRunId,
           executionRunId: issue.executionRunId,
