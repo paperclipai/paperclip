@@ -107,7 +107,33 @@ async function createPipelineWriterAgentKey(board: APIRequestContext, companyId:
   await expectOk(approveResponse, "approve pipeline-writer join");
   const approved = await approveResponse.json() as { createdAgentId: string };
 
-  const runId = randomUUID();
+  const configureResponse = await board.patch(`/api/agents/${approved.createdAgentId}`, {
+    data: {
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => {}, 220000)"],
+        timeoutSec: 230,
+      },
+    },
+  });
+  await expectOk(configureResponse, "configure pipeline-writer runtime");
+
+  const invokeResponse = await board.post(`/api/agents/${approved.createdAgentId}/heartbeat/invoke`, {
+    data: {},
+  });
+  await expectOk(invokeResponse, "start pipeline-writer run");
+  const invoked = await invokeResponse.json() as { id: string };
+
+  let status = "queued";
+  for (let attempt = 0; attempt < 100 && status !== "running"; attempt += 1) {
+    const runResponse = await board.get(`/api/heartbeat-runs/${invoked.id}`);
+    await expectOk(runResponse, "read pipeline-writer run");
+    status = ((await runResponse.json()) as { status: string }).status;
+    if (status !== "running") await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  expect(status).toBe("running");
+
+  const runId = invoked.id;
   const token = createLocalAgentJwt(approved.createdAgentId, companyId, "process", runId);
   if (!token) throw new Error("PAPERCLIP_AGENT_JWT_SECRET is required for pipeline writer JWT setup");
   return { agentId: approved.createdAgentId, runId, token };
@@ -431,6 +457,10 @@ test.describe("Pipelines tutorial UI flow", () => {
     expect(editedA.version).toBeGreaterThan(childA.version);
     expect(rereviewed.case.version).toBeGreaterThan(changedReview.version);
 
+    await expectOk(
+      await board.post(`/api/heartbeat-runs/${key.runId}/cancel`),
+      "cancel pipeline-writer run",
+    );
     await agentApi.dispose();
     await board.dispose();
   });
