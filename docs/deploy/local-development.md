@@ -92,6 +92,14 @@ pnpm paperclipai run
 pnpm paperclipai doctor
 ```
 
+By default the new branch starts at the current `HEAD`. Use `--start-point` to pick a different base. A ref whose first segment names a configured remote is fetched first; every other ref is resolved locally, with no fetch:
+
+```sh
+npx paperclipai worktree:make local-lab --start-point origin/master   # fetches origin, then branches
+npx paperclipai worktree:make local-lab --start-point HEAD            # local ref
+npx paperclipai worktree:make local-lab --start-point 6ef1c733e       # local commit
+```
+
 If the experiment gets noisy, repair or reseed the worktree without touching the main branch:
 
 ```sh
