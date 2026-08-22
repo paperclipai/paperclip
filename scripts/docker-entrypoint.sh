@@ -45,4 +45,35 @@ if [ -d "$home_dir" ] && [ -n "$(find "$home_dir" \( ! -user node -o ! -group no
     chown -R node:node "$home_dir"
 fi
 
+# --- Fork-local: disk-exhaustion prevention (Railway volume is fixed-size) ---
+# Retained across the 2026-08 upstream sync. Upstream has no equivalent, and
+# this container previously filled its volume and hit ENOSPC. The Paperclip
+# backup-retention routines that would otherwise cover this are PAUSED under
+# the cost hold, so this entrypoint is the only active disk protection.
+# Runs as root, before dropping privileges, so it can remove node-owned files.
+
+# Prune run logs older than 7 days, for every instance
+for instance_dir in "$home_dir"/instances/*; do
+    RUN_LOG_DIR="${instance_dir}/data/run-logs"
+    if [ -d "$RUN_LOG_DIR" ]; then
+        echo "Cleaning logs in $RUN_LOG_DIR"
+        find "$RUN_LOG_DIR" -type f -mtime +7 -delete 2>/dev/null || true
+    fi
+done
+
+# Prune oversized Claude Code caches (>50MB) that accumulate per agent
+for AGENT_DIR in "$home_dir"/instances/*/agents/*/; do
+    if [ -d "${AGENT_DIR}.claude" ]; then
+        CACHE_SIZE=$(du -sm "${AGENT_DIR}.claude" 2>/dev/null | cut -f1)
+        if [ "${CACHE_SIZE:-0}" -gt 50 ]; then
+            echo "Pruning large .claude cache (${CACHE_SIZE}MB) in $AGENT_DIR"
+            rm -rf "${AGENT_DIR}.claude/cache" 2>/dev/null || true
+        fi
+    fi
+done
+
+USED=$(du -sm "$home_dir" 2>/dev/null | cut -f1)
+echo "Volume $home_dir usage: ${USED}MB"
+# --- end fork-local ---
+
 exec gosu node "$@"
