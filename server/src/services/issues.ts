@@ -669,8 +669,12 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
-  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  onDeduplicated?: (reason: IssueCreateDeduplicationReason) => void;
 };
+export type IssueCreateDeduplicationReason =
+  | "idempotency_key"
+  | "recent_open_title"
+  | "recent_open_sibling_code";
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
@@ -4454,6 +4458,24 @@ export function issueService(db: Db) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
 
+  // A leading "ROT-01 — ", "SEC-02b: " style token is a batch code the author already
+  // treats as an identifier, so two open siblings carrying the same code are the same
+  // item even when the rest of the title was rephrased. Exact-title dedup misses that
+  // case: a second run re-planning the same parent restates each title slightly
+  // differently and every duplicate slips through.
+  //
+  // The shape is deliberately narrow, because a false positive here silently drops a
+  // real task. Both signals must be present: the ordinal is zero-padded ("SEC-02", not
+  // "GPT-4"), and the code is followed by a separator rather than a plain word
+  // ("SEC-02 — fix", not "GPT-04 pricing"). A product/version token that happens to be
+  // shared by two unrelated sibling titles therefore never collapses them. The cost of
+  // being too narrow is only a duplicate that the caller can still avoid with
+  // idempotencyKey — the pre-existing behaviour.
+  function extractCreateIssueTitleCode(title: string) {
+    const match = /^\s*([A-Za-z]{2,8}-0\d{1,4}[A-Za-z]?)\s*(?:[—–:.)\]-]\s|$)/.exec(title);
+    return match ? match[1].toLowerCase() : null;
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -7073,10 +7095,16 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
+        const titleCode = extractCreateIssueTitleCode(issueData.title);
         if (allowDuplicate === false) {
           const titleGuardKey =
             `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
+          if (titleCode && issueData.parentId) {
+            const codeGuardKey =
+              `issue-create:code:${companyId}:${issueData.parentId}:${titleCode}`;
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${codeGuardKey}, 0))`);
+          }
         }
         if (idempotencyKey) {
           const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
@@ -7084,7 +7112,7 @@ export function issueService(db: Db) {
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
-        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+        let deduplicationReason: IssueCreateDeduplicationReason | null = null;
         if (idempotencyKey) {
           const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
           await tx.execute(sql`
@@ -7126,6 +7154,38 @@ export function issueService(db: Db) {
             .orderBy(asc(issues.createdAt), asc(issues.id))
             .limit(1);
           if (existingIssue) deduplicationReason = "recent_open_title";
+        }
+        // Scoped to real siblings on purpose. Root issues share a single company-wide
+        // bucket, so a leading code there is not evidence of one batch: two unrelated
+        // root issues opened days apart under the same code would collapse and the
+        // second one would be silently dropped. Under a parent the bucket is the batch.
+        if (!existingIssue && allowDuplicate === false && titleCode && issueData.parentId) {
+          // A code that names an existing issue is a reference ("ENG-0042 follow-up"),
+          // not a work-item code, so it must not collapse unrelated siblings.
+          const [referencedIssue] = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              sql`lower(${issues.identifier}) = ${titleCode}`,
+            ))
+            .limit(1);
+          if (!referencedIssue) {
+            [existingIssue] = await tx
+              .select()
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, companyId),
+                eq(issues.parentId, issueData.parentId),
+                isNull(issues.hiddenAt),
+                notInArray(issues.status, ["done", "cancelled"]),
+                gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
+                sql`lower(substring(btrim(${issues.title}) from '^[A-Za-z]{2,8}-0[0-9]{1,4}[A-Za-z]?(?=[[:space:]]*([—–:.)\\]-][[:space:]]|$))')) = ${titleCode}`,
+              ))
+              .orderBy(asc(issues.createdAt), asc(issues.id))
+              .limit(1);
+            if (existingIssue) deduplicationReason = "recent_open_sibling_code";
+          }
         }
         if (existingIssue) {
           if (idempotencyKey) {
