@@ -739,6 +739,137 @@ describe("issue execution policy routes", () => {
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
   });
 
+  it("atomically persists a blocked status, blocker relation, and unblock descriptor without review", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1007A",
+      title: "Blockable issue",
+      executionPolicy: null,
+      executionState: null,
+      blockedByIssueIds: [],
+    };
+    const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let blockedByIssueIds: string[] = [];
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getRelationSummaries.mockImplementation(async () => ({
+      blockedBy: blockedByIssueIds.map((id) => ({ id })),
+      blocks: [],
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      blockedByIssueIds = (patch.blockedByIssueIds as string[] | undefined) ?? blockedByIssueIds;
+      return {
+        ...issue,
+        ...patch,
+        blockedByIssueIds,
+        updatedAt: new Date(),
+      };
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [blockerId],
+        unblockDescriptor: { owner: "board", action: "Review the blocker" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "blocked",
+        blockedByIssueIds: [blockerId],
+        unblockDescriptor: { owner: "board", action: "Review the blocker" },
+      }),
+    );
+    expect(res.body).toMatchObject({
+      status: "blocked",
+      blockedByIssueIds: [blockerId],
+      blockedBy: [{ id: blockerId }],
+    });
+  });
+
+  it("drops an unblock descriptor when a pending review rewrites blocked to in_progress", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1007B",
+      title: "Review-gated issue",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    let persistedIssue: Record<string, unknown> = issue;
+    mockIssueService.getById.mockImplementation(async () => persistedIssue);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "The review found a blocker." });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      persistedIssue = { ...persistedIssue, ...patch, updatedAt: new Date() };
+      return persistedIssue;
+    });
+    mockDb.transaction.mockImplementation(async (callback) =>
+      callback({
+        select: mockDbSelect,
+        insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+      } as any),
+    );
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "blocked",
+        comment: "The review found a blocker.",
+        unblockDescriptor: {
+          owner: { agentId: "33333333-3333-4333-8333-333333333333" },
+          action: "Review the blocker",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("in_progress");
+    expect(res.body).not.toHaveProperty("unblockDescriptor");
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_progress");
+    expect(updatePatch).not.toHaveProperty("unblockDescriptor");
+    const readback = await mockIssueService.getById(issue.id);
+    expect(readback).toMatchObject({ status: "in_progress" });
+    expect(readback).not.toHaveProperty("unblockDescriptor");
+    expect(res.body.error).toBeUndefined();
+  });
+
   it("allows a board user to cancel an active agent review task", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
