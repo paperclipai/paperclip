@@ -88,6 +88,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { startHostResourceTelemetry } from "./services/host-telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
@@ -994,6 +995,7 @@ export async function startServer(): Promise<StartedServer> {
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let stopHostResourceTelemetry: (() => void) | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1572,7 +1574,15 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  // Lightweight periodic CPU/RAM sampling for post-incident diagnostics (RENA-51447).
+  // Optional/best-effort: never let a telemetry setup failure reject startServer.
+  try {
+    stopHostResourceTelemetry = startHostResourceTelemetry();
+  } catch (err) {
+    logger.warn({ err }, "failed to start host resource telemetry; continuing without it");
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1662,6 +1672,10 @@ export async function startServer(): Promise<StartedServer> {
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
+      }
+      if (stopHostResourceTelemetry) {
+        stopHostResourceTelemetry();
+        stopHostResourceTelemetry = null;
       }
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
