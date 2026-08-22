@@ -12,9 +12,13 @@ function areEqual(a: string[], b: string[]) {
   return true;
 }
 
-function sortCompaniesByOrder(companies: Company[], orderedIds: string[]): Company[] {
+export function sortCompaniesByOrder(companies: Company[], orderedIds: string[]): Company[] {
   if (companies.length === 0) return [];
-  if (orderedIds.length === 0) return companies;
+  if (orderedIds.length === 0) {
+    return [...companies].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
+  }
 
   const byId = new Map(companies.map((company) => [company.id, company]));
   const sorted: Company[] = [];
