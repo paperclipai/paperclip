@@ -44,6 +44,9 @@ export type {
 } from "./types/decision.js";
 
 export {
+  AGENT_SUBTREE_MAX_DEPTH,
+  agentIsInSubtree,
+  agentIsWithinIssueWriteBoundary,
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,
@@ -56,6 +59,7 @@ export {
   type AgentOrgChainEntry,
   type AgentOrgChainHealth,
   type AgentOrgChainInvalidReason,
+  type AgentSubtreeNode,
   type AgentWorkEligibility,
 } from "./agent-eligibility.js";
 export {
