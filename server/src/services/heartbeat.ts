@@ -21395,12 +21395,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .from(issues)
       .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, batchIssueIds)));
-    const unfinishedSiblingIds = selectUnfinishedBatchIssuesForRequeue({
+    const requeueCandidateIds = selectUnfinishedBatchIssuesForRequeue({
       batchIssueIds,
       primaryIssueId: contextIssueId,
       issueStates: batchIssueStates.map((row: { id: string; status: string; assigneeAgentId: string | null }) => row),
       finishingAgentId: run.agentId,
     });
+    // 2026-08-22: a dependency-blocked sibling was requeued on EVERY completion
+    // of the batch agent — the run.id-scoped idempotency key mints a fresh slot
+    // per run, so the wake gate skipped the same card thousands of times a day
+    // (TSM-5542: 1,918 issue_dependencies_blocked skips in one day) while the
+    // per-pass wake budget starved runnable work. Check readiness BEFORE the
+    // offer; a blocked sibling is re-entered by the issue_blockers_resolved
+    // dependency wake when its blockers actually resolve, not by this requeue.
+    let unfinishedSiblingIds = requeueCandidateIds;
+    if (requeueCandidateIds.length > 0) {
+      const siblingReadiness = await issuesSvc.listDependencyReadiness(run.companyId, requeueCandidateIds);
+      unfinishedSiblingIds = requeueCandidateIds.filter(
+        (id) => siblingReadiness.get(id)?.isDependencyReady !== false,
+      );
+      const held = requeueCandidateIds.length - unfinishedSiblingIds.length;
+      if (held > 0) {
+        logger.info(
+          { runId: run.id, heldDependencyBlockedSiblings: held },
+          "batch pickup requeue held dependency-blocked siblings",
+        );
+      }
+    }
     for (const siblingIssueId of unfinishedSiblingIds) {
       await enqueueWakeup(run.agentId, {
         source: "assignment",
