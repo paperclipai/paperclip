@@ -167,10 +167,13 @@ function makeIssue() {
 }
 
 function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Record<string, unknown>) {
+  // Mirrors the control fields `issueService.update` destructures out before it
+  // touches the row, so they never reach a change receipt.
   const {
     actorAgentId: _actorAgentId,
     actorUserId: _actorUserId,
     blockedByIssueIds: _blockedByIssueIds,
+    liveRunAuthority: _liveRunAuthority,
     ...issuePatch
   } = patch;
   const updated = {
