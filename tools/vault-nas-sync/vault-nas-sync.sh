@@ -162,6 +162,18 @@ RSYNC_ARGS=(
   --exclude ".obsidian/cache/"
   --exclude "_geloescht/"
   --exclude ".rsync-partial/"
+  # Wiederherstellbarer Ballast aus den Code-Projekten im Vault: 2 `.venv`
+  # (0,7 GB, 8.097 Dateien, darunter ein 572-MB-spaCy-Modell), 433
+  # `__pycache__`, dazu `node_modules` — zusammen ein Viertel aller Dateien.
+  # Genau daran scheiterte `projekte/obsidian` am 22.08.2026 wieder und
+  # wieder, und alles davon entsteht aus den Lockfiles neu.
+  # `.git` bleibt ausdruecklich DRIN: dort steckt Historie, und die Projekte
+  # im Vault haben nicht zwangslaeufig ein Remote.
+  --exclude ".venv/"
+  --exclude "venv/"
+  --exclude "node_modules/"
+  --exclude "__pycache__/"
+  --exclude "*.pyc"
   # --partial-dir statt blossem --partial: `--partial` laesst Bruchstuecke AM
   # ZIELORT liegen. Der naechste Versuch haelt sie fuer echten Inhalt, schiebt
   # sie in den Auffangordner und uebertraegt neu — nach drei Fehlversuchen
@@ -193,13 +205,29 @@ FEHLER_ORDNER=""
 
 shopt -s dotglob nullglob
 cd "$QUELLE" || melde_fehler "Quelle nicht betretbar: $QUELLE"
+
+# Dateien der obersten Ebene in EINEM Aufruf, Verzeichnisse einzeln.
+# `--delete` auf eine einzelne Datei quittiert rsync mit einem Syntaxfehler
+# (code 1) — deshalb `--exclude '/*/'`, das alle Unterordner ausblendet und
+# nur die losen Dateien im Wurzelverzeichnis behandelt.
+EINTRAEGE=("::wurzeldateien::")
 for E in *; do
   case "$E" in .|..|_geloescht|.rsync-partial|.trash) continue ;; esac
-  [ -e "$E" ] || continue
+  [ -d "$E" ] && EINTRAEGE+=("$E")
+done
+
+for E in "${EINTRAEGE[@]}"; do
+  if [ "$E" = "::wurzeldateien::" ]; then
+    QUELL_ARG="$QUELLE/"
+    ZUSATZ=(--exclude "/*/" --backup-dir="$AUFFANG/_wurzel")
+  else
+    QUELL_ARG="$QUELLE/$E"
+    ZUSATZ=(--backup-dir="$AUFFANG/$E")
+  fi
   n=1
   while : ; do
-    AUSGABE="$("$RSYNC" "${RSYNC_ARGS[@]}" --backup-dir="$AUFFANG/$E" \
-                "$QUELLE/$E" "$ZIEL/" 2>&1)"
+    AUSGABE="$("$RSYNC" "${RSYNC_ARGS[@]}" "${ZUSATZ[@]}" \
+                "$QUELL_ARG" "$ZIEL/" 2>&1)"
     RC=$?
     { echo "===== $(ts) [$E] Versuch $n (rc=$RC)"; echo "$AUSGABE"; } >> "$RSYNC_LOG"
     if [ "$RC" -eq 0 ]; then
@@ -210,8 +238,38 @@ for E in *; do
       break
     fi
     if [ "$n" -ge "$VERSUCHE" ]; then
-      FEHLER_ORDNER="$FEHLER_ORDNER $E"
       log "  $E: nach $VERSUCHE Versuchen fehlgeschlagen — $(echo "$AUSGABE" | tail -1)"
+      # Feiner aufteilen statt aufgeben. Am 22.08.2026 scheiterten `Katalog`
+      # (9.135 winzige Dateien) und `projekte` (9.322 Dateien, eine davon
+      # 572 MB) auch ordnerweise — dieselbe SMB-Ueberlastung wie beim
+      # monolithischen Lauf, nur eine Ebene tiefer. Kleinere Haeppchen haben
+      # bisher jedes Mal geholfen, also wird genau das getan.
+      if [ "$E" != "::wurzeldateien::" ] && [ -d "$QUELLE/$E" ]; then
+        UNTER=0
+        for U2 in "$QUELLE/$E"/*/; do
+          [ -d "$U2" ] || continue
+          UNTER=1
+          NAME="$(basename "$U2")"
+          for m in 1 2 3; do
+            AUS2="$("$RSYNC" "${RSYNC_ARGS[@]}" \
+                     --backup-dir="$AUFFANG/$E/$NAME" \
+                     "$QUELLE/$E/$NAME" "$ZIEL/$E/" 2>&1)"
+            RC2=$?
+            { echo "===== $(ts) [$E/$NAME] Versuch $m (rc=$RC2)"; echo "$AUS2"; } >> "$RSYNC_LOG"
+            [ "$RC2" -eq 0 ] && break
+            [ "$m" -ge 3 ] && { FEHLER_ORDNER="$FEHLER_ORDNER $E/$NAME"; log "    $E/$NAME: endgueltig fehlgeschlagen"; }
+            sleep "$PAUSE"
+          done
+        done
+        # Die losen Dateien des Ordners noch hinterher.
+        "$RSYNC" "${RSYNC_ARGS[@]}" --exclude "/*/" \
+          --backup-dir="$AUFFANG/$E/_dateien" \
+          "$QUELLE/$E/" "$ZIEL/$E/" >>"$RSYNC_LOG" 2>&1 \
+          || FEHLER_ORDNER="$FEHLER_ORDNER $E/(Dateien)"
+        [ "$UNTER" -eq 1 ] && log "  $E: in Unterordner zerlegt und einzeln uebertragen."
+      else
+        FEHLER_ORDNER="$FEHLER_ORDNER $E"
+      fi
       break
     fi
     sleep "$PAUSE"

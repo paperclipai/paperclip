@@ -29,6 +29,16 @@ def baue_vault(w: Path):
     (w / ".trash").mkdir()
     (w / ".trash" / "geloescht.md").write_text("muell")
     (w / ".DS_Store").write_text("x")
+    # Wiederherstellbarer Ballast, der im Vault tatsaechlich vorkommt
+    (w / "projekte" / "code" / ".venv" / "lib").mkdir(parents=True)
+    (w / "projekte" / "code" / ".venv" / "lib" / "riesig.bin").write_text("x" * 100)
+    (w / "projekte" / "code" / "__pycache__").mkdir(parents=True)
+    (w / "projekte" / "code" / "__pycache__" / "m.cpython-39.pyc").write_text("x")
+    (w / "projekte" / "code" / "node_modules").mkdir()
+    (w / "projekte" / "code" / "node_modules" / "paket.js").write_text("x")
+    (w / "projekte" / "code" / ".git").mkdir()
+    (w / "projekte" / "code" / ".git" / "config").write_text("historie")
+    (w / "projekte" / "code" / "quelle.py").write_text("echter inhalt")
     return w
 
 
@@ -189,3 +199,63 @@ def test_loeschung_innerhalb_eines_ordners_wirkt(tmp_path):
     (q / "Analysen" / "zweite.md").unlink()
     lauf(q, z)
     assert not (z / "Analysen" / "zweite.md").exists()
+
+
+def test_bei_fehlschlag_wird_der_ordner_feiner_aufgeteilt(tmp_path):
+    """Am 22.08.2026 scheiterten zwei Ordner auch ordnerweise: `Katalog`
+    (9.135 winzige Dateien) und `projekte` (9.322 Dateien, darunter eine mit
+    572 MB). Bei hohen Dateizahlen reisst SMB weg — dieselbe Ursache wie beim
+    monolithischen Lauf, nur eine Ebene tiefer.
+
+    Antwort: scheitert ein Ordner, wird er in seine Unterordner zerlegt und
+    diese werden einzeln versucht. Der Stub hier laesst genau den obersten
+    Aufruf scheitern und alles Tiefere gelingen."""
+    q = baue_vault(tmp_path / "vault")
+    (q / "Gross" / "a").mkdir(parents=True)
+    (q / "Gross" / "b").mkdir()
+    (q / "Gross" / "a" / "eins.md").write_text("1")
+    (q / "Gross" / "b" / "zwei.md").write_text("2")
+    z = tmp_path / "nas"; z.mkdir()
+
+    stub = tmp_path / "rsync-waehlerisch"
+    stub.write_text(
+        '#!/bin/bash\n'
+        '[ "$1" = "--version" ] && { echo "rsync version 3.4.1"; exit 0; }\n'
+        '# Der vorletzte Parameter ist die Quelle.\n'
+        'for a in "$@"; do vor="$letzte"; letzte="$a"; done\n'
+        'q="$vor"\n'
+        'case "$q" in\n'
+        '  */Gross) echo "rsync: [sender] write error: Broken pipe (32)" >&2; exit 12 ;;\n'
+        'esac\n'
+        'exec /opt/homebrew/bin/rsync "$@"\n')
+    stub.chmod(0o755)
+    umg = dict(os.environ, RSYNC_BIN=str(stub))
+    r = subprocess.run(["/bin/bash", str(SKRIPT), "--quelle", str(q),
+                        "--ziel", str(z), "--kein-versand", "--mindest", "2",
+                        "--pause", "0"],
+                       capture_output=True, text=True, env=umg, timeout=180)
+    assert (z / "Gross" / "a" / "eins.md").exists(), \
+        f"Unterordner nicht einzeln versucht.\n{r.stdout}\n{r.stderr}"
+    assert (z / "Gross" / "b" / "zwei.md").exists()
+
+
+def test_wiederherstellbarer_ballast_bleibt_draussen(tmp_path):
+    """Der Vault enthaelt Code-Projekte: 2 `.venv` (0,7 GB, 8.097 Dateien,
+    darunter ein 572-MB-spaCy-Modell), 433 `__pycache__` und `node_modules`.
+    Zusammen ein Viertel aller Dateien — und alles aus Lockfiles wieder
+    herstellbar. Genau daran scheiterte `projekte/obsidian` am 22.08.2026
+    wieder und wieder."""
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas"; z.mkdir()
+    lauf(q, z)
+    assert not (z / "projekte" / "code" / ".venv").exists()
+    assert not (z / "projekte" / "code" / "__pycache__").exists()
+    assert not (z / "projekte" / "code" / "node_modules").exists()
+    assert (z / "projekte" / "code" / "quelle.py").exists(), "Quelltext fehlt!"
+
+
+def test_git_historie_bleibt_erhalten(tmp_path):
+    """`.git` ist KEIN Ballast: dort steckt die Historie, und die Projekte im
+    Vault haben nicht zwangslaeufig ein Remote."""
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas"; z.mkdir()
+    lauf(q, z)
+    assert (z / "projekte" / "code" / ".git" / "config").read_text() == "historie"
