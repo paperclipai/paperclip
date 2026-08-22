@@ -784,6 +784,15 @@ export function createPluginWorkerHandle(
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+  // One reusable invocation per company for the notification path, keyed by
+  // company id. Notifications have no response to settle on, so their
+  // invocation expires by TTL rather than on completion — and session-event
+  // notifications are published per 250ms of agent output, so minting one per
+  // notification would leave thousands of TTL-retained invocations and timers
+  // alive per run. Reusing one keeps the live set bounded by the number of
+  // companies being streamed for rather than by event volume. See
+  // `registerNotificationInvocation` for why reuse cannot widen scope.
+  const notificationInvocations = new Map<string, PluginInvocationContext>();
   // Host-owned execute routes, keyed by the host-issued invocation id. Only an
   // `environmentExecute` call with a log sink registers a route here. The
   // `execute.log` router delivers only through this map — never through the
@@ -1047,6 +1056,45 @@ export function createPluginWorkerHandle(
     }
     activeInvocations.set(invocation.id, entry);
     return invocation;
+  }
+
+  /**
+   * Mint or reuse the notification invocation for `scope`'s company.
+   *
+   * Reuse never widens scope: the returned invocation carries exactly the
+   * company being requested, and a different company always mints its own
+   * entry, so the worker can never echo one company's id to reach another. It
+   * only extends how long a single company's id stays valid — bounded by the
+   * stream that keeps refreshing it, plus the TTL.
+   *
+   * An entry is reused only while it is still live in `activeInvocations` and
+   * its captured `traceparent` still matches the current one, so a reused
+   * invocation never reports stale span parentage.
+   *
+   * `minted` tells the caller whether this notification is the only one holding
+   * the invocation, so a failed send can retire a brand-new invocation without
+   * revoking one that earlier notifications were already delivered under.
+   */
+  function registerNotificationInvocation(
+    scope: PluginInvocationScope,
+  ): { invocation: PluginInvocationContext; minted: boolean } {
+    const activeStep = getActiveStepContext();
+    const traceparent = activeStep
+      ? traceparentFromContextToken(activeStep.parentContext)
+      : undefined;
+
+    const cached = notificationInvocations.get(scope.companyId);
+    const entry = cached ? activeInvocations.get(cached.id) : undefined;
+    if (cached && entry && entry.traceparent === traceparent) {
+      // Push the expiry out so a long-running stream keeps one live invocation
+      // rather than accumulating one per event.
+      entry.timer?.refresh();
+      return { invocation: cached, minted: false };
+    }
+
+    const invocation = registerInvocation(scope, MAX_RPC_TIMEOUT_MS);
+    notificationInvocations.set(scope.companyId, invocation);
+    return { invocation, minted: true };
   }
 
   function clearInvocation(invocation: PluginInvocationContext | null): void {
@@ -2333,6 +2381,7 @@ export function createPluginWorkerHandle(
       if (invocation.timer) clearTimeout(invocation.timer);
     }
     activeInvocations.clear();
+    notificationInvocations.clear();
   }
 
   // -----------------------------------------------------------------------
@@ -2753,7 +2802,10 @@ export function createPluginWorkerHandle(
       // Notifications have no response to settle on, so the invocation scope
       // is GC'd by TTL. Call-path invocations are registered without a TTL and
       // cleared on settlement, so they survive arbitrarily long call timeouts.
-      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
+      // The notification invocation is shared per company so a high-volume
+      // stream cannot accumulate one retained invocation per event.
+      const registered = invocationScope ? registerNotificationInvocation(invocationScope) : null;
+      const invocation = registered?.invocation ?? null;
       try {
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
@@ -2762,7 +2814,13 @@ export function createPluginWorkerHandle(
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         });
       } catch {
-        clearInvocation(invocation);
+        // Drop it from the cache either way — the next notification should mint
+        // a fresh one rather than reuse an id this send never delivered. Only
+        // revoke the invocation itself when this send minted it: a reused one is
+        // still held by notifications the worker already received, and clearing
+        // it would strip the scope out from under callbacks still running.
+        if (invocationScope) notificationInvocations.delete(invocationScope.companyId);
+        if (registered?.minted) clearInvocation(invocation);
         log.warn({ method }, "failed to send notification to worker");
       }
     },

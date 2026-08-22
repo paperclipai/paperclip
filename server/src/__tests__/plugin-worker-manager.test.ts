@@ -25,6 +25,7 @@ const INVOCATION_SCOPE_WORKER_ENTRYPOINT = path.join(
 );
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
 const EXECUTE_LOG_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-execute-log.cjs");
+const NOTIFY_ECHO_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-notify-echo.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   id: "test.plugin",
@@ -472,6 +473,154 @@ describe("plugin-worker-manager stderr failure context", () => {
   });
 });
 
+describe("plugin worker manager notification invocation scope (BRO-2278)", () => {
+  // notify() has no reply of its own, so these tests observe the invocation
+  // info that rode along on the wire indirectly: the fixture
+  // (plugin-worker-notify-echo.cjs) reacts to each `agents.sessions.event`
+  // notification by issuing its own `companies.get` worker→host request whose
+  // params echo the notification's `params.companyId` plus the
+  // `paperclipInvocation.id`/`scope.companyId` it just received.
+  function makeNotifyEchoHandle(companiesGet: ReturnType<typeof vi.fn>) {
+    return createPluginWorkerHandle("test.plugin", {
+      entrypointPath: NOTIFY_ECHO_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+  }
+
+  it("stamps a companyId notification with a paperclipInvocation scoped to that company", async () => {
+    // Before the fix, `agents.sessions.event` notify() payloads carried no
+    // top-level `companyId`, so `deriveInvocationScope` returned null and no
+    // `paperclipInvocation` was ever attached — `observedInvocationId` and
+    // `observedScopeCompanyId` would both echo back null. This fails if that
+    // regresses.
+    const companiesGet = vi.fn(async () => ({ id: "company-a" }));
+    const handle = makeNotifyEchoHandle(companiesGet);
+
+    try {
+      await handle.start();
+
+      handle.notify("agents.sessions.event", {
+        companyId: "company-a",
+        sessionId: "session-1",
+        runId: "run-1",
+        seq: 0,
+        eventType: "chunk",
+        stream: "assistant",
+        message: "hello",
+      });
+
+      await vi.waitFor(() => expect(companiesGet).toHaveBeenCalledTimes(1));
+
+      expect(companiesGet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          companyId: "company-a",
+          observedScopeCompanyId: "company-a",
+          observedInvocationId: expect.any(String),
+        }),
+        expect.anything(),
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("reuses one retained invocation id across many notifications for the same company", async () => {
+    // Regression guard for the resource leak: registerNotificationInvocation
+    // reuses one cached invocation per company (refreshing its TTL) instead of
+    // minting a fresh one per notify() call. If that reuse broke — e.g. back
+    // to the old registerInvocation(scope, MAX_RPC_TIMEOUT_MS) per call — every
+    // one of these 50 notifications would echo back a distinct id and this
+    // assertion would fail.
+    const companiesGet = vi.fn(async () => ({ id: "company-a" }));
+    const handle = makeNotifyEchoHandle(companiesGet);
+    const NOTIFICATION_COUNT = 50;
+
+    try {
+      await handle.start();
+
+      for (let i = 0; i < NOTIFICATION_COUNT; i++) {
+        handle.notify("agents.sessions.event", {
+          companyId: "company-a",
+          sessionId: "session-1",
+          runId: "run-1",
+          seq: i,
+          eventType: "chunk",
+          stream: "assistant",
+          message: `chunk-${i}`,
+        });
+      }
+
+      await vi.waitFor(() =>
+        expect(companiesGet).toHaveBeenCalledTimes(NOTIFICATION_COUNT),
+      );
+
+      const observedIds = companiesGet.mock.calls.map(
+        ([params]) => (params as { observedInvocationId: string }).observedInvocationId,
+      );
+      expect(observedIds).toHaveLength(NOTIFICATION_COUNT);
+      expect(observedIds.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
+      expect(new Set(observedIds).size).toBe(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("never reuses one company's invocation id for another company's notification", async () => {
+    // Isolation guard: reuse is keyed by companyId, so company B must mint its
+    // own invocation and never receive company A's id or vice versa — the
+    // shared-cache reuse must not widen scope across companies.
+    const companiesGet = vi.fn(async () => ({ id: "unused" }));
+    const handle = makeNotifyEchoHandle(companiesGet);
+
+    try {
+      await handle.start();
+
+      handle.notify("agents.sessions.event", {
+        companyId: "company-a",
+        sessionId: "session-a",
+        runId: "run-a",
+        seq: 0,
+        eventType: "chunk",
+        stream: "assistant",
+        message: "from a",
+      });
+      handle.notify("agents.sessions.event", {
+        companyId: "company-b",
+        sessionId: "session-b",
+        runId: "run-b",
+        seq: 0,
+        eventType: "chunk",
+        stream: "assistant",
+        message: "from b",
+      });
+
+      await vi.waitFor(() => expect(companiesGet).toHaveBeenCalledTimes(2));
+
+      const calls = companiesGet.mock.calls as Array<
+        [{ companyId: string; observedInvocationId: string; observedScopeCompanyId: string }]
+      >;
+      const callA = calls.find(([params]) => params.companyId === "company-a")?.[0];
+      const callB = calls.find(([params]) => params.companyId === "company-b")?.[0];
+
+      expect(callA).toBeDefined();
+      expect(callB).toBeDefined();
+      expect(callA?.observedScopeCompanyId).toBe("company-a");
+      expect(callB?.observedScopeCompanyId).toBe("company-b");
+      expect(callA?.observedInvocationId).not.toBe(callB?.observedInvocationId);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
 
 describe("plugin host company context guards", () => {
   it("rejects config and secret calls without host-issued company context before host services run", async () => {

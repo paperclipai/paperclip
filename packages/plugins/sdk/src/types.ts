@@ -1685,6 +1685,13 @@ export interface AgentSession {
  * Delivered via JSON-RPC notifications from host to worker.
  */
 export interface AgentSessionEvent {
+  /**
+   * The company of the run that produced this event. Set by the host, never by
+   * the plugin. Host calls made from inside the event callback are confined to
+   * this company, so a callback that acts on the event does not need to — and
+   * must not — pick a company of its own.
+   */
+  companyId: string;
   sessionId: string;
   runId: string;
   seq: number;

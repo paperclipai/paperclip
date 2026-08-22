@@ -1093,3 +1093,154 @@ describe("worker duplex channel dispatch", () => {
     }
   });
 });
+
+describe("session event invocation scope", () => {
+  /**
+   * A session-event callback must run inside the invocation the host stamped on
+   * the notification, so the host calls it makes are confined to the company of
+   * the run that produced the event.
+   *
+   * Without the `runNotification` wrapper on the `agents.sessions.event` branch
+   * the callback runs with no invocation restored, `callHost` omits
+   * `paperclipInvocationId`, and the host treats the call as proactive —
+   * admitted for any company the plugin is configured for. This test fails with
+   * an empty observed invocation id in that case.
+   */
+  it("runs the session event callback inside the invocation the host stamped", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    const SESSION_ID = "session-1";
+    const EVENT_INVOCATION: PluginInvocationContext = {
+      id: "invocation-session-event",
+      scope: { companyId: "company-a" },
+    };
+
+    // What the host observed on the nested call the callback made.
+    const observed = new Promise<{ invocationId: string; companyId: string }>((resolve) => {
+      hostReadline.on("line", (line) => {
+        const message = parseMessage(line);
+        if (isJsonRpcResponse(message)) {
+          pending.get(String(message.id))?.(message);
+          pending.delete(String(message.id));
+          return;
+        }
+        if (!isJsonRpcRequest(message)) return;
+
+        if (message.method === "agents.sessions.sendMessage") {
+          hostToWorker.write(
+            serializeMessage(createSuccessResponse(message.id, { runId: "run-1" })),
+          );
+          return;
+        }
+
+        if (message.method === "companies.get") {
+          resolve({
+            invocationId:
+              (message as { paperclipInvocationId?: string }).paperclipInvocationId ?? "",
+            companyId: String((message.params as { companyId?: string }).companyId ?? ""),
+          });
+          hostToWorker.write(
+            serializeMessage(createSuccessResponse(message.id, { id: "company-a" })),
+          );
+        }
+      });
+    });
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("start-session", async () => {
+          await ctx.agents.sessions.sendMessage(SESSION_ID, "company-a", {
+            prompt: "hello",
+            onEvent: (event) => {
+              // Deliberately re-uses the company carried on the event rather
+              // than one of the callback's own choosing.
+              void ctx.companies.get(event.companyId);
+            },
+          });
+          return { started: true };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown, invocation?: PluginInvocationContext) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(invocation ? { paperclipInvocation: invocation } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.session-scope-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Session scope test",
+          description: "Session scope test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["companies.read", "agents.write"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+
+      // Register the session callback. This runs inside its own invocation,
+      // which must NOT be what the later notification restores.
+      await callWorker(
+        "getData",
+        { key: "start-session", companyId: "company-a", params: {} },
+        { id: "invocation-getdata", scope: { companyId: "company-a" } },
+      );
+
+      // The host pushes a session event stamped with the run's invocation.
+      hostToWorker.write(
+        serializeMessage({
+          jsonrpc: "2.0",
+          method: "agents.sessions.event",
+          params: {
+            companyId: "company-a",
+            sessionId: SESSION_ID,
+            runId: "run-1",
+            seq: 1,
+            eventType: "chunk",
+            stream: "stdout",
+            message: "thinking",
+            payload: null,
+          },
+          paperclipInvocation: EVENT_INVOCATION,
+        } as unknown as JsonRpcNotification),
+      );
+
+      await expect(observed).resolves.toEqual({
+        invocationId: EVENT_INVOCATION.id,
+        companyId: "company-a",
+      });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
