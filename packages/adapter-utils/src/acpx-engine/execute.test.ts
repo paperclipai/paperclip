@@ -1271,17 +1271,23 @@ describe("shared ACPX engine runtime behavior", () => {
         "custom-a",
       ),
     ).toBe("node ./fake-acp.js");
+    // GAM-470: a credencial de run viaja em `authCredentials`, que o acpx injeta no
+    // filho e NAO grava no registro da sessao. `sessionOptions.env` e persistido em
+    // disco, entao nao pode mais carrega-la.
+    expect(
+      (second.runtimeOptions[0]!.authCredentials as Record<string, string>).PAPERCLIP_API_KEY,
+    ).toBe("new-key");
     expect(
       (second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env
         .PAPERCLIP_API_KEY,
-    ).toBe("new-key");
+    ).toBeUndefined();
     await expect(fs.access(path.join(stateDir, "wrappers"))).rejects.toThrow();
   });
 
   it("forwards resolved adapter env through session options without overriding runtime vars", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const { sessionInputs } = await runExecutor(
+    const { sessionInputs, runtimeOptions } = await runExecutor(
       {
         agentCommand: "node ./fake-acp.js",
         stateDir,
@@ -1303,11 +1309,19 @@ describe("shared ACPX engine runtime behavior", () => {
       },
     );
     const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    const auth = runtimeOptions[0]!.authCredentials as Record<string, string>;
+    // Configuracao comum continua no lado persistido.
     expect(env.OOGA_BOOGA_123).toBe("plain-value");
-    expect(env.OPENROUTER_API_KEY).toBe("resolved-secret-value");
     expect(env.PAPERCLIP_TASK_ID).toBe("issue-real");
-    expect(env.PAPERCLIP_API_KEY).toBe("runtime-secret-token");
-    expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
+    // GAM-470: tudo que casa a heuristica de credencial muda de faixa. O filho recebe
+    // igual (`buildAgentEnvironment` injeta `authCredentials`), mas o registro da
+    // sessao em disco nao vê mais o valor.
+    expect(auth.OPENROUTER_API_KEY).toBe("resolved-secret-value");
+    expect(auth.PAPERCLIP_API_KEY).toBe("runtime-secret-token");
+    expect(auth.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
+    expect(env.OPENROUTER_API_KEY).toBeUndefined();
+    expect(env.PAPERCLIP_API_KEY).toBeUndefined();
+    expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBeUndefined();
   });
 
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
@@ -1544,14 +1558,18 @@ describe("shared ACPX engine runtime behavior", () => {
       runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js" }, { authToken: "first" }),
       runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js" }, { authToken: "second" }),
     ]);
+    // GAM-470: o isolamento continua sendo por run — mudou so a faixa em que a
+    // credencial viaja, de `sessionOptions.env` (persistido) para `authCredentials`.
+    expect(
+      (first.runtimeOptions[0]!.authCredentials as Record<string, string>).PAPERCLIP_API_KEY,
+    ).toBe("first");
+    expect(
+      (second.runtimeOptions[0]!.authCredentials as Record<string, string>).PAPERCLIP_API_KEY,
+    ).toBe("second");
     expect(
       (first.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env
         .PAPERCLIP_API_KEY,
-    ).toBe("first");
-    expect(
-      (second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env
-        .PAPERCLIP_API_KEY,
-    ).toBe("second");
+    ).toBeUndefined();
   });
 
   it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
@@ -1831,8 +1849,11 @@ describe("shared ACPX engine runtime behavior", () => {
 
   it("passes Paperclip env through ACPX session options instead of process.env", async () => {
     let observedSessionEnv: Record<string, string> | undefined;
+    let observedAuthCredentials: Record<string, string> | undefined;
     const execute = createAcpxEngineExecutor({
-      createRuntime: () => ({
+      createRuntime: (options: { authCredentials?: Record<string, string> }) => ((
+        observedAuthCredentials = options.authCredentials,
+        {
         ensureSession: async (input: { sessionOptions?: { env?: Record<string, string> } }) => {
           observedSessionEnv = input.sessionOptions?.env;
           return { backendSessionId: "backend-session", agentSessionId: "agent-session", runtimeSessionName: "runtime-session" };
@@ -1843,7 +1864,7 @@ describe("shared ACPX engine runtime behavior", () => {
           cancel: async () => {},
         }),
         close: async () => {},
-      }) as never,
+      })) as never,
     });
     const previousApiKey = process.env.PAPERCLIP_API_KEY;
     try {
@@ -1859,7 +1880,10 @@ describe("shared ACPX engine runtime behavior", () => {
         onMeta: async () => {},
       } as never);
       expect(result.exitCode).toBe(0);
-      expect(observedSessionEnv?.PAPERCLIP_API_KEY).toBe("runtime-key");
+      // GAM-470: continua NAO vindo de `process.env` — e agora tambem nao vem por
+      // `sessionOptions.env`, que o acpx grava em disco. Vem por `authCredentials`.
+      expect(observedAuthCredentials?.PAPERCLIP_API_KEY).toBe("runtime-key");
+      expect(observedSessionEnv?.PAPERCLIP_API_KEY).toBeUndefined();
       expect(process.env.PAPERCLIP_API_KEY).toBeUndefined();
     } finally {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
