@@ -715,6 +715,12 @@ function createGzipFileWriteSink(filePath: string): BackupWriteSink {
   const gzip: Gzip = createGzip();
   const fileStream = createWriteStream(filePath);
   const pipelineDone = pipeline(gzip, fileStream);
+  // Attach a rejection handler immediately so a failure that occurs before
+  // close()/abort() is ever called (e.g. disk fills mid-write) can never
+  // surface as an unhandled promise rejection and crash the process. The
+  // real error is still surfaced to callers via the awaited pipelineDone
+  // in close()/abort() below.
+  pipelineDone.catch(() => {});
 
   return {
     async write(chunk: string | Buffer) {
