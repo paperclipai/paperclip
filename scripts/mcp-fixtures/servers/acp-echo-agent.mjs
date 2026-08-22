@@ -6,6 +6,11 @@ function writeMessage(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+const inspectedEnvKeys = (process.env.PAPERCLIP_ACPX_INSPECT_ENV_KEYS ?? "")
+  .split(",")
+  .map((key) => key.trim())
+  .filter(Boolean);
+
 async function handleRequest(request) {
   if (request.method === "initialize") {
     process.stderr.write("Error handling request { method: 'nes/close' } { code: -32601 }\n");
@@ -25,7 +30,15 @@ async function handleRequest(request) {
         sessionId: request.params.sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: process.env.PAPERCLIP_ACPX_SPAWN_SMOKE ?? "missing" },
+          content: {
+            type: "text",
+            text: JSON.stringify({
+              smoke: process.env.PAPERCLIP_ACPX_SPAWN_SMOKE ?? "missing",
+              envKeysPresent: Object.fromEntries(
+                inspectedEnvKeys.map((key) => [key, Object.hasOwn(process.env, key)]),
+              ),
+            }),
+          },
         },
       },
     });
