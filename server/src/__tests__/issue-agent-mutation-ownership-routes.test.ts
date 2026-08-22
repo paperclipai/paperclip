@@ -1619,6 +1619,45 @@ describe("agent issue mutation checkout ownership", () => {
     },
   );
 
+  // The default-open write rule lets a visible agent cancel another agent's issue while
+  // that issue is still idle. The grant comes from the idle status and from issue
+  // visibility. It does not come from the identity of the issue creator, so this test
+  // sets no creator. Locked in here so a later change does not narrow the rule silently.
+  it("allows a peer agent to cancel an idle issue assigned to another agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled", comment: "duplicate of an existing issue" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "cancelled" }),
+    );
+  });
+
+  // This is the other half of the same boundary. After the assignee starts its run, the
+  // peer agent loses the cancel path and must use a comment instead. The suite covered
+  // the run lock with a title edit only, so pin it with the cancel payload as well.
+  it("refuses a peer agent's cancel once the assignee's run has started", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled", comment: "duplicate of an existing issue" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
