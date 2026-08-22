@@ -10,6 +10,7 @@ import {
   type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -387,6 +388,12 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+
+const RECOVERY_UNBLOCK_FALLBACK_ACTION =
+  "Restore a live execution path for this issue, or record the manual resolution, then move it out of `blocked`.";
+const RECOVERY_ISSUE_IN_PLACE_UNBLOCK_ACTION =
+  "Inspect the failed recovery run evidence, restore a live execution path or record the manual resolution, " +
+  "then move this recovery issue out of `blocked`.";
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -3193,12 +3200,52 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  /**
+   * `blocked` has exactly one automatic exit: the release of an unresolved blocker. A recovery
+   * escalation that writes `blocked` with no blocker edge therefore removes the last wake path
+   * of the issue, and the row stays silent until an operator finds it by hand. `blockedTransitionAt`
+   * plus an `unblockDescriptor` is the routable-blocked contract that the PATCH route enforces for
+   * every other actor: it puts an agent-owned row on the `issue_unblock_requested` wake path and a
+   * board-owned row in the human attention inbox. Recovery escalations must satisfy the same
+   * contract. When a blocker edge exists, that edge is the wake path and no descriptor is needed.
+   */
+  function buildRecoveryUnblockDescriptor(input: {
+    ownerAgentId: string | null;
+    action: string;
+    unresolvedBlockerCount: number;
+  }): IssueUnblockDescriptor | null {
+    if (input.unresolvedBlockerCount > 0) return null;
+    const action = input.action.trim();
+    return {
+      owner: input.ownerAgentId ? { agentId: input.ownerAgentId } : "board",
+      action: action.length > 0 ? action : RECOVERY_UNBLOCK_FALLBACK_ACTION,
+    };
+  }
+
   async function escalateStrandedRecoveryIssueInPlace(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // The assignee of a stranded recovery issue may itself be the reason the run died: a paused,
+    // terminated, deleted or budget-blocked agent. Naming it in the descriptor would hand the only
+    // wake path to an agent that cannot be invoked, which is the same dead end this escalation is
+    // meant to close. Resolve through the ladder that validates invokability — assignee first, then
+    // the manager chain, and `null` (`board`) when Paperclip finds nobody live.
+    const unblockOwnerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(
+      input.issue,
+      input.issue.assigneeAgentId,
+    );
+    const unblockDescriptor = buildRecoveryUnblockDescriptor({
+      ownerAgentId: unblockOwnerAgentId,
+      action: RECOVERY_ISSUE_IN_PLACE_UNBLOCK_ACTION,
+      unresolvedBlockerCount: blockerIds.length,
+    });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -4393,12 +4440,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // The provider-quota wait arms a `scheduled_retry` monitor, so that issue already has a
+    // timeline and must not also raise an unblock request.
+    const unblockDescriptor = isProviderQuotaWait
+      ? null
+      : buildRecoveryUnblockDescriptor({
+        ownerAgentId: recoveryAction.ownerAgentId,
+        action: recoveryAction.nextAction,
+        unresolvedBlockerCount: blockerIds.length,
+      });
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
       // Recovery-action ownership is intentionally separate from deliverable
       // ownership. Automatic escalation must never transfer the source task.
       assigneeAgentId: input.issue.assigneeAgentId,
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -4556,6 +4613,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: "blocked",
           blockedByIssueIds: blockerIds,
           assigneeAgentId: input.issue.assigneeAgentId,
+          ...(unblockDescriptor ? { unblockDescriptor } : {}),
         });
         if (reblocked) return reblocked;
       }
