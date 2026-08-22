@@ -102,6 +102,7 @@ import {
   isUuidLike,
   type Agent,
   type AgentDetail as AgentDetailRecord,
+  type BudgetMetric,
   type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
@@ -908,37 +909,63 @@ export function AgentDetail() {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
+  const [agentBudgetMetric, setAgentBudgetMetric] = useState<BudgetMetric>("billed_cents");
   const agentBudgetSummary = useMemo(() => {
+    const scopeId = agent?.id ?? routeAgentRef;
     const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
+      (policy) => policy.scopeType === "agent" && policy.scopeId === scopeId && policy.metric === agentBudgetMetric,
     );
     if (matched) return matched;
-    const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
-    const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
+    if (agentBudgetMetric === "billed_cents") {
+      const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
+      const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
+      return {
+        policyId: "",
+        companyId: resolvedCompanyId ?? "",
+        scopeType: "agent",
+        scopeId,
+        scopeName: agent?.name ?? "Agent",
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: budgetMonthlyCents,
+        observedAmount: spentMonthlyCents,
+        remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
+        utilizationPercent:
+          budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: budgetMonthlyCents > 0,
+        status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+        paused: agent?.status === "paused",
+        pauseReason: agent?.pauseReason ?? null,
+        windowStart: new Date(),
+        windowEnd: new Date(),
+      } satisfies BudgetPolicySummary;
+    }
     return {
       policyId: "",
       companyId: resolvedCompanyId ?? "",
       scopeType: "agent",
-      scopeId: agent?.id ?? routeAgentRef,
+      scopeId,
       scopeName: agent?.name ?? "Agent",
-      metric: "billed_cents",
+      metric: agentBudgetMetric,
       windowKind: "calendar_month_utc",
-      amount: budgetMonthlyCents,
-      observedAmount: spentMonthlyCents,
-      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
-      utilizationPercent:
-        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+      amount: 0,
+      observedAmount: 0,
+      remainingAmount: 0,
+      utilizationPercent: 0,
       warnPercent: 80,
       hardStopEnabled: true,
       notifyEnabled: true,
-      isActive: budgetMonthlyCents > 0,
-      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+      isActive: false,
+      status: "ok",
       paused: agent?.status === "paused",
       pauseReason: agent?.pauseReason ?? null,
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
+  }, [agent, agentBudgetMetric, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -1014,6 +1041,7 @@ export function AgentDetail() {
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "agent",
         scopeId: agent?.id ?? routeAgentRef,
+        metric: agentBudgetMetric,
         amount,
         windowKind: "calendar_month_utc",
       }),
@@ -1558,6 +1586,7 @@ export function AgentDetail() {
             summary={agentBudgetSummary}
             isSaving={budgetMutation.isPending}
             onSave={(amount) => budgetMutation.mutate(amount)}
+            onMetricChange={setAgentBudgetMetric}
             variant="plain"
           />
         </div>
