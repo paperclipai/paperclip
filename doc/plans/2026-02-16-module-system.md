@@ -552,7 +552,7 @@ You can also export a running company as a template:
 GET /api/templates/export → downloads the current company as a template JSON
 ```
 
-This makes companies shareable and clonable.
+This makes companies shareable and cloneable.
 
 ---
 
