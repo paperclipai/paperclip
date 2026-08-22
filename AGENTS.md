@@ -283,6 +283,7 @@ This section is local to the ThinkStack served tree (not upstream).
 - Bank every generated asset into the governed path IMMEDIATELY at creation. Never batch-copy later from a shared cache: concurrent lanes write to the same cache and timestamp-matching delivers other lanes' files (proven 2026-07-30).
 - Renders of canon characters or locked brand marks MUST pass the locked reference images as image refs. Text-only prompts of canon subjects are a defect (Fluffy-as-cat class). No readable fake product content (fake planner pages, invented data) in listing or product imagery.
 - A close that cites a run, model, or benchmark result must quote the artifact — run id, file path, or ledger row. A prose description of work is not evidence. Model labels name the REQUEST; served-model truth requires the retirement/alias map (grok-4-fast→grok-4.3 class).
+- Before declaring an artifact missing through a search-class door or agent procedure, inspect `ARCHIVED.txt` pointers in its expected parent work-products tree (and `DR-ARCHIVE-INDEX.tsv` when present); an archived pointer is a location, not absence.
 - An incident or defect close must name its recurrence mechanism AND the layer it is encoded in, preferring the highest that fits: platform guard > pipeline script/driver > standing rule (this registry) > skill > KB note. A lesson that exists only as prose in a comment is NOT closed.
 <!-- END THINKSTACK OPS RULE: verify-by-artifact-block -->
 
