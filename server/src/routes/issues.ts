@@ -9383,6 +9383,17 @@ export function issueRoutes(
     const issueMutationAuthorizationReason = req.actor.type === "agent"
       ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
       : issueWriteAuthorizationReason(req, true);
+    if (
+      req.actor.type === "agent" &&
+      req.actor.agentId === existing.assigneeAgentId &&
+      existing.status === "cancelled" &&
+      (req.body.resume === true ||
+        req.body.reopen === true ||
+        (req.body.status !== undefined && req.body.status !== "cancelled"))
+    ) {
+      res.status(409).json({ error: "Cancelled issues cannot be resumed by a stale agent run" });
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
