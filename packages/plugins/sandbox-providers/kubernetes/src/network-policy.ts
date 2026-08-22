@@ -17,6 +17,18 @@ export interface BuildNetworkPolicyInput {
   podSelector?: Record<string, string>;
   includeBaseRules?: boolean;
   ownerReferences?: Record<string, unknown>[];
+  /**
+   * Provider-level NAMESPACE BASELINE posture. "allowlist" (default): egress
+   * restricted to egressAllowFqdns/egressAllowCidrs (plus the public-IPv4 FQDN
+   * fallback below when applicable). "open-internet": always apply the hardened
+   * public-internet fallback regardless of FQDN/CIDR configuration.
+   *
+   * Only the tenant's baseline policy passes this. Task-scoped egress grants
+   * (see `scoped-network-egress.ts`) are ADDITIVE, run-label-selected policies
+   * that deliberately leave this unset, so switching the provider to
+   * "open-internet" never changes what a per-task grant itself permits.
+   */
+  egressPolicy?: "allowlist" | "open-internet";
 }
 
 /**
@@ -26,7 +38,7 @@ export interface BuildNetworkPolicyInput {
  * cluster loopback (127.0.0.0/8), CGNAT (100.64.0.0/10), this-network
  * (0.0.0.0/8), and multicast (224.0.0.0/4).
  */
-const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
+export const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
   "0.0.0.0/8",
   "10.0.0.0/8",
   "100.64.0.0/10",
@@ -36,6 +48,15 @@ const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
   "192.168.0.0/16",
   "224.0.0.0/4",
 ];
+
+/**
+ * Value reported to the sandbox through `PAPERCLIP_NETWORK_EGRESS_POLICY`. It
+ * names the NAMESPACE BASELINE the run is governed by; task-scoped grants are
+ * reported separately through `PAPERCLIP_NETWORK_EGRESS_ALLOW_*`.
+ */
+export function baselineEgressPolicyLabel(egressPolicy?: "allowlist" | "open-internet"): string {
+  return egressPolicy === "open-internet" ? "kubernetes-open-internet" : "kubernetes-default-deny";
+}
 
 // Design note: the deny-all baseline blocks all ingress to agent pods.
 // Paperclip-server does NOT push to agent pods — the agent shim makes
@@ -108,8 +129,8 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
         // the box for cloud LLM APIs without inadvertently exposing
         // cluster internals or link-local metadata endpoints. Operators
         // who want exact FQDN enforcement should use `egressMode: "cilium"`.
-        ...(input.egressAllowCidrs.length === 0 &&
-          (input.egressAllowFqdns?.length ?? 0) > 0
+        ...(input.egressPolicy === "open-internet" ||
+          (input.egressAllowCidrs.length === 0 && (input.egressAllowFqdns?.length ?? 0) > 0)
           ? [
               {
                 to: [
