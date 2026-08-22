@@ -4708,3 +4708,155 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(legacyReadiness?.plannedActions.map((action) => action.kind)).not.toContain("git_branch_delete");
   }, 20_000);
 });
+
+// SOV-2798: archiving a workspace used to leave every issue that inherited its
+// link pointing at a closed workspace, which the closed-workspace guard then
+// refused writes on. The archive clears those links now, and a sweep heals the
+// rows archived before it did.
+describeEmbeddedPostgres("execution workspace issue-link reconciliation", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof executionWorkspaceService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspace-links-");
+    db = createDb(tempDb.connectionString);
+    svc = executionWorkspaceService(db, {});
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedLinkedWorkspace(options: {
+    mode: "isolated_workspace" | "shared_workspace";
+    status?: "active" | "archived";
+  }) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const inheritedIssueId = randomUUID();
+    const terminalIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Links", status: "in_progress" });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: options.mode,
+      strategyType: "git_worktree",
+      name: `${issuePrefix}-1`,
+      status: options.status ?? "active",
+      cwd: `/tmp/paperclip-links-${executionWorkspaceId}`,
+      providerRef: `/tmp/paperclip-links-${executionWorkspaceId}`,
+      providerType: "git_worktree",
+      baseRef: "main",
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        projectId,
+        identifier: `${issuePrefix}-1`,
+        title: "Source issue",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId,
+      },
+      {
+        // Created during the run, inherited the link, still needs writes.
+        id: inheritedIssueId,
+        companyId,
+        projectId,
+        identifier: `${issuePrefix}-2`,
+        title: "Issue created during the run",
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId,
+      },
+      {
+        id: terminalIssueId,
+        companyId,
+        projectId,
+        identifier: `${issuePrefix}-3`,
+        title: "Closed issue from the run",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId,
+      },
+    ]);
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    return { companyId, executionWorkspaceId, sourceIssueId, inheritedIssueId, terminalIssueId };
+  }
+
+  async function linkOf(issueId: string) {
+    return db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.executionWorkspaceId ?? null);
+  }
+
+  it("clears inherited issue links when an isolated workspace is archived, keeping the source link", async () => {
+    const seeded = await seedLinkedWorkspace({ mode: "isolated_workspace" });
+    const result = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: new Date(),
+    });
+    expect(result?.outcome).toBe("archived");
+    // The reopen path resolves the source issue through this link, so it stays.
+    expect(await linkOf(seeded.sourceIssueId)).toBe(seeded.executionWorkspaceId);
+    expect(await linkOf(seeded.inheritedIssueId)).toBeNull();
+    expect(await linkOf(seeded.terminalIssueId)).toBeNull();
+  });
+
+  it("clears every issue link when a shared workspace is archived", async () => {
+    const seeded = await seedLinkedWorkspace({ mode: "shared_workspace" });
+    await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: new Date(),
+    });
+    // A shared workspace has no reopen path, so nothing needs the link.
+    expect(await linkOf(seeded.sourceIssueId)).toBeNull();
+    expect(await linkOf(seeded.inheritedIssueId)).toBeNull();
+  });
+
+  it("sweeps links left dangling by an archive that predates the archive-time clear", async () => {
+    const seeded = await seedLinkedWorkspace({ mode: "isolated_workspace", status: "archived" });
+
+    expect(await svc.reconcileArchivedWorkspaceIssueLinks()).toEqual({ cleared: 1 });
+    expect(await linkOf(seeded.inheritedIssueId)).toBeNull();
+    // Terminal issues are left alone: a dangling link only strands an issue that
+    // still needs writes, and churning the archive buys nothing.
+    expect(await linkOf(seeded.terminalIssueId)).toBe(seeded.executionWorkspaceId);
+    expect(await linkOf(seeded.sourceIssueId)).toBe(seeded.executionWorkspaceId);
+
+    // Idempotent: the backlog drains and the sweep goes quiet.
+    expect(await svc.reconcileArchivedWorkspaceIssueLinks()).toEqual({ cleared: 0 });
+  });
+
+  it("leaves links to a live workspace alone", async () => {
+    const seeded = await seedLinkedWorkspace({ mode: "isolated_workspace", status: "active" });
+    expect(await svc.reconcileArchivedWorkspaceIssueLinks()).toEqual({ cleared: 0 });
+    expect(await linkOf(seeded.inheritedIssueId)).toBe(seeded.executionWorkspaceId);
+  });
+});

@@ -1133,6 +1133,19 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "terminal issue workspace reaper failed");
         }));
+      // SOV-2798: heal issues still linked to an already-archived workspace. Runs
+      // on the reaper's cadence rather than its own timer; the scan is bounded
+      // and returns zero once the backlog drains.
+      trackHeartbeatSchedulerWork(terminalWorkspaces
+        .reconcileArchivedWorkspaceIssueLinks()
+        .then((result) => {
+          if (result.cleared > 0) {
+            logger.info(result, "cleared issue links to archived execution workspaces");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "archived execution workspace issue-link reconciliation failed");
+        }));
     };
 
     // The restart-safe cleanup backstop for adapter login sessions. The

@@ -4,7 +4,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -1220,21 +1220,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       // Closing the workspace ends the lane, so the runtime-control lease is released
       // outright rather than waiting for owner-eligibility or TTL recovery.
       await runtimeLeases.release({ executionWorkspaceId: existing.id, force: true });
-
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
-      }
 
       try {
         const projectWorkspace = existing.projectWorkspaceId

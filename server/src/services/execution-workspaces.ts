@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -213,6 +213,36 @@ async function acquireExecutionWorkspaceLifecycleLock(
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
   );
+}
+
+// SOV-2798: archiving a workspace stranded every issue that inherited its link
+// during the run. The closed-workspace guard then refused writes to those
+// issues, and clearing the link required rights on the workspace record that the
+// stuck agent does not have by construction — so the card became permanently
+// inert. The archive clears the inherited links itself, in the same transaction
+// as the archive write, so no window exists where a closed workspace still owns
+// a live issue.
+//
+// The one link that survives is an isolated workspace's own `sourceIssueId`:
+// `reopenClosedIsolatedExecutionWorkspaceForIssue` resumes a terminal issue in
+// its original worktree and resolves the workspace through that link. A shared
+// workspace has no reopen path, so every link goes — which is what the
+// mode-gated clears this replaces already did for that mode.
+async function clearInheritedIssueWorkspaceLinks(
+  tx: DbTransaction,
+  workspace: { id: string; companyId: string; mode: string; sourceIssueId: string | null },
+): Promise<number> {
+  const sourceIssueId = workspace.mode === "isolated_workspace" ? workspace.sourceIssueId : null;
+  const cleared = await tx
+    .update(issues)
+    .set({ executionWorkspaceId: null, updatedAt: new Date() })
+    .where(and(
+      eq(issues.companyId, workspace.companyId),
+      eq(issues.executionWorkspaceId, workspace.id),
+      ...(sourceIssueId ? [ne(issues.id, sourceIssueId)] : []),
+    ))
+    .returning({ id: issues.id });
+  return cleared.length;
 }
 
 export type ReopenClosedIsolatedExecutionWorkspaceResult =
@@ -1732,15 +1762,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         runCleanupCommands: false,
         forceWorktreeRemoval: false,
       });
-      if (cleanup.cleaned && workspace.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({ executionWorkspaceId: null, updatedAt: now() })
-          .where(and(
-            eq(issues.companyId, workspace.companyId),
-            eq(issues.executionWorkspaceId, workspace.id),
-          ));
-      }
       const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
       if (!cleanup.cleaned || cleanup.warnings.length > 0) {
         await db
@@ -2500,6 +2521,44 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
     },
 
+    // SOV-2798 asked for the clear to be a scheduled sweep rather than one-shot,
+    // so a path that closes a workspace without clearing its inherited issue
+    // links self-heals on the next tick instead of stranding a card until a human
+    // notices. This also backfills the rows archived before the archive-time
+    // clear existed.
+    //
+    // Terminal issues are left alone. A dangling link only strands an issue that
+    // still needs writes, and clearing every historical row would churn
+    // `updatedAt` across the whole archive for no gain.
+    // ponytail: bounded scan per tick, no cursor — the backlog is finite and
+    // drains in a few ticks. Add a keyset cursor if the standing count stops
+    // reaching zero.
+    reconcileArchivedWorkspaceIssueLinks: async (limit = 200) => {
+      const stranded = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .innerJoin(executionWorkspaces, eq(issues.executionWorkspaceId, executionWorkspaces.id))
+        .where(and(
+          inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+          notInArray(issues.status, ["done", "cancelled"]),
+          // Keep an isolated workspace's own source-issue link, so the reopen
+          // path can still resume that issue in its original worktree.
+          or(
+            ne(executionWorkspaces.mode, "isolated_workspace"),
+            isNull(executionWorkspaces.sourceIssueId),
+            ne(executionWorkspaces.sourceIssueId, issues.id),
+          ),
+        ))
+        .limit(limit);
+      if (stranded.length === 0) return { cleared: 0 };
+      const cleared = await db
+        .update(issues)
+        .set({ executionWorkspaceId: null, updatedAt: now() })
+        .where(inArray(issues.id, stranded.map((row) => row.id)))
+        .returning({ id: issues.id });
+      return { cleared: cleared.length };
+    },
+
     sweepTerminalWorkspaces: async (limit = 50) => {
       // Skip this sweep while another sweep runs. A concurrent sweep would share
       // the cursor and the boundary and could corrupt the rotation state. A
@@ -2712,7 +2771,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // lock, so it never archives a workspace that a reopen just restored.
         const archived = await db.transaction(async (tx) => {
           await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
-          return tx
+          const archivedRow = await tx
             .update(executionWorkspaces)
             .set({
               status: "archived",
@@ -2794,6 +2853,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ))
             .returning()
             .then((rows) => rows[0] ?? null);
+          if (archivedRow) await clearInheritedIssueWorkspaceLinks(tx, archivedRow);
+          return archivedRow;
         });
         if (!archived) {
           result.skippedRace += 1;
@@ -3272,6 +3333,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!archived) return null;
+        await clearInheritedIssueWorkspaceLinks(tx, archived);
         return {
           outcome: "archived",
           workspace: toExecutionWorkspace(archived),
