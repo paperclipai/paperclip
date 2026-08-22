@@ -14,6 +14,15 @@ export const HERMES_CLI = "hermes";
 /** Default timeout for a single execution run (seconds). */
 export const DEFAULT_TIMEOUT_SEC = 1800;
 
+/** Default Hermes tool-calling turn limit used by the create form. */
+export const DEFAULT_MAX_TURNS_PER_RUN = 1000;
+
+/** Timeout paired with the default turn limit (20 seconds per turn). */
+export const DEFAULT_SCALED_TIMEOUT_SEC = Math.max(
+  DEFAULT_TIMEOUT_SEC,
+  DEFAULT_MAX_TURNS_PER_RUN * 20,
+);
+
 /** Grace period after SIGTERM before SIGKILL (seconds). */
 export const DEFAULT_GRACE_SEC = 10;
 

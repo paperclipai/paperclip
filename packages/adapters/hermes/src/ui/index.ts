@@ -3,5 +3,8 @@
  * and agent configuration forms.
  */
 
-export { parseHermesStdoutLine } from "./parse-stdout.js";
+export {
+  createHermesStdoutParser,
+  parseHermesStdoutLine,
+} from "./parse-stdout.js";
 export { buildHermesConfig } from "./build-config.js";

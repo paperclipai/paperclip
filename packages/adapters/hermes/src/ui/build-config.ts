@@ -13,6 +13,7 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 import {
+  DEFAULT_MAX_TURNS_PER_RUN,
   DEFAULT_TIMEOUT_SEC,
 } from "../shared/constants.js";
 
@@ -43,12 +44,18 @@ export function buildHermesConfig(
   // Execution limits — let the user configure these from the Paperclip UI.
   // timeoutSec: wall-clock kill timeout for the hermes child process.
   // maxTurnsPerRun: maps to Hermes's --max-turns (agent tool-calling iterations).
+  // Hermes's create UI is schema-driven, so the shared form's 1000-turn
+  // default is normally hidden. Retain this fallback only for callers that do
+  // not provide schema values (for example, older onboarding integrations).
   ac.timeoutSec = DEFAULT_TIMEOUT_SEC;
-  if (v.maxTurnsPerRun > 0) {
-    ac.maxTurnsPerRun = v.maxTurnsPerRun;
+  if (!v.adapterSchemaValues) {
+    const maxTurnsPerRun = v.maxTurnsPerRun > 0
+      ? v.maxTurnsPerRun
+      : DEFAULT_MAX_TURNS_PER_RUN;
+    ac.maxTurnsPerRun = maxTurnsPerRun;
     // Scale timeout to match: ~20s per tool turn is generous headroom.
     // Never go below the default (1800s / 30 min).
-    ac.timeoutSec = Math.max(DEFAULT_TIMEOUT_SEC, v.maxTurnsPerRun * 20);
+    ac.timeoutSec = Math.max(DEFAULT_TIMEOUT_SEC, maxTurnsPerRun * 20);
   }
 
   // Session persistence (default: on)
@@ -79,6 +86,13 @@ export function buildHermesConfig(
   // Prompt template
   if (v.promptTemplate) {
     ac.promptTemplate = v.promptTemplate;
+  }
+
+  // Hermes's adapter-specific fields are rendered from config-schema.ts and
+  // stored here by SchemaConfigFields. Preserve them when creating an agent;
+  // schema values intentionally win over the legacy fallback above.
+  if (v.adapterSchemaValues) {
+    Object.assign(ac, v.adapterSchemaValues);
   }
 
   // Heartbeat config is handled by Paperclip itself
