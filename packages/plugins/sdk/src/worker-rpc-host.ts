@@ -391,7 +391,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       if (nextOutboundId >= MAX_OUTBOUND_ID) {
         nextOutboundId = 1;
       }
-      const id = nextOutboundId++;
+      // Namespace worker→host request ids so they can never collide with the
+      // host's numeric host→worker ids on this bidirectional JSON-RPC channel.
+      // A collision lets a request consume the other direction's response,
+      // resolve as null, and leave real async work outside its invocation scope.
+      const id = `worker:${nextOutboundId++}`;
       const timeout = timeoutMs ?? rpcTimeoutMs;
       let settled = false;
 
