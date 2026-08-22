@@ -1,0 +1,125 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Source sequence gap",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_phase1",
+    "issueId": "issue_phase1_gap",
+    "runId": "run_phase1_gap",
+    "environmentLeaseId": "lease_phase1_gap",
+    "runnerInstanceId": "runner_phase1",
+    "normalizedSessionId": "session_phase1_gap",
+    "driverSessionId": "driver_phase1_gap"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "fake",
+      "version": "1.0.0"
+    },
+    "steer": false,
+    "interrupt": false,
+    "resume": true,
+    "runtimeRequests": false,
+    "structuredResult": true,
+    "typedEvents": true
+  },
+  "runPhase": "terminal",
+  "sessionState": "running",
+  "turnState": "completed",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "needs_review",
+    "summary": "The source gap requires reconciliation.",
+    "completionClaim": {
+      "contractRevision": "phase1-contract-v1",
+      "objectiveSatisfied": false,
+      "criteria": [],
+      "remainingWork": [
+        {
+          "description": "Replay missing source event",
+          "blocksCompletion": true
+        }
+      ]
+    },
+    "evidence": [],
+    "verification": [],
+    "attentionRequests": [],
+    "artifacts": []
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "needs_review"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "event_gap_01",
+      "sourceSeq": 1,
+      "eventType": "session.started",
+      "emittedAt": "2026-08-07T12:40:00.010Z",
+      "summary": "session started"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "event_gap_02",
+      "sourceSeq": 2,
+      "eventType": "turn.started",
+      "emittedAt": "2026-08-07T12:40:00.020Z",
+      "summary": "turn started"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "event_gap_04",
+      "sourceSeq": 4,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-07T12:40:00.040Z",
+      "summary": "The source gap requires reconciliation."
+    },
+    {
+      "position": 4,
+      "sourceEventId": "event_gap_05",
+      "sourceSeq": 5,
+      "eventType": "turn.completed",
+      "emittedAt": "2026-08-07T12:40:00.050Z",
+      "summary": "turn completed"
+    },
+    {
+      "position": 5,
+      "sourceEventId": "event_gap_06",
+      "sourceSeq": 6,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-07T12:40:00.060Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_phase1": 6
+  },
+  "processedEventIds": [
+    "event_gap_01",
+    "event_gap_02",
+    "event_gap_04",
+    "event_gap_05",
+    "event_gap_06"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [
+    {
+      "sourceKey": "runner:runner_phase1",
+      "expected": 3,
+      "received": 4,
+      "missing": [
+        3
+      ]
+    }
+  ],
+  "integrity": "gap_detected"
+}

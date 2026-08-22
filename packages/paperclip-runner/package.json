@@ -1,0 +1,101 @@
+{
+  "name": "@paperclipai/paperclip-runner",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./styles.css": "./styles.css"
+  },
+  "files": [
+    "dist",
+    "protocol",
+    "styles.css",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm run build:typescript && pnpm run build:rust && pnpm run build:browser && pnpm run build:phase5",
+    "build:typescript": "pnpm run generate:protocol-types && tsc -p tsconfig.json",
+    "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace",
+    "build:browser": "vite build --config vite.config.ts",
+    "build:phase5": "vite build --config vite.phase5.config.ts",
+    "generate:phase-07-contract": "node scripts/generate-phase-07-contract.mjs",
+    "check:phase-07-contract": "node scripts/generate-phase-07-contract.mjs --check",
+    "generate:semantic-contracts": "pnpm run build:typescript && node scripts/generate-semantic-contracts.mjs",
+    "check:semantic-contracts": "pnpm run build:typescript && node scripts/generate-semantic-contracts.mjs --check",
+    "typecheck": "pnpm run typecheck:typescript && pnpm run typecheck:rust && pnpm run typecheck:browser",
+    "typecheck:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
+    "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
+    "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
+    "test": "pnpm run build:phase2-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs scripts/record-phase4-evidence.test.mjs test/capability-contract.test.mjs",
+    "test:typescript": "vitest run",
+    "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
+    "test:browser": "pnpm run build:typescript && pnpm run build:phase2-binaries && pnpm run build:browser && playwright test --config devtools/browser/playwright.config.ts",
+    "test:phase5": "vitest run src/browser/client.test.ts src/browser/transcript-model.test.ts src/react/public-contract.test.tsx",
+    "test:browser:phase5": "pnpm run build:typescript && playwright test --config examples/playwright.config.ts",
+    "record:phase5:codex": "pnpm run build:typescript && playwright test --config examples/playwright.real.config.ts",
+    "build:phase2-binaries": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
+    "generate:protocol-types": "node scripts/generate-protocol-schema-module.mjs",
+    "check:protocol-types": "node scripts/generate-protocol-schema-module.mjs --check",
+    "generate:phase1-goldens": "pnpm run build:typescript && node scripts/generate-phase1-goldens.mjs",
+    "check:phase1-goldens": "node scripts/generate-phase1-goldens.mjs --check",
+    "check:browser-tokens": "node scripts/check-browser-tokens.mjs",
+    "check:forbidden-imports": "node scripts/check-forbidden-imports.mjs",
+    "check:phase0-parity": "vitest run src/tracer/phase0-runner.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core runs_the_mock_core_path_with_stable_output && node -e \"process.stdout.write('Rust and TypeScript Phase 0 tracer output matches the shared golden fixture.\\n')\"",
+    "check:phase1-parity": "vitest run src/reducer/session-reducer.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core phase1_fixture_parity && node -e \"process.stdout.write('Rust and TypeScript Phase 1 reducer summaries match the shared golden fixtures.\\n')\"",
+    "docs:validate": "node scripts/validate-doc-links.mjs && node scripts/validate-okf.mjs",
+    "trace:phase0": "pnpm run trace:phase0:rust",
+    "trace:phase0:rust": "pnpm run build:rust && cargo run --quiet --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin phase0-tracer",
+    "trace:phase0:typescript": "pnpm run build:typescript && node dist/tracer/phase0.js",
+    "replay:phase1": "pnpm run build:typescript && node dist/cli/phase1-replay.js",
+    "trace:phase2": "pnpm run build:typescript && pnpm run build:phase2-binaries && node dist/cli/phase2-mock-core.js",
+    "record:phase2": "pnpm run trace:phase2 -- --quiet --output knowledge/evidence/phase-02-happy-path.json",
+    "trace:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node dist/cli/phase3-recovery.js",
+    "trace:phase4": "pnpm run build:typescript && node dist/cli/phase4-codex.js",
+    "trace:phase6": "pnpm run build:typescript && node dist/cli/phase6-paperclip.js",
+    "trace:phase7": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node dist/cli/phase7-live.js",
+    "test:phase7": "vitest run src/phase7/live-session.test.ts src/semantic-tools/semantic-tools.test.ts src/mock-core/phase7-mock-control-plane-adapter.test.ts",
+    "demo:phase4b": "pnpm run build:typescript && node scripts/phase4b-demo-server.mjs",
+    "record:phase4b": "pnpm run build:typescript && node scripts/record-phase4b-evidence.mjs",
+    "record:phase4": "pnpm run build:typescript && node scripts/record-phase4-evidence.mjs",
+    "diagnose:phase3": "pnpm run trace:phase3",
+    "record:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node scripts/record-phase3-evidence.mjs",
+    "record:phase3:lost-ack": "pnpm run trace:phase3 -- --fault lost-ack --output knowledge/evidence/phase-03-lost-ack.json",
+    "console:phase4b": "pnpm run build:typescript && vite --config vite.config.ts --host 127.0.0.1 --port 4180",
+    "console:phase5": "pnpm run build:typescript && vite --config vite.phase5.config.ts --host 127.0.0.1 --port 4181",
+    "browser:dev": "pnpm run build:typescript && pnpm run build:phase2-binaries && vite --config vite.config.ts",
+    "browser:preview": "vite preview --config vite.config.ts",
+    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run test:phase5 && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:phase5 && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",
+    "verify:rootless": "bash scripts/verify-rootless-linux.sh"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "ajv": "^8.20.0",
+    "json-schema-to-ts": "^3.1.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "^4.1.10"
+  }
+}
