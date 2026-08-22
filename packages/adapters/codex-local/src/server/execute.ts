@@ -107,6 +107,7 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
+const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
@@ -265,6 +266,65 @@ async function pruneBrokenUnavailablePaperclipSkillSymlinks(
 
 function resolveCodexSkillsDir(codexHome: string): string {
   return path.join(codexHome, "skills");
+}
+
+async function readManagedCodexSkillsManifest(skillsHome: string): Promise<Set<string>> {
+  try {
+    const raw = JSON.parse(
+      await fs.readFile(path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST), "utf8"),
+    ) as unknown;
+    const parsed = parseObject(raw);
+    return new Set(
+      Array.isArray(parsed.managedSkillNames)
+        ? parsed.managedSkillNames.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+async function writeManagedCodexSkillsManifest(skillsHome: string, skillNames: Iterable<string>): Promise<void> {
+  await fs.writeFile(
+    path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST),
+    `${JSON.stringify({ version: 1, managedSkillNames: Array.from(new Set(skillNames)).sort() }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function isPaperclipManagedCodexSkillTarget(input: {
+  target: string;
+  source: string | undefined;
+  runtimeName: string;
+}): Promise<boolean> {
+  const existing = await fs.lstat(input.target).catch(() => null);
+  if (!existing?.isSymbolicLink()) return false;
+  const linkedPath = await fs.readlink(input.target).catch(() => null);
+  if (!linkedPath) return false;
+  const resolvedLinkedPath = path.resolve(path.dirname(input.target), linkedPath);
+  if (input.source && resolvedLinkedPath === path.resolve(input.source)) return true;
+  return isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, input.runtimeName, {
+    requireSkillMarkdown: false,
+  });
+}
+
+async function reconcileManagedCodexSkills(input: {
+  skillsHome: string;
+  allSkillsEntries: Array<{ runtimeName: string; source: string }>;
+  desiredRuntimeNames: Set<string>;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const managed = await readManagedCodexSkillsManifest(input.skillsHome);
+  const availableByRuntimeName = new Map(input.allSkillsEntries.map((entry) => [entry.runtimeName, entry]));
+
+  for (const name of managed) {
+    if (input.desiredRuntimeNames.has(name)) continue;
+    const target = path.join(input.skillsHome, name);
+    const source = availableByRuntimeName.get(name)?.source;
+    if (!(await isPaperclipManagedCodexSkillTarget({ target, source, runtimeName: name }))) continue;
+    await fs.rm(target, { recursive: true, force: true });
+    await input.onLog("stdout", `[paperclip] Revoked Codex skill "${name}" from ${input.skillsHome}\n`);
+  }
 }
 
 type EnsureCodexSkillsInjectedOptions = {
@@ -505,10 +565,14 @@ export async function ensureCodexSkillsInjected(
     options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.key);
   const desiredSet = new Set(desiredSkillNames);
   const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.key));
-  if (skillsEntries.length === 0) return;
-
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
   await fs.mkdir(skillsHome, { recursive: true });
+  await reconcileManagedCodexSkills({
+    skillsHome,
+    allSkillsEntries,
+    desiredRuntimeNames: new Set(skillsEntries.map((entry) => entry.runtimeName)),
+    onLog,
+  });
   const linkSkill = options.linkSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
@@ -553,6 +617,22 @@ export async function ensureCodexSkillsInjected(
       );
     }
   }
+
+  const managedSkillNames = await Promise.all(
+    skillsEntries.map(async (entry) =>
+      (await isPaperclipManagedCodexSkillTarget({
+        target: path.join(skillsHome, entry.runtimeName),
+        source: entry.source,
+        runtimeName: entry.runtimeName,
+      }))
+        ? entry.runtimeName
+        : null,
+    ),
+  );
+  await writeManagedCodexSkillsManifest(
+    skillsHome,
+    managedSkillNames.filter((name): name is string => name !== null),
+  );
 
   await pruneBrokenUnavailablePaperclipSkillSymlinks(
     skillsHome,
