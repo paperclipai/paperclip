@@ -131,6 +131,53 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// Default + hard ceiling for the `successful_run_missing_state` re-escalation
+// cap. The ceiling is PostgreSQL `integer` (int32) so a parsed env value can
+// never be written into `issue_recovery_actions.max_attempts` as Infinity,
+// a decimal, or a number outside the column range.
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT = 3;
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING = 2_147_483_647;
+
+// Accept only a finite integer in [1, int32]. Reject decimals ("3.5"),
+// Infinity, scientific notation, and out-of-range values. `Number("3.5")`
+// is finite and `Math.max(1, 3.5)` would persist 3.5 into an integer column.
+export function parseSuccessfulRunMissingStateMaxAttempts(
+  raw: string | undefined,
+  fallback = SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT,
+): number {
+  const trimmed = raw?.trim();
+  if (!trimmed || !/^[+-]?\d+$/.test(trimmed)) return fallback;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING) {
+    return fallback;
+  }
+  return parsed;
+}
+
+// Cap re-escalation for the `successful_run_missing_state` recovery cause.
+// Without a bound, `reconcileStrandedAssignedIssues` re-escalates every tick
+// when an owner PATCHes `in_progress` on every recovery wake without recording
+// a valid disposition (observed ~1 wake/min for 17+ minutes, attemptCount=30).
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS = parseSuccessfulRunMissingStateMaxAttempts(
+  process.env.SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
+);
+
+// Honor the cap persisted on the recovery-action row. A later env change must
+// not re-open or prematurely stop an in-flight missing-disposition action.
+export function resolveSuccessfulRunMissingStateMaxAttempts(
+  persistedMaxAttempts: number | null | undefined,
+): number {
+  if (
+    typeof persistedMaxAttempts === "number" &&
+    Number.isSafeInteger(persistedMaxAttempts) &&
+    persistedMaxAttempts >= 1 &&
+    persistedMaxAttempts <= SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING
+  ) {
+    return persistedMaxAttempts;
+  }
+  return SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS;
+}
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -3017,7 +3064,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorPolicy: recoveryCause === "provider_quota" && !ownerAgentId
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
-      maxAttempts: null,
+      // SPC-21314: carry the missing-disposition attempt cap on the row itself so
+      // the reconciler gate (and any future consumer) can bound re-escalation.
+      maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
+        : null,
       lastAttemptAt: now,
     });
 
@@ -5238,6 +5289,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (!handoffEvidence.exhausted) {
           result.skipped += 1;
           continue;
+        }
+
+        // SPC-21314: same-cause re-escalation cap. When a prior
+        // `successful_run_missing_state` recovery action is still active and has
+        // already hit its attempt cap, stop re-escalating. Without this gate the
+        // reconciler re-escalates every tick (owner PATCHes `in_progress` on each
+        // recovery wake without recording a valid disposition), producing an
+        // unbounded ~1 wake/min flap (observed attemptCount=30 in 17min on
+        // SPC-21292). The exhausted action stays as first-class evidence for
+        // board/human intervention.
+        const existingActive = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+        if (existingActive && existingActive.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON) {
+          const existingActiveMaxAttempts = resolveSuccessfulRunMissingStateMaxAttempts(
+            existingActive.maxAttempts,
+          );
+          if (existingActive.attemptCount >= existingActiveMaxAttempts) {
+            logger.warn(
+              {
+                issueId: issue.id,
+                actionId: existingActive.id,
+                attemptCount: existingActive.attemptCount,
+                maxAttempts: existingActiveMaxAttempts,
+              },
+              "recovery.stranded.repeated_missing_disposition — skipping re-escalation",
+            );
+            result.skipped += 1;
+            continue;
+          }
         }
 
         const updated = await escalateStrandedAssignedIssue({
