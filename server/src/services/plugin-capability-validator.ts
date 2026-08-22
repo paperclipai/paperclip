@@ -109,6 +109,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "telemetry.track": ["telemetry.track"],
   "db.migrate": ["database.namespace.migrate"],
   "db.execute": ["database.namespace.write"],
+  "db.executeTransaction": ["database.namespace.write"],
   "external.objects.detect": ["external.objects.detect"],
   "external.objects.read": ["external.objects.read"],
   "external.objects.write": ["external.objects.write"],

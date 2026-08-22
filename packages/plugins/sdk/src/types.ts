@@ -50,7 +50,18 @@ import type {
   PrincipalType,
   EnvSecretRefBinding,
 } from "@paperclipai/shared";
-import type { PluginPerformActionContext } from "./protocol.js";
+import type {
+  PluginDatabaseTransactionInput,
+  PluginDatabaseTransactionResult,
+  PluginPerformActionContext,
+} from "./protocol.js";
+
+export type {
+  PluginDatabaseTransactionInput,
+  PluginDatabaseTransactionResult,
+  PluginDatabaseTransactionStep,
+  PluginDatabaseTransactionStepResult,
+} from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -617,6 +628,17 @@ export interface PluginDatabaseClient {
 
   /** Run a restricted INSERT, UPDATE, or DELETE against the plugin namespace. */
   execute(sql: string, params?: unknown[]): Promise<{ rowCount: number }>;
+
+  /**
+   * Apply a bounded declarative batch atomically inside the plugin namespace.
+   *
+   * The host validates every step before opening the transaction. Any SQL
+   * error or `expectRowCount` mismatch rolls the whole batch back. Transaction
+   * callbacks are deliberately not exposed across the worker RPC boundary.
+   */
+  executeTransaction(
+    input: PluginDatabaseTransactionInput,
+  ): Promise<PluginDatabaseTransactionResult>;
 }
 
 /**

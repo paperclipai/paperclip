@@ -574,6 +574,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async execute(sql: string, params?: unknown[]) {
           return callHost("db.execute", { sql, params });
         },
+        async executeTransaction(input) {
+          return callHost("db.executeTransaction", input);
+        },
       },
 
       http: {

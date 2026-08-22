@@ -49,6 +49,11 @@ import type {
   ExternalObjectMentionSourceKind,
   EnvSecretRefBinding,
 } from "@paperclipai/shared";
+
+export {
+  validatePluginDatabaseTransactionSql,
+  type PluginDatabaseTransactionSqlTarget,
+} from "./database-transaction-policy.js";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
@@ -265,12 +270,55 @@ export const PLUGIN_RPC_ERROR_CODES = {
    * `multiCompanyConfig: true` on its definition.
    */
   CROSS_TENANT_CONFIG: -32006,
+  /** A host-owned conditional mutation observed a row count other than the declared expectation. */
+  CONDITION_FAILED: -32007,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
 
 export type PluginRpcErrorCode =
   (typeof PLUGIN_RPC_ERROR_CODES)[keyof typeof PLUGIN_RPC_ERROR_CODES];
+
+/**
+ * Fixed safety limits for one host-owned plugin database transaction.
+ *
+ * The host validates the complete declarative batch before opening a database
+ * transaction. `maxBytes` covers the UTF-8 JSON representation of all SQL and
+ * parameters, while `statementTimeoutMs` is re-applied before every step. The
+ * maximum aggregate statement budget stays below the worker RPC timeout.
+ */
+export const PLUGIN_DATABASE_TRANSACTION_LIMITS = {
+  maxSteps: 16,
+  maxBytes: 64 * 1024,
+  maxParams: 256,
+  statementTimeoutMs: 1_000,
+} as const;
+
+/** One restricted mutation in a host-owned plugin database transaction. */
+export interface PluginDatabaseTransactionStep {
+  /** A single INSERT, UPDATE, or DELETE statement targeting the plugin namespace. */
+  sql: string;
+  /** Positional values referenced by `$1`, `$2`, and so on. */
+  params?: unknown[];
+  /** Exact affected-row precondition. A mismatch aborts and rolls back the whole batch. */
+  expectRowCount?: number;
+}
+
+/** Declarative input for `ctx.db.executeTransaction`. */
+export interface PluginDatabaseTransactionInput {
+  /** Ordered mutations applied atomically by the host. Callback transactions are intentionally unsupported. */
+  steps: PluginDatabaseTransactionStep[];
+}
+
+/** Per-step result returned after the complete transaction commits. */
+export interface PluginDatabaseTransactionStepResult {
+  rowCount: number;
+}
+
+/** Result returned only after every step commits successfully. */
+export interface PluginDatabaseTransactionResult {
+  results: PluginDatabaseTransactionStepResult[];
+}
 
 // ---------------------------------------------------------------------------
 // Invocation scope metadata
@@ -1447,6 +1495,10 @@ export interface WorkerToHostMethods {
   "db.execute": [
     params: { sql: string; params?: unknown[] },
     result: { rowCount: number },
+  ];
+  "db.executeTransaction": [
+    params: PluginDatabaseTransactionInput,
+    result: PluginDatabaseTransactionResult,
   ];
 
   // Entities

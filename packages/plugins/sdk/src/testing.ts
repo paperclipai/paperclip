@@ -71,7 +71,17 @@ import type {
   PluginEnvironmentDeleteTemplateResult,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
+  PluginDatabaseTransactionInput,
+  PluginDatabaseTransactionResult,
+  PluginDatabaseTransactionStep,
+  PluginDatabaseTransactionStepResult,
 } from "./protocol.js";
+import {
+  JsonRpcCallError,
+  PLUGIN_DATABASE_TRANSACTION_LIMITS,
+  PLUGIN_RPC_ERROR_CODES,
+} from "./protocol.js";
+import { validatePluginDatabaseTransactionSql } from "./database-transaction-policy.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -80,6 +90,24 @@ export interface TestHarnessOptions {
   capabilities?: PluginCapability[];
   /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
+  /** Optional transactional driver for exercising database-dependent plugin code. */
+  database?: TestHarnessDatabase;
+}
+
+export interface TestHarnessDatabaseTransactionDriver {
+  execute(
+    step: PluginDatabaseTransactionStep,
+  ): Promise<PluginDatabaseTransactionStepResult>;
+}
+
+/**
+ * In-process test adapter whose callback resolves before the driver commits.
+ * A driver must roll back its tentative state whenever `run` rejects.
+ */
+export interface TestHarnessDatabase {
+  transaction<T>(
+    run: (driver: TestHarnessDatabaseTransactionDriver) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface TestHarnessLogEntry {
@@ -146,6 +174,7 @@ export interface TestHarness {
   telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
   dbQueries: Array<{ sql: string; params?: unknown[] }>;
   dbExecutes: Array<{ sql: string; params?: unknown[] }>;
+  dbTransactions: PluginDatabaseTransactionInput[];
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +507,9 @@ function isInCompany<T extends { companyId: string | null | undefined }>(
 export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const manifest = options.manifest;
   const capabilitySet = new Set(options.capabilities ?? manifest.capabilities);
+  const databaseNamespace = manifest.database
+    ? `test_${manifest.id.replace(/[^a-z0-9_]+/g, "_")}`
+    : "";
   let currentConfig = { ...(options.config ?? {}) };
 
   const logs: TestHarnessLogEntry[] = [];
@@ -486,6 +518,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const telemetry: TestHarness["telemetry"] = [];
   const dbQueries: TestHarness["dbQueries"] = [];
   const dbExecutes: TestHarness["dbExecutes"] = [];
+  const dbTransactions: TestHarness["dbTransactions"] = [];
 
   const state = new Map<string, unknown>();
   const entities = new Map<string, PluginEntityRecord>();
@@ -890,7 +923,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     db: {
-      namespace: manifest.database ? `test_${manifest.id.replace(/[^a-z0-9_]+/g, "_")}` : "",
+      namespace: databaseNamespace,
       async query(sql, params) {
         requireCapability(manifest, capabilitySet, "database.namespace.read");
         dbQueries.push({ sql, params });
@@ -900,6 +933,91 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "database.namespace.write");
         dbExecutes.push({ sql, params });
         return { rowCount: 0 };
+      },
+      async executeTransaction(input) {
+        requireCapability(manifest, capabilitySet, "database.namespace.write");
+        if (!Array.isArray(input.steps) || input.steps.length === 0) {
+          throw new Error("ctx.db.executeTransaction requires at least one step");
+        }
+        if (input.steps.length > PLUGIN_DATABASE_TRANSACTION_LIMITS.maxSteps) {
+          throw new Error(
+            `ctx.db.executeTransaction accepts at most ${PLUGIN_DATABASE_TRANSACTION_LIMITS.maxSteps} steps`,
+          );
+        }
+
+        let paramCount = 0;
+        const recordedInput: PluginDatabaseTransactionInput = {
+          steps: input.steps.map((step) => {
+            if (typeof step.sql !== "string" || step.sql.trim().length === 0) {
+              throw new Error("ctx.db.executeTransaction step SQL must be a non-empty string");
+            }
+            validatePluginDatabaseTransactionSql(step.sql, databaseNamespace);
+            if (step.params !== undefined && !Array.isArray(step.params)) {
+              throw new Error("ctx.db.executeTransaction step params must be an array");
+            }
+            if (
+              step.expectRowCount !== undefined
+              && (!Number.isSafeInteger(step.expectRowCount) || step.expectRowCount < 0)
+            ) {
+              throw new Error(
+                "ctx.db.executeTransaction expectRowCount must be a non-negative safe integer",
+              );
+            }
+            const params = step.params === undefined ? undefined : [...step.params];
+            paramCount += params?.length ?? 0;
+            return {
+              sql: step.sql,
+              ...(params ? { params } : {}),
+              ...(step.expectRowCount === undefined
+                ? {}
+                : { expectRowCount: step.expectRowCount }),
+            };
+          }),
+        };
+        if (paramCount > PLUGIN_DATABASE_TRANSACTION_LIMITS.maxParams) {
+          throw new Error(
+            `ctx.db.executeTransaction accepts at most ${PLUGIN_DATABASE_TRANSACTION_LIMITS.maxParams} parameters`,
+          );
+        }
+        if (
+          Buffer.byteLength(JSON.stringify(recordedInput), "utf8")
+          > PLUGIN_DATABASE_TRANSACTION_LIMITS.maxBytes
+        ) {
+          throw new Error(
+            `ctx.db.executeTransaction payload exceeds ${PLUGIN_DATABASE_TRANSACTION_LIMITS.maxBytes} bytes`,
+          );
+        }
+        dbTransactions.push(recordedInput);
+
+        const run = async (
+          driver: TestHarnessDatabaseTransactionDriver,
+        ): Promise<PluginDatabaseTransactionResult> => {
+          const results: PluginDatabaseTransactionStepResult[] = [];
+          for (let index = 0; index < recordedInput.steps.length; index += 1) {
+            const step = recordedInput.steps[index]!;
+            const result = await driver.execute(step);
+            if (!Number.isSafeInteger(result.rowCount) || result.rowCount < 0) {
+              throw new Error(
+                "ctx.db.executeTransaction test driver returned an invalid row count",
+              );
+            }
+            if (
+              step.expectRowCount !== undefined
+              && result.rowCount !== step.expectRowCount
+            ) {
+              throw new JsonRpcCallError({
+                code: PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED,
+                message: `CONDITION_FAILED: transaction step ${index} expected rowCount ${step.expectRowCount}, received ${result.rowCount}`,
+              });
+            }
+            results.push(result);
+          }
+          return { results };
+        };
+
+        return options.database
+          ? options.database.transaction(run)
+          : run({ execute: async () => ({ rowCount: 0 }) });
       },
     },
     http: {
@@ -2649,6 +2767,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     telemetry,
     dbQueries,
     dbExecutes,
+    dbTransactions,
   };
 
   return harness;

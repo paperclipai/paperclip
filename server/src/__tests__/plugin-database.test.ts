@@ -15,12 +15,18 @@ import {
 } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
+  PLUGIN_DATABASE_TRANSACTION_LIMITS,
+  PLUGIN_RPC_ERROR_CODES,
+} from "@paperclipai/plugin-sdk/protocol";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
   derivePluginDatabaseNamespace,
+  PluginDatabaseConditionFailedError,
   pluginDatabaseService,
+  preparePluginDatabaseTransaction,
   validatePluginMigrationStatement,
   validatePluginRuntimeExecute,
   validatePluginRuntimeQuery,
@@ -127,6 +133,180 @@ describe("plugin database SQL validation", () => {
     expect(() =>
       validatePluginRuntimeExecute("UPDATE public.issues SET title = $1", "plugin_test")
     ).toThrow(/namespace/i);
+  });
+
+  it("requires every runtime mutation table reference to stay fully namespace-qualified", () => {
+    expect(() =>
+      validatePluginRuntimeExecute(
+        `UPDATE plugin_test.rows r
+         SET value = other.value
+         FROM other_rows other
+         WHERE other.id = r.id`,
+        "plugin_test",
+      )
+    ).toThrow(/fully qualified plugin namespace/i);
+    expect(() =>
+      validatePluginRuntimeExecute(
+        `DELETE FROM plugin_test.rows r
+         USING public.issues i
+         WHERE i.id = r.issue_id`,
+        "plugin_test",
+      )
+    ).toThrow(/non-plugin schemas/i);
+    expect(() =>
+      validatePluginRuntimeExecute(
+        `INSERT INTO plugin_test.rows (id, value)
+         VALUES ($1, $2)
+         ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value`,
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "INSERT INTO plugin_test.rows (id) SELECT id FROM/**/public.issues",
+        "plugin_test",
+      )
+    ).toThrow(/comments/i);
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "INSERT INTO plugin_test.rows (id) TABLE public.issues",
+        "plugin_test",
+      )
+    ).toThrow(/non-plugin schemas/i);
+    expect(() =>
+      validatePluginRuntimeExecute(
+        `INSERT INTO plugin_test.rows (id)
+         SELECT r.id FROM plugin_test.rows r, public.issues i`,
+        "plugin_test",
+      )
+    ).toThrow(/relation lists/i);
+  });
+
+  it("ignores string contents structurally and blocks timeout-control functions", () => {
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "INSERT INTO plugin_test.rows (message) VALUES ('copied from cache')",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "UPDATE plugin_test.rows SET message = 'join public.issues' WHERE id = 1",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "UPDATE plugin_test.rows SET message = set_config('statement_timeout', '0', true)",
+        "plugin_test",
+      )
+    ).toThrow(/timeout or advisory-lock/i);
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "UPDATE plugin_test.rows SET message = pg_sleep(4.9)::text",
+        "plugin_test",
+      )
+    ).toThrow(/timeout or advisory-lock/i);
+    expect(() =>
+      validatePluginRuntimeExecute(
+        `INSERT INTO plugin_test.rows (message, id)
+         SELECT E'foo\\'bar', id FROM public.issues`,
+        "plugin_test",
+      )
+    ).toThrow(/escape strings as parameters/i);
+  });
+
+  it("bounds declarative transaction steps, parameters, bytes, and row-count conditions", () => {
+    const mutation = {
+      sql: "UPDATE plugin_test.rows SET value = $1 WHERE id = $2",
+      params: ["value", "id"],
+    };
+    expect(() => preparePluginDatabaseTransaction({
+      steps: Array.from(
+        { length: PLUGIN_DATABASE_TRANSACTION_LIMITS.maxSteps + 1 },
+        () => mutation,
+      ),
+    }, "plugin_test")).toThrow(/at most 16 steps/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: "UPDATE plugin_test.rows SET value = $1",
+        params: Array.from(
+          { length: PLUGIN_DATABASE_TRANSACTION_LIMITS.maxParams + 1 },
+          () => "value",
+        ),
+      }],
+    }, "plugin_test")).toThrow(/at most 256 parameters/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `UPDATE plugin_test.rows SET value = '${"x".repeat(
+          PLUGIN_DATABASE_TRANSACTION_LIMITS.maxBytes,
+        )}'`,
+      }],
+    }, "plugin_test")).toThrow(/payload exceeds 65536 bytes/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{ ...mutation, expectRowCount: -1 }],
+    }, "plugin_test")).toThrow(/non-negative safe integer/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `INSERT INTO plugin_test.rows (id)
+              SELECT i.id
+              FROM plugin_test.rows r TABLESAMPLE SYSTEM (100), public.issues i`,
+      }],
+    }, "plugin_test")).toThrow(/TABLESAMPLE|single-table/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `INSERT INTO plugin_test.rows (id)
+              SELECT id FROM plugin_test.rows`,
+      }],
+    }, "plugin_test")).toThrow(/single-table/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `UPDATE plugin_test.rows
+              SET value = pg_catalog.setval('public.heartbeat_run_events_id_seq', 1, false)`,
+      }],
+    }, "plugin_test")).toThrow(/function "setval" is not allowed/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `INSERT INTO plugin_test.rows (id)
+              VALUES (nextval('public.heartbeat_run_events_id_seq'))`,
+      }],
+    }, "plugin_test")).toThrow(/function "nextval" is not allowed/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: "UPDATE plugin_test.rows SET value = pg_notify('channel', 'payload')",
+      }],
+    }, "plugin_test")).toThrow(/function "pg_notify" is not allowed/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: "INSERT INTO plugin_test.rows (id) VALUES ($1) RETURNING id",
+        params: ["row-a"],
+      }],
+    }, "plugin_test")).toThrow(/single-table/i);
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `UPDATE plugin_test.rows
+              SET value = COALESCE($1, value), updated_at = now()
+              WHERE id = $2`,
+        params: ["value", "row-a"],
+      }],
+    }, "plugin_test")).not.toThrow();
+  });
+
+  it("binds transaction placeholders only in executable SQL contexts", () => {
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: "INSERT INTO plugin_test.rows (id, value) VALUES ($1, '$2')",
+        params: ["row-a"],
+      }],
+    }, "plugin_test")).not.toThrow();
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `UPDATE plugin_test.rows AS "row$2"
+              SET value = $1
+              WHERE "row$2".id = 'literal$3'`,
+        params: ["value"],
+      }],
+    }, "plugin_test")).not.toThrow();
   });
 
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
@@ -319,7 +499,15 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   }, 20_000);
 
   afterEach(async () => {
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey, llmWikiPluginKey]) {
+    for (const pluginKey of [
+      "paperclip.dbtest",
+      "paperclip.escape",
+      "paperclip.refresh",
+      "paperclip.atomic",
+      "paperclip.atomic-b",
+      multiMigrationPluginKey,
+      llmWikiPluginKey,
+    ]) {
       const namespace = derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
@@ -431,6 +619,28 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
         coreReadTables: ["issues"],
       },
     };
+  }
+
+  async function installAtomicPlugin(pluginKey = "paperclip.atomic") {
+    const pluginManifest = manifest(pluginKey);
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `
+      CREATE TABLE ${namespace}.lanes (
+        lane_key text PRIMARY KEY,
+        owner_key text NOT NULL
+      );
+      CREATE TABLE ${namespace}.claims (
+        lane_key text PRIMARY KEY REFERENCES ${namespace}.lanes(lane_key),
+        receipt_key text NOT NULL UNIQUE
+      );
+      `,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+    return { pluginDb, pluginId, namespace };
   }
 
   it("applies multi-file plugin migrations through the production validator", async () => {
@@ -580,6 +790,217 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await expect(
       pluginDb.execute(pluginId, "UPDATE public.issues SET title = $1", ["bad"]),
     ).rejects.toThrow(/plugin namespace/i);
+  });
+
+  it("commits all steps of a namespace-safe transaction together", async () => {
+    const { pluginDb, pluginId, namespace } = await installAtomicPlugin();
+
+    await expect(pluginDb.executeTransaction(pluginId, {
+      steps: [
+        {
+          sql: `INSERT INTO ${namespace}.lanes (lane_key, owner_key) VALUES ($1, $2)`,
+          params: ["lane-a", "worker-a"],
+          expectRowCount: 1,
+        },
+        {
+          sql: `INSERT INTO ${namespace}.claims (lane_key, receipt_key) VALUES ($1, $2)`,
+          params: ["lane-a", "receipt-a"],
+          expectRowCount: 1,
+        },
+      ],
+    })).resolves.toEqual({ results: [{ rowCount: 1 }, { rowCount: 1 }] });
+
+    await expect(pluginDb.query(
+      pluginId,
+      `SELECT l.lane_key, l.owner_key, c.receipt_key
+       FROM ${namespace}.lanes l
+       JOIN ${namespace}.claims c ON c.lane_key = l.lane_key`,
+    )).resolves.toEqual([{
+      lane_key: "lane-a",
+      owner_key: "worker-a",
+      receipt_key: "receipt-a",
+    }]);
+  });
+
+  it("rolls back earlier steps when a later row-count condition fails", async () => {
+    const { pluginDb, pluginId, namespace } = await installAtomicPlugin();
+
+    await expect(pluginDb.executeTransaction(pluginId, {
+      steps: [
+        {
+          sql: `INSERT INTO ${namespace}.lanes (lane_key, owner_key) VALUES ($1, $2)`,
+          params: ["lane-rollback", "worker-a"],
+          expectRowCount: 1,
+        },
+        {
+          sql: `UPDATE ${namespace}.claims SET receipt_key = $1 WHERE lane_key = $2`,
+          params: ["never", "missing"],
+          expectRowCount: 1,
+        },
+      ],
+    })).rejects.toMatchObject({
+      name: PluginDatabaseConditionFailedError.name,
+      code: PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED,
+      condition: "CONDITION_FAILED",
+      stepIndex: 1,
+      expectedRowCount: 1,
+      actualRowCount: 0,
+    });
+
+    await expect(pluginDb.query(
+      pluginId,
+      `SELECT lane_key FROM ${namespace}.lanes WHERE lane_key = $1`,
+      ["lane-rollback"],
+    )).resolves.toEqual([]);
+  });
+
+  it("bounds lock waits below the worker RPC timeout", async () => {
+    const { pluginDb, pluginId, namespace } = await installAtomicPlugin();
+    await pluginDb.execute(
+      pluginId,
+      `INSERT INTO ${namespace}.lanes (lane_key, owner_key) VALUES ($1, $2)`,
+      ["lane-locked", "worker-a"],
+    );
+
+    const startedAt = Date.now();
+    await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(
+        `SELECT lane_key FROM ${namespace}.lanes`
+        + " WHERE lane_key = 'lane-locked' FOR UPDATE",
+      ));
+      let timeoutError: unknown;
+      try {
+        await pluginDb.executeTransaction(pluginId, {
+          steps: [{
+            sql: `UPDATE ${namespace}.lanes SET owner_key = $1 WHERE lane_key = $2`,
+            params: ["worker-b", "lane-locked"],
+            expectRowCount: 1,
+          }],
+        });
+      } catch (error) {
+        timeoutError = error;
+      }
+      expect(timeoutError).toMatchObject({
+        cause: expect.objectContaining({ code: expect.stringMatching(/^(55P03|57014)$/) }),
+      });
+    });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    await expect(pluginDb.query(
+      pluginId,
+      `SELECT owner_key FROM ${namespace}.lanes WHERE lane_key = $1`,
+      ["lane-locked"],
+    )).resolves.toEqual([{ owner_key: "worker-a" }]);
+  });
+
+  it("validates every step before opening the transaction", async () => {
+    const { pluginDb, pluginId, namespace } = await installAtomicPlugin();
+    const invalidStatements = [
+      `CREATE TABLE ${namespace}.escaped (id text)`,
+      `DELETE FROM ${namespace}.claims; DELETE FROM ${namespace}.lanes`,
+      "UPDATE public.issues SET title = 'bad'",
+      "UPDATE plugin_external.rows SET value = 'bad'",
+    ];
+
+    for (const [index, invalidSql] of invalidStatements.entries()) {
+      await expect(pluginDb.executeTransaction(pluginId, {
+        steps: [
+          {
+            sql: `INSERT INTO ${namespace}.lanes (lane_key, owner_key) VALUES ($1, $2)`,
+            params: [`lane-invalid-${index}`, "worker-a"],
+            expectRowCount: 1,
+          },
+          { sql: invalidSql },
+        ],
+      })).rejects.toThrow();
+    }
+
+    await expect(pluginDb.query(
+      pluginId,
+      `SELECT lane_key FROM ${namespace}.lanes ORDER BY lane_key`,
+    )).resolves.toEqual([]);
+  });
+
+  it("rejects namespace views so writes cannot escape through an updatable view", async () => {
+    const { pluginDb, pluginId, namespace } = await installAtomicPlugin();
+    await pluginDb.execute(
+      pluginId,
+      `INSERT INTO ${namespace}.lanes (lane_key, owner_key) VALUES ($1, $2)`,
+      ["lane-view", "worker-a"],
+    );
+    await db.execute(sql.raw(
+      `CREATE VIEW ${namespace}.lane_view AS SELECT lane_key, owner_key FROM ${namespace}.lanes`,
+    ));
+
+    await expect(pluginDb.executeTransaction(pluginId, {
+      steps: [{
+        sql: `UPDATE ${namespace}.lane_view SET owner_key = $1 WHERE lane_key = $2`,
+        params: ["worker-b", "lane-view"],
+        expectRowCount: 1,
+      }],
+    })).rejects.toThrow(/must be a plugin base table/i);
+    await expect(pluginDb.query(
+      pluginId,
+      `SELECT owner_key FROM ${namespace}.lanes WHERE lane_key = $1`,
+      ["lane-view"],
+    )).resolves.toEqual([{ owner_key: "worker-a" }]);
+  });
+
+  it("lets concurrent workers produce exactly one lane and claim pair", async () => {
+    const { pluginDb, pluginId, namespace } = await installAtomicPlugin();
+    const claim = (owner: string) => pluginDb.executeTransaction(pluginId, {
+      steps: [
+        {
+          sql: `INSERT INTO ${namespace}.lanes (lane_key, owner_key)
+                VALUES ($1, $2) ON CONFLICT (lane_key) DO NOTHING`,
+          params: ["shared-lane", owner],
+          expectRowCount: 1,
+        },
+        {
+          sql: `INSERT INTO ${namespace}.claims (lane_key, receipt_key) VALUES ($1, $2)`,
+          params: ["shared-lane", `receipt-${owner}`],
+          expectRowCount: 1,
+        },
+      ],
+    });
+
+    const outcomes = await Promise.allSettled([claim("worker-a"), claim("worker-b")]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({
+        code: PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED,
+        condition: "CONDITION_FAILED",
+      }),
+    });
+
+    const rows = await pluginDb.query<{ lane_key: string; owner_key: string; receipt_key: string }>(
+      pluginId,
+      `SELECT l.lane_key, l.owner_key, c.receipt_key
+       FROM ${namespace}.lanes l
+       JOIN ${namespace}.claims c ON c.lane_key = l.lane_key`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ lane_key: "shared-lane" });
+    expect(rows[0]!.receipt_key).toBe(`receipt-${rows[0]!.owner_key}`);
+  });
+
+  it("cannot cross another installed plugin's database namespace", async () => {
+    const pluginA = await installAtomicPlugin("paperclip.atomic");
+    const pluginB = await installAtomicPlugin("paperclip.atomic-b");
+
+    await expect(pluginA.pluginDb.executeTransaction(pluginA.pluginId, {
+      steps: [{
+        sql: `INSERT INTO ${pluginB.namespace}.lanes (lane_key, owner_key) VALUES ($1, $2)`,
+        params: ["cross-namespace", "worker-a"],
+        expectRowCount: 1,
+      }],
+    })).rejects.toThrow(/plugin namespace/i);
+
+    await expect(pluginB.pluginDb.query(
+      pluginB.pluginId,
+      `SELECT lane_key FROM ${pluginB.namespace}.lanes`,
+    )).resolves.toEqual([]);
   });
 
   it("records a failed migration when SQL escapes the plugin namespace", async () => {
