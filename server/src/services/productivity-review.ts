@@ -16,6 +16,7 @@ import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { resolveConfiguredOperationalReviewOwnerAgentId } from "./operational-review-routing.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -595,6 +596,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
     const candidateIds: string[] = [];
+    const configuredOwnerId = await resolveConfiguredOperationalReviewOwnerAgentId(db, sourceIssue.companyId, {
+      excludeAgentIds: [sourceAgent.id],
+    });
+    if (configuredOwnerId) candidateIds.push(configuredOwnerId);
     if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);
     if (sourceIssue.projectId) {
