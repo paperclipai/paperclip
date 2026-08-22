@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -123,6 +123,7 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
   }) {
     const runId = randomUUID();
     const status = input.status ?? "running";
+    const unfinished = status === "running" || status === "queued" || status === "scheduled_retry";
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId: input.companyId,
@@ -130,7 +131,7 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
       status,
       invocationSource: "manual",
       startedAt: new Date(),
-      finishedAt: status === "running" ? null : new Date(),
+      finishedAt: unfinished ? null : new Date(),
       contextSnapshot: input.contextSnapshot ?? null,
     });
     return runId;
@@ -154,6 +155,14 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
       companyId,
       agentId,
       status: "failed",
+      contextSnapshot: { issueId, taskId: issueId },
+    });
+    // Not terminal, and deliberately not executing: recovery parks a run here
+    // while it waits to retry, so it has no process to speak for the agent.
+    const scheduledRetryRunId = await seedRun({
+      companyId,
+      agentId,
+      status: "scheduled_retry",
       contextSnapshot: { issueId, taskId: issueId },
     });
     const emptyContextRunId = await seedRun({ companyId, agentId, contextSnapshot: {} });
@@ -198,6 +207,7 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
       otherIssueId,
       liveRunId,
       staleRunId,
+      scheduledRetryRunId,
       emptyContextRunId,
       otherAgentRunId,
       otherCompanyRunId,
@@ -228,6 +238,25 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0]?.contextSnapshot ?? null);
+  }
+
+  /**
+   * Waits until some other session is parked on a row lock. That is the signal
+   * that the request under test has passed every unlocked gate and is waiting
+   * for the run row — polling it instead of sleeping keeps the interleaving
+   * deterministic rather than timing-dependent.
+   */
+  async function waitForBlockedSession() {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      const rows = await db.execute(sql`
+        select count(*)::int as waiting
+        from pg_stat_activity
+        where wait_event_type = 'Lock' and state = 'active' and datname = current_database()
+      `);
+      if (Number((rows as unknown as Array<{ waiting: number }>)[0]?.waiting ?? 0) > 0) return true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
   }
 
   async function countComments(issueId: string) {
@@ -289,6 +318,9 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
   const invalidRunCases = [
     ["unknown", (s: Scenario) => s.unknownRunId],
     ["terminal/stale", (s: Scenario) => s.staleRunId],
+    // Write authority is an allowlist of queued/running, not "anything that has
+    // not finished": a parked scheduled_retry run has no process behind it.
+    ["inactive/scheduled-retry", (s: Scenario) => s.scheduledRetryRunId],
     ["unassigned/empty-context", (s: Scenario) => s.emptyContextRunId],
     ["mismatched-agent", (s: Scenario) => s.otherAgentRunId],
     ["mismatched-company", (s: Scenario) => s.otherCompanyRunId],
@@ -469,4 +501,107 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
       runExists: false,
     });
   });
+
+  /**
+   * The blocker/resume controls take a richer PATCH path that resolves agent
+   * trust from the run row before the cap transaction runs. That lookup used to
+   * hand the raw header to a uuid column, so a forged id answered 500 — an
+   * unaudited error class instead of the fail-closed denial contract.
+   */
+  it("denies a malformed run id on the blocker PATCH path with an audited 403 and no mutation", async () => {
+    const scenario = await seedScenario();
+    const before = await readIssue(scenario.issueId);
+    const forgedRunId = "../../not-a-run-id";
+
+    const res = await request(createApp(agentActor(scenario.companyId, scenario.agentId, forgedRunId)))
+      .patch(`/api/issues/${scenario.issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code, JSON.stringify(res.body)).toBe("cross_issue_influence_run_context_required");
+    expect(await readIssue(scenario.issueId)).toEqual(before);
+    expect(await db.select({ id: issueRelations.id }).from(issueRelations)).toHaveLength(0);
+
+    const denials = await db
+      .select({ runId: activityLog.runId, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.agent_run_context_denied"));
+    expect(denials).toHaveLength(1);
+    // The column is a foreign key, so an unpersisted id survives only in details.
+    expect(denials[0]?.runId).toBeNull();
+    expect(denials[0]?.details).toMatchObject({
+      runId: forgedRunId,
+      runExists: false,
+      reason: "malformed_run_id",
+    });
+  });
+
+  /**
+   * The route gate reads the run without holding it, so a run can terminalize
+   * between that decision and the durable write. The mutation transaction
+   * re-locks the run row, so the terminalization either wins outright or waits
+   * behind the write — it can never land in between.
+   */
+  it("refuses a release when the run is terminalized before the issue write lands", async () => {
+    const companyId = await seedCompany("Paperclip");
+    const agentId = await seedAgent(companyId, "CodexCoder");
+    const issueId = randomUUID();
+    const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, taskId: issueId } });
+    // No execution lock on the issue: stale-lock recovery would otherwise clear
+    // it and answer 409, which would prove lock hygiene rather than this gate.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Racing release",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const before = await readIssue(issueId);
+
+    const lockDb = createDb(tempDb!.connectionString);
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const lockHeld = lockDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM heartbeat_runs WHERE id = ${runId} FOR UPDATE`);
+      signalLocked();
+      // Terminalize only once the release request is parked behind this lock,
+      // so the interleaving under test is the real one: the route gate has
+      // already admitted a live run, and the durable write has not happened.
+      await gate;
+      await tx.execute(
+        sql`UPDATE heartbeat_runs SET status = 'failed', finished_at = now() WHERE id = ${runId}`,
+      );
+    });
+
+    const app = createApp(agentActor(companyId, agentId, runId));
+    // Warm the route stack first: a cold first request can take seconds to
+    // issue its first query, which would let the terminalization land before
+    // the gate instead of between the gate and the write.
+    await request(app).get(`/api/issues/${issueId}`);
+
+    await locked;
+    // `.then` is what actually dispatches a supertest request; without it the
+    // request would sit unsent while this test waits for it to block.
+    const pending = request(app).post(`/api/issues/${issueId}/release`).send({}).then((res) => res);
+    expect(await waitForBlockedSession(), "release never blocked on the run row").toBe(true);
+    releaseGate();
+    await lockHeld;
+
+    const res = await pending;
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code, JSON.stringify(res.body)).toBe("agent_run_context_invalid");
+    // Proves the refusal came from the write-time lock, not the route gate:
+    // the gate had already admitted this run while it was still live.
+    expect(res.body.details?.stage, JSON.stringify(res.body)).toBe("durable_write");
+    expect(await readIssue(issueId)).toEqual(before);
+
+    await lockDb.$client.end();
+  }, 60_000);
 });

@@ -199,7 +199,6 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
-  TERMINAL_HEARTBEAT_RUN_STATUSES,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -253,6 +252,11 @@ import {
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
+import {
+  hasAgentWriteRunAuthority,
+  loadAgentRunRow,
+  lockLiveAgentRun,
+} from "../services/agent-run-authority.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -2954,18 +2958,8 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
   ): Promise<string | null> {
     if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return null;
-    const run = await db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.id, actor.runId),
-        eq(heartbeatRuns.companyId, companyId),
-      ))
-      .then((rows) => rows[0] ?? null);
-    if (!run || run.agentId !== actor.agentId) return null;
+    const run = await loadAgentRunRow(db, actor.runId);
+    if (!run || run.companyId !== companyId || run.agentId !== actor.agentId) return null;
     const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
       : null;
@@ -2985,20 +2979,14 @@ export function issueRoutes(
     issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
   ): Promise<TrustPresetResolution | null> {
     if (!input.agentId) return null;
-    const [agent, run] = await Promise.all([
+    // The run id can come straight from a caller-controlled header, so it goes
+    // through the shared lookup: a malformed id is "no run" here, not a uuid
+    // cast error that 500s past the audited denial contract (FAI-9983).
+    const [agent, runRow] = await Promise.all([
       agentsSvc.getById(input.agentId),
-      input.runId
-        ? db
-            .select({
-              companyId: heartbeatRuns.companyId,
-              agentId: heartbeatRuns.agentId,
-              contextSnapshot: heartbeatRuns.contextSnapshot,
-            })
-            .from(heartbeatRuns)
-            .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, companyId)))
-            .then((rows) => rows[0] ?? null)
-        : Promise.resolve(null),
+      loadAgentRunRow(db, input.runId),
     ]);
+    const run = runRow?.companyId === companyId ? runRow : null;
     if (!agent || agent.companyId !== companyId) return null;
     const runContext = run?.agentId === agent.id && run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
@@ -4023,10 +4011,12 @@ export function issueRoutes(
    * it started the run. Nothing here ever *writes* run context: authority is
    * only read, never minted by the request that wants to use it.
    *
-   * The run row is read, not locked. The check is monotonic in the attacker's
-   * favour only — a run that passes here was authorized at check time, and a run
-   * that becomes terminal a moment later loses authority rather than gaining it,
-   * so there is no window a caller can drive to widen its own authority.
+   * This gate reads the run; it does not hold it. A run terminalized between
+   * here and the durable write would still be authorized by this check alone,
+   * so checkout and release re-prove the run inside the statement/transaction
+   * that mutates (the `liveRunAuthority` argument they pass to the service).
+   * This gate is the cheap early refusal that produces the audited 403; that
+   * write-time check is what makes the decision true when the write lands.
    */
   async function assertCanonicalAgentRunContext(
     req: Request,
@@ -4037,21 +4027,11 @@ export function issueRoutes(
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
 
-    // A forged header can be any string. Reject malformed ids here rather than
-    // letting Postgres turn an untrusted value into a uuid cast error, so the
-    // denial stays a clean audited 403 instead of a 500.
-    const run = !isUuidLike(runId)
-      ? null
-      : await db
-        .select({
-          companyId: heartbeatRuns.companyId,
-          agentId: heartbeatRuns.agentId,
-          status: heartbeatRuns.status,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
-        })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
+    // A forged header can be any string; `loadAgentRunRow` resolves anything
+    // that is not uuid-shaped to "no run" rather than letting Postgres turn an
+    // untrusted value into a cast error, so the denial stays a clean audited
+    // 403 instead of a 500.
+    const run = await loadAgentRunRow(db, runId);
     const context = run?.contextSnapshot && typeof run.contextSnapshot === "object"
       && !Array.isArray(run.contextSnapshot)
       ? run.contextSnapshot as Record<string, unknown>
@@ -4062,9 +4042,10 @@ export function issueRoutes(
       !run
       || run.companyId !== issue.companyId
       || run.agentId !== req.actor.agentId
-      // A finished run is a spent credential; a queued one is the run the agent
-      // is about to execute, which is still live authority.
-      || TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)
+      // Write authority is an allowlist, never the complement of "terminal":
+      // `scheduled_retry` is a run parked with no process behind it, and it
+      // must not be able to take this issue's lock (FAI-9983).
+      || !hasAgentWriteRunAuthority(run.status)
       || contextIssueId !== issue.id
     ) {
       const actor = getActorInfo(req);
@@ -4104,6 +4085,49 @@ export function issueRoutes(
       return false;
     }
     return true;
+  }
+
+  /**
+   * Performs `mutate` with the actor's heartbeat run re-read and row-locked in
+   * the same transaction as the durable write (FAI-9983).
+   *
+   * Every gate above this one authorizes from a run row read in an earlier
+   * statement, and a run can terminalize in the gap between that read and the
+   * write. Re-locking here makes the authorization true *at write time*: a
+   * concurrent terminalization either commits first (and this refuses) or waits
+   * behind the mutation. Non-agent actors carry no run authority and are passed
+   * through unchanged.
+   */
+  async function assertLiveAgentRunAuthorityInTx(
+    req: Request,
+    issue: { id: string; companyId: string },
+    tx: Db,
+  ) {
+    if (req.actor.type !== "agent") return;
+    // Issue row first, then the run row. `issues.release` and the checkout
+    // adoption paths take the same order, so holding both here cannot deadlock
+    // against them.
+    await svc.getByIdForUpdate(issue.id, tx);
+    const run = await lockLiveAgentRun(tx, {
+      runId: req.actor.runId,
+      companyId: issue.companyId,
+      agentId: req.actor.agentId,
+    });
+    // Same denial the cap transaction raises for a dead run, so the caller sees
+    // one run-context contract wherever the refusal comes from.
+    if (!run) throw crossIssueInfluenceRunContextError();
+  }
+
+  async function withLiveAgentRunAuthority<T>(
+    req: Request,
+    issue: { id: string; companyId: string },
+    mutate: (dbOrTx: Db) => Promise<T>,
+  ): Promise<T> {
+    if (req.actor.type !== "agent") return await mutate(db);
+    return await db.transaction(async (tx) => {
+      await assertLiveAgentRunAuthorityInTx(req, issue, tx as unknown as Db);
+      return await mutate(tx as unknown as Db);
+    });
   }
 
   async function hasActiveCheckoutManagementOverride(
@@ -4330,19 +4354,7 @@ export function issueRoutes(
       });
     }
 
-    const run = await db
-      .select({
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        responsibleUserId: heartbeatRuns.responsibleUserId,
-      })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.id, runId),
-        eq(heartbeatRuns.companyId, issue.companyId),
-        eq(heartbeatRuns.agentId, req.actor.agentId),
-      ))
-      .then((rows) => rows[0] ?? null);
+    const run = await loadAgentRunRow(db, runId);
     const actorResponsibleUserId = req.actor.onBehalfOfUserId?.trim() || null;
     if (
       !run
@@ -4942,20 +4954,7 @@ export function issueRoutes(
 
   async function loadActorRunContext(req: Request, companyId: string) {
     if (req.actor.type !== "agent") return null;
-    const runId = req.actor.runId?.trim();
-    // A forged header need not be a uuid; treat it as "no run" rather than
-    // letting it become a uuid cast error (FAI-9983).
-    if (!runId || !isUuidLike(runId)) return null;
-    const run = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    const run = await loadAgentRunRow(db, req.actor.runId);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
   }
@@ -10055,10 +10054,15 @@ export function issueRoutes(
       Boolean(decision)
       || shouldRelayStop
       || persistReviewActivityTransactionally
-      || reviewPolicySensitiveMutationRequested;
+      || reviewPolicySensitiveMutationRequested
+      // An agent PATCH always takes the transactional path: its run authority
+      // has to be re-locked in the same transaction as the durable write, or a
+      // run terminalized since the cap gate still lands the update (FAI-9983).
+      || actor.actorType === "agent";
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
+          await assertLiveAgentRunAuthorityInTx(req, existing, tx as unknown as Db);
           if (
             reviewPolicySensitiveMutationRequested
             && !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -11145,7 +11149,15 @@ export function issueRoutes(
       finalIssueStatus: () => updated?.status,
     });
     try {
-      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+      updated = await svc.checkout(
+        id,
+        req.body.agentId,
+        req.body.expectedStatuses,
+        checkoutRunId,
+        // Agent callers re-prove the run inside the statement that takes the
+        // lock; the gate above ran an earlier statement ago (FAI-9983).
+        req.actor.type === "agent" ? { companyId: issue.companyId } : null,
+      );
     } catch (error) {
       if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
         res.status(409).json({
@@ -11210,6 +11222,9 @@ export function issueRoutes(
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
       actorRunId,
+      // Agent callers re-prove the run inside the release transaction; the gate
+      // above ran against a row read in an earlier statement (FAI-9983).
+      req.actor.type === "agent" ? { companyId: existing.companyId } : null,
     );
     if (!released) {
       res.status(404).json({ error: "Issue not found" });
@@ -12525,6 +12540,9 @@ export function issueRoutes(
       const postCommitActivityPublications: ActivityPublication[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
+          // The run has to still be live when the comment and the auto-approval
+          // transition actually commit, not merely when the cap gate ran.
+          await assertLiveAgentRunAuthorityInTx(req, currentIssue, tx as unknown as Db);
           const insertedComment = await svc.addComment(
             id,
             req.body.body,
@@ -12601,18 +12619,20 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-      }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
-        authorizationReason: commentAuthorizationReason,
-        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
+      const commentSourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+      comment = await withLiveAgentRunAuthority(req, currentIssue, (tx) =>
+        svc.addComment(id, req.body.body, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+          onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+        }, {
+          authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+          presentation: commentPresentation,
+          metadata: req.body.metadata ?? null,
+          authorizationReason: commentAuthorizationReason,
+          sourceTrust: commentSourceTrust,
+        }, tx));
     }
 
     await issueReferencesSvc.syncComment(comment.id);
