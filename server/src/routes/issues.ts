@@ -4915,11 +4915,52 @@ export function issueRoutes(
       (overrides as Record<string, unknown>).modelProfile === "cheap";
   }
 
+  /**
+   * Resolves the acting agent's run row, keeping "no run was claimed" separate
+   * from "a run was claimed and does not resolve" (FAI-9983).
+   *
+   * The run-context gates below are *deny* rules keyed off what Paperclip wrote
+   * into the run: they refuse a mutation when the run says the caller is a cheap
+   * status-only recovery. An unresolvable claim must therefore not read as "no
+   * restrictions apply", or a caller sheds every one of them by sending a run id
+   * that is malformed, unknown, or owned by another agent or company — the
+   * header would become a way to *gain* authority by being wrong, which is the
+   * exact inversion this issue exists to close.
+   */
+  async function resolveActorRunContext(req: Request, companyId: string) {
+    if (req.actor.type !== "agent") return { claimedRunId: null, run: null };
+    const claimedRunId = req.actor.runId?.trim() || null;
+    if (!claimedRunId) return { claimedRunId: null, run: null };
+    const run = await loadAgentRunRow(db, claimedRunId);
+    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) {
+      return { claimedRunId, run: null };
+    }
+    return { claimedRunId, run };
+  }
+
   async function loadActorRunContext(req: Request, companyId: string) {
-    if (req.actor.type !== "agent") return null;
-    const run = await loadAgentRunRow(db, req.actor.runId);
-    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
-    return run;
+    return (await resolveActorRunContext(req, companyId)).run;
+  }
+
+  /**
+   * The refusal for a claimed-but-unresolvable run on the deny-rule gates.
+   * Shaped like the checkout/release gate's 403 so callers read one run-context
+   * contract wherever the denial came from.
+   */
+  function denyUnresolvableActorRunContext(res: Response, issueId: string | null, runId: string) {
+    res.status(403).json({
+      error: "Agent writes require a live heartbeat run whose context targets this issue",
+      code: "agent_run_context_invalid",
+      details: {
+        issueId,
+        runId,
+        stage: "run_context_lookup",
+        securityPrinciples: ["Complete Mediation", "Secure Defaults", "Fail Securely"],
+        remediation:
+          "Retry from the Paperclip-created heartbeat run for this issue instead of supplying a run id by hand.",
+      },
+    });
+    return false;
   }
 
   function readObject(value: unknown): Record<string, unknown> {
@@ -4976,7 +5017,8 @@ export function issueRoutes(
     input: { assigneeAdapterOverrides?: unknown },
   ) {
     if (!requestsCheapIssueAssigneeModelProfile(input)) return true;
-    const run = await loadActorRunContext(req, issue.companyId);
+    const { claimedRunId, run } = await resolveActorRunContext(req, issue.companyId);
+    if (!run && claimedRunId) return denyUnresolvableActorRunContext(res, issue.id ?? null, claimedRunId);
     if (!run || !isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
@@ -4997,7 +5039,8 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string },
   ) {
-    const run = await loadActorRunContext(req, issue.companyId);
+    const { claimedRunId, run } = await resolveActorRunContext(req, issue.companyId);
+    if (!run && claimedRunId) return denyUnresolvableActorRunContext(res, issue.id, claimedRunId);
     if (!run) return true;
     if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
 
@@ -5019,7 +5062,8 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string },
   ) {
-    const run = await loadActorRunContext(req, issue.companyId);
+    const { claimedRunId, run } = await resolveActorRunContext(req, issue.companyId);
+    if (!run && claimedRunId) return denyUnresolvableActorRunContext(res, issue.id, claimedRunId);
     if (!run) return true;
     if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
 

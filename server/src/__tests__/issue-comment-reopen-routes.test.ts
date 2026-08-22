@@ -248,13 +248,19 @@ function makeIssueUpdateReceipt(
   return { ...existing, ...fields, changes };
 }
 
+// `heartbeat_runs.id` is a uuid column and the run header is caller-controlled,
+// so routes resolve anything non-uuid to "no run" instead of letting Postgres
+// raise a cast error. A realistic run id keeps these fixtures on the path a real
+// agent takes rather than the malformed-id refusal (FAI-9983).
+const AGENT_RUN_ID = "55555555-5555-4555-8555-555555555555";
+
 function agentActor(agentId = "22222222-2222-4222-8222-222222222222") {
   return {
     type: "agent",
     agentId,
     companyId: "company-1",
     source: "agent_key",
-    runId: "run-1",
+    runId: AGENT_RUN_ID,
   };
 }
 
@@ -1158,6 +1164,9 @@ describe.sequential("issue comment reopen routes", () => {
         presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata,
         sourceTrust: null,
+        // A board actor carries no heartbeat run, so the durable write has no
+        // run authority to re-prove (FAI-9983).
+        liveRunAuthority: null,
       },
     );
   });
@@ -1186,7 +1195,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectWhere.mockImplementation(() => ({
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
-          id: "run-1",
+          id: AGENT_RUN_ID,
           companyId: "company-1",
           agentId: "22222222-2222-4222-8222-222222222222",
           contextSnapshot: {
@@ -1207,7 +1216,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: AGENT_RUN_ID,
         onBehalfOfUserId: null,
       },
       expect.objectContaining({
@@ -1237,7 +1246,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: AGENT_RUN_ID,
         onBehalfOfUserId: null,
       },
       expect.objectContaining({ presentation: null }),
@@ -1249,7 +1258,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectWhere.mockImplementation(() => ({
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
-          id: "run-1",
+          id: AGENT_RUN_ID,
           companyId: "company-1",
           agentId: "22222222-2222-4222-8222-222222222222",
           contextSnapshot: {
@@ -1270,7 +1279,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: AGENT_RUN_ID,
         onBehalfOfUserId: null,
       },
       expect.objectContaining({ presentation: null }),
@@ -2047,7 +2056,7 @@ describe.sequential("issue comment reopen routes", () => {
     const agentA = "44444444-4444-4444-8444-444444444444";
     mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: "22222222-2222-4222-8222-222222222222" });
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: AGENT_RUN_ID,
       companyId: "company-1",
       agentId: agentA,
       responsibleUserId: null,
@@ -2068,7 +2077,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        runId: "run-1",
+        runId: AGENT_RUN_ID,
         agentId: agentA,
         targetIssueId: "11111111-1111-4111-8111-111111111111",
         kind,
@@ -3423,7 +3432,7 @@ describe.sequential("issue comment reopen routes", () => {
         type: "agent",
         agentId: "22222222-2222-4222-8222-222222222222",
         companyId: "company-1",
-        runId: "run-1",
+        runId: AGENT_RUN_ID,
       }),
     )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")

@@ -153,6 +153,12 @@ function registerModuleMocks() {
   }));
 }
 
+// `heartbeat_runs.id` is a uuid column and the run header is caller-controlled,
+// so routes resolve anything non-uuid to "no run" instead of letting Postgres
+// raise a cast error. A realistic run id keeps this fixture on the path a real
+// recovery run takes rather than the malformed-id refusal (FAI-9983).
+const runId = "55555555-5555-4555-8555-555555555555";
+
 function createRunContextDb(contextSnapshot: Record<string, unknown>) {
   return {
     select: vi.fn(() => ({
@@ -160,7 +166,7 @@ function createRunContextDb(contextSnapshot: Record<string, unknown>) {
         where: vi.fn(() => ({
           then: async (resolve: (rows: unknown[]) => unknown) =>
             resolve([{
-              id: "run-1",
+              id: runId,
               companyId,
               agentId: "agent-1",
               contextSnapshot,
@@ -364,7 +370,7 @@ describe("issue document revision routes", () => {
         type: "agent",
         agentId: "agent-1",
         companyId,
-        runId: "run-1",
+        runId,
         source: "agent_jwt",
       },
       createRunContextDb({
@@ -380,6 +386,49 @@ describe("issue document revision routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
+    expect(mockDocumentsService.restoreIssueDocumentRevision).not.toHaveBeenCalled();
+  });
+
+  // The run-context restriction above is a deny rule read out of the run row, so
+  // a run id that does not resolve must not read as "no restrictions apply" —
+  // otherwise a caller sheds the cheap status-only limits by claiming a run that
+  // is malformed, unknown, or owned by someone else (FAI-9983).
+  it.each([
+    ["malformed", "not-a-uuid"],
+    ["unknown", "66666666-6666-4666-8666-666666666666"],
+  ])("fails closed when the acting agent claims a %s run id", async (_label, claimedRunId) => {
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: issueId,
+      companyId,
+      identifier: "PAP-881",
+      title: "Document revisions",
+      status: "todo",
+      assigneeAgentId: "agent-1",
+    });
+
+    const res = await request(await createApp(
+      {
+        type: "agent",
+        agentId: "agent-1",
+        companyId,
+        runId: claimedRunId,
+        source: "agent_jwt",
+      },
+      // No run row comes back for the claimed id, exactly as an unknown or
+      // malformed id resolves in production.
+      {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({ then: async (resolve: (rows: unknown[]) => unknown) => resolve([]) })),
+          })),
+        })),
+      },
+    ))
+      .post(`/api/issues/${issueId}/documents/plan/revisions/revision-1/restore`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("agent_run_context_invalid");
     expect(mockDocumentsService.restoreIssueDocumentRevision).not.toHaveBeenCalled();
   });
 
