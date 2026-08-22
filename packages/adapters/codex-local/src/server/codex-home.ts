@@ -294,6 +294,8 @@ function buildManagedMcpBlock(input: {
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
       `headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      // Codex exec uses approval=never; unnamed MCP tools are otherwise auto-cancelled.
+      `default_tools_approval_mode = ${tomlString("approve")}`,
     );
   });
   lines.push(MANAGED_MCP_BLOCK_END);
