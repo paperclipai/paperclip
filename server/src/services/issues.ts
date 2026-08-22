@@ -65,7 +65,13 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import {
+  AGENT_WRITE_HEARTBEAT_RUN_STATUSES,
+  agentRunLookupId,
+  hasAgentWriteRunAuthority,
+  lockLiveAgentRun,
+} from "./agent-run-authority.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -777,6 +783,72 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+
+/**
+ * Passed by routes that authenticated the caller as an agent: the durable write
+ * has to prove the run is *still* live, in this company and owned by this
+ * agent, at the moment it lands (FAI-9983). Internal callers pass nothing and
+ * keep the previous behaviour — the threat here is a caller-supplied header,
+ * not the scheduler calling its own service.
+ */
+export type LiveRunAuthority = { companyId: string; agentId: string; runId: string | null };
+
+/**
+ * Restricts a durable checkout write to a run that is still live when the write
+ * lands.
+ *
+ * Folded into the mutating statement's own WHERE clause rather than checked
+ * beforehand: the route gate decided on a run row read in an earlier statement,
+ * and a run terminalized in that gap would otherwise still take the issue lock.
+ * Returns `undefined` (no extra predicate) for internal callers, and a
+ * never-true predicate when authority is required but the run id is unusable —
+ * an unusable id must fail closed, never fall through unconstrained.
+ */
+function liveRunAuthorityCondition(authority: LiveRunAuthority | null | undefined): SQL | undefined {
+  if (!authority) return undefined;
+  const lookupId = agentRunLookupId(authority.runId);
+  if (!lookupId) return sql`false`;
+  return sql`exists (select 1 from ${heartbeatRuns} where ${and(
+    eq(heartbeatRuns.id, lookupId),
+    eq(heartbeatRuns.companyId, authority.companyId),
+    eq(heartbeatRuns.agentId, authority.agentId),
+    inArray(heartbeatRuns.status, [...AGENT_WRITE_HEARTBEAT_RUN_STATUSES]),
+  )})`;
+}
+
+/** Whether the authority's run still carries write authority right now. */
+async function liveRunAuthorityHolds(dbOrTx: Db, authority: LiveRunAuthority) {
+  const lookupId = agentRunLookupId(authority.runId);
+  if (!lookupId) return false;
+  return await dbOrTx
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, lookupId),
+      eq(heartbeatRuns.companyId, authority.companyId),
+      eq(heartbeatRuns.agentId, authority.agentId),
+    ))
+    .then((rows) => hasAgentWriteRunAuthority(rows[0]?.status));
+}
+
+/**
+ * The write-time refusal, shaped like the route gate's 403 so a caller reads
+ * one run-context contract wherever the denial came from.
+ */
+function agentRunContextInvalidError(issueId: string, runId: string | null) {
+  return forbidden("Agent writes require a live heartbeat run whose context targets this issue", {
+    code: "agent_run_context_invalid",
+    // Distinguishes "the gate refused" from "the run lost authority before the
+    // write landed" — the same code, two different moments.
+    stage: "durable_write",
+    issueId,
+    runId,
+    securityPrinciples: ["Complete Mediation", "Secure Defaults", "Fail Securely"],
+    remediation:
+      "Retry from the Paperclip-created heartbeat run for this issue instead of supplying a run id by hand.",
+  });
+}
+
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -5249,8 +5321,11 @@ export function issueService(db: Db) {
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
+      // Asymmetric on purpose. The incumbent only loses its lock once its run
+      // is truly finished, while the run taking the lock must hold positive
+      // write authority — `scheduled_retry` is parked, not executing (FAI-9983).
       const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      const actorLive = hasAgentWriteRunAuthority(actorRun?.status);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
@@ -5313,7 +5388,9 @@ export function issueService(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.actorRunId))
         .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
+      // Taking an unowned checkout lock needs positive write authority, not
+      // merely a run that has not finished yet (FAI-9983).
+      if (!hasAgentWriteRunAuthority(actorRun?.status)) return null;
 
       const now = new Date();
       const adopted = await tx
@@ -5548,7 +5625,7 @@ export function issueService(db: Db) {
     return row;
   }
 
-  return {
+  const api = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
@@ -7638,6 +7715,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        liveRunAuthority?: LiveRunAuthority | null;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7656,8 +7734,10 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        liveRunAuthority,
         ...issueData
       } = data;
+      const liveRunCondition = liveRunAuthorityCondition(liveRunAuthority);
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7841,10 +7921,18 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(and(eq(issues.id, id), liveRunCondition))
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
-        if (!updated) return null;
+        if (!updated) {
+          // Distinguish "the run stopped being live between the route gate and
+          // this statement" from an issue that was concurrently deleted; only
+          // the former is a run-context denial (FAI-9983).
+          if (liveRunAuthority && !(await liveRunAuthorityHolds(tx as unknown as Db, liveRunAuthority))) {
+            throw agentRunContextInvalidError(id, liveRunAuthority.runId);
+          }
+          return null;
+        }
         if (existing.status !== updated.status) {
           if (
             (existing.status === "done" || existing.status === "cancelled")
@@ -8134,7 +8222,14 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      liveRunAuthority?: LiveRunAuthority | null,
+    ) => {
+      const liveRunCondition = liveRunAuthorityCondition(liveRunAuthority);
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -8203,6 +8298,7 @@ export function issueService(db: Db) {
             inArray(issues.status, expectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
+            liveRunCondition,
           ),
         )
         .returning()
@@ -8211,6 +8307,13 @@ export function issueService(db: Db) {
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
+      }
+
+      // Past this point every branch is a recovery path for a checkout that did
+      // not land. If the caller's run lost authority in the meantime, say so
+      // with the run-context contract instead of reporting a lock conflict.
+      if (liveRunAuthority && !(await liveRunAuthorityHolds(db, liveRunAuthority))) {
+        throw agentRunContextInvalidError(id, checkoutRunId);
       }
 
       const current = await db
@@ -8248,6 +8351,7 @@ export function issueService(db: Db) {
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
               or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              liveRunCondition,
             ),
           )
           .returning()
@@ -8309,6 +8413,7 @@ export function issueService(db: Db) {
                 inArray(issues.status, expectedStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
+                liveRunCondition,
               ),
             )
             .returning()
@@ -8485,11 +8590,21 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
+    release: async (
+      id: string,
+      actorAgentId?: string,
+      actorRunId?: string | null,
+      liveRunAuthority?: LiveRunAuthority | null,
+    ) =>
       db.transaction(async (tx) => {
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );
+        // Issue row first, then the run row: the same order the checkout
+        // adoption paths take, so the two cannot deadlock against each other.
+        if (liveRunAuthority && !(await lockLiveAgentRun(tx as unknown as Db, liveRunAuthority))) {
+          throw agentRunContextInvalidError(id, actorRunId ?? null);
+        }
         const existing = await tx
           .select()
           .from(issues)
@@ -8804,6 +8919,7 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
+        liveRunAuthority?: LiveRunAuthority | null;
       },
       dbOrTx: any = db,
     ) => {
@@ -9245,6 +9361,33 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+  };
+
+  return {
+    ...api,
+    /**
+     * A comment insert has no WHERE clause to carry the run proof, so an agent
+     * comment takes the run row lock and inserts inside one transaction: a run
+     * terminalized since the route gate either commits first (and this refuses)
+     * or waits behind the insert (FAI-9983). Callers that already own a
+     * transaction get the proof inside theirs.
+     */
+    addComment: async (
+      ...args: Parameters<typeof api.addComment>
+    ): ReturnType<typeof api.addComment> => {
+      const [issueId, body, actor, options, dbOrTx = db] = args;
+      const authority = options?.liveRunAuthority ?? null;
+      if (!authority) return await api.addComment(issueId, body, actor, options, dbOrTx);
+      const insertWithRunProof = async (runner: Db) => {
+        if (!(await lockLiveAgentRun(runner, authority))) {
+          throw agentRunContextInvalidError(issueId, authority.runId);
+        }
+        return await api.addComment(issueId, body, actor, options, runner);
+      };
+      return dbOrTx === db
+        ? await db.transaction((tx) => insertWithRunProof(tx as unknown as Db))
+        : await insertWithRunProof(dbOrTx);
     },
   };
 }

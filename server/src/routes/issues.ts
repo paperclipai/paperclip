@@ -252,6 +252,7 @@ import {
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
+import { hasAgentWriteRunAuthority, loadAgentRunRow } from "../services/agent-run-authority.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -2953,18 +2954,8 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
   ): Promise<string | null> {
     if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return null;
-    const run = await db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.id, actor.runId),
-        eq(heartbeatRuns.companyId, companyId),
-      ))
-      .then((rows) => rows[0] ?? null);
-    if (!run || run.agentId !== actor.agentId) return null;
+    const run = await loadAgentRunRow(db, actor.runId);
+    if (!run || run.companyId !== companyId || run.agentId !== actor.agentId) return null;
     const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
       : null;
@@ -2984,20 +2975,14 @@ export function issueRoutes(
     issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
   ): Promise<TrustPresetResolution | null> {
     if (!input.agentId) return null;
-    const [agent, run] = await Promise.all([
+    // The run id can come straight from a caller-controlled header, so it goes
+    // through the shared lookup: a malformed id is "no run" here, not a uuid
+    // cast error that 500s past the audited denial contract (FAI-9983).
+    const [agent, runRow] = await Promise.all([
       agentsSvc.getById(input.agentId),
-      input.runId
-        ? db
-            .select({
-              companyId: heartbeatRuns.companyId,
-              agentId: heartbeatRuns.agentId,
-              contextSnapshot: heartbeatRuns.contextSnapshot,
-            })
-            .from(heartbeatRuns)
-            .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, companyId)))
-            .then((rows) => rows[0] ?? null)
-        : Promise.resolve(null),
+      loadAgentRunRow(db, input.runId),
     ]);
+    const run = runRow?.companyId === companyId ? runRow : null;
     if (!agent || agent.companyId !== companyId) return null;
     const runContext = run?.agentId === agent.id && run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
@@ -4006,6 +3991,108 @@ export function issueRoutes(
     return null;
   }
 
+  /**
+   * Fail-closed run-context authorization for checkout and release (FAI-9983).
+   *
+   * `X-Paperclip-Run-Id` is a claim, never an authority. Comment, PATCH and
+   * interaction-resolution writes already prove the run through
+   * `observeCrossIssueInfluence`, which locks the persisted run row before it
+   * derives the source issue. Checkout and release had no equivalent gate: an
+   * unknown, terminal, forged, mismatched-agent, mismatched-company or
+   * context-less run id reached durable state, and checkout could bootstrap its
+   * own authority by writing the target issue into the run it was authenticating
+   * with. Both routes act on one canonical target, so this guard requires the
+   * run to exist, be non-terminal, match the actor agent, match the issue's
+   * company, and already name *this* issue in the context Paperclip wrote when
+   * it started the run. Nothing here ever *writes* run context: authority is
+   * only read, never minted by the request that wants to use it.
+   *
+   * This gate reads the run; it does not hold it. A run terminalized between
+   * here and the durable write would still be authorized by this check alone,
+   * so checkout and release re-prove the run inside the statement/transaction
+   * that mutates (the `liveRunAuthority` argument they pass to the service).
+   * This gate is the cheap early refusal that produces the audited 403; that
+   * write-time check is what makes the decision true when the write lands.
+   */
+  async function assertCanonicalAgentRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+
+    // A forged header can be any string; `loadAgentRunRow` resolves anything
+    // that is not uuid-shaped to "no run" rather than letting Postgres turn an
+    // untrusted value into a cast error, so the denial stays a clean audited
+    // 403 instead of a 500.
+    const run = await loadAgentRunRow(db, runId);
+    const context = run?.contextSnapshot && typeof run.contextSnapshot === "object"
+      && !Array.isArray(run.contextSnapshot)
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    const contextIssueId = readNonEmptyString(context?.issueId) ?? readNonEmptyString(context?.taskId);
+
+    if (
+      !run
+      || run.companyId !== issue.companyId
+      || run.agentId !== req.actor.agentId
+      // Write authority is an allowlist, never the complement of "terminal":
+      // `scheduled_retry` is a run parked with no process behind it, and it
+      // must not be able to take this issue's lock (FAI-9983).
+      || !hasAgentWriteRunAuthority(run.status)
+      || contextIssueId !== issue.id
+    ) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        // A run id that is not persisted cannot be referenced by the audit row;
+        // the claimed value is preserved in `details.runId` either way.
+        runId: run ? actor.runId : null,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.agent_run_context_denied",
+        entityType: "issue",
+        entityId: issue.id,
+        issueId: issue.id,
+        details: {
+          runId,
+          runExists: Boolean(run),
+          runStatus: run?.status ?? null,
+          runAgentMatch: run ? run.agentId === req.actor.agentId : false,
+          runCompanyMatch: run ? run.companyId === issue.companyId : false,
+          contextIssueId,
+        },
+      });
+      res.status(403).json({
+        error: "Agent writes require a live heartbeat run whose context targets this issue",
+        code: "agent_run_context_invalid",
+        details: {
+          issueId: issue.id,
+          runId,
+          securityPrinciples: ["Complete Mediation", "Secure Defaults", "Fail Securely"],
+          remediation:
+            "Retry from the Paperclip-created heartbeat run for this issue instead of supplying a run id by hand.",
+        },
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * The run-authority argument agent-authenticated routes hand to the service
+   * layer, so the durable write itself proves the run is still live (FAI-9983).
+   * Non-agent actors carry no run authority and pass `null`.
+   */
+  function liveRunAuthorityFor(req: Request, companyId: string) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+    return { companyId, agentId: req.actor.agentId, runId: req.actor.runId ?? null };
+  }
+
   async function hasActiveCheckoutManagementOverride(
     actorAgentId: string,
     companyId: string,
@@ -4222,7 +4309,7 @@ export function issueRoutes(
   ) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (!req.actor.agentId || !runId) {
+    if (!req.actor.agentId || !runId || !isUuidLike(runId)) {
       return denyIssueThreadInteractionResolution(res, {
         status: 422,
         code: "interaction_run_attribution_required",
@@ -4230,19 +4317,7 @@ export function issueRoutes(
       });
     }
 
-    const run = await db
-      .select({
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        responsibleUserId: heartbeatRuns.responsibleUserId,
-      })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.id, runId),
-        eq(heartbeatRuns.companyId, issue.companyId),
-        eq(heartbeatRuns.agentId, req.actor.agentId),
-      ))
-      .then((rows) => rows[0] ?? null);
+    const run = await loadAgentRunRow(db, runId);
     const actorResponsibleUserId = req.actor.onBehalfOfUserId?.trim() || null;
     if (
       !run
@@ -4842,18 +4917,7 @@ export function issueRoutes(
 
   async function loadActorRunContext(req: Request, companyId: string) {
     if (req.actor.type !== "agent") return null;
-    const runId = req.actor.runId?.trim();
-    if (!runId) return null;
-    const run = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    const run = await loadAgentRunRow(db, req.actor.runId);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
   }
@@ -4973,6 +5037,9 @@ export function issueRoutes(
   }
 
   async function loadWorkProductRunAttribution(runId: string) {
+    // Both callers treat a missing row as a denial, so a malformed run id has to
+    // resolve to null instead of raising a uuid cast error (FAI-9983).
+    if (!isUuidLike(runId)) return null;
     return await db
       .select({
         id: heartbeatRuns.id,
@@ -9838,6 +9905,9 @@ export function issueRoutes(
       ...updateFields,
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      // The statement that writes the issue re-proves the run, so a run
+      // terminalized since the cap gate cannot land this PATCH (FAI-9983).
+      liveRunAuthority: liveRunAuthorityFor(req, existing.companyId),
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
@@ -10985,6 +11055,9 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent can only checkout as itself" });
       return;
     }
+    // Checkout must not bootstrap its own authority: the run has to already be
+    // bound to this issue before it can take the execution lock.
+    if (!(await assertCanonicalAgentRunContext(req, res, issue))) return;
 
     if (issue.assigneeAgentId !== req.body.agentId) {
       await assertCanAssignTasks(req, issue.companyId, {
@@ -11037,7 +11110,15 @@ export function issueRoutes(
       finalIssueStatus: () => updated?.status,
     });
     try {
-      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+      updated = await svc.checkout(
+        id,
+        req.body.agentId,
+        req.body.expectedStatuses,
+        checkoutRunId,
+        // Agent callers re-prove the run inside the statement that takes the
+        // lock; the gate above ran an earlier statement ago (FAI-9983).
+        liveRunAuthorityFor(req, issue.companyId),
+      );
     } catch (error) {
       if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
         res.status(409).json({
@@ -11094,6 +11175,7 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertCanonicalAgentRunContext(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
@@ -11101,6 +11183,9 @@ export function issueRoutes(
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
       actorRunId,
+      // Agent callers re-prove the run inside the release transaction; the gate
+      // above ran against a row read in an earlier statement (FAI-9983).
+      liveRunAuthorityFor(req, existing.companyId),
     );
     if (!released) {
       res.status(404).json({ error: "Issue not found" });
@@ -12425,7 +12510,11 @@ export function issueRoutes(
               runId: actor.runId,
               onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
             },
-            { ...commentOptions, authorizationReason: commentAuthorizationReason },
+            {
+              ...commentOptions,
+              authorizationReason: commentAuthorizationReason,
+              liveRunAuthority: liveRunAuthorityFor(req, currentIssue.companyId),
+            },
             tx,
           );
           const updated = actor.actorType === "user" && currentIssue.status !== "done"
@@ -12503,6 +12592,7 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+        liveRunAuthority: liveRunAuthorityFor(req, currentIssue.companyId),
       });
     }
 
