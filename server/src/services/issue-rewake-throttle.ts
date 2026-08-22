@@ -29,14 +29,19 @@
  * allowing one extra attempt before cooldowns engage. */
 export const ISSUE_REWAKE_NO_PROGRESS_THRESHOLD = 3;
 
-/** Cooldown after the threshold streak; doubles per additional no-progress run. */
-export const ISSUE_REWAKE_BASE_COOLDOWN_MS = 120_000;
+/** Cooldown after the threshold streak; doubles per additional no-progress run.
+ * 2026-08-22 recalibration (operator bulk-drain test): a 25-card bulk kick
+ * against a healthy fleet had 15 offers eaten by throttle cooldowns carried
+ * over from the narration-run era (that no-progress class is now fixed at
+ * source — dispositions honored, 470 corrective runs/day gone). 90s base /
+ * 6min cap keeps loop damping while halving how long real work parks. */
+export const ISSUE_REWAKE_BASE_COOLDOWN_MS = 90_000;
 
 /** Upper bound for the escalating cooldown.
  * 2026-08-21: 30min parked deadline work for half-hour stretches on a machine
  * whose runs finish in 1-3 minutes; 10min still damps loops (2→4→8→10) without
  * writing off a lane's whole window. */
-export const ISSUE_REWAKE_MAX_COOLDOWN_MS = 10 * 60_000;
+export const ISSUE_REWAKE_MAX_COOLDOWN_MS = 6 * 60_000;
 
 /** Only runs newer than this feed the streak; older history is ignored.
  * 2026-08-20: shrunk from 6h to 90min — the churn-era no-progress runs
