@@ -23,10 +23,12 @@ import {
   issueAttachments,
   issueComments,
   issueApprovals,
+  issueLabels,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -4709,6 +4711,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             sql`${issues.assigneeAgentId} is not null`,
             eq(issues.status, "in_review"),
           ),
+          // A perpetual-tracker issue is a long-lived tracking EPIC. It stays
+          // assigned on purpose and spends most of its life with no live
+          // execution path, because it only advances when something it tracks
+          // changes. The stranded sweep reads that idle state as an abandoned
+          // assignment, so on every cycle it flips the issue to `blocked` and
+          // reassigns it. Exempt the label from the candidate set so a tracker
+          // is never a stranding candidate in the first place.
+          sql`not exists (
+            select 1
+            from ${issueLabels} il
+            inner join ${labels} l on l.id = il.label_id and l.company_id = il.company_id
+            where il.issue_id = ${issues.id}
+              and il.company_id = ${issues.companyId}
+              and l.name = 'perpetual-tracker'
+          )`,
           opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
         ),
       );
