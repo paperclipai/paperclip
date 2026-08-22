@@ -851,7 +851,10 @@ type RuntimeConfigSecretResolver = Pick<
   | "resolveEnvBindings"
   | "collectMissingRuntimeBindings"
   | "collectMissingAdapterConfigRuntimeBindings"
->;
+>
+  // Optional so existing partial test doubles keep type-checking; the delivery
+  // gate is skipped (not silently passed) when a double omits it.
+  & Partial<Pick<ReturnType<typeof secretService>, "collectUndeliveredEnvBindings">>;
 
 function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
   if (missing.bindingType === "user_secret_ref") {
@@ -868,6 +871,18 @@ function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string
     ? `"${missing.secretName}"`
     : missing.secretId ?? "unknown";
   return `secret ${secretLabel} not bound at ${missing.consumerType} ${missing.configPath}`;
+}
+
+function formatUndeliveredBindingForOperator(missing: MissingRuntimeBinding): string {
+  const secretLabel = missing.secretName
+    ? `"${missing.secretName}"`
+    : missing.secretId ?? "unknown";
+  return (
+    `secret ${secretLabel} is granted to ${missing.consumerType} ${missing.consumerId} at ` +
+    `${missing.configPath} but ${missing.envKey} did not reach the run environment. ` +
+    `Re-save the ${missing.consumerType}'s configuration so ${missing.configPath} is declared there, ` +
+    `then run again`
+  );
 }
 
 function isConfiguredEnvBindingValue(binding: unknown) {
@@ -1218,6 +1233,54 @@ export async function resolveExecutionRunAdapterConfig(input: {
     };
     for (const key of routineEnvResolution.secretKeys) {
       secretKeys.add(key);
+    }
+  }
+  // Delivery gate: every declared env binding must be present in the run env.
+  //
+  // The checks above walk the *config* and fail when a ref has no binding. They
+  // cannot see the opposite drift — a binding row that exists while its
+  // `env.<KEY>` config entry is gone. That run dispatches with the credential
+  // silently absent and dies inside the agent with an opaque provider error
+  // ("OpenAI API key is missing"), so a configuration fault is recorded as
+  // `adapter_failed`. A grant is not proof of delivery; this is the check that
+  // makes the run prove it, before dispatch, naming keys and never values.
+  //
+  // The low-trust boundary is carried through: a run can only be required to
+  // hold a credential it is allowed to hold. Demanding delivery of a binding
+  // outside `allowedSecretBindingIds` would abort a run that is correctly
+  // withholding it.
+  if (input.secretsSvc.collectUndeliveredEnvBindings) {
+    const deliveredEnvKeys = Object.keys(parseObject(resolvedConfig.env));
+    const undelivered: MissingRuntimeBinding[] = [];
+    for (const consumer of [
+      input.agentId ? { consumerType: "agent" as const, consumerId: input.agentId } : null,
+      input.projectId ? { consumerType: "project" as const, consumerId: input.projectId } : null,
+      input.environmentId ? { consumerType: "environment" as const, consumerId: input.environmentId } : null,
+      input.routineId ? { consumerType: "routine" as const, consumerId: input.routineId } : null,
+    ]) {
+      if (!consumer) continue;
+      undelivered.push(
+        ...(await input.secretsSvc.collectUndeliveredEnvBindings(
+          input.companyId,
+          consumer,
+          deliveredEnvKeys,
+          { allowedBindingIds: lowTrustAllowedBindingIds ?? null },
+        )),
+      );
+    }
+    if (undelivered.length > 0) {
+      const detail = undelivered.map(formatUndeliveredBindingForOperator).join("; ");
+      throw new ConfigurationIncompleteFailure(`configuration incomplete: ${detail}`, {
+        configurationIncomplete: {
+          reason: "secret_binding_not_delivered",
+          companyId: input.companyId,
+          agentId: input.agentId ?? null,
+          issueId: input.issueId ?? null,
+          projectId: input.projectId ?? null,
+          routineId: input.routineId ?? null,
+          missingBindings: undelivered,
+        },
+      });
     }
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no

@@ -689,6 +689,7 @@ type RuntimeSecretResolution = {
 
 type SecretResolutionErrorCode =
   | "binding_missing"
+  | "binding_not_delivered"
   | "secret_deleted"
   | "secret_inactive"
   | "secret_scope_invalid"
@@ -5114,6 +5115,78 @@ export function secretService(db: Db) {
       }
 
       return [...missingSecretBindings, ...missingUserSecretBindings];
+    },
+
+    /**
+     * The inverse of {@link collectMissingRuntimeBindings}. That one walks the
+     * config and asks "is this ref bound?"; this one walks the *bindings* and
+     * asks "did this grant actually reach the run?".
+     *
+     * A grant is not proof of delivery. A binding row can exist while the
+     * matching `env.<KEY>` entry has been dropped from the adapter config, and
+     * nothing on the config-walking side can see that — the run dispatches with
+     * the credential silently absent and dies later inside the agent with an
+     * opaque provider error ("API key is missing"), which reads as a runtime
+     * fault rather than the configuration fault it is.
+     *
+     * `deliveredEnvKeys` is the key set of the fully resolved run env, so a
+     * plain (non-secret) value at the same key still counts as delivered.
+     *
+     * `allowedBindingIds` carries the low-trust boundary. Delivery can only be
+     * required of a credential the run is permitted to receive, so a binding
+     * outside the boundary is not a finding — that run is *forbidden* to hold
+     * it, and resolution would reject it as `binding_not_allowed` if the config
+     * still declared it. Omit it (or pass null) outside low trust, where every
+     * required binding is in scope.
+     */
+    collectUndeliveredEnvBindings: async (
+      companyId: string,
+      context: Pick<SecretBindingContext, "consumerType" | "consumerId">,
+      deliveredEnvKeys: Iterable<string>,
+      options?: { allowedBindingIds?: string[] | null },
+    ): Promise<MissingRuntimeBinding[]> => {
+      const consumerType = missingRuntimeConsumerType(context.consumerType);
+      const rows = await db
+        .select()
+        .from(companySecretBindings)
+        .where(and(
+          eq(companySecretBindings.companyId, companyId),
+          eq(companySecretBindings.targetType, consumerType),
+          eq(companySecretBindings.targetId, context.consumerId),
+          eq(companySecretBindings.required, true),
+          like(companySecretBindings.configPath, "env.%"),
+        ));
+      if (rows.length === 0) return [];
+
+      const allowedBindingIds = Array.isArray(options?.allowedBindingIds)
+        ? new Set(options.allowedBindingIds)
+        : null;
+      const delivered = new Set(deliveredEnvKeys);
+      const undelivered = rows.filter((row) => {
+        if (allowedBindingIds && !allowedBindingIds.has(row.id)) return false;
+        const envKey = row.configPath.slice("env.".length);
+        return ENV_KEY_RE.test(envKey) && !delivered.has(envKey);
+      });
+      if (undelivered.length === 0) return [];
+
+      const secretRows = await Promise.all(
+        [...new Set(undelivered.map((row) => row.secretId))].map(async (secretId) => [
+          secretId,
+          await getById(secretId).catch(() => null),
+        ] as const),
+      );
+      const secretsById = new Map(secretRows);
+
+      return undelivered.map((row) => ({
+        consumerType,
+        consumerId: context.consumerId,
+        configPath: row.configPath,
+        envKey: row.configPath.slice("env.".length),
+        bindingType: "secret_ref" as const,
+        secretId: row.secretId,
+        secretName: secretsById.get(row.secretId)?.name ?? null,
+        errorCode: "binding_not_delivered" as const,
+      }));
     },
 
     collectMissingAdapterConfigRuntimeBindings: async (
