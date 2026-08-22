@@ -592,6 +592,107 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   });
 
+  async function seedStoppedSubtreeWithTwoLeaves() {
+    // root (non-leaf) with two stopped child leaves.
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const rootId = await seedIssue(companyId, { identifier: "WDOG-ROOT", status: "blocked" });
+    const leafAId = await seedIssue(companyId, { identifier: "WDOG-LEAF-A", status: "blocked", parentId: rootId });
+    const leafBId = await seedIssue(companyId, { identifier: "WDOG-LEAF-B", status: "blocked", parentId: rootId });
+    await seedWatchdog(companyId, rootId, agentId);
+    const { service } = createService();
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, rootId));
+    const wakeFingerprint = watchdog!.lastObservedFingerprint!;
+    expect(wakeFingerprint).toMatch(/^task_watchdog_stop:/);
+    return { companyId, service, watchdog: watchdog!, wakeFingerprint, leafAId, leafBId };
+  }
+
+  it("allows a sanctioned mutation to a different stopped leaf after an earlier self-write moved the subtree fingerprint", async () => {
+    // Regression: a watchdog run makes several sanctioned mutations to distinct
+    // stopped leaves. The first write moves the whole-subtree stop fingerprint,
+    // which used to permanently 409 every later gated mutation for the rest of
+    // the run. Revalidation must still allow a mutation to a *different* leaf
+    // that is itself unchanged since the watchdog reviewed it.
+    const { companyId, service, watchdog, wakeFingerprint, leafAId, leafBId } = await seedStoppedSubtreeWithTwoLeaves();
+
+    // Sanctioned self-write to leaf A (blocked -> todo, both non-terminal so the
+    // subtree stays stopped). This moves the whole-subtree stop fingerprint.
+    await db
+      .update(issues)
+      .set({ status: "todo", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, leafAId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog.id,
+      companyId,
+      watchedIssueId: watchdog.issueId,
+      stopFingerprint: wakeFingerprint,
+    }, leafBId);
+
+    expect(revalidated.allowed).toBe(true);
+    if (revalidated.classification?.state !== "stopped") {
+      throw new Error(`Expected stopped classification, got ${revalidated.classification?.state}`);
+    }
+    // The whole-subtree fingerprint genuinely moved (leaf A changed), yet the
+    // gated mutation to the untouched leaf B is still allowed.
+    expect(revalidated.classification.stopFingerprint).not.toBe(wakeFingerprint);
+  });
+
+  it("blocks mutating a stopped leaf that was materially edited since the watchdog reviewed it", async () => {
+    // A concurrent user/agent edit to a stopped leaf must still invalidate the
+    // watchdog's scope for that leaf, so the watchdog does not overwrite the
+    // newer status/assignee/blocker/approval state it never reviewed.
+    const { companyId, service, watchdog, wakeFingerprint, leafAId } = await seedStoppedSubtreeWithTwoLeaves();
+
+    // Third-party material edit to leaf A after the watchdog woke.
+    await db
+      .update(issues)
+      .set({ status: "todo", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, leafAId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog.id,
+      companyId,
+      watchedIssueId: watchdog.issueId,
+      stopFingerprint: wakeFingerprint,
+    }, leafAId);
+
+    expect(revalidated.allowed).toBe(false);
+    expect(revalidated.reason).toContain("materially changed since it was reviewed");
+    expect(revalidated.classification?.state).toBe("stopped");
+  });
+
+  it("falls back to strict subtree equality for a non-leaf target so non-leaf freshness is not bypassed", async () => {
+    // A non-leaf issue's material state is not captured by the stop snapshot
+    // (only leaves are hashed), so the per-leaf freshness check cannot judge it.
+    // The watched root here is a non-leaf; once any leaf write has moved the
+    // subtree fingerprint, a mutation targeting the non-leaf root must fall back
+    // to strict whole-subtree equality and be rejected — not silently treated as
+    // unchanged.
+    const { companyId, service, watchdog, wakeFingerprint, leafAId } = await seedStoppedSubtreeWithTwoLeaves();
+
+    // Any leaf write moves the whole-subtree fingerprint.
+    await db
+      .update(issues)
+      .set({ status: "todo", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, leafAId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog.id,
+      companyId,
+      watchedIssueId: watchdog.issueId,
+      stopFingerprint: wakeFingerprint,
+    }, watchdog.issueId); // target the non-leaf watched root
+
+    expect(revalidated.allowed).toBe(false);
+    expect(revalidated.reason).toContain("stop fingerprint changed");
+    expect(revalidated.classification?.state).toBe("stopped");
+  });
+
   it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });
