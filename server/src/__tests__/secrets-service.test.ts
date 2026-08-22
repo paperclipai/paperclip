@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -146,6 +146,185 @@ describeEmbeddedPostgres("secretService", () => {
         API_KEY: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
       }),
     ).rejects.toThrow(/same company/i);
+  });
+
+  it("replaceSecretRefsForInstanceTarget moves the binding to the referenced secret's company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `provider-key-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `provider-key-b-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const envSecretA = await svc.create(companyA, {
+      name: `env-var-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "env",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId: companyA,
+      secretId: secretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+    // A company-scoped env-var binding on the same environment target must
+    // survive config-ref replacement untouched.
+    await db.insert(companySecretBindings).values({
+      companyId: companyA,
+      secretId: envSecretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "env.EXTRA",
+      versionSelector: "latest",
+      required: true,
+      projectionClass: "unclassified",
+    });
+
+    await svc.replaceSecretRefsForInstanceTarget(
+      { targetType: "environment", targetId: environmentId },
+      [{ secretId: secretB.id, configPath: "apiKey" }],
+    );
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    const configRows = rows.filter((row) => row.configPath === "apiKey");
+    expect(configRows).toHaveLength(1);
+    expect(configRows[0]?.companyId).toBe(companyB);
+    expect(configRows[0]?.secretId).toBe(secretB.id);
+    expect(rows.filter((row) => row.configPath === "env.EXTRA")).toHaveLength(1);
+  });
+
+  it("replaceSecretRefsForInstanceTarget writes each binding under its own secret's company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `ssh-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const environmentId = randomUUID();
+
+    const refs = await svc.replaceSecretRefsForInstanceTarget(
+      { targetType: "environment", targetId: environmentId },
+      [
+        { secretId: secretA.id, configPath: "apiKey" },
+        { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      ],
+    );
+
+    expect(refs.map((ref) => ref.companyId).sort()).toEqual([companyA, companyB].sort());
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.configPath === "apiKey")?.companyId).toBe(companyA);
+    expect(rows.find((row) => row.configPath === "privateKeySecretRef")?.companyId).toBe(companyB);
+  });
+
+  it("replaceSecretRefsForInstanceTarget rejects unknown secrets without touching existing bindings", async () => {
+    const companyA = await seedCompany("A");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `provider-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId: companyA,
+      secretId: secretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+
+    await expect(
+      svc.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: environmentId },
+        [{ secretId: randomUUID(), configPath: "apiKey" }],
+      ),
+    ).rejects.toThrow(/was not found/i);
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.secretId).toBe(secretA.id);
+    expect(rows[0]?.companyId).toBe(companyA);
+  });
+
+  it("describeSecretRefs names secrets across companies and omits unknown ids", async () => {
+    const companyA = await seedCompany("Alpha");
+    const companyB = await seedCompany("Beta");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: "PROVIDER_KEY_A",
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: "PROVIDER_KEY_B",
+      provider: "local_encrypted",
+      value: "b",
+    });
+
+    const described = await svc.describeSecretRefs([
+      { secretId: secretA.id, configPath: "apiKey" },
+      { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      { secretId: randomUUID(), configPath: "token" },
+    ]);
+
+    expect(described).toEqual([
+      {
+        configPath: "apiKey",
+        secretId: secretA.id,
+        name: "PROVIDER_KEY_A",
+        status: "active",
+        companyId: companyA,
+        companyName: "Alpha",
+      },
+      {
+        configPath: "privateKeySecretRef",
+        secretId: secretB.id,
+        name: "PROVIDER_KEY_B",
+        status: "active",
+        companyId: companyB,
+        companyName: "Beta",
+      },
+    ]);
   });
 
   it("prevents duplicate bindings for a target config path", async () => {

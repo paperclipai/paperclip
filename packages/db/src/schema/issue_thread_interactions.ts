@@ -1,5 +1,8 @@
 import type {
+  IssueThreadInteractionCanonicalResolverPolicy,
+  IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionPayload,
+  IssueThreadInteractionResolverPolicyProvenance,
   IssueThreadInteractionResult,
 } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
@@ -15,18 +18,36 @@ export const issueThreadInteractions = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    issueId: uuid("issue_id").notNull().references(() => issues.id),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
     status: text("status").notNull().default("pending"),
     continuationPolicy: text("continuation_policy").notNull().default("wake_assignee"),
+    requestedResolverPolicy: text("requested_resolver_policy")
+      .$type<IssueThreadInteractionCanonicalResolverPolicy>()
+      .notNull()
+      .default("anyone"),
+    effectiveResolverPolicy: text("effective_resolver_policy")
+      .$type<IssueThreadInteractionCanonicalResolverPolicy>()
+      .notNull()
+      .default("anyone"),
+    resolverPolicyProvenance: text("resolver_policy_provenance")
+      .$type<IssueThreadInteractionResolverPolicyProvenance>()
+      .notNull()
+      .default("inherited"),
+    effectiveResolverPolicySource: text("effective_resolver_policy_source")
+      .$type<IssueThreadInteractionEffectiveResolverPolicySource>()
+      .notNull()
+      .default("requested"),
     idempotencyKey: text("idempotency_key"),
     sourceCommentId: uuid("source_comment_id").references(() => issueComments.id, { onDelete: "set null" }),
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     title: text("title"),
     summary: text("summary"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
+    addresseeAgentId: uuid("addressee_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     resolvedByAgentId: uuid("resolved_by_agent_id").references(() => agents.id),
+    resolvedByRunId: uuid("resolved_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     resolvedByUserId: text("resolved_by_user_id"),
     payload: jsonb("payload").$type<IssueThreadInteractionPayload>().notNull(),
     result: jsonb("result").$type<IssueThreadInteractionResult>(),
@@ -50,5 +71,6 @@ export const issueThreadInteractions = pgTable(
       .on(table.companyId, table.issueId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
     sourceCommentIdx: index("issue_thread_interactions_source_comment_idx").on(table.sourceCommentId),
+    addresseeAgentIdx: index("issue_thread_interactions_addressee_agent_idx").on(table.addresseeAgentId),
   }),
 );

@@ -119,7 +119,7 @@ function PanelHarness({ access, install }: { access: AccessDraft; install: Insta
         onSaveAccess={() => {}}
         onSaveInstall={setState}
         onSetActionPermission={() => {}}
-        onTurnOnQuarantined={() => {}}
+        onReviewQuarantined={() => {}}
         onRefreshActions={() => {}}
       />
     </div>

@@ -47,16 +47,38 @@ export interface IssueLivenessAgentInput {
 }
 
 export interface IssueLivenessExecutionPathInput {
+  id?: string | null;
   companyId: string;
   issueId: string | null;
   agentId?: string | null;
   status: string;
+  createdAt?: Date | string | null;
 }
 
 export interface IssueLivenessWaitingPathInput {
+  id?: string | null;
   companyId: string;
   issueId: string;
   status: string;
+  createdAt?: Date | string | null;
+}
+
+export type IssueReviewPathFactKind =
+  | "execution_participant"
+  | "interaction"
+  | "approval"
+  | "monitor"
+  | "human_reviewer"
+  | "active_run"
+  | "queued_wake"
+  | "recovery";
+
+export interface IssueReviewPathFact {
+  kind: IssueReviewPathFactKind;
+  ref: string | null;
+  agentId: string | null;
+  userId: string | null;
+  since: Date | string | null;
 }
 
 export interface IssueLivenessDependencyPathEntry {
@@ -169,7 +191,8 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
+  const nowMs = typeof now === "number" ? now : readDateMs(now) ?? Date.now();
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
@@ -183,6 +206,95 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
   return true;
+}
+
+export function classifyIssueReviewPaths(
+  input: IssueGraphLivenessInput,
+  issue: IssueLivenessIssueInput,
+): IssueReviewPathFact[] {
+  if (issue.status !== "in_review") return [];
+  const nowMs = readDateMs(input.now ?? new Date()) ?? Date.now();
+  const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
+  const paths: IssueReviewPathFact[] = [];
+
+  if (issue.assigneeUserId) {
+    paths.push({
+      kind: "human_reviewer",
+      ref: issue.assigneeUserId,
+      agentId: null,
+      userId: issue.assigneeUserId,
+      since: null,
+    });
+  }
+
+  const participant = issue.executionState?.status === "pending"
+    ? issue.executionState.currentParticipant
+    : null;
+  const participantAgentId = readPrincipalAgentId(participant);
+  if (participantAgentId) {
+    const participantAgent = agentsById.get(participantAgentId);
+    if (participantAgent?.companyId === issue.companyId && isInvokableAgent(participantAgent, agentsById)) {
+      paths.push({
+        kind: "execution_participant",
+        ref: participantAgentId,
+        agentId: participantAgentId,
+        userId: null,
+        since: null,
+      });
+    }
+  } else if (principalIsResolvableUser(participant)) {
+    const userId = (participant as Record<string, unknown>).userId as string;
+    paths.push({
+      kind: "execution_participant",
+      ref: userId,
+      agentId: null,
+      userId,
+      since: null,
+    });
+  }
+
+  if (hasScheduledIssueMonitorPath(issue, nowMs)) {
+    paths.push({ kind: "monitor", ref: null, agentId: issue.assigneeAgentId ?? null, userId: null, since: null });
+  }
+
+  const appendExecutionPaths = (
+    entries: IssueLivenessExecutionPathInput[],
+    kind: "active_run" | "queued_wake",
+  ) => {
+    for (const entry of entries) {
+      if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
+      paths.push({
+        kind,
+        ref: entry.id ?? null,
+        agentId: entry.agentId ?? null,
+        userId: null,
+        since: entry.createdAt ?? null,
+      });
+    }
+  };
+  appendExecutionPaths(input.activeRuns ?? [], "active_run");
+  appendExecutionPaths(input.queuedWakeRequests ?? [], "queued_wake");
+
+  const appendWaitingPaths = (
+    entries: IssueLivenessWaitingPathInput[],
+    kind: "interaction" | "approval" | "recovery",
+  ) => {
+    for (const entry of entries) {
+      if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
+      paths.push({
+        kind,
+        ref: entry.id ?? null,
+        agentId: null,
+        userId: null,
+        since: entry.createdAt ?? null,
+      });
+    }
+  };
+  appendWaitingPaths(input.pendingInteractions ?? [], "interaction");
+  appendWaitingPaths(input.pendingApprovals ?? [], "approval");
+  appendWaitingPaths(input.openRecoveryIssues ?? [], "recovery");
+
+  return paths;
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -401,7 +513,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
-      hasScheduledMonitor(issue, nowMs) ||
+      hasScheduledIssueMonitorPath(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
@@ -414,13 +526,16 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     dependencyPath: IssueLivenessIssueInput[],
   ): IssueLivenessFinding | null {
     if (reviewIssue.status !== "in_review") return null;
-    if (hasExplicitWaitingPath(reviewIssue)) return null;
+    if (classifyIssueReviewPaths(input, reviewIssue).length > 0) return null;
 
     const ownerCandidates = ownerCandidatesForRecoveryIssue(reviewIssue, input.agents, agentsById, {
       includeStalledAssignee: true,
     });
 
-    const participant = reviewIssue.executionState?.currentParticipant;
+    const hasPendingExecutionState = reviewIssue.executionState?.status === "pending";
+    const participant = hasPendingExecutionState
+      ? reviewIssue.executionState?.currentParticipant
+      : null;
     const participantAgentId = readPrincipalAgentId(participant);
     if (participantAgentId) {
       const participantAgent = agentsById.get(participantAgentId);
@@ -444,7 +559,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
     if (principalIsResolvableUser(participant)) return null;
 
-    if (reviewIssue.executionState) {
+    if (hasPendingExecutionState) {
       return finding({
         issue: source,
         state: "invalid_review_participant",

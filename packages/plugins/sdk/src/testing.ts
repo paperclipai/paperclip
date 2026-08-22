@@ -45,6 +45,7 @@ import type {
   PermissionKey,
   PrincipalType,
 } from "./types.js";
+import { NOOP_PLUGIN_TRACER } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -1602,6 +1603,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           status: input.status ?? "todo",
           workMode: "standard",
           priority: input.priority ?? "medium",
+          reviewPolicy: null,
           assigneeAgentId: input.assigneeAgentId ?? null,
           assigneeUserId: input.assigneeUserId ?? null,
           checkoutRunId: null,
@@ -1726,6 +1728,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           authorType: options?.actorUserId ? "user" : options?.authorAgentId ? "agent" : "system",
           authorAgentId: options?.actorUserId ? null : options?.authorAgentId ?? null,
           authorUserId: options?.actorUserId ?? null,
+          onBehalfOfUserId: null,
           body,
           presentation: null,
           metadata: null,
@@ -2470,6 +2473,27 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       };
     })(),
+    execution: {
+      log(_stream: "stdout" | "stderr", _chunk: string) {
+        // No-op in test harness — the host runner log sink is not wired here.
+      },
+    },
+    setupTokenPty: {
+      output(_workerSessionId: string, _chunk: string) {
+        // No-op in test harness — the host login route is not wired here.
+      },
+      exit(_workerSessionId: string, _exitCode: number | null) {
+        // No-op in test harness — the host login route is not wired here.
+      },
+    },
+    duplexChannel: {
+      data(_workerSessionId: string, _chunk: string) {
+        // No-op in test harness — the host duplex route is not wired here.
+      },
+      exit(_workerSessionId: string, _exitCode: number | null) {
+        // No-op in test harness — the host duplex route is not wired here.
+      },
+    },
     tools: {
       register(name, _decl, fn) {
         requireCapability(manifest, capabilitySet, "agent.tools.register");
@@ -2502,6 +2526,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         logs.push({ level: "debug", message, meta });
       },
     },
+    tracer: NOOP_PLUGIN_TRACER,
   };
 
   const harness: TestHarness = {

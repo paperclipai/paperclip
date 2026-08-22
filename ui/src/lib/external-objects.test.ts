@@ -8,6 +8,7 @@ import {
 import {
   dominantExternalObjectTone,
   externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectDisplayLabel,
   externalObjectDominantCount,
   externalObjectFallbackTone,
@@ -112,6 +113,42 @@ describe("external-objects helpers", () => {
     expect(externalObjectDisplayLabel("url", "link")).toBe("URL");
     expect(externalObjectDisplayLabel("url", "link", "Canonical URL")).toBe("Canonical URL");
     expect(externalObjectDisplayLabel("github", "pull_request")).toBe("GitHub pull request");
+  });
+
+  it("labels unresolved known objects as not refreshed while preserving generic URL copy", () => {
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "github",
+        objectType: "pull_request",
+        statusCategory: "unknown",
+        liveness: "unknown",
+      }),
+    ).toBe("Not yet refreshed");
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "url",
+        objectType: "link",
+        statusCategory: "unknown",
+        liveness: "unknown",
+      }),
+    ).toBe("Not yet resolved");
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "github",
+        objectType: "pull_request",
+        statusCategory: "unknown",
+        liveness: "fresh",
+      }),
+    ).toBe("Status unavailable");
+    expect(
+      externalObjectDisplayStatusLabel({
+        providerKey: "github",
+        objectType: "pull_request",
+        statusCategory: "open",
+        liveness: "fresh",
+        statusLabel: "Open",
+      }),
+    ).toBe("Open");
   });
 
   it("orders tones from danger down to muted", () => {

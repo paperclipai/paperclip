@@ -17,6 +17,7 @@ function runPublishHelper({
   distTag = "canary",
   callerPipefail = true,
   publishTool = "pnpm",
+  waitForRegistry = false,
 }) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-release-lib-"));
   const binDir = join(fixtureDir, "bin");
@@ -129,7 +130,11 @@ exec npm "$@"
   const script = `
 ${shellOptions}
 source "${repoRoot}/scripts/release-lib.sh"
-publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}
+${
+  waitForRegistry
+    ? `publish_package_to_npm_and_wait ${distTag} @paperclipai/example 1.2.3 ${publishTool} 1 0`
+    : `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}`
+}
 `;
 
   let status = 0;
@@ -238,4 +243,24 @@ test("publish_package_to_npm does not retry stable publishes without provenance"
   assert.notEqual(result.status, 0);
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
   assert.doesNotMatch(result.calls, /--provenance=false/);
+});
+
+test("publish_package_to_npm_and_wait confirms registry visibility before returning", () => {
+  const result = runPublishHelper({
+    pnpmMode: "success",
+    npmVersionExists: true,
+    waitForRegistry: true,
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.calls, /^pnpm publish --no-git-checks --tag canary --access public$/m);
+  assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
+});
+
+test("publish_package_to_npm_and_wait blocks the release when registry visibility lags", () => {
+  const result = runPublishHelper({ pnpmMode: "success", waitForRegistry: true });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
+  assert.match(result.output, /did not become registry-visible/);
 });

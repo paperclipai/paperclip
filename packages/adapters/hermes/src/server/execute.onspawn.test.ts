@@ -119,6 +119,74 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(opts.onSpawn).toBeDefined();
   });
 
+  it("preserves a specific stderr diagnostic for a nonzero exit", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "Error: provider unavailable\n",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBe("Error: provider unavailable");
+  });
+
+  it("reports the exit code when a nonzero exit has no diagnostic", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 130,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBe("Hermes exited with code 130");
+  });
+
+  it("leaves timeout diagnostics to the heartbeat timeout path", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 143,
+      signal: "SIGTERM",
+      timedOut: true,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBeUndefined();
+  });
+
+  it("does not label signal cancellation as a silent nonzero exit", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorMessage).toBeUndefined();
+  });
+
   it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {
     const previousApiKey = process.env.PAPERCLIP_API_KEY;
     process.env.PAPERCLIP_API_KEY = "parent-process-key";

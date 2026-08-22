@@ -57,6 +57,8 @@ export {
   usePluginToast,
 } from "./hooks.js";
 
+export { copyTextToClipboard } from "./clipboard.js";
+
 export {
   MetricCard,
   StatusBadge,

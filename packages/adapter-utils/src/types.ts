@@ -101,8 +101,23 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Provider-billed cost after prompt-cache discounts. Adapters should set
+   * this when they expose it separately; otherwise the server treats a
+   * provider-reported `costUsd` as the cache-adjusted billed amount.
+   */
+  cacheAdjustedCostUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
+  /**
+   * Each referenced (mentioned) project that failed to stage into the remote sandbox for this run,
+   * by `projectId`. The run continues without a failed project (per-project failure isolation); this
+   * field carries the failure back so the server counts it in the requested-vs-synced observability
+   * instead of losing it to a warning line. Each entry pairs the `projectId` with the failure
+   * `error`, so a reader of the run learns why the project dropped. Absent or empty on a local
+   * target, or when every staged referenced project succeeded.
+   */
+  referencedProjectStagingFailures?: Array<{ projectId: string; error: string }>;
   summary?: string | null;
   clearSession?: boolean;
   question?: {
@@ -175,6 +190,14 @@ export interface AdapterExecutionContext {
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /**
+   * The injected OpenTelemetry startup trace context (tracer + root
+   * parent-context helper). The server passes the real, endpoint-gated
+   * implementation; when absent, the ACPX engine uses a no-op, so the whole
+   * span path stays inert. The type is an inline import so this module keeps no
+   * top-level dependency on the timing helper.
+   */
+  startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
 export interface AdapterModel {
@@ -478,6 +501,14 @@ export interface ServerAdapterModule {
    * and provisioned in fresh remote environments such as sandboxes.
    */
   getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+
+  /**
+   * Optional: declare the interactive sandbox login capability. The server uses
+   * it to drive the login flow and to project the safe panel fields to the user
+   * interface. An adapter with no interactive login (for example an
+   * API-key-only vendor) omits it. The capability data holds no secret.
+   */
+  loginCapability?: import("./login-capability.js").AdapterLoginCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +588,21 @@ export interface CreateConfigValues {
   envBindings: Record<string, unknown>;
   url: string;
   bootstrapPrompt: string;
+  /**
+   * The non-secret stored-session claim from a completed Claude subscription
+   * login. The create form holds it after the login reaches the server `stored`
+   * state and sends it in the agent create request. The server consumes the
+   * claim to bind the fixed `CLAUDE_CODE_OAUTH_TOKEN`. It never carries a token.
+   */
+  claudeStoredSessionId?: string | null;
+  /**
+   * True when the create form binds the fixed `CLAUDE_CODE_OAUTH_TOKEN`
+   * reference to an existing stored owner login with no new login round trip.
+   * The form sets it after the owner clicks apply-existing. The server binds the
+   * fixed reference only for a user actor and only when a stored value exists. It
+   * never carries a token.
+   */
+  claudeApplyStoredLogin?: boolean;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
   workspaceBaseRef?: string;

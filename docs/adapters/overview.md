@@ -21,6 +21,7 @@ When a heartbeat fires, Paperclip:
 | [Claude Code](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally, with a native ACP engine when available |
 | [Codex](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally, with a native ACP engine when available |
 | [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [Kimi Code CLI](/adapters/kimi-local) | `kimi_local` | Runs Kimi Code CLI locally through ACP, with headless `-p` mode as a fallback |
 | OpenCode | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi | `pi_local` | Runs an embedded Pi agent locally |
@@ -39,7 +40,7 @@ before the CLI starts:
 | Adapter | Credential topology | Which credential file wins on managed sandbox targets |
 |---------|---------------------|-------------------------------------------------------|
 | [`codex_local`](/adapters/codex-local) | Host-owns-auth for Paperclip-managed `CODEX_HOME` | A host-owned `auth.json` is symlinked into the managed `CODEX_HOME` and uploaded to the sandbox. If a per-agent `OPENAI_API_KEY` is configured, Paperclip writes an API-key `auth.json` instead and that file wins. A login baked into the sandbox image is shadowed because Codex runs with Paperclip's uploaded `CODEX_HOME`. |
-| [`claude_local`](/adapters/claude-local) | Snapshot-owns-auth for managed remote Claude config | Paperclip uploads only sanitized settings and skill/runtime assets. When the remote managed config has no Claude credential files, it copies `.credentials.json` or `credentials.json` from the sandbox image's own `$HOME/.claude`, so the image's login wins. |
+| [`claude_local`](/adapters/claude-local) | Snapshot-owns-auth for managed remote Claude config | A configured `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (agent or environment env) wins over any stored login. Otherwise Paperclip uploads only sanitized settings and skill/runtime assets, and when the remote managed config has no Claude credential files it copies `.credentials.json` or `credentials.json` from the sandbox image's own `$HOME/.claude`, so the image's login wins. |
 
 Worked examples:
 

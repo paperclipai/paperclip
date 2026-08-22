@@ -6,7 +6,12 @@ import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssuesList } from "./IssuesList";
+import {
+  IssuesList,
+  issueAgeBucket,
+  issueAgeBucketsCrossed,
+  issueAgeSeparatorLabel,
+} from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const companyState = vi.hoisted(() => ({
@@ -193,6 +198,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -760,6 +766,54 @@ describe("IssuesList", () => {
       expect(rows.find((row) => row.textContent?.includes("Active blocker"))?.getAttribute("data-current-step")).toBe("true");
       expect(rows.find((row) => row.textContent?.includes("Done first"))?.getAttribute("data-title-class")).toContain("text-muted-foreground");
       expect(container.textContent).toContain("blocked by PAP-3 · step 2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Priority option from the Sort and Group menus while priority UI is off (PAP-411)", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-1", identifier: "PAP-1", title: "Task one" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(0);
+    });
+
+    const sortButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("title") === "Sort",
+    );
+    expect(sortButton).toBeTruthy();
+    act(() => {
+      sortButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const labels = Array.from(document.body.querySelectorAll("button")).map((b) => b.textContent ?? "");
+      // Status sort option renders, but the Priority option is gated off (PAP-411).
+      expect(labels.some((text) => text.includes("Status"))).toBe(true);
+      expect(labels.some((text) => text.includes("Priority"))).toBe(false);
+    });
+
+    const groupButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("title") === "Group",
+    );
+    expect(groupButton).toBeTruthy();
+    act(() => {
+      groupButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const labels = Array.from(document.body.querySelectorAll("button")).map((b) => b.textContent ?? "");
+      expect(labels.some((text) => text.includes("Status"))).toBe(true);
+      expect(labels.some((text) => text.includes("Priority"))).toBe(false);
     });
 
     act(() => {
@@ -1957,5 +2011,150 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("draws day and week separators between recency-sorted rows", async () => {
+    const now = Date.now();
+    const hourAgo = new Date(now - 60 * 60 * 1000);
+    const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+    const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-recent", identifier: "PAP-1", title: "Just updated", updatedAt: hourAgo }),
+          createIssue({ id: "issue-mid", identifier: "PAP-2", title: "A few days old", updatedAt: threeDaysAgo }),
+          createIssue({ id: "issue-old", identifier: "PAP-3", title: "Over a week old", updatedAt: tenDaysAgo }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const separators = Array.from(container.querySelectorAll("[data-issues-date-separator]"));
+      const labels = separators.map((el) => el.getAttribute("aria-label"));
+      expect(labels).toEqual(["Older than a day", "Older than a week"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("draws both separators when adjacent rows skip the middle age bucket", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-recent", identifier: "PAP-1", title: "Just updated", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-old", identifier: "PAP-2", title: "Over a week old", updatedAt: new Date(now - 10 * 24 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const labels = Array.from(container.querySelectorAll("[data-issues-date-separator]"))
+        .map((el) => el.getAttribute("aria-label"));
+      expect(labels).toEqual(["Older than a day", "Older than a week"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("places separators around expanded nested rows in visible order", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-parent", identifier: "PAP-1", title: "Recent parent", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-child", identifier: "PAP-2", parentId: "issue-parent", title: "Older child", updatedAt: new Date(now - 3 * 24 * 60 * 60 * 1000) }),
+          createIssue({ id: "issue-old", identifier: "PAP-3", title: "Old root", updatedAt: new Date(now - 10 * 24 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const visibleOrder = Array.from(
+        container.querySelectorAll("[data-testid='issue-row'], [data-issues-date-separator]"),
+      ).map((element) => element.getAttribute("aria-label") ?? element.firstElementChild?.textContent);
+      expect(visibleOrder).toEqual([
+        "Recent parent",
+        "Older than a day",
+        "Older child",
+        "Older than a week",
+        "Old root",
+      ]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("omits date separators when all rows share a recency bucket", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-a", identifier: "PAP-1", title: "One", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-b", identifier: "PAP-2", title: "Two", updatedAt: new Date(now - 2 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(container.querySelectorAll("[data-issues-date-separator]").length).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("issueAgeBucket", () => {
+  const now = new Date("2026-04-10T12:00:00.000Z").getTime();
+
+  it("buckets by day and week boundaries", () => {
+    expect(issueAgeBucket(new Date(now - 60 * 60 * 1000), now)).toBe(0);
+    expect(issueAgeBucket(new Date(now - 3 * 24 * 60 * 60 * 1000), now)).toBe(1);
+    expect(issueAgeBucket(new Date(now - 10 * 24 * 60 * 60 * 1000), now)).toBe(2);
+  });
+
+  it("labels the day and week separators", () => {
+    expect(issueAgeSeparatorLabel(1)).toBe("Older than a day");
+    expect(issueAgeSeparatorLabel(2)).toBe("Older than a week");
+  });
+
+  it("returns every boundary crossed between adjacent rows", () => {
+    expect(issueAgeBucketsCrossed(0, 1)).toEqual([1]);
+    expect(issueAgeBucketsCrossed(1, 2)).toEqual([2]);
+    expect(issueAgeBucketsCrossed(0, 2)).toEqual([1, 2]);
+    expect(issueAgeBucketsCrossed(2, 1)).toEqual([]);
   });
 });

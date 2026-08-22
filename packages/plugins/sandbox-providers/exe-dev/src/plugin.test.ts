@@ -15,6 +15,7 @@ vi.mock("node:child_process", async () => {
 });
 
 import plugin, { validateSshPrivateKey } from "./plugin.js";
+import manifest from "./manifest.js";
 
 class MockChildProcess extends EventEmitter {
   stdout = new EventEmitter();
@@ -371,7 +372,9 @@ describe("exe.dev sandbox provider plugin", () => {
 
     const body = String(fetchMock.mock.calls[0]?.[1]?.body ?? "");
     expect(body).toContain("--setup-script=");
-    expect(body).toContain("nodesource.com/setup_20.x");
+    expect(body).toContain("process.versions.node");
+    expect(body).toContain("v[0]>24||(v[0]===24&&v[1]>=11)");
+    expect(body).toContain("nodesource.com/setup_24.x");
     expect(body).toContain("sudo apt-get install -y nodejs");
   });
 
@@ -424,7 +427,7 @@ describe("exe.dev sandbox provider plugin", () => {
     await acquirePromise?.catch((error: Error) => {
       // Operator did not supply a setupScript, so the visible default install
       // is not a secret and stays in the error for debuggability.
-      expect(error.message).toContain("nodesource.com/setup_20.x");
+      expect(error.message).toContain("nodesource.com/setup_24.x");
       expect(error.message).not.toContain("[REDACTED]");
     });
   });
@@ -576,8 +579,12 @@ describe("exe.dev sandbox provider plugin", () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(spawnMock.mock.calls[0]?.[0]).toBe("ssh");
-    expect(String(spawnMock.mock.calls[0]?.[1]?.at(-1) ?? "")).toContain("/workspace");
-    expect(String(spawnMock.mock.calls[0]?.[1]?.at(-1) ?? "")).toContain("FOO='");
+    const remoteScript = String(spawnMock.mock.calls[0]?.[1]?.at(-1) ?? "");
+    expect(remoteScript).toContain("/workspace");
+    expect(remoteScript).toContain("FOO='");
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(remoteScript).not.toContain("nvm.sh");
+    expect(remoteScript).not.toContain("NVM_DIR");
     const child = spawnMock.mock.results[0]?.value as MockChildProcess;
     expect(child.stdin.written).toBe("input-body");
     expect(child.stdin.ended).toBe(true);
@@ -836,5 +843,28 @@ describe("exe.dev sandbox provider plugin", () => {
 
     expect(spawnMock).not.toHaveBeenCalled();
     expect(result?.cwd).toBe("/srv/paperclip/no-vm");
+  });
+});
+
+describe("exe-dev manifest form defaults", () => {
+  const configSchema = (
+    manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { format?: string; default?: unknown }>;
+    }
+  );
+  const properties = configSchema.properties ?? {};
+
+  it("pre-fills VM sizing for the environment form", () => {
+    expect(properties.cpu?.default).toBe(4);
+    expect(properties.memory?.default).toBe("4GB");
+    expect(properties.disk?.default).toBe("20GB");
+  });
+
+  it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {
+    for (const prop of Object.values(properties)) {
+      if (prop.format === "secret-ref") {
+        expect(prop.default).toBeUndefined();
+      }
+    }
   });
 });

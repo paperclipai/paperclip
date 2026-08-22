@@ -24,13 +24,7 @@
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
-        "serverUrl": "https://mcp.notion.com/mcp",
-        "authorizationEndpoint": "https://api.notion.com/v1/oauth/authorize",
-        "tokenEndpoint": "https://api.notion.com/v1/oauth/token",
-        "scopesHint": [
-          "read_content",
-          "update_content"
-        ]
+        "serverUrl": "https://mcp.notion.com/mcp"
       },
       "guidanceMd": "Connect Notion for workspace content. Share only the pages and databases agents should use.",
       "riskTier": "S3",
@@ -40,5 +34,6 @@
         "database"
       ]
     }
-  ]
+  ],
+  "redirectConstraints": "https-or-loopback-http"
 }

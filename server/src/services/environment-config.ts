@@ -33,16 +33,16 @@ import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environ
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
-  host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
   remoteWorkspacePath: z
-    .string({ required_error: "SSH environments require a remote workspace path." })
+    .string({ error: "SSH environments require a remote workspace path." })
     .trim()
     .min(1, "SSH environments require a remote workspace path.")
     .refine((value) => value.startsWith("/"), "SSH remote workspace path must be absolute."),
@@ -102,7 +102,7 @@ const pluginEnvironmentConfigSchema = z.object({
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
   ),
-  driverConfig: z.record(z.unknown()).optional().default({}),
+  driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
 }).strict();
 
 export type ParsedEnvironmentConfig =
@@ -121,10 +121,29 @@ function getSandboxProvider(raw: Record<string, unknown>) {
   return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
 }
 
+// Operator flags removed when session-output streaming moved to the verified
+// capability snapshot. A saved environment config can still carry a removed key.
+// The server now decides session-output streaming from the effective capability
+// snapshot alone, so no consumer reads these flags. Strip a removed key before
+// validation so a strict schema (the fake sandbox) still loads an old config,
+// and so the removed flag never reaches the parsed config.
+const REMOVED_SANDBOX_CONFIG_KEYS = ["streamAgentSessionOutput"] as const;
+
+function stripRemovedSandboxConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!REMOVED_SANDBOX_CONFIG_KEYS.some((key) => key in raw)) {
+    return raw;
+  }
+  const next = { ...raw };
+  for (const key of REMOVED_SANDBOX_CONFIG_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
 function parseSandboxEnvironmentConfig(
   input: Record<string, unknown> | null | undefined,
 ) {
-  const raw = parseObject(input);
+  const raw = stripRemovedSandboxConfigKeys(parseObject(input));
   const provider = getSandboxProvider(raw);
 
   if (provider === "fake") {
@@ -371,6 +390,29 @@ export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): 
   return driverConfig;
 }
 
+// The host owns this sandbox run-behavior flag, not the provider plugin. The
+// host reads it to select the run-log stream. The host passes the whole config
+// to the plugin, so a plugin that allowlists its own driver fields drops the
+// flag from its normalized config. Re-apply it from the parsed envelope after
+// the plugin normalizes, or a saved environment loses the operator opt-in and
+// the stream never starts.
+const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
+  "streamRunLogs",
+] as const;
+
+function applyHostOwnedSandboxStreamFlags(
+  normalizedConfig: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...normalizedConfig };
+  for (const key of HOST_OWNED_SANDBOX_STREAM_FLAGS) {
+    if (envelope[key] !== undefined) {
+      merged[key] = envelope[key];
+    }
+  }
+  return merged;
+}
+
 export function normalizeEnvironmentConfig(input: {
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
@@ -458,7 +500,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        config: validated.normalizedConfig,
+        config: applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
         accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
@@ -550,7 +592,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
-        ...validated.normalizedConfig,
+        ...applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
       },
       schema:
         validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)
@@ -670,6 +712,45 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   return parsed;
+}
+
+/**
+ * Resolve the connection secrets of a recorded sandbox config for a durable
+ * orphan-sandbox teardown. The retry reads the recorded config from the durable
+ * `pending_cleanup` lease row, not from the current environment. So this
+ * resolver must not require the environment binding: a delete removed the
+ * environment, or a provider change replaced the binding. It resolves each
+ * schema-declared secret ref by id at the latest version through
+ * `resolveSecretValueForSandboxCleanup`, which authorizes the read from the
+ * durable orphan record and skips the binding check. The resolved values are
+ * used once for the teardown RPC and never persisted.
+ */
+export async function resolveSandboxCleanupConfigSecrets(
+  db: Db,
+  companyId: string,
+  config: SandboxEnvironmentConfig,
+  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+): Promise<SandboxEnvironmentConfig> {
+  if (config.provider === "fake") return config;
+  const schema = await getSandboxProviderConfigSchema(db, config.provider);
+  const secrets = secretService(db);
+  let nextConfig = { ...config } as Record<string, unknown>;
+  for (const path of collectSecretRefPaths(schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForSandboxCleanup(companyId, trimmed, "latest", {
+        configPath: path,
+        issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig as SandboxEnvironmentConfig;
 }
 
 export function readSshEnvironmentPrivateKeySecretId(

@@ -44,7 +44,7 @@ const skillMetadataValueSchema: z.ZodType<unknown> = z.lazy(() =>
     z.boolean(),
     z.null(),
     z.array(skillMetadataValueSchema),
-    z.record(skillMetadataValueSchema),
+    z.record(z.string(), skillMetadataValueSchema),
   ])
 );
 
@@ -52,7 +52,7 @@ export const skillFrontmatterSchema = z.object({
   name: z.string().regex(SKILL_FRONTMATTER_SLUG_RE, "Expected a lowercase URL slug."),
   description: z.string().min(1),
   "allowed-tools": z.array(z.string()).optional(),
-  metadata: z.record(skillMetadataValueSchema).optional(),
+  metadata: z.record(z.string(), skillMetadataValueSchema).optional(),
 }).passthrough();
 
 export const skillFrontmatterKnownKeys = [

@@ -50,6 +50,9 @@ const mockSecretsApi = vi.hoisted(() => ({
   updateMyUserSecret: vi.fn(),
   rotateMyUserSecret: vi.fn(),
   removeMyUserSecret: vi.fn(),
+  listProposals: vi.fn(),
+  approveProposal: vi.fn(),
+  rejectProposal: vi.fn(),
 }));
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -382,6 +385,7 @@ describe("Secrets page layout", () => {
     mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
     mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
   });
 
@@ -774,6 +778,7 @@ describe("Secrets page layout", () => {
 
     const listContainer = container.querySelector('[data-testid="secrets-list-container"]');
     const tableView = container.querySelector('[data-testid="secrets-table-view"]');
+    expect(listContainer?.parentElement?.className).not.toContain("overflow-y-auto");
     const cardView = container.querySelector('[data-testid="secrets-card-view"]');
     expect(listContainer?.className).toContain("@container");
     expect(tableView?.className).toContain("@min-[40rem]:block");

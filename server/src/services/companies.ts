@@ -39,6 +39,8 @@ import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
   actorId: string;
@@ -139,6 +141,7 @@ export function companyService(db: Db) {
     attachmentMaxBytes: companies.attachmentMaxBytes,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
@@ -258,6 +261,11 @@ export function companyService(db: Db) {
     },
 
     getById: async (id: string) => {
+      // Non-UUID refs previously reached the uuid-typed query and threw a
+      // DrizzleQueryError ("invalid input syntax for type uuid"), surfacing
+      // as HTTP 500 from GET /api/companies/:companyId. Treat them as
+      // not-found so the route returns 404.
+      if (!UUID_RE.test(id)) return null;
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null);

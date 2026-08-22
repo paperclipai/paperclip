@@ -6,6 +6,7 @@ import {
   createTarballFromDirectory,
   prepareSandboxManagedRuntime,
   type PreparedSandboxManagedRuntime,
+  type SandboxAdditionalSource,
   type SandboxManagedRuntimeAsset,
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
@@ -15,8 +16,48 @@ import {
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+
+/**
+ * Input for a duplex channel open. The caller supplies only the command argument
+ * vector the sandbox runs as the channel child process. Element 0 is the program
+ * and the rest are its arguments. The runner adds the lease scope from its own
+ * closure. This type is separate from the worker manager's
+ * `DuplexChannelOpenInput`, which also carries the lease scope fields.
+ */
+export interface DuplexChannelOpenInput {
+  command: readonly string[];
+}
+
+/**
+ * A persistent bidirectional channel to one long-lived command in the sandbox.
+ * The caller writes raw input bytes, reads streamed output, and stops or closes
+ * the channel. This is the cross-layer channel type: the runner returns it, and
+ * the sandbox driver adapts the worker manager's host session to it.
+ */
+export interface CommandManagedDuplexChannel {
+  /** Writes raw input bytes to the channel. */
+  write(data: string): void;
+  /** Registers the one data listener. The channel streams each raw chunk in order. */
+  onData(listener: (chunk: string) => void): void;
+  /** Registers the one exit listener. The channel calls it one time with the exit. */
+  onExit(listener: (exit: { exitCode: number | null }) => void): void;
+  /** Stops the child process. Safe to call more than one time. */
+  stop(): void;
+  /** Closes the channel and releases the route. Safe to call more than one time. */
+  close(): Promise<void>;
+}
 
 export interface CommandManagedRuntimeRunner {
+  /**
+   * True when the provider verified the concurrent-sync opt-in. A native runner
+   * carries the value from the effective capability snapshot
+   * (`concurrentSyncOperations`). The client copies it onto the prepared sync
+   * client only on the native path; the base64 fallback ignores it and always
+   * permits concurrency. The default is false, so an undeclared native provider
+   * never permits concurrent sync operations.
+   */
+  allowConcurrentSyncOperations?: boolean;
   /**
    * True only when `execute({ stdin })` can surface useful in-flight progress
    * for a single stdin-backed command. Provider-backed sandbox runners usually
@@ -24,25 +65,6 @@ export interface CommandManagedRuntimeRunner {
    * and let the caller choose a chunked upload path when progress is requested.
    */
   supportsSingleStreamStdinProgress?: boolean;
-  /**
-   * Cumulative count of host→sandbox `execute` round-trips this runner has
-   * performed (Open Q1). Present only on runners that instrument the single
-   * exec seam (the sandbox runner); the per-step delta is emitted as
-   * `run.startup.step` `payload.roundTrips`. A `() => number` reader, never the
-   * runner itself, is threaded into `measureStartupStep` so the timing helper
-   * stays runner-agnostic.
-   */
-  execCount?(): number;
-  /**
-   * Cumulative provider-reported wall-time (ms) for the `executeCommand` REST
-   * call ({@link providerExecMs}) vs the `client.get` sandbox re-fetch that
-   * precedes it ({@link providerGetMs}), accumulated across every `execute`
-   * round-trip (Open Q1, finer attribution). Present only when the provider
-   * surfaces these durations on its result metadata; the per-step deltas are
-   * emitted as `payload.providerExecMs` / `payload.providerGetMs`.
-   */
-  providerExecMs?(): number;
-  providerGetMs?(): number;
   execute(input: {
     command: string;
     args?: string[];
@@ -50,9 +72,29 @@ export interface CommandManagedRuntimeRunner {
     env?: Record<string, string>;
     stdin?: string;
     timeoutMs?: number;
-    noProfile?: boolean;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    /**
+     * Run this command through the lease's persistent session even when no run
+     * step is active. A sandbox provider opens the session on the first
+     * non-bypassed command; the ACP process session bridge sets this so the
+     * long-lived agent command streams its output through the session log
+     * stream. The default keeps the context-based session selection.
+     */
+    useSession?: boolean;
+    /**
+     * Run this command outside the lease's persistent session even when a run
+     * step is active. The persistent session is a single serialized shell. In
+     * streamed mode the agent runs as one long-lived foreground command that
+     * holds the session for the whole run. The bridge control-plane execs
+     * (input delivery, output read, callback relay, and the queue/setup
+     * bookkeeping) must run concurrently with the agent, so they run as
+     * independent one-shot commands. On the session they queue behind the agent
+     * command that never returns — a permanent deadlock. An explicit bypass
+     * always wins over the context-based session selection and over
+     * `useSession`. The default keeps the context-based session selection.
+     */
+    bypassSession?: boolean;
   }): Promise<RunProcessResult>;
   /**
    * Optional native inbound file transfer. Present only when the sandbox
@@ -64,6 +106,14 @@ export interface CommandManagedRuntimeRunner {
   syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
   /** Optional native outbound file transfer. See {@link syncIn}. */
   syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /**
+   * Optional persistent duplex channel. Present only when the sandbox provider's
+   * effective capability grants `duplexCommandStream`. The runner opens one
+   * bidirectional channel to a long-lived command in the sandbox. The SSH runner
+   * and every provider without the capability omit the member, so a caller gates
+   * on its presence in the same style as {@link syncIn}/{@link syncOut}.
+   */
+  openDuplexChannel?(input: DuplexChannelOpenInput): Promise<CommandManagedDuplexChannel>;
 }
 
 export interface CommandManagedRuntimeSpec {
@@ -206,7 +256,6 @@ export function createCommandManagedRuntimeClient(input: {
     opts: {
       stdin?: string;
       timeoutMs?: number;
-      noProfile?: boolean;
       onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     } = {},
   ) => {
@@ -216,7 +265,6 @@ export function createCommandManagedRuntimeClient(input: {
       cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
-      noProfile: opts.noProfile === true,
       onLog: opts.onLog,
     });
     requireSuccessfulResult(result, script);
@@ -225,7 +273,7 @@ export function createCommandManagedRuntimeClient(input: {
 
   const client: SandboxManagedRuntimeClient = {
     makeDir: async (remotePath) => {
-      await runShell(`mkdir -p ${shellQuote(remotePath)}`, { noProfile: true });
+      await runShell(`mkdir -p ${shellQuote(remotePath)}`);
     },
     writeFile: async (remotePath, bytes, options) => {
       const buffer = toBuffer(bytes);
@@ -252,7 +300,7 @@ export function createCommandManagedRuntimeClient(input: {
               `mkdir -p ${shellQuote(remoteDir)} && ` +
               `base64 -d > ${shellQuote(remoteTempPath)} && ` +
               `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`,
-            { stdin: body, noProfile: true },
+            { stdin: body },
           );
           await options?.onProgress?.(total, total);
           return;
@@ -266,15 +314,14 @@ export function createCommandManagedRuntimeClient(input: {
         await runShell(
           `mkdir -p ${shellQuote(remoteDir)} && ` +
             `rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
-          { noProfile: true },
         );
         for (let offset = 0; offset < total; offset += REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE) {
           const end = Math.min(total, offset + REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE);
           const chunk = buffer.subarray(offset, end).toString("base64");
-          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk, noProfile: true });
+          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk });
           await options?.onProgress?.(end, total);
         }
-        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`, { noProfile: true });
+        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`);
         await options?.onProgress?.(total, total);
       } finally {
         await bestEffortRemoveRemotePath(client, remoteTempPath);
@@ -284,7 +331,7 @@ export function createCommandManagedRuntimeClient(input: {
       // Chunked reads intentionally query the remote size first, even without
       // a progress sink, so each sandbox RPC stays bounded and truncation is
       // detected without materializing the whole file as one stdout string.
-      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`, { noProfile: true });
+      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);
@@ -303,7 +350,6 @@ export function createCommandManagedRuntimeClient(input: {
       for (let chunkIndex = 0; decodedSoFar < totalBytes; chunkIndex++) {
         const result = await runShell(
           `dd if=${shellQuote(remotePath)} bs=${REMOTE_READ_CHUNK_BYTES} skip=${chunkIndex} count=1 2>/dev/null | base64`,
-          { noProfile: true },
         );
         const chunk = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
         if (chunk.byteLength === 0) break;
@@ -326,7 +372,6 @@ export function createCommandManagedRuntimeClient(input: {
           `basename "$entry"; ` +
           `done; ` +
         `fi`,
-        { noProfile: true },
       );
       return result.stdout
         .split(/\r?\n/)
@@ -340,7 +385,6 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
-        noProfile: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -350,7 +394,6 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
-        noProfile: options.noProfile === true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -361,8 +404,7 @@ export function createCommandManagedRuntimeClient(input: {
   // replace untar for directories, direct `writeFile` for single files), then run
   // the operation's ordered `postUploadCommands` fail-fast. Byte-for-byte
   // behavior-equivalent to the caller-inlined tar path it will replace. All exec
-  // rides the shared `execute` seam so `execCount`/`providerExecMs` still
-  // attribute (Open Q1).
+  // rides the shared `execute` seam.
   const fallbackSyncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
     const resultOperations: SandboxSyncResult["operations"] = [];
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-fallback-"));
@@ -390,7 +432,7 @@ export function createCommandManagedRuntimeClient(input: {
               await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
               await client.run(
                 buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
-                { timeoutMs: input.timeoutMs, noProfile: true },
+                { timeoutMs: input.timeoutMs },
               );
               bytesTransferred += tarBytes.byteLength;
             } else {
@@ -403,11 +445,11 @@ export function createCommandManagedRuntimeClient(input: {
               if (mapping.mode != null) {
                 await client.run(
                   buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs, noProfile: true },
+                  { timeoutMs: input.timeoutMs },
                 );
                 await client.run(
                   buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
-                  { timeoutMs: input.timeoutMs, noProfile: true },
+                  { timeoutMs: input.timeoutMs },
                 );
               }
               bytesTransferred += fileBytes.byteLength;
@@ -451,6 +493,13 @@ export function createCommandManagedRuntimeClient(input: {
   const nativeSyncIn = input.runner.syncIn;
   const nativeSyncOut = input.runner.syncOut;
   const hasNativeBoth = Boolean(nativeSyncIn && nativeSyncOut);
+  // The base64 fallback always permits concurrent sync operations. A native
+  // runner permits them only when the provider verified the opt-in; an
+  // undeclared native provider keeps concurrency off. One flag serves both sync
+  // directions.
+  client.allowConcurrentSyncOperations = hasNativeBoth
+    ? input.runner.allowConcurrentSyncOperations === true
+    : true;
   client.syncIn = async (operations) => {
     assertPostUploadCommandsConfined(operations);
     if (hasNativeBoth) {
@@ -475,6 +524,8 @@ export async function prepareCommandManagedRuntime(input: {
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if `command -v <detectCommand>` succeeds. */
   detectCommand?: string | null;
@@ -482,6 +533,10 @@ export async function prepareCommandManagedRuntime(input: {
   // task wires it into the byte-counting writeFile/readFile transport.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  // Optional host span runner for the workspace tarball build. Forwarded to
+  // prepareSandboxManagedRuntime so the host pack time rides one `pack` span
+  // under the `stage.sync` step. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -530,8 +585,10 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
+          additionalSources: input.additionalSources,
           onProgress: input.onProgress,
           onRuntimeProgress: input.onRuntimeProgress,
+          runtimeSpan: input.runtimeSpan,
         });
       }
     }
@@ -567,7 +624,9 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    additionalSources: input.additionalSources,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
 }

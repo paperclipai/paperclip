@@ -83,7 +83,11 @@ export interface Environment {
   updatedAt: Date;
 }
 
-export type EnvironmentDeleteBlockedReason = "managed_local" | "instance_default";
+export type EnvironmentDeleteBlockedReason =
+  | "managed_local"
+  | "instance_default"
+  | "reusable_sandbox_lease"
+  | "pending_sandbox_cleanup";
 
 export interface EnvironmentDeleteBlastRadius {
   environmentId: string;
@@ -103,12 +107,28 @@ export interface EnvironmentDeleteBlastRadius {
     activeCustomImageSetupSessionCount: number;
     hasActiveRuntimeUse: boolean;
   };
+  /**
+   * Count of leases in the terminal `pending_cleanup` state. Each such lease
+   * holds the only durable provider reference for a sandbox that a teardown
+   * retry must destroy. A delete or a provider change must not remove this
+   * reference, so a count above zero blocks the delete.
+   */
+  pendingCleanupLeaseCount: number;
+  /**
+   * Count of reusable sandbox leases whose provider resource is still live.
+   * Deleting the environment would remove the context used by their normal
+   * release and destroy paths, so these leases block deletion.
+   */
+  reusableSandboxLeaseCount: number;
 }
 
 export interface EnvironmentLease {
   id: string;
   companyId: string;
-  environmentId: string;
+  // Null only for an orphan `pending_cleanup` lease whose environment a delete
+  // removed. The cleanup sweep tears the orphan down from the row's immutable
+  // provider metadata, so it needs no environment row.
+  environmentId: string | null;
   executionWorkspaceId: string | null;
   issueId: string | null;
   heartbeatRunId: string | null;

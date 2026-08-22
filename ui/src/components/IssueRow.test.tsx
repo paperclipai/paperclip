@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
+import { StatusIcon } from "./StatusIcon";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -51,6 +52,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -102,12 +104,45 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
     });
 
-    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    // jsdom 30 does not value-match a CSS attribute selector against a
+    // mixed-case SVG attribute name, so `svg[viewBox="0 0 24 24"]` matches
+    // nothing. Select the glyph SVGs by attribute presence, then compare the
+    // viewBox value with getAttribute to keep the exact-value assertion.
+    const glyphs = Array.from(container.querySelectorAll("svg[viewBox]")).filter(
+      (svg) => svg.getAttribute("viewBox") === "0 0 24 24",
+    );
     expect(glyphs.length).toBeGreaterThan(0);
     glyphs.forEach((glyph) => {
       expect(glyph.getAttribute("width")).toBe("16");
       expect(glyph.getAttribute("height")).toBe("16");
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps editable row controls keyboard-accessible and outside the navigation link", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          desktopMetaLeading={<StatusIcon status="todo" onChange={() => undefined} />}
+        />,
+      );
+    });
+
+    const link = container.querySelector<HTMLAnchorElement>("[data-inbox-issue-link]");
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: Todo)"]',
+    );
+
+    expect(link).not.toBeNull();
+    expect(statusButton).not.toBeNull();
+    expect(statusButton?.tabIndex).toBe(0);
+    expect(link?.contains(statusButton)).toBe(false);
 
     act(() => {
       root.unmount();
@@ -122,10 +157,16 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={issue} selected />);
     });
 
+    // The hover wash lives on the ROOT row band (not the overlay link) so the
+    // tint paints behind the content. Selected rows suppress the accent hover.
+    const row = container.firstElementChild as HTMLElement | null;
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
-    expect(link).not.toBeNull();
-    expect(link?.className).toContain("hover:bg-transparent");
-    expect(link?.className).not.toContain("hover:bg-accent/50");
+    expect(row).not.toBeNull();
+    expect(row?.className).toContain("hover:bg-transparent");
+    expect(row?.className).not.toContain("hover:bg-accent/50");
+    // The overlay link no longer carries the hover wash.
+    expect(link?.className ?? "").not.toContain("hover:bg-transparent");
+    expect(link?.className ?? "").not.toContain("hover:bg-accent/50");
 
     act(() => {
       root.unmount();
@@ -184,7 +225,7 @@ describe("IssueRow", () => {
     });
   });
 
-  it("puts the unread dot in the reserved far-left slot on desktop and in flow on mobile", () => {
+  it("puts the unread dot in the reserved desktop slot and overlays it on mobile", () => {
     const root = createRoot(container);
     act(() => {
       root.render(<IssueRow issue={createIssue()} unreadState="visible" />);
@@ -196,12 +237,16 @@ describe("IssueRow", () => {
     expect(slot).not.toBeNull();
     expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
 
-    // Mobile: a separate in-flow, order-first dot (mobile has no reserved slot).
+    // Mobile: all inbox rows reserve a gutter and the dot stays fully inside
+    // it, so the control cannot be clipped or indent the status/title.
     const mobileDot = container
       .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
       ?.closest("span.sm\\:hidden");
     expect(mobileDot).not.toBeNull();
-    expect(mobileDot?.className).toContain("order-first");
+    expect(mobileDot?.className).toContain("absolute");
+    expect(mobileDot?.className).toContain("left-0");
+    expect(mobileDot?.className).not.toContain("order-first");
+    expect(container.firstElementChild?.className).toContain("pl-4");
 
     act(() => {
       root.unmount();
@@ -296,8 +341,7 @@ describe("IssueRow", () => {
       );
     });
 
-    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
-    const metaRow = Array.from(link?.querySelectorAll("span.flex.items-center.gap-2") ?? [])
+    const metaRow = Array.from(container.querySelectorAll("span.flex.items-center.gap-2"))
       .find((element) => element.textContent?.includes("PAP-42"));
 
     expect(metaRow).not.toBeUndefined();
@@ -321,12 +365,17 @@ describe("IssueRow", () => {
       );
     });
 
+    // `aria-current="step"` stays on the overlay link (the focusable target),
+    // but the current-step wash moved to the ROOT row band alongside the hover
+    // wash so it paints behind the content.
+    const row = container.firstElementChild as HTMLElement | null;
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
 
     expect(link).not.toBeNull();
     expect(link?.getAttribute("aria-current")).toBe("step");
-    expect(link?.className).toContain("bg-primary/5");
-    expect(link?.className).not.toContain("border-l-");
+    expect(row?.className).toContain("bg-primary/5");
+    expect(row?.className).not.toContain("border-l-");
+    expect(link?.className ?? "").not.toContain("bg-primary/5");
 
     act(() => {
       root.unmount();
@@ -417,6 +466,175 @@ describe("IssueRow", () => {
 
     act(() => {
       root.unmount();
+    });
+  });
+
+  it("renders no bottom divider by default", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    // Dividers are opt-in: without `showDivider` no row-separating border
+    // renders on either the root band or the overlay link.
+    const row = container.firstElementChild as HTMLElement | null;
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(row).not.toBeNull();
+    expect(row?.className).not.toContain("border-b");
+    expect(link?.className ?? "").not.toContain("border-b");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders an opt-in bottom divider on the row root when showDivider is set", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} showDivider />);
+    });
+
+    // The divider lives on the ROOT row band with `last:border-b-0` so the real
+    // last row drops its border — it is not on the overlay link.
+    const row = container.firstElementChild as HTMLElement | null;
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(row?.className).toContain("border-b");
+    expect(row?.className).toContain("last:border-b-0");
+    expect(link?.className ?? "").not.toContain("border-b");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the hover wash on the row root while the overlay link stays a bare positioning layer", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const row = container.firstElementChild as HTMLElement | null;
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    // Hover wash paints behind the content on the root band...
+    expect(row?.className).toContain("hover:bg-accent/50");
+    expect(link?.className ?? "").not.toContain("hover:bg-accent/50");
+    // ...and the overlay link keeps only positioning + focus concerns.
+    expect(link?.className).toContain("absolute");
+    expect(link?.className).toContain("inset-0");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  describe("recovery chip liveness", () => {
+    const NOW = new Date("2026-08-18T12:00:00.000Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function at(offsetMs: number) {
+      return new Date(NOW.getTime() + offsetMs).toISOString();
+    }
+
+    function recoveryIssue(retryAt: string, scheduledRetry: Issue["scheduledRetry"] = null): Issue {
+      return createIssue({
+        status: "in_progress",
+        scheduledRetry,
+        activeRecoveryAction: {
+          id: "action-1",
+          companyId: "company-1",
+          sourceIssueId: "issue-1",
+          recoveryIssueId: null,
+          kind: "deliberate_wait_without_target",
+          status: "active",
+          ownerType: "agent",
+          ownerAgentId: "agent-owner",
+          ownerUserId: null,
+          previousOwnerAgentId: "agent-owner",
+          returnOwnerAgentId: "agent-owner",
+          cause: "deliberate_wait_without_target",
+          fingerprint: "fp",
+          evidence: {},
+          nextAction: "Record a real next step.",
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: "agent-owner",
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt,
+            scheduledRunId: "run-2",
+          },
+          monitorPolicy: null,
+          attemptCount: 1,
+          maxAttempts: 5,
+          timeoutAt: retryAt,
+          lastAttemptAt: retryAt,
+          outcome: null,
+          resolutionNote: null,
+          resolvedAt: null,
+          createdAt: at(-10 * 60_000),
+          updatedAt: at(-10 * 60_000),
+        },
+      });
+    }
+
+    function renderChip(issue: Issue): HTMLElement | null {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<IssueRow issue={issue} />);
+      });
+      const chip = container.querySelector<HTMLElement>(
+        "[data-testid='issue-row-recovery-indicator']",
+      );
+      const snapshot = chip?.cloneNode(true) as HTMLElement | null;
+      act(() => {
+        root.unmount();
+      });
+      return snapshot;
+    }
+
+    it("stays calm while the next attempt is still ahead", () => {
+      const chip = renderChip(recoveryIssue(at(3 * 60_000)));
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).toContain("next try in 3m");
+    });
+
+    it("warns once the stored attempt came due and never ran", () => {
+      // The inbox chip must reach the same verdict as the source card, so a parent scanning
+      // the inbox is not told recovery is running when nothing is.
+      const chip = renderChip(recoveryIssue(at(-5 * 60_000)));
+      expect(chip?.getAttribute("data-recovery-state")).toBe("needed");
+      const label = chip?.getAttribute("aria-label") ?? "";
+      expect(label).toContain("Recovery needed");
+      expect(label).toContain("retry missed 5m ago");
+      expect(label).not.toContain("next try");
+    });
+
+    it("stays calm when the overdue attempt is a verified live run", () => {
+      const chip = renderChip(
+        recoveryIssue(at(-5 * 60_000), {
+          runId: "run-2",
+          status: "running",
+          agentId: "agent-owner",
+          agentName: "CodexCoder",
+          retryOfRunId: null,
+          scheduledRetryAt: at(-5 * 60_000),
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: null,
+        }),
+      );
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).toContain("attempt running now");
     });
   });
 });

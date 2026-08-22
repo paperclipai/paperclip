@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -24,9 +25,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { agentService } from "../services/agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -46,6 +49,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
+    await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -97,6 +101,330 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     return { companyId, goalId, issueId };
   }
+
+  async function recordReviewTransition(args: {
+    companyId: string;
+    issueId: string;
+    interactionId: string;
+    actorId?: string;
+  }) {
+    await db.insert(activityLog).values({
+      companyId: args.companyId,
+      actorType: "user",
+      actorId: args.actorId ?? "local-board",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: args.issueId,
+      details: {
+        status: "in_review",
+        reviewInteractionId: args.interactionId,
+        _previous: { status: "in_progress" },
+      },
+    });
+  }
+
+  it("persists addressees without allowing them to bypass human-only governance", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
+    const creatorAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const unrelatedAgentId = randomUUID();
+    const addresseeRunId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    const agentRows = [
+      { id: creatorAgentId, name: "Creator" },
+      { id: addresseeAgentId, name: "Addressee" },
+      { id: unrelatedAgentId, name: "Unrelated" },
+    ].map((agent) => ({
+      ...agent,
+      companyId,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }));
+    await db.insert(agents).values(agentRows);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: addresseeRunId,
+        companyId,
+        agentId: addresseeAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-25T12:00:00.000Z"),
+      },
+      {
+        id: unrelatedRunId,
+        companyId,
+        agentId: unrelatedAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-25T12:01:00.000Z"),
+      },
+    ]);
+
+    const input = {
+      kind: "ask_user_questions" as const,
+      resolverPolicy: "board_or_agents" as const,
+      addresseeAgentId,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single" as const,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    };
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      input,
+      { agentId: creatorAgentId },
+    );
+    expect(created).toMatchObject({
+      addresseeAgentId,
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+    });
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: addresseeAgentId, runId: addresseeRunId },
+    );
+    expect(answered).toMatchObject({
+      status: "answered",
+      addresseeAgentId,
+      resolvedByAgentId: addresseeAgentId,
+      resolvedByRunId: addresseeRunId,
+    });
+
+    const second = await interactionsSvc.create(
+      { id: issueId, companyId },
+      { ...input, idempotencyKey: "addressed:second" },
+      { agentId: creatorAgentId },
+    );
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      second.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: unrelatedAgentId, runId: unrelatedRunId },
+    )).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("addressed agent"),
+    });
+
+    const boardOnly = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        ...input,
+        resolverPolicy: "board_only",
+        idempotencyKey: "addressed:board-only",
+      },
+      { agentId: creatorAgentId },
+    );
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      boardOnly.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: addresseeAgentId, runId: addresseeRunId },
+    )).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("human-only"),
+    });
+
+    await expect(interactionsSvc.create(
+      { id: issueId, companyId },
+      { ...input, addresseeAgentId: creatorAgentId },
+      { agentId: creatorAgentId },
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("themselves"),
+    });
+  });
+
+  it("cancels addressed interactions before deleting the addressee", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Deleted interaction addressee");
+    const creatorAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const unrelatedAgentId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    await db.insert(agents).values([
+      { id: creatorAgentId, name: "Creator" },
+      { id: addresseeAgentId, name: "Addressee" },
+      { id: unrelatedAgentId, name: "Unrelated" },
+    ].map((agent) => ({
+      ...agent,
+      companyId,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    })));
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId: unrelatedAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date("2026-07-25T12:02:00.000Z"),
+    });
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        resolverPolicy: "board_or_agents",
+        addresseeAgentId,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    await agentService(db).remove(addresseeAgentId);
+
+    const cancelled = await interactionsSvc.getById(created.id);
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      addresseeAgentId: null,
+      resolvedByAgentId: null,
+      resolvedByRunId: null,
+      resolvedByUserId: null,
+      result: {
+        version: 1,
+        outcome: "addressee_deleted",
+        reason: "Cancelled because the addressed agent was deleted",
+      },
+    });
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: unrelatedAgentId, runId: unrelatedRunId },
+    )).rejects.toMatchObject({
+      status: 409,
+      message: "Interaction has already been resolved",
+    });
+  });
+
+  it.each(["paused", "pending_approval", "terminated"])(
+    "rejects %s interaction addressees",
+    async (status) => {
+      const { companyId, issueId } = await seedConfirmationIssue(`Reject ${status} addressee`);
+      const creatorAgentId = randomUUID();
+      const addresseeAgentId = randomUUID();
+      await db.insert(agents).values([
+        {
+          id: creatorAgentId,
+          companyId,
+          name: "Creator",
+          role: "engineer",
+          status: "active",
+        },
+        {
+          id: addresseeAgentId,
+          companyId,
+          name: "Unavailable addressee",
+          role: "engineer",
+          status,
+        },
+      ]);
+
+      await expect(interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions",
+          addresseeAgentId,
+          payload: {
+            version: 1,
+            questions: [{
+              id: "scope",
+              prompt: "Which scope?",
+              selectionMode: "single",
+              options: [{ id: "phase-1", label: "Phase 1" }],
+            }],
+          },
+        },
+        { agentId: creatorAgentId },
+      )).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("invokable agent"),
+        details: expect.objectContaining({ reason: status }),
+      });
+    },
+  );
+
+  it("rejects interaction addressees with an invalid reporting chain", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject uninvokable addressee chain");
+    const creatorAgentId = randomUUID();
+    const managerAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+      },
+      {
+        id: managerAgentId,
+        companyId,
+        name: "Terminated manager",
+        role: "manager",
+        status: "terminated",
+      },
+      {
+        id: addresseeAgentId,
+        companyId,
+        name: "Unavailable addressee",
+        role: "engineer",
+        status: "active",
+        reportsTo: managerAgentId,
+      },
+    ]);
+
+    await expect(interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        addresseeAgentId,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("invokable agent"),
+      details: expect.objectContaining({
+        reason: "manager_terminated",
+        managerId: managerAgentId,
+      }),
+    });
+  });
 
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
@@ -892,6 +1220,356 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.idempotencyKey).toBe("run-1:questionnaire");
   });
 
+  it("supersedes older pending confirmations from the same agent without crossing agent or kind", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Newer confirmation supersedes older");
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const older = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:first:older",
+      payload: { version: 1, prompt: "Approve the older draft?" },
+    }, { agentId: firstAgentId });
+    const otherKind = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      idempotencyKey: "checkbox:first",
+      payload: {
+        version: 1,
+        prompt: "Select regions",
+        options: [{ id: "us", label: "US" }],
+      },
+    }, { agentId: firstAgentId });
+    const otherAgent = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:second",
+      payload: { version: 1, prompt: "Approve the second agent's draft?" },
+    }, { agentId: secondAgentId });
+    const replacement = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:first:newer",
+      payload: { version: 1, prompt: "Approve the newer draft?" },
+    }, { agentId: firstAgentId });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    expect(interactions.find((interaction) => interaction.id === older.id)).toMatchObject({
+      status: "expired",
+      resolvedByAgentId: firstAgentId,
+      result: {
+        outcome: "superseded_by_newer_request",
+        supersededByInteractionId: replacement.id,
+      },
+    });
+    expect(interactions.find((interaction) => interaction.id === replacement.id)?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === otherAgent.id)?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === otherKind.id)?.status).toBe("pending");
+  });
+
+  it("supersedes an agent's own older pending ask_user_questions without crossing agent, kind, or issue", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Question supersedes older sibling");
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      goalId,
+      title: "Other issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const probingAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: probingAgentId,
+        companyId,
+        name: "Probing agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const question = (prompt: string) => ({
+      kind: "ask_user_questions" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "q",
+          prompt,
+          selectionMode: "single" as const,
+          options: [{ id: "opt", label: "Option" }],
+        }],
+      },
+    });
+
+    const older = await interactionsSvc.create(
+      { id: issueId, companyId }, question("Older question"), { agentId: probingAgentId },
+    );
+    const otherKind = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve the draft?" },
+    }, { agentId: probingAgentId });
+    const otherAgentQuestion = await interactionsSvc.create(
+      { id: issueId, companyId }, question("Other agent question"), { agentId: otherAgentId },
+    );
+    const otherIssueQuestion = await interactionsSvc.create(
+      { id: otherIssueId, companyId }, question("Other issue question"), { agentId: probingAgentId },
+    );
+    const replacement = await interactionsSvc.create(
+      { id: issueId, companyId }, question("Newer question"), { agentId: probingAgentId },
+    );
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    expect(interactions.find((interaction) => interaction.id === older.id)).toMatchObject({
+      status: "expired",
+      resolvedByAgentId: probingAgentId,
+      result: {
+        answers: [],
+        expirationReason: "superseded_by_newer_interaction",
+        supersededByInteractionId: replacement.id,
+      },
+    });
+    expect(interactions.find((interaction) => interaction.id === replacement.id)?.status).toBe("pending");
+    // A different agent's pending question is untouched.
+    expect(interactions.find((interaction) => interaction.id === otherAgentQuestion.id)?.status).toBe("pending");
+    // A different kind from the same agent is untouched.
+    expect(interactions.find((interaction) => interaction.id === otherKind.id)?.status).toBe("pending");
+
+    // The same agent's question on a different issue is untouched.
+    const otherIssueInteractions = await interactionsSvc.listForIssue(otherIssueId);
+    expect(otherIssueInteractions.find((interaction) => interaction.id === otherIssueQuestion.id)?.status)
+      .toBe("pending");
+  });
+
+  it("leaves exactly one pending ask_user_questions on the onboarding first task after probe cards and the real question arrive", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Chief of staff",
+      role: "chief_of_staff",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Your first task",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Your first task",
+      status: "in_progress",
+      priority: "medium",
+      originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+      assigneeAgentId: agentId,
+    });
+
+    // Reproduces PAP-436: the assigned agent posts two throwaway schema probes
+    // (title/prompt/option "t"/"p"/"L") before the genuine question.
+    const probe = (prompt: string) => ({
+      kind: "ask_user_questions" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "q",
+          prompt,
+          selectionMode: "single" as const,
+          options: [{ id: "L", label: "L" }],
+        }],
+      },
+    });
+    await interactionsSvc.create({ id: issueId, companyId }, probe("t"), { agentId });
+    await interactionsSvc.create({ id: issueId, companyId }, probe("p"), { agentId });
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "focus",
+          prompt: "What would you like your team to focus on first?",
+          selectionMode: "single",
+          options: [
+            { id: "mvp", label: "Ship the MVP" },
+            { id: "bugs", label: "Fix bugs" },
+          ],
+        }],
+      },
+    }, { agentId });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    const pendingQuestions = interactions.filter(
+      (interaction) => interaction.kind === "ask_user_questions" && interaction.status === "pending",
+    );
+    expect(pendingQuestions).toHaveLength(1);
+    expect(pendingQuestions[0]?.kind).toBe("ask_user_questions");
+    const [remaining] = pendingQuestions;
+    if (remaining?.kind === "ask_user_questions") {
+      expect(remaining.payload.questions[0]?.prompt).toContain("focus on first");
+    }
+
+    // Both probe cards auto-expired with the sibling-supersede reason.
+    const expiredQuestions = interactions.filter(
+      (interaction) => interaction.kind === "ask_user_questions" && interaction.status === "expired",
+    );
+    expect(expiredQuestions).toHaveLength(2);
+    for (const card of expiredQuestions) {
+      expect(card.result).toMatchObject({ expirationReason: "superseded_by_newer_interaction" });
+    }
+  });
+
+  it("sweeps historical confirmation pile-ups idempotently per issue, kind, and agent", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Historical confirmation sweep");
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const firstAgentIds = [randomUUID(), randomUUID(), randomUUID()];
+    const secondAgentIds = [randomUUID(), randomUUID()];
+    const checkboxId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      ...firstAgentIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: firstAgentId,
+        payload: { version: 1 as const, prompt: `First agent draft ${index + 1}` },
+        createdAt: new Date(`2026-07-01T12:0${index}:00.000Z`),
+        updatedAt: new Date(`2026-07-01T12:0${index}:00.000Z`),
+      })),
+      ...secondAgentIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: secondAgentId,
+        payload: { version: 1 as const, prompt: `Second agent draft ${index + 1}` },
+        createdAt: new Date(`2026-07-01T13:0${index}:00.000Z`),
+        updatedAt: new Date(`2026-07-01T13:0${index}:00.000Z`),
+      })),
+      {
+        id: checkboxId,
+        companyId,
+        issueId,
+        kind: "request_checkbox_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: firstAgentId,
+        payload: { version: 1, prompt: "Select one", options: [{ id: "one", label: "One" }] },
+        createdAt: new Date("2026-07-01T14:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T14:00:00.000Z"),
+      },
+    ]);
+
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 3 });
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 0 });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    for (const id of firstAgentIds.slice(0, -1)) {
+      expect(interactions.find((interaction) => interaction.id === id)).toMatchObject({
+        status: "expired",
+        result: {
+          outcome: "superseded_by_newer_request",
+          supersededByInteractionId: firstAgentIds.at(-1),
+        },
+      });
+    }
+    expect(interactions.find((interaction) => interaction.id === firstAgentIds.at(-1))?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === secondAgentIds[0])).toMatchObject({
+      status: "expired",
+      result: {
+        outcome: "superseded_by_newer_request",
+        supersededByInteractionId: secondAgentIds[1],
+      },
+    });
+    expect(interactions.find((interaction) => interaction.id === secondAgentIds[1])?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === checkboxId)?.status).toBe("pending");
+  });
+
   it("refuses to create an interaction on a closed issue", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Closed issue create guard");
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
@@ -1002,6 +1680,232 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it("records an authorized agent as the review-confirmation resolver", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Agent review verdict");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve this review?" },
+      resolverPolicy: "anyone",
+    }, {
+      userId: "local-board",
+    });
+    await recordReviewTransition({ companyId, issueId, interactionId: created.id });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      resolverPolicyRestriction: "anyone",
+    });
+
+    expect(accepted.interaction).toMatchObject({
+      status: "accepted",
+      resolvedByAgentId: resolverAgentId,
+      resolvedByRunId: resolverRunId,
+      resolvedByUserId: null,
+    });
+  });
+
+  it.each(["accept", "reject"] as const)(
+    "revalidates review policy under the issue lock before interaction %s",
+    async (action) => {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue(`Locked ${action} policy`);
+      const resolverAgentId = randomUUID();
+      const resolverRunId = randomUUID();
+      await db.insert(agents).values({
+        id: resolverAgentId,
+        companyId,
+        name: "Review agent",
+        role: "reviewer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values({
+        id: resolverRunId,
+        companyId,
+        agentId: resolverAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+      });
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        payload: { version: 1, prompt: "Approve this review?" },
+      }, {
+        userId: "local-board",
+      });
+      await db.update(issues)
+        .set({ status: "in_review", reviewPolicy: "anyone" })
+        .where(eq(issues.id, issueId));
+      await recordReviewTransition({ companyId, issueId, interactionId: created.id });
+
+      let releasePolicyLock!: () => void;
+      let policyLockReady!: () => void;
+      const holdPolicyLock = new Promise<void>((resolve) => {
+        releasePolicyLock = resolve;
+      });
+      const policyLocked = new Promise<void>((resolve) => {
+        policyLockReady = resolve;
+      });
+      const tightenPolicy = db.transaction(async (tx) => {
+        await tx.select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .for("update");
+        await tx.update(issues)
+          .set({ reviewPolicy: "human_only" })
+          .where(eq(issues.id, issueId));
+        policyLockReady();
+        await holdPolicyLock;
+      });
+      await policyLocked;
+
+      const actor = {
+        agentId: resolverAgentId,
+        runId: resolverRunId,
+        reviewVerdictAuthorized: true,
+      };
+      const verdict = action === "accept"
+        ? interactionsSvc.acceptInteraction({
+            id: issueId,
+            companyId,
+            goalId,
+            projectId: null,
+            status: "in_review",
+          }, created.id, {}, actor)
+        : interactionsSvc.rejectInteraction({
+            id: issueId,
+            companyId,
+            status: "in_review",
+          }, created.id, { reason: "Needs changes" }, actor);
+      let verdictSettled = false;
+      void verdict.then(
+        () => { verdictSettled = true; },
+        () => { verdictSettled = true; },
+      );
+      const denied = expect(verdict).rejects.toMatchObject({
+        status: 403,
+        details: expect.objectContaining({
+          code: "review_policy_denied",
+          policy: "human_only",
+        }),
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(verdictSettled).toBe(false);
+      releasePolicyLock();
+      await tightenPolicy;
+      await denied;
+
+      const persisted = await db.select({ status: issueThreadInteractions.status })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("pending");
+    },
+  );
+
+  it("preserves creator and same-run guards for authorized agent review verdicts", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Guard agent review verdicts");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve your own request?" },
+      resolverPolicy: "anyone",
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ createdByAgentId: resolverAgentId })
+      .where(eq(issueThreadInteractions.id, createdByResolver.id));
+    await recordReviewTransition({ companyId, issueId, interactionId: createdByResolver.id });
+
+    const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve the same run?",
+        options: [{ id: "approve", label: "Approve" }],
+      },
+      resolverPolicy: "anyone",
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ sourceRunId: resolverRunId })
+      .where(eq(issueThreadInteractions.id, createdBySameRun.id));
+
+    const issue = { id: issueId, companyId, goalId, projectId: null };
+    const actor = {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      resolverPolicyRestriction: "not_creator",
+    };
+    await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
+      .rejects.toThrow("requires a resolver other than its creator or creating run");
+    await db.update(activityLog).set({
+      details: {
+        status: "in_review",
+        reviewInteractionId: createdBySameRun.id,
+        _previous: { status: "in_progress" },
+      },
+    }).where(eq(activityLog.entityId, issueId));
+    await expect(interactionsSvc.acceptInteraction(issue, createdBySameRun.id, {
+      selectedOptionIds: ["approve"],
+    }, actor)).rejects.toThrow("requires a resolver other than its creator or creating run");
   });
 
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
@@ -1399,7 +2303,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
+  it("returns accepted agent confirmations from review without resetting active work", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -1476,6 +2380,90 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(updatedIssue).toMatchObject({
       id: issueId,
       status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    const agentOwnedConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve the next step?",
+      },
+    }, {
+      agentId,
+    });
+
+    const resumed = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, agentOwnedConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(resumed.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+
+    const resumedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(resumedIssue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, issueId));
+
+    const activeConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve while work is active?",
+      },
+    }, {
+      agentId,
+    });
+
+    const acceptedWhileActive = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, activeConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(acceptedWhileActive.continuationIssue).toBeNull();
+    const activeIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(activeIssue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });
@@ -1627,6 +2615,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     // The unparseable result degrades to null; the interaction still lists.
     expect(listed[0]?.result).toBeNull();
     expect(listed[0]?.status).toBe("cancelled");
+  });
+
+  it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+    }, { userId: "local-board" });
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: { version: 1, outcome: "issue_closed" },
+    });
+
+    const stored = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(stored?.status).toBe("pending");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      projectId: null,
+      goalId: null,
+      status: "done",
+    }, created.id, {}, { userId: "local-board" })).rejects.toThrow(
+      "Interaction is no longer actionable because the issue is closed",
+    );
+    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId, status: "done" }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
   });
 
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
@@ -1940,16 +2965,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       latestRevisionNumber: 2,
     });
 
-    const accepted = await interactionsSvc.acceptInteraction({
+    await expect(interactionsSvc.acceptInteraction({
       id: issueId,
       companyId,
       goalId,
       projectId: null,
     }, created.id, {}, {
       userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "interaction_stale_target" },
     });
 
-    expect(accepted.interaction).toMatchObject({
+    const expired = await interactionsSvc.getForIssue({ id: issueId, companyId }, created.id);
+    expect(expired).toMatchObject({
       id: created.id,
       status: "expired",
       payload: {
@@ -1970,6 +2999,130 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         },
       },
     });
+  });
+
+  it("rejects creating a plan confirmation against a stale document revision and accepts the current one", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const nextRevisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Stale plan confirmation",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    // Document is already at revision 2 — revision 1 is stale.
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v2",
+      latestRevisionId: nextRevisionId,
+      latestRevisionNumber: 2,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values([
+      {
+        id: revisionId,
+        companyId,
+        documentId,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "v1",
+      },
+      {
+        id: nextRevisionId,
+        companyId,
+        documentId,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "v2",
+      },
+    ]);
+
+    const staleTarget = {
+      type: "issue_document" as const,
+      issueId,
+      documentId,
+      key: "plan",
+      revisionId,
+      revisionNumber: 1,
+    };
+
+    // The revision check runs inside the create transaction (locking the
+    // document row), so a target pointing at an older revision is rejected
+    // atomically with the would-be insert rather than by a racy pre-check.
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: staleTarget,
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("current issue document revision"),
+    });
+
+    const noRows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(noRows).toHaveLength(0);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: {
+          ...staleTarget,
+          revisionId: nextRevisionId,
+          revisionNumber: 2,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+    expect(created).toMatchObject({ status: "pending", kind: "request_confirmation" });
   });
 
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {
@@ -2077,17 +3230,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       latestRevisionNumber: 2,
     });
 
-    const stale = await interactionsSvc.submitItemVerdicts({
+    await expect(interactionsSvc.submitItemVerdicts({
       id: issueId,
       companyId,
     }, created.id, {
       verdicts: [{ id: "docs", verdict: "approve" }],
     }, {
       userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "interaction_stale_target" },
     });
 
-    expect(stale.newlyResolvedItemIds).toEqual([]);
-    expect(stale.interaction).toMatchObject({
+    const stale = await interactionsSvc.getForIssue({ id: issueId, companyId }, created.id);
+    expect(stale).toMatchObject({
       id: created.id,
       status: "expired",
       payload: {

@@ -82,6 +82,18 @@ import type {
   PluginExternalObjectResolveResult,
   RefreshExternalObjectsParams,
   RefreshExternalObjectsResult,
+  PluginSetupTokenPtyOpenParams,
+  PluginSetupTokenPtyOpenResult,
+  PluginSetupTokenPtyInputParams,
+  PluginSetupTokenPtyStopParams,
+  PluginSetupTokenPtyCloseParams,
+  PluginSetupTokenPtyCloseResult,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelOpenResult,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
+  PluginDuplexChannelCloseResult,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -432,6 +444,59 @@ export interface PluginDefinition {
   onEnvironmentDeleteTemplate?(
     params: PluginEnvironmentDeleteTemplateParams,
   ): Promise<PluginEnvironmentDeleteTemplateResult>;
+
+  /**
+   * Called to open one live Claude `setup-token` login pseudo-terminal.
+   * The worker registers the terminal under the host route identifier and returns a
+   * worker session identifier for the output notification binding only. The worker
+   * streams output and the exit through `ctx.setupTokenPty`, never as a reply.
+   * Defining the four `onSetupTokenPty*` hooks advertises the four methods.
+   */
+  onSetupTokenPtyOpen?(
+    params: PluginSetupTokenPtyOpenParams,
+  ): Promise<PluginSetupTokenPtyOpenResult>;
+
+  /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
+  onSetupTokenPtyInput?(params: PluginSetupTokenPtyInputParams): Promise<void>;
+
+  /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
+  onSetupTokenPtyStop?(params: PluginSetupTokenPtyStopParams): Promise<void>;
+
+  /**
+   * Called to close an open login pseudo-terminal by the host route identifier. The
+   * worker closes the exact terminal registered under that identifier and returns a
+   * close acknowledgement that carries the same identifier.
+   */
+  onSetupTokenPtyClose?(
+    params: PluginSetupTokenPtyCloseParams,
+  ): Promise<PluginSetupTokenPtyCloseResult>;
+
+  /**
+   * Called to open one persistent duplex channel. The worker registers the
+   * channel under the host route identifier and returns a worker session
+   * identifier for the data notification binding only. The worker streams data
+   * and the exit through worker→host notifications, never as a reply. Defining
+   * the four `onDuplexChannel*` hooks advertises the four methods. The host reads
+   * the open verb to gate the `duplexCommandStream` capability.
+   */
+  onDuplexChannelOpen?(
+    params: PluginDuplexChannelOpenParams,
+  ): Promise<PluginDuplexChannelOpenResult>;
+
+  /** Called to write raw input to an open duplex channel, keyed by the worker session identifier. */
+  onDuplexChannelWrite?(params: PluginDuplexChannelWriteParams): Promise<void>;
+
+  /** Called to stop an open duplex channel child, keyed by the worker session identifier. */
+  onDuplexChannelStop?(params: PluginDuplexChannelStopParams): Promise<void>;
+
+  /**
+   * Called to close an open duplex channel by the host route identifier. The
+   * worker closes the exact channel registered under that identifier and returns
+   * a close acknowledgement that carries the same identifier.
+   */
+  onDuplexChannelClose?(
+    params: PluginDuplexChannelCloseParams,
+  ): Promise<PluginDuplexChannelCloseResult>;
 }
 
 // ---------------------------------------------------------------------------
