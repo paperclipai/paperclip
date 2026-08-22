@@ -791,7 +791,7 @@ export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupte
  * keep the previous behaviour — the threat here is a caller-supplied header,
  * not the scheduler calling its own service.
  */
-export type LiveRunAuthority = { companyId: string };
+export type LiveRunAuthority = { companyId: string; agentId: string; runId: string | null };
 
 /**
  * Restricts a durable checkout write to a run that is still live when the write
@@ -804,20 +804,31 @@ export type LiveRunAuthority = { companyId: string };
  * never-true predicate when authority is required but the run id is unusable —
  * an unusable id must fail closed, never fall through unconstrained.
  */
-function liveRunAuthorityCondition(
-  authority: LiveRunAuthority | null | undefined,
-  agentId: string,
-  runId: string | null,
-): SQL | undefined {
+function liveRunAuthorityCondition(authority: LiveRunAuthority | null | undefined): SQL | undefined {
   if (!authority) return undefined;
-  const lookupId = agentRunLookupId(runId);
+  const lookupId = agentRunLookupId(authority.runId);
   if (!lookupId) return sql`false`;
   return sql`exists (select 1 from ${heartbeatRuns} where ${and(
     eq(heartbeatRuns.id, lookupId),
     eq(heartbeatRuns.companyId, authority.companyId),
-    eq(heartbeatRuns.agentId, agentId),
+    eq(heartbeatRuns.agentId, authority.agentId),
     inArray(heartbeatRuns.status, [...AGENT_WRITE_HEARTBEAT_RUN_STATUSES]),
   )})`;
+}
+
+/** Whether the authority's run still carries write authority right now. */
+async function liveRunAuthorityHolds(dbOrTx: Db, authority: LiveRunAuthority) {
+  const lookupId = agentRunLookupId(authority.runId);
+  if (!lookupId) return false;
+  return await dbOrTx
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, lookupId),
+      eq(heartbeatRuns.companyId, authority.companyId),
+      eq(heartbeatRuns.agentId, authority.agentId),
+    ))
+    .then((rows) => hasAgentWriteRunAuthority(rows[0]?.status));
 }
 
 /**
@@ -5614,7 +5625,7 @@ export function issueService(db: Db) {
     return row;
   }
 
-  return {
+  const api = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
@@ -7704,6 +7715,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        liveRunAuthority?: LiveRunAuthority | null;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7722,8 +7734,10 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        liveRunAuthority,
         ...issueData
       } = data;
+      const liveRunCondition = liveRunAuthorityCondition(liveRunAuthority);
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7907,10 +7921,18 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(and(eq(issues.id, id), liveRunCondition))
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
-        if (!updated) return null;
+        if (!updated) {
+          // Distinguish "the run stopped being live between the route gate and
+          // this statement" from an issue that was concurrently deleted; only
+          // the former is a run-context denial (FAI-9983).
+          if (liveRunAuthority && !(await liveRunAuthorityHolds(tx as unknown as Db, liveRunAuthority))) {
+            throw agentRunContextInvalidError(id, liveRunAuthority.runId);
+          }
+          return null;
+        }
         if (existing.status !== updated.status) {
           if (
             (existing.status === "done" || existing.status === "cancelled")
@@ -8207,8 +8229,7 @@ export function issueService(db: Db) {
       checkoutRunId: string | null,
       liveRunAuthority?: LiveRunAuthority | null,
     ) => {
-      const liveRunCondition = liveRunAuthorityCondition(liveRunAuthority, agentId, checkoutRunId);
-      const liveRunLookupId = agentRunLookupId(checkoutRunId);
+      const liveRunCondition = liveRunAuthorityCondition(liveRunAuthority);
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -8291,19 +8312,8 @@ export function issueService(db: Db) {
       // Past this point every branch is a recovery path for a checkout that did
       // not land. If the caller's run lost authority in the meantime, say so
       // with the run-context contract instead of reporting a lock conflict.
-      if (liveRunAuthority) {
-        const stillLive = liveRunLookupId
-          ? await db
-            .select({ status: heartbeatRuns.status })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.id, liveRunLookupId),
-              eq(heartbeatRuns.companyId, liveRunAuthority.companyId),
-              eq(heartbeatRuns.agentId, agentId),
-            ))
-            .then((rows) => hasAgentWriteRunAuthority(rows[0]?.status))
-          : false;
-        if (!stillLive) throw agentRunContextInvalidError(id, checkoutRunId);
+      if (liveRunAuthority && !(await liveRunAuthorityHolds(db, liveRunAuthority))) {
+        throw agentRunContextInvalidError(id, checkoutRunId);
       }
 
       const current = await db
@@ -8592,13 +8602,8 @@ export function issueService(db: Db) {
         );
         // Issue row first, then the run row: the same order the checkout
         // adoption paths take, so the two cannot deadlock against each other.
-        if (liveRunAuthority) {
-          const live = await lockLiveAgentRun(tx as unknown as Db, {
-            runId: actorRunId,
-            companyId: liveRunAuthority.companyId,
-            agentId: actorAgentId,
-          });
-          if (!live) throw agentRunContextInvalidError(id, actorRunId ?? null);
+        if (liveRunAuthority && !(await lockLiveAgentRun(tx as unknown as Db, liveRunAuthority))) {
+          throw agentRunContextInvalidError(id, actorRunId ?? null);
         }
         const existing = await tx
           .select()
@@ -8914,6 +8919,7 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
+        liveRunAuthority?: LiveRunAuthority | null;
       },
       dbOrTx: any = db,
     ) => {
@@ -9355,6 +9361,33 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+  };
+
+  return {
+    ...api,
+    /**
+     * A comment insert has no WHERE clause to carry the run proof, so an agent
+     * comment takes the run row lock and inserts inside one transaction: a run
+     * terminalized since the route gate either commits first (and this refuses)
+     * or waits behind the insert (FAI-9983). Callers that already own a
+     * transaction get the proof inside theirs.
+     */
+    addComment: async (
+      ...args: Parameters<typeof api.addComment>
+    ): ReturnType<typeof api.addComment> => {
+      const [issueId, body, actor, options, dbOrTx = db] = args;
+      const authority = options?.liveRunAuthority ?? null;
+      if (!authority) return await api.addComment(issueId, body, actor, options, dbOrTx);
+      const insertWithRunProof = async (runner: Db) => {
+        if (!(await lockLiveAgentRun(runner, authority))) {
+          throw agentRunContextInvalidError(issueId, authority.runId);
+        }
+        return await api.addComment(issueId, body, actor, options, runner);
+      };
+      return dbOrTx === db
+        ? await db.transaction((tx) => insertWithRunProof(tx as unknown as Db))
+        : await insertWithRunProof(dbOrTx);
     },
   };
 }

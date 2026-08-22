@@ -292,10 +292,7 @@ function createRunContextDb(
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
 ) {
-  // `status` defaults to a live run: mutation routes now re-read and lock the
-  // run row inside the write transaction, so a status-less stub row would read
-  // as "no write authority" (FAI-9983). Individual rows can still override it.
-  const runRows = (Array.isArray(runAgentOrRows)
+  const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
     : [{
         id: runId,
@@ -303,7 +300,7 @@ function createRunContextDb(
         agentId: runAgentOrRows,
         agentCompanyId: companyId,
         contextSnapshot,
-      }]).map((row) => ({ status: "running", ...row }));
+      }];
   const firstRun = runRows[0] ?? {};
   const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
@@ -848,7 +845,6 @@ describe("agent issue mutation checkout ownership", () => {
       "I can respond here.",
       expect.any(Object),
       expect.any(Object),
-      expect.anything(),
     );
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
@@ -871,7 +867,6 @@ describe("agent issue mutation checkout ownership", () => {
       "I was not mentioned.",
       expect.any(Object),
       expect.any(Object),
-      expect.anything(),
     );
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ownerAgentId,
@@ -1543,14 +1538,12 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ title: "Updated after commit" }),
-      expect.anything(),
     );
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
       "progress update",
       expect.any(Object),
       expect.any(Object),
-      expect.anything(),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
     expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
@@ -2072,7 +2065,6 @@ describe("agent issue mutation checkout ownership", () => {
         id: watchdogRunId,
         companyId,
         agentId: peerAgentId,
-        status: "running",
         contextSnapshot: { taskWatchdog: { watchedIssueId, stopFingerprint: "task_watchdog_stop:test" } },
       }];
       const watchdogRows = options.watchdogRows ?? [{
@@ -2105,9 +2097,6 @@ describe("agent issue mutation checkout ownership", () => {
           limit: vi.fn(() => ({
             then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
           })),
-          for: vi.fn(() => ({
-            then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
-          })),
           then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
         };
         const query = {
@@ -2116,15 +2105,12 @@ describe("agent issue mutation checkout ownership", () => {
         };
         return query;
       };
-      // Transactions get the same stub, not an empty object: agent mutations now
-      // run their durable write with the run row locked in that transaction.
-      const stub: Record<string, unknown> = {
-        transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(stub),
+      return {
+        transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
           from: vi.fn(() => buildQuery(selection)),
         })),
       };
-      return stub;
     }
 
     // The base boundary always denies a cross-agent issue:mutate; only the
@@ -2154,7 +2140,6 @@ describe("agent issue mutation checkout ownership", () => {
         "Watchdog finding",
         expect.any(Object),
         expect.any(Object),
-        expect.anything(),
       );
     });
 
@@ -2174,11 +2159,7 @@ describe("agent issue mutation checkout ownership", () => {
       const res = await request(app).patch(`/api/issues/${issueId}`).send({ status });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(mockIssueService.update).toHaveBeenCalledWith(
-        issueId,
-        expect.objectContaining({ status }),
-        expect.anything(),
-      );
+      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {
@@ -2363,7 +2344,6 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(
         issueId,
         expect.objectContaining({ assigneeAgentId: peerAgentId }),
-        expect.anything(),
       );
     });
 
