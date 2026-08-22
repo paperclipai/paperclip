@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,8 @@ const execFileAsync = promisify(execFile);
 
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
+const CLAUDE_CLI_PROBE_TERMINATION_GRACE_MS = 1_000;
+const CLAUDE_CLI_PROBE_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
@@ -437,13 +440,240 @@ function buildClaudeCliShellProbeCommand(): string {
   return `${feed} | script -q -e -f -c ${quoteForShell(claudeCommand)} /dev/null`;
 }
 
+interface ClaudeCliShellProbeOptions {
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  terminationGraceMs?: number;
+  maxBufferBytes?: number;
+}
+
+function snapshotClaudeCliProbeProcessGroups(rootPid: number): number[] {
+  if (process.platform === "win32") return [];
+  if (process.platform === "linux") {
+    const groupsByDepth = new Map<number, number>([[rootPid, 0]]);
+    const pending = [{ pid: rootPid, depth: 0 }];
+    const visited = new Set<number>();
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (visited.has(current.pid)) continue;
+      visited.add(current.pid);
+      let childPids: number[];
+      try {
+        childPids = readFileSync(
+          `/proc/${current.pid}/task/${current.pid}/children`,
+          "utf8",
+        ).trim().split(/\s+/).filter(Boolean).map(Number);
+      } catch {
+        continue;
+      }
+      for (const childPid of childPids) {
+        try {
+          const stat = readFileSync(`/proc/${childPid}/stat`, "utf8");
+          const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+          const processGroupId = Number(fields[2]);
+          if (Number.isInteger(processGroupId) && processGroupId > 0) {
+            groupsByDepth.set(processGroupId, Math.max(
+              groupsByDepth.get(processGroupId) ?? 0,
+              current.depth + 1,
+            ));
+          }
+          pending.push({ pid: childPid, depth: current.depth + 1 });
+        } catch {
+          // A descendant can exit while /proc is being read.
+        }
+      }
+    }
+    return [...groupsByDepth]
+      .sort((left, right) => right[1] - left[1])
+      .map(([processGroupId]) => processGroupId);
+  }
+  let processTable: string;
+  try {
+    processTable = execFileSync("ps", ["-axo", "pid=,ppid=,pgid="], { encoding: "utf8" });
+  } catch {
+    return [rootPid];
+  }
+
+  const childrenByParent = new Map<number, Array<{ pid: number; processGroupId: number }>>();
+  for (const line of processTable.split("\n")) {
+    const [pid, parentPid, processGroupId] = line.trim().split(/\s+/).map(Number);
+    if (![pid, parentPid, processGroupId].every(Number.isInteger)) continue;
+    const children = childrenByParent.get(parentPid) ?? [];
+    children.push({ pid, processGroupId });
+    childrenByParent.set(parentPid, children);
+  }
+
+  const groupsByDepth = new Map<number, number>();
+  const pending = [{ pid: rootPid, depth: 0 }];
+  const visited = new Set<number>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (visited.has(current.pid)) continue;
+    visited.add(current.pid);
+    for (const child of childrenByParent.get(current.pid) ?? []) {
+      groupsByDepth.set(child.processGroupId, Math.max(
+        groupsByDepth.get(child.processGroupId) ?? 0,
+        current.depth + 1,
+      ));
+      pending.push({ pid: child.pid, depth: current.depth + 1 });
+    }
+  }
+  groupsByDepth.set(rootPid, 0);
+  return [...groupsByDepth]
+    .filter(([processGroupId]) => processGroupId > 0)
+    .sort((left, right) => right[1] - left[1])
+    .map(([processGroupId]) => processGroupId);
+}
+
+function signalClaudeCliProbeTarget(
+  child: ReturnType<typeof spawn>,
+  processGroupId: number | null,
+  signal: NodeJS.Signals,
+): void {
+  if (process.platform !== "win32" && processGroupId !== null) {
+    try {
+      process.kill(-processGroupId, signal);
+    } catch {
+      // A descendant can exit between the process snapshot and the signal.
+    }
+    return;
+  }
+  if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+}
+
+function aliveClaudeCliProbeGroups(processGroupIds: number[]): number[] {
+  return processGroupIds.filter((processGroupId) => {
+    try {
+      process.kill(-processGroupId, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function waitForClaudeCliProbeGroupsToExit(
+  processGroupIds: number[],
+  timeoutMs: number,
+): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  let alive = aliveClaudeCliProbeGroups(processGroupIds);
+  while (alive.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    alive = aliveClaudeCliProbeGroups(alive);
+  }
+  return alive;
+}
+
+export function executeClaudeCliShellProbe(
+  command: string,
+  options: ClaudeCliShellProbeOptions,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let timedOut = false;
+    let settled = false;
+    let outputExceededMaxBuffer = false;
+    let stdout = "";
+    let stderr = "";
+    const maxBufferBytes = options.maxBufferBytes ?? CLAUDE_CLI_PROBE_MAX_BUFFER_BYTES;
+    const child = spawn("sh", ["-c", command], {
+      detached: process.platform !== "win32",
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    const appendOutput = (current: string, chunk: string): string => {
+      if (Buffer.byteLength(current) + Buffer.byteLength(chunk) > maxBufferBytes) {
+        outputExceededMaxBuffer = true;
+        return current;
+      }
+      return current + chunk;
+    };
+    child.stdout.on("data", (chunk: string) => {
+      stdout = appendOutput(stdout, chunk);
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr = appendOutput(stderr, chunk);
+    });
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      void (async () => {
+        const processGroupIds =
+          typeof child.pid === "number" && child.pid > 0
+            ? snapshotClaudeCliProbeProcessGroups(child.pid)
+            : [];
+        const terminationGraceMs =
+          options.terminationGraceMs ?? CLAUDE_CLI_PROBE_TERMINATION_GRACE_MS;
+        if (process.platform === "win32") {
+          signalClaudeCliProbeTarget(child, null, "SIGTERM");
+          await new Promise((resolveDelay) => setTimeout(
+            resolveDelay,
+            terminationGraceMs,
+          ));
+          if (child.exitCode === null && child.signalCode === null) {
+            signalClaudeCliProbeTarget(child, null, "SIGKILL");
+          }
+        } else {
+          // Stop nested pty groups before their parents so script(1) can reap
+          // the child instead of leaving a reparented zombie behind.
+          for (const processGroupId of processGroupIds) {
+            signalClaudeCliProbeTarget(child, processGroupId, "SIGTERM");
+            const stillAlive = await waitForClaudeCliProbeGroupsToExit(
+              [processGroupId],
+              terminationGraceMs,
+            );
+            if (stillAlive.length === 0) continue;
+            signalClaudeCliProbeTarget(child, processGroupId, "SIGKILL");
+            await waitForClaudeCliProbeGroupsToExit(stillAlive, 1_000);
+          }
+        }
+        if (settled) return;
+        settled = true;
+        const timeoutError = new Error(`Claude CLI usage probe timed out after ${options.timeoutMs}ms`);
+        Object.assign(timeoutError, { stdout, stderr, code: "ETIMEDOUT" });
+        reject(timeoutError);
+      })();
+    }, options.timeoutMs);
+
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      if (settled || timedOut) return;
+      settled = true;
+      reject(error);
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timeout);
+      if (settled || timedOut) return;
+      settled = true;
+      if (outputExceededMaxBuffer) {
+        const error = new Error("Claude CLI usage probe exceeded maxBuffer");
+        Object.assign(error, {
+          stdout,
+          stderr,
+          code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        });
+        reject(error);
+        return;
+      }
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const error = new Error(`Claude CLI usage probe exited with ${signal ?? `code ${code}`}`);
+      Object.assign(error, { stdout, stderr, code, signal });
+      reject(error);
+    });
+  });
+}
+
 export async function captureClaudeCliUsageText(timeoutMs = 12_000): Promise<string> {
   const command = buildClaudeCliShellProbeCommand();
   try {
-    const { stdout, stderr } = await execFileAsync("sh", ["-c", command], {
+    const { stdout, stderr } = await executeClaudeCliShellProbe(command, {
       env: createClaudeQuotaEnv(),
-      timeout: timeoutMs,
-      maxBuffer: 8 * 1024 * 1024,
+      timeoutMs,
     });
     const output = `${stdout}${stderr}`;
     const cleaned = cleanTerminalText(output);
