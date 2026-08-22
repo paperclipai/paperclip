@@ -30,6 +30,20 @@ import type {
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api, type RequestOptions } from "./client";
+import type { RunForIssue } from "./activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
+
+export type IssueViewResponse = {
+  detail: Issue;
+  comments: IssueComment[];
+  interactions: IssueThreadInteraction[];
+  attachments: IssueAttachment[];
+  workProducts: IssueWorkProduct[];
+  childIssues: Issue[];
+  runs: RunForIssue[];
+  liveRuns: LiveRunForIssue[];
+  activeRun: ActiveRunForIssue | null;
+};
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
@@ -152,6 +166,9 @@ export const issuesApi = {
   get: (id: string, options?: RequestOptions) => options
     ? api.get<Issue>(`/issues/${id}`, options)
     : api.get<Issue>(`/issues/${id}`),
+  getView: (id: string, options?: RequestOptions) => options
+    ? api.get<IssueViewResponse>(`/issues/${id}/view`, options)
+    : api.get<IssueViewResponse>(`/issues/${id}/view`),
   getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),

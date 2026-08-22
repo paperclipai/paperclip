@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
@@ -117,8 +117,67 @@ export async function fetchIssueDetail(
   issueRef: string,
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
-  const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
-  return seedIssueDetailCache(queryClient, issue, { issueRef });
+  const requestedAt = Date.now();
+  const cachedIssueBeforeRequest = getCachedIssueDetail(queryClient, issueRef);
+  const detailRefsBeforeRequest = collectIssueRefs(issueRef, cachedIssueBeforeRequest);
+  const detailStateBeforeRequest = new Map(detailRefsBeforeRequest.map((ref) => {
+    const queryKey = queryKeys.issues.detail(ref);
+    return [ref, {
+      data: queryClient.getQueryData<Issue>(queryKey),
+      dataUpdatedAt: queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0,
+    }] as const;
+  }));
+  const view = options ? await issuesApi.getView(issueRef, options) : await issuesApi.getView(issueRef);
+  const refs = collectIssueRefs(issueRef, view.detail);
+  const invalidatedLiveIssue = refs
+    .map((ref) => {
+      const queryKey = queryKeys.issues.detail(ref);
+      const data = queryClient.getQueryData<Issue>(queryKey);
+      return queryClient.getQueryState(queryKey)?.isInvalidated && isCompleteIssueSnapshot(data)
+        ? data
+        : null;
+    })
+    .find((data): data is Issue => data !== null);
+  const freshestLiveIssue = refs
+    .map((ref) => {
+      const queryKey = queryKeys.issues.detail(ref);
+      const data = queryClient.getQueryData<Issue>(queryKey);
+      const dataUpdatedAt = queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0;
+      const before = detailStateBeforeRequest.get(ref);
+      const changedDuringRequest = data !== before?.data || dataUpdatedAt !== (before?.dataUpdatedAt ?? 0);
+      return isCompleteIssueSnapshot(data) && changedDuringRequest && dataUpdatedAt >= requestedAt
+        ? { data, dataUpdatedAt }
+        : null;
+    })
+    .filter((entry): entry is { data: Issue; dataUpdatedAt: number } => entry !== null)
+    .sort((left, right) => right.dataUpdatedAt - left.dataUpdatedAt)[0]?.data;
+  const issue = seedIssueDetailCache(
+    queryClient,
+    invalidatedLiveIssue ?? freshestLiveIssue ?? view.detail,
+    { issueRef },
+  );
+  const hydrateIfNotUpdatedDuringRequest = <T>(queryKey: readonly unknown[], value: T) => {
+    const state = queryClient.getQueryState(queryKey);
+    if (state?.isInvalidated || (state?.dataUpdatedAt ?? 0) >= requestedAt) return;
+    queryClient.setQueryData(queryKey, value);
+  };
+  for (const ref of refs) {
+    hydrateIfNotUpdatedDuringRequest<InfiniteData<typeof view.comments, string | null>>(
+      queryKeys.issues.comments(ref),
+      { pages: [view.comments], pageParams: [null] },
+    );
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.interactions(ref), view.interactions);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.attachments(ref), view.attachments);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.workProducts(ref), view.workProducts);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.runs(ref), view.runs);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.liveRuns(ref), view.liveRuns);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.activeRun(ref), view.activeRun);
+  }
+  hydrateIfNotUpdatedDuringRequest(
+    queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
+    view.childIssues,
+  );
+  return issue;
 }
 
 export function getIssueDetailQueryOptions(
@@ -158,6 +217,10 @@ export function prefetchIssueDetail(
  * query key IssueDetail mounts, so a subsequent navigation paints comments from
  * cache instead of waiting on a fetch. Keyed by issue ref and always background
  * revalidated by the mounted query, so it never surfaces stale cross-issue data.
+ *
+ * `prefetchInfiniteQuery` respects `staleTime`: if the comments cache is already
+ * fresh (e.g. seeded by the aggregate `getView` fetch), this is a no-op and does
+ * not issue a redundant request.
  */
 export function prefetchIssueComments(queryClient: QueryClient, issueRef: string) {
   return queryClient.prefetchInfiniteQuery({

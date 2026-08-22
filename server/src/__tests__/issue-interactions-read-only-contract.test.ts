@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 
-describe("issue interactions GET contract", () => {
-  it("does not perform expiry sweeps or activity writes", () => {
+describe("aggregate issue view interactions contract", () => {
+  it("hydrates interactions without expiry sweeps or activity writes", () => {
     const source = fs.readFileSync(new URL("../routes/issues.ts", import.meta.url), "utf8");
-    const start = source.indexOf('router.get("/issues/:id/interactions"');
-    const end = source.indexOf('router.post("/issues/:id/interactions"', start);
+    const start = source.indexOf('router.get("/issues/:id/view"');
+    const end = source.indexOf('router.get("/issues/:id/watchdog"', start);
     const handler = source.slice(start, end);
 
     expect(start).toBeGreaterThanOrEqual(0);
