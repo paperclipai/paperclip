@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
+import type { AdapterModelDiscoveryContext } from "../adapters/types.js";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
@@ -2362,9 +2363,50 @@ export function agentRoutes(
       res.json(adapter.models ?? []);
       return;
     }
+    // Model discovery shells out to the provider CLI, which can only enumerate
+    // models for providers it can authenticate. When the caller names an agent,
+    // resolve that agent's adapter env (company secrets included, via the same
+    // path execution uses) so secret-backed providers show up in the picker
+    // instead of only those hardcoded in an on-disk provider config.
+    const discoveryAgentId = asNonEmptyString(req.query.agentId);
+    let discoveryCtx: AdapterModelDiscoveryContext | undefined;
+    if (discoveryAgentId) {
+      const discoveryAgent = await svc.getById(discoveryAgentId);
+      // Bind the agent to the requested adapter type as well as the company.
+      // Without the type check a caller could name an agent of one adapter and
+      // hand its resolved credentials to a different adapter's discovery.
+      if (
+        discoveryAgent
+        && discoveryAgent.companyId === companyId
+        && discoveryAgent.adapterType === type
+      ) {
+        try {
+          const { config } = await secretsSvc.resolveAdapterConfigForRuntime(
+            companyId,
+            asRecord(discoveryAgent.adapterConfig) ?? {},
+            {
+              consumerType: "agent",
+              consumerId: discoveryAgent.id,
+              actorType: "agent",
+              actorId: discoveryAgent.id,
+            },
+            { adapterType: discoveryAgent.adapterType },
+          );
+          const resolvedEnv = asRecord(config.env) ?? {};
+          const env: Record<string, string> = {};
+          for (const [key, value] of Object.entries(resolvedEnv)) {
+            if (typeof value === "string") env[key] = value;
+          }
+          if (Object.keys(env).length > 0) discoveryCtx = { env };
+        } catch {
+          // Discovery must never fail the picker — fall back to process env.
+          discoveryCtx = undefined;
+        }
+      }
+    }
     const models = refresh
-      ? await refreshAdapterModels(type)
-      : await listAdapterModels(type);
+      ? await refreshAdapterModels(type, discoveryCtx)
+      : await listAdapterModels(type, discoveryCtx);
     res.json(models);
   });
 

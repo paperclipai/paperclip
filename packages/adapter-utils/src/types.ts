@@ -205,6 +205,23 @@ export interface AdapterModel {
   label: string;
 }
 
+/**
+ * Optional context for adapter model discovery.
+ *
+ * Adapters that shell out to a provider CLI (pi, opencode, codex, ...) can only
+ * enumerate models for providers they can authenticate. Without this, discovery
+ * sees nothing but the server process environment, so a credential held as a
+ * per-company secret can never surface a model in the picker — the provider has
+ * to be hardcoded in an on-disk config instead.
+ *
+ * `env` carries an already-resolved environment (the server resolves company
+ * secrets via the same path it uses for execution) so the adapter never needs
+ * access to the secret store itself.
+ */
+export interface AdapterModelDiscoveryContext {
+  env?: Record<string, string>;
+}
+
 export type AdapterModelProfileKey = "cheap";
 
 export interface AdapterModelProfileDefinition {
@@ -428,7 +445,7 @@ export interface ServerAdapterModule {
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  listModels?: (ctx?: AdapterModelDiscoveryContext) => Promise<AdapterModel[]>;
   modelProfiles?: AdapterModelProfileDefinition[];
   listModelProfiles?: () => Promise<AdapterModelProfileDefinition[]>;
   /**
@@ -437,7 +454,7 @@ export interface ServerAdapterModule {
    * so the UI can fetch newly released models without waiting for cache expiry
    * or a Paperclip code update.
    */
-  refreshModels?: () => Promise<AdapterModel[]>;
+  refreshModels?: (ctx?: AdapterModelDiscoveryContext) => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

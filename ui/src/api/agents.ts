@@ -207,11 +207,14 @@ export const agentsApi = {
   adapterModels: (
     companyId: string,
     type: string,
-    options?: { refresh?: boolean; environmentId?: string | null },
+    options?: { refresh?: boolean; environmentId?: string | null; agentId?: string | null },
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
     if (options?.environmentId) params.set("environmentId", options.environmentId);
+    // Lets the server resolve this agent's secrets so secret-backed providers
+    // appear in the picker, not just those hardcoded in an on-disk config.
+    if (options?.agentId) params.set("agentId", options.agentId);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return api.get<AdapterModel[]>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${query}`,

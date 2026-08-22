@@ -687,7 +687,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // Fetch adapter models for the effective adapter type
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, editAgentId)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -696,6 +696,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
+      // Lets the server resolve this agent's secrets so secret-backed
+      // providers appear in the picker.
+      agentId: editAgentId,
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -1150,7 +1153,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, {
+        refresh: true,
+        agentId: editAgentId,
+      });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
