@@ -32,6 +32,7 @@ describe("project and goal commands", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_CONTEXT;
   });
@@ -70,6 +71,7 @@ describe("project and goal commands", () => {
       "project", "update", PROJECT_ID,
       "--api-base", "http://localhost:3100",
       "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
       "--status", "in_progress",
     ], { from: "user" });
 
@@ -79,7 +81,7 @@ describe("project and goal commands", () => {
       status: "planned",
       goalIds: [GOAL_ID],
     });
-    expect(fetchMock.mock.calls[1]?.[0]).toBe(`http://localhost:3100/api/projects/${PROJECT_ID}`);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`http://localhost:3100/api/projects/${PROJECT_ID}?companyId=${COMPANY_ID}`);
     expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("PATCH");
   });
 
@@ -102,12 +104,32 @@ describe("project and goal commands", () => {
       "project", "delete", PROJECT_ID,
       "--api-base", "http://localhost:3100",
       "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
       "--yes",
     ], { from: "user" });
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://localhost:3100/api/companies/${COMPANY_ID}/projects`);
-    expect(fetchMock.mock.calls[1]?.[0]).toBe(`http://localhost:3100/api/projects/${PROJECT_ID}`);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`http://localhost:3100/api/projects/${PROJECT_ID}?companyId=${COMPANY_ID}`);
     expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("DELETE");
+  });
+
+  it("refuses to delete projects without explicit confirmation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
+
+    await expect(createProgram().parseAsync([
+      "project", "delete", PROJECT_ID,
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+    ], { from: "user" })).rejects.toThrow("process.exit called");
+
+    expect(error.mock.calls[0]?.[0]).toContain("Deletion requires --yes");
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("creates, updates, lists, and deletes goals", async () => {
@@ -157,5 +179,24 @@ describe("project and goal commands", () => {
     expect(fetchMock.mock.calls[2]?.[0]).toBe(`http://localhost:3100/api/companies/${COMPANY_ID}/goals`);
     expect(fetchMock.mock.calls[3]?.[0]).toBe(`http://localhost:3100/api/goals/${GOAL_ID}`);
     expect(fetchMock.mock.calls[3]?.[1]?.method).toBe("DELETE");
+  });
+
+  it("refuses to delete goals without explicit confirmation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
+
+    await expect(createProgram().parseAsync([
+      "goal", "delete", GOAL_ID,
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+    ], { from: "user" })).rejects.toThrow("process.exit called");
+
+    expect(error.mock.calls[0]?.[0]).toContain("Deletion requires --yes");
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
