@@ -149,10 +149,10 @@ function parseCompanyPackage(companyDir: string): CompanyPackage | null {
   const agents: CompanyPortabilityManifest["agents"] = [];
   if (fs.existsSync(agentsDir)) {
     for (const agentSlug of fs.readdirSync(agentsDir)) {
-      const agentMdName = fs.existsSync(path.join(agentsDir, agentSlug, "AGENT.md"))
-        ? "AGENT.md"
-        : fs.existsSync(path.join(agentsDir, agentSlug, "AGENTS.md"))
-          ? "AGENTS.md"
+      const agentMdName = fs.existsSync(path.join(agentsDir, agentSlug, "AGENTS.md"))
+        ? "AGENTS.md"
+        : fs.existsSync(path.join(agentsDir, agentSlug, "AGENT.md"))
+          ? "AGENT.md"
           : null;
       if (!agentMdName) continue;
       const agentMdPath = path.join(agentsDir, agentSlug, agentMdName);
