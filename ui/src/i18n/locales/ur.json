@@ -5,5 +5,11 @@
       "description": "کمپنی بنا کر شروع کریں۔",
       "newCompany": "نئی کمپنی"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

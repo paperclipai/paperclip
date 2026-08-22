@@ -5,5 +5,11 @@
       "description": "Commencez par créer une entreprise.",
       "newCompany": "Nouvelle entreprise"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

@@ -5,5 +5,11 @@
       "description": "కంపెనీని సృష్టించడం ద్వారా ప్రారంభించండి.",
       "newCompany": "కొత్త కంపెనీ"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

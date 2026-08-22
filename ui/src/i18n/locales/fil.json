@@ -5,5 +5,11 @@
       "description": "Magsimula sa paggawa ng kumpanya.",
       "newCompany": "Bagong Kumpanya"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

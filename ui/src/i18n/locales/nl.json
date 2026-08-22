@@ -5,5 +5,11 @@
       "description": "Begin door een bedrijf aan te maken.",
       "newCompany": "Nieuw bedrijf"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

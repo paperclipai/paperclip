@@ -5,5 +5,11 @@
       "description": "Anza kwa kuunda kampuni.",
       "newCompany": "Kampuni Mpya"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }
