@@ -73,6 +73,36 @@ describe("managed install doctor checks", () => {
     ]);
   });
 
+  it("ignores a foreign binary that a global npm install left at the shim path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-install-doctor-"));
+    const paths = resolveInstallStorePaths({
+      paperclipHome: path.join(root, ".paperclip"),
+      homeDir: root,
+    });
+    // `npm config set prefix ~/.local` puts the global binary on exactly the
+    // path the managed installer uses for its shim.
+    fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });
+    const npmGlobalBinary = "#!/bin/sh exec node $HOME/.local/lib/node_modules/paperclipai/dist/index.js";
+    fs.writeFileSync(paths.shimPath, npmGlobalBinary);
+
+    expect(managedInstallChecks(paths)).toEqual([
+      expect.objectContaining({ name: "Managed install", status: "pass" }),
+    ]);
+  });
+
+  it("still detects a managed install from the shim marker alone", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-install-doctor-"));
+    const paths = resolveInstallStorePaths({
+      paperclipHome: path.join(root, ".paperclip"),
+      homeDir: root,
+    });
+    writeManagedShim(paths);
+
+    expect(managedInstallChecks(paths)).toEqual([
+      expect.objectContaining({ name: "Managed install manifest", status: "fail" }),
+    ]);
+  });
+
   it("ignores an empty installs directory left by a harmless lock lifecycle", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-install-doctor-"));
     const paths = resolveInstallStorePaths({
