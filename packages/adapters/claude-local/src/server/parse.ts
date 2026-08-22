@@ -54,6 +54,57 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
   return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+/**
+ * Incrementally scans raw stdout chunks from a running `claude --print
+ * --output-format stream-json` process for the first `{"type":"system",
+ * "subtype":"init","session_id":...}` line and invokes `onSessionObserved`
+ * exactly once with that session id, while the process is still alive. This
+ * lets the server persist the task session mid-run so a killed process
+ * (`process_lost`) can resume from the observed session instead of losing
+ * all accumulated context. See parseClaudeStreamJson for the equivalent
+ * end-of-run parse over the fully accumulated stdout.
+ *
+ * Chunks arrive as raw `data` events off the child process stdout stream and
+ * are not guaranteed to align with line boundaries, so this buffers partial
+ * lines across `feed` calls.
+ */
+export function createClaudeSessionObservedStdoutTracker(
+  onSessionObserved: (meta: { sessionId: string }) => Promise<void>,
+) {
+  let buffer = "";
+  let observed = false;
+
+  return {
+    async feed(chunk: string): Promise<void> {
+      if (observed || !chunk) return;
+      buffer += chunk;
+
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (observed) return;
+        if (line) {
+          const event = parseJson(line);
+          if (
+            event &&
+            asString(event.type, "") === "system" &&
+            asString(event.subtype, "") === "init"
+          ) {
+            const sessionId = asString(event.session_id, "");
+            if (sessionId) {
+              observed = true;
+              await onSessionObserved({ sessionId });
+              return;
+            }
+          }
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    },
+  };
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";

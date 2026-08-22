@@ -189,6 +189,23 @@ export interface AdapterExecutionContext {
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /**
+   * Fired the first time an adapter observes the session id its underlying
+   * agent process is using, while that process is still running. This lets
+   * the server persist the task session mid-run so a `process_lost` retry
+   * (the process was killed before it returned an `AdapterExecutionResult`)
+   * can resume from the observed session instead of starting from zero. The
+   * terminal `AdapterExecutionResult.sessionId`/`sessionParams` write still
+   * happens as before and remains authoritative (it still honours
+   * `clearSession` / max-turns clearing); this callback only closes the gap
+   * for a run that never reaches that terminal write. Adapters should invoke
+   * this at most once per run.
+   */
+  onSessionObserved?: (meta: {
+    sessionId: string;
+    sessionParams?: Record<string, unknown>;
+    sessionDisplayId?: string;
+  }) => Promise<void>;
   authToken?: string;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root

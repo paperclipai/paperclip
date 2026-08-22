@@ -16186,6 +16186,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               startedAt: meta.startedAt,
             });
           },
+          // Persist the task session as soon as the adapter observes a
+          // session id, while the underlying agent process is still
+          // running. If the process is later killed (SIGKILL, OOM, cgroup
+          // sweep) before the adapter returns an AdapterExecutionResult, the
+          // terminal `upsertTaskSession` write below never runs and the
+          // process_lost retry path (`resolveSessionBeforeForWakeup`) would
+          // otherwise find no task-session row and resume from zero. This is
+          // best-effort and never authoritative: the terminal write after a
+          // clean finish still runs unconditionally and still wins (it still
+          // honours `adapterResult.clearSession` / max-turns clearing), so a
+          // mid-run write here can never prevent the terminal path from
+          // clearing a poisoned session.
+          onSessionObserved: taskKey
+            ? async (meta) => {
+                try {
+                  const observedParams = normalizeSessionParams(
+                    sessionCodec.serialize(
+                      normalizeSessionParams(meta.sessionParams ?? { sessionId: meta.sessionId }) ?? null,
+                    ),
+                  );
+                  const observedDisplayId = truncateDisplayId(
+                    meta.sessionDisplayId ??
+                      (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(observedParams) : null) ??
+                      readNonEmptyString(observedParams?.sessionId) ??
+                      meta.sessionId,
+                  );
+                  await upsertTaskSession({
+                    companyId: agent.companyId,
+                    agentId: agent.id,
+                    adapterType: agent.adapterType,
+                    taskKey,
+                    sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+                      observedParams,
+                      configuredModel,
+                      sessionConfigMetadata,
+                    ),
+                    sessionDisplayId: observedDisplayId,
+                    lastRunId: run.id,
+                    lastError: null,
+                  });
+                } catch (err) {
+                  logger.warn(
+                    { err, runId: run.id, agentId: agent.id, taskKey },
+                    "failed to persist mid-run observed session id; process_lost retry may resume from zero for this run",
+                  );
+                }
+              }
+            : undefined,
           authToken: authToken ?? undefined,
         });
         // Adapter returned cleanly, which means its workspace-restore finally
