@@ -99,6 +99,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
+    enableSandboxDuplexBridge: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
@@ -928,5 +929,57 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
       (badge) => badge.textContent?.trim(),
     );
     expect(badges).not.toContain("Experimental");
+  });
+});
+
+describe("InstanceExperimentalSettings — operator-hidden cards", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    root = null;
+    queryClient?.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(hiddenSettings?: string[]) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue(defaultExperimentalSettings());
+    root = createRoot(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      ...(hiddenSettings ? { hiddenSettings } : {}),
+    });
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceExperimentalSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  it("renders nothing for an operator-hidden toggle and keeps the rest", async () => {
+    await renderPage(["instance.experimental.enableEnvironments"]);
+
+    expect(container.textContent).not.toContain("Enable Environments");
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).toContain("Task Watchdogs");
+  });
+
+  it("shows every toggle when nothing is hidden", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Enable Environments");
+    expect(container.textContent).toContain("Beta skills");
   });
 });

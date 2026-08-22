@@ -16,6 +16,11 @@ import {
   expiredToolActionInteraction,
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
+  pendingSecretProposalInteraction,
+  executedSecretProposalInteraction,
+  failedSecretProposalInteraction,
+  rejectedSecretProposalInteraction,
+  expiredSecretProposalInteraction,
   genericPendingRequestConfirmationInteraction,
   agentAddressedRequestConfirmationInteraction,
   companyCappedRequestConfirmationInteraction,
@@ -798,6 +803,116 @@ export const ToolActionLegacyGeneric: Story = {
       >
         <ToolActionCard interaction={genericPendingRequestConfirmationInteraction} interactive />
       </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+function SecretProposalCard({
+  interaction,
+  interactive = false,
+}: {
+  interaction: RequestConfirmationInteraction;
+  interactive?: boolean;
+}) {
+  return (
+    <IssueThreadInteractionCard
+      interaction={interaction}
+      agentMap={storybookAgentMap}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+      userLabelMap={boardUserLabels}
+      onAcceptInteraction={interactive ? () => undefined : undefined}
+      onRejectInteraction={interactive ? () => undefined : undefined}
+    />
+  );
+}
+
+export const SecretProposalPending: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Pending secret binding"
+        description="A human reviews safe binding metadata, the agent-authored reason, and expiry before approving the real write."
+      >
+        <SecretProposalCard interaction={pendingSecretProposalInteraction} interactive />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SecretProposalExecuted: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Secret binding executed"
+        description="Acceptance is only shown as successful after the existing proposal transaction creates the binding."
+      >
+        <SecretProposalCard interaction={executedSecretProposalInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SecretProposalFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Secret binding failed"
+        description="An accepted request that fails execution is unmistakably FAILED and exposes the safe error code."
+      >
+        <SecretProposalCard interaction={failedSecretProposalInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SecretProposalRejected: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Secret binding rejected"
+        description="The rejection reason remains in the thread and the card states that no binding was created."
+      >
+        <SecretProposalCard interaction={rejectedSecretProposalInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SecretProposalExpired: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Secret binding expired"
+        description="Expired proposals are neutral, non-actionable receipts that require a fresh proposal."
+      >
+        <SecretProposalCard interaction={expiredSecretProposalInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SecretProposalAllStates: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="Secret binding proposal" title="All lifecycle states">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ScenarioCard title="1 · Pending" description="Safe metadata and approval actions.">
+            <SecretProposalCard interaction={pendingSecretProposalInteraction} interactive />
+          </ScenarioCard>
+          <ScenarioCard title="2 · Executed" description="The binding was created.">
+            <SecretProposalCard interaction={executedSecretProposalInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="3 · FAILED" description="Accepted, then failed closed.">
+            <SecretProposalCard interaction={failedSecretProposalInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="4 · Rejected" description="The binding was not created.">
+            <SecretProposalCard interaction={rejectedSecretProposalInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="5 · Expired" description="A fresh proposal is required.">
+            <SecretProposalCard interaction={expiredSecretProposalInteraction} />
+          </ScenarioCard>
+        </div>
+      </Section>
     </StoryFrame>
   ),
 };

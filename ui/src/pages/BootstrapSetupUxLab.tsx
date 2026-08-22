@@ -143,7 +143,7 @@ function ClaimErrorPrivate() {
           <p className="font-medium">Someone else has already claimed this instance.</p>
           <p className="mt-1 text-destructive/90">
             Refresh to sign in, or ask the existing admin to invite you from{" "}
-            <span className="font-mono">Instance settings → Access</span>.
+            <span className="font-mono">Settings → Access</span>.
           </p>
         </div>
       </div>

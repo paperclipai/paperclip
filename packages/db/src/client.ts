@@ -35,13 +35,20 @@ function splitMigrationStatements(content: string): string[] {
 }
 
 export type MigrationState =
-  | { status: "upToDate"; tableCount: number; availableMigrations: string[]; appliedMigrations: string[] }
+  | {
+      status: "upToDate";
+      tableCount: number;
+      availableMigrations: string[];
+      appliedMigrations: string[];
+      journalEntryCount: number;
+    }
   | {
       status: "needsMigrations";
       tableCount: number;
       availableMigrations: string[];
       appliedMigrations: string[];
       pendingMigrations: string[];
+      journalEntryCount: number;
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
@@ -683,6 +690,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
           availableMigrations,
           appliedMigrations: [],
           pendingMigrations: availableMigrations,
+          journalEntryCount: 0,
           reason: "no-migration-journal-non-empty-db",
         };
       }
@@ -693,10 +701,16 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
         availableMigrations,
         appliedMigrations: [],
         pendingMigrations: availableMigrations,
+        journalEntryCount: 0,
         reason: "no-migration-journal-empty-db",
       };
     }
 
+    const qualifiedMigrationTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
+    const journalCountRows = await sql.unsafe<{ count: number }[]>(
+      `SELECT count(*)::int AS count FROM ${qualifiedMigrationTable}`,
+    );
+    const journalEntryCount = journalCountRows[0]?.count ?? 0;
     const appliedMigrations = await loadAppliedMigrations(sql, migrationTableSchema, availableMigrations);
     const pendingMigrations = availableMigrations.filter((name) => !appliedMigrations.includes(name));
     if (pendingMigrations.length === 0) {
@@ -705,6 +719,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
         tableCount,
         availableMigrations,
         appliedMigrations,
+        journalEntryCount,
       };
     }
 
@@ -714,6 +729,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
       availableMigrations,
       appliedMigrations,
       pendingMigrations,
+      journalEntryCount,
       reason: "pending-migrations",
     };
   } finally {

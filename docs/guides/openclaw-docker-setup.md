@@ -316,7 +316,7 @@ This issue does not affect the Docker Sandbox approach.
 
 ### Node version mismatch in community template images
 
-Some community-built sandbox templates (e.g. `olegselajev241/openclaw-dmr:latest`) ship Node 20, but OpenClaw requires Node >=22.12.0. Use our locally built `openclaw:local` image as the sandbox template instead, which includes Node 22.
+Some community-built sandbox templates (e.g. `olegselajev241/openclaw-dmr:latest`) ship Node 20, but OpenClaw requires Node >=22.12.0. Use our locally built `openclaw:local` image as the sandbox template instead, which includes Node 24.
 
 ### Gateway takes ~15 seconds to respond after start
 

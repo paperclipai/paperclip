@@ -13,6 +13,11 @@ import {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
 const durationsManifest = path.join(repoRoot, "scripts", "general-server-shard-durations.json");
+const serializedDurationsManifest = path.join(
+  repoRoot,
+  "scripts",
+  "serialized-shard-durations.json",
+);
 
 function dryRun(args) {
   const result = spawnSync(process.execPath, [script, ...args, "--dry-run"], {
@@ -164,6 +169,39 @@ test("the checked-in manifest loads and covers most of the current suite set", (
   assert.ok(
     known / currentFiles.length >= 0.5,
     `manifest is stale: only ${known} of ${currentFiles.length} suites have recorded durations — regenerate it from a recent PR run (see the manifest's $comment)`,
+  );
+});
+
+test("the checked-in serialized manifest loads and covers most of the current suite set", () => {
+  const durations = loadShardDurations(serializedDurationsManifest);
+  assert.ok(Object.keys(durations).length > 0, "manifest must parse to a non-empty duration map");
+
+  const shard = dryRunJson(["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"]);
+  const currentFiles = shard.selectedSerializedSuites;
+  const known = currentFiles.filter((file) => durations[file] !== undefined).length;
+  assert.ok(
+    known / currentFiles.length >= 0.5,
+    `manifest is stale: only ${known} of ${currentFiles.length} suites have recorded durations — regenerate it from a recent PR run (see the manifest's $comment)`,
+  );
+});
+
+test("the real serialized shard partition is duration-balanced", () => {
+  const durations = loadShardDurations(serializedDurationsManifest);
+  const fallback = defaultSuiteWeight(durations);
+  const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
+    dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
+  );
+
+  const totals = shards.map((shard) =>
+    shard.selectedSerializedSuites.reduce((sum, file) => sum + (durations[file] ?? fallback), 0),
+  );
+  const maxTotal = Math.max(...totals);
+  const minTotal = Math.min(...totals);
+  // LPT keeps the spread within the heaviest single suite; use that as the bound.
+  const heaviest = Math.max(...Object.values(durations));
+  assert.ok(
+    maxTotal - minTotal <= heaviest,
+    `serialized shard weight spread ${maxTotal - minTotal}ms exceeds heaviest suite ${heaviest}ms: ${totals.join(", ")}`,
   );
 });
 

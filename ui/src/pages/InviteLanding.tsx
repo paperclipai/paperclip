@@ -23,6 +23,7 @@ const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
   "gemini_local",
+  "kimi_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -180,10 +181,10 @@ function AwaitingJoinApprovalPanel({
           </p>
           <div className="border border-zinc-800 p-3">
             <p className="text-xs text-zinc-500 mb-1">Approval page</p>
-            <p className="text-sm text-zinc-200">Company Settings → Members</p>
+            <p className="text-sm text-zinc-200">Settings → Members</p>
           </div>
           <p className="text-sm text-zinc-400">
-            Ask them to visit <span className="text-zinc-200">Company Settings → Members</span> to approve your request.
+            Ask them to visit <span className="text-zinc-200">Settings → Members</span> to approve your request.
           </p>
           <p className="text-xs text-zinc-500">
             Refresh this page after you've been approved — you'll be redirected automatically.

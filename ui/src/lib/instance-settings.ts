@@ -79,3 +79,23 @@ export function normalizeRememberedInstanceSettingsPath(rawPath: string | null):
 
   return DEFAULT_INSTANCE_SETTINGS_PATH;
 }
+
+/**
+ * Remaps a remembered instance-settings path onto the settings root when its
+ * page is hidden by the hosting operator (`hidden` holds keys from the shared
+ * settings-visibility registry). Saves a redirect hop; the route-level
+ * HiddenSettingsPageGate stays the enforcement point.
+ */
+export function filterHiddenInstanceSettingsPath(
+  normalizedPath: string,
+  hidden: ReadonlySet<string>,
+): string {
+  const { pathname } = splitPath(normalizedPath);
+  const suffix = instanceSettingsSuffix(pathname);
+  if (!suffix) return normalizedPath;
+  const page = suffix.split("/")[1];
+  if (page && page !== "general" && hidden.has(`instance.${page}`)) {
+    return DEFAULT_INSTANCE_SETTINGS_PATH;
+  }
+  return normalizedPath;
+}

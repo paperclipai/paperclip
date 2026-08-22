@@ -243,7 +243,7 @@ describe("CompanyEnvironments", () => {
     await flushReact();
     await flushReact();
 
-    const addEnvironmentButton = findAction(container, "Add environment");
+    const addEnvironmentButton = container.querySelector('[aria-label="Add environment"]');
     expect(addEnvironmentButton).toBeTruthy();
 
     await act(async () => {

@@ -40,5 +40,15 @@ export function buildNewAgentHirePayload(input: {
     }),
     budgetMonthlyCents: 0,
     ...(permissions ? { permissions } : {}),
+    // The stored-session claim is not an agent column. The server derives the
+    // owner from the actor and consumes the claim to bind the fixed OAuth token.
+    // Send it only after a Claude subscription login reaches the `stored` state.
+    ...(configValues.claudeStoredSessionId
+      ? { storedSessionId: configValues.claudeStoredSessionId }
+      : {}),
+    // The apply-existing flag is not an agent column. The server binds the fixed
+    // OAuth token reference to the owner stored value with no login round trip.
+    // Send it only after the owner applies an existing stored login.
+    ...(configValues.claudeApplyStoredLogin ? { applyStoredClaudeLogin: true } : {}),
   };
 }

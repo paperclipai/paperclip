@@ -316,9 +316,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     from: z.string().optional(),
     to: z.string().optional(),
     userId: z.string().min(1).optional(),
-    goalId: z.string().uuid().optional(),
-    projectId: z.string().uuid().optional(),
-    issueId: z.string().uuid().optional(),
+    goalId: z.string().guid().optional(),
+    projectId: z.string().guid().optional(),
+    issueId: z.string().guid().optional(),
     limit: z.string().optional(),
     offset: z.string().optional(),
   }).passthrough();

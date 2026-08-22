@@ -82,6 +82,10 @@ export {
   parseMessage,
   JsonRpcParseError,
   JsonRpcCallError,
+  SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
+  SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   _resetIdCounter,
 } from "./protocol.js";
 

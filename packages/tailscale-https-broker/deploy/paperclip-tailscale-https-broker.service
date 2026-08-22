@@ -1,0 +1,26 @@
+[Unit]
+Description=Paperclip Tailscale HTTPS broker
+After=tailscaled.service
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+User=paperclip-tsbroker
+Group=paperclip-tsbroker-sock
+EnvironmentFile=/etc/paperclip/tailscale-https-broker.env
+ExecStart=/usr/bin/node /opt/paperclip/packages/tailscale-https-broker/dist/main.js
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RuntimeDirectory=paperclip-tailscale-broker
+RuntimeDirectoryMode=0750
+StateDirectory=paperclip-tailscale-broker
+StateDirectoryMode=0700
+LogsDirectory=paperclip-tailscale-broker
+LogsDirectoryMode=0700
+ReadWritePaths=/run/paperclip-tailscale-broker /var/lib/paperclip-tailscale-broker /var/log/paperclip-tailscale-broker
+
+[Install]
+WantedBy=multi-user.target

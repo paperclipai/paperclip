@@ -8,6 +8,7 @@ paperclip_instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
 paperclip_dir="$worktree_cwd/.paperclip"
 worktree_config_path="$paperclip_dir/config.json"
 worktree_env_path="$paperclip_dir/.env"
+seed_manifest_path="$paperclip_dir/seed-manifest.json"
 seed_pending_marker_path="$paperclip_dir/seed-pending"
 seed_complete_marker_path="$paperclip_dir/seed-complete"
 worktree_name="${PAPERCLIP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
@@ -39,12 +40,28 @@ if [[ ! -d "$worktree_cwd" ]]; then
   exit 1
 fi
 
-source_config_path="${PAPERCLIP_CONFIG:-}"
-if [[ -z "$source_config_path" && ( -e "$base_cwd/.paperclip/config.json" || -L "$base_cwd/.paperclip/config.json" ) ]]; then
-  source_config_path="$base_cwd/.paperclip/config.json"
+canonical_base_cwd="$(cd "$base_cwd" && pwd -P)"
+if [[ -L "$canonical_base_cwd/.paperclip" && ! -d "$canonical_base_cwd/.paperclip" ]]; then
+  # A broken link hides whatever it points at, so the config below would read as absent
+  # on a workspace that is malformed rather than plain. Refuse instead of falling back.
+  echo "Registered base project workspace .paperclip is a broken symlink: $canonical_base_cwd/.paperclip" >&2
+  exit 1
 fi
-if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
+source_config_path="$canonical_base_cwd/.paperclip/config.json"
+if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+  # A base workspace that is a plain checkout carries no instance config of its own.
+  # Fall back to the control plane's own registered instance config, which is process
+  # state this workspace cannot rewrite.
+  source_config_path="${PAPERCLIP_CONFIG:-$paperclip_home/instances/$paperclip_instance_id/config.json}"
+fi
+if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
+  echo "Registered Paperclip seed source config is missing or is not a canonical file: $source_config_path" >&2
+  exit 1
+fi
+canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
+if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
+  echo "Registered Paperclip seed source config uses a symlink alias: $source_config_path" >&2
+  exit 1
 fi
 source_env_path="$(dirname "$source_config_path")/.env"
 
@@ -237,25 +254,93 @@ for (const rawValue of runtimePaths) {
 EOF
 }
 
-write_seed_pending_marker() {
-  SEED_PENDING_MARKER_PATH="$seed_pending_marker_path" \
-  SEED_COMPLETE_MARKER_PATH="$seed_complete_marker_path" \
+reconcile_worktree_deployment_mode() {
   SOURCE_CONFIG_PATH="$source_config_path" \
+  WORKTREE_CONFIG_PATH="$worktree_config_path" \
   node <<'EOF'
 const fs = require("node:fs");
 const path = require("node:path");
 
+const sourceConfigPath = path.resolve(process.env.SOURCE_CONFIG_PATH);
+const worktreeConfigPath = path.resolve(process.env.WORKTREE_CONFIG_PATH);
+const sourceConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8"));
+const worktreeConfig = JSON.parse(fs.readFileSync(worktreeConfigPath, "utf8"));
+const deploymentMode = sourceConfig?.server?.deploymentMode ?? "local_trusted";
+if (deploymentMode !== "local_trusted" && deploymentMode !== "authenticated") {
+  throw new Error(`Registered source has unsupported server.deploymentMode: ${deploymentMode}`);
+}
+const exposure = deploymentMode === "local_trusted"
+  ? "private"
+  : (sourceConfig?.server?.exposure ?? "private");
+const currentServer = worktreeConfig?.server && typeof worktreeConfig.server === "object"
+  ? worktreeConfig.server
+  : {};
+if (currentServer.deploymentMode === deploymentMode && currentServer.exposure === exposure) {
+  process.exit(0);
+}
+
+worktreeConfig.server = {
+  ...currentServer,
+  deploymentMode,
+  exposure,
+};
+if (worktreeConfig.$meta && typeof worktreeConfig.$meta === "object") {
+  worktreeConfig.$meta.updatedAt = new Date().toISOString();
+}
+
+const temporaryPath = `${worktreeConfigPath}.deployment-mode-${process.pid}`;
+try {
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(worktreeConfig, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryPath, worktreeConfigPath);
+} finally {
+  fs.rmSync(temporaryPath, { force: true });
+}
+console.error(`Reconciled isolated Paperclip worktree deployment mode from ${sourceConfigPath}: ${deploymentMode}/${exposure}`);
+EOF
+}
+
+write_seed_pending_manifest() {
+  SEED_MANIFEST_PATH="$seed_manifest_path" \
+  SEED_PENDING_MARKER_PATH="$seed_pending_marker_path" \
+  SEED_COMPLETE_MARKER_PATH="$seed_complete_marker_path" \
+  SOURCE_CONFIG_PATH="$source_config_path" \
+  TARGET_INSTANCE_ID="$worktree_instance_id" \
+  node <<'EOF'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const manifestPath = process.env.SEED_MANIFEST_PATH;
 const pendingPath = process.env.SEED_PENDING_MARKER_PATH;
 const completePath = process.env.SEED_COMPLETE_MARKER_PATH;
+const sourceConfigPath = path.resolve(process.env.SOURCE_CONFIG_PATH);
+const sourceEnvPath = path.join(path.dirname(sourceConfigPath), ".env");
+let sourceInstanceId = path.basename(path.dirname(sourceConfigPath));
+if (fs.existsSync(sourceEnvPath)) {
+  const match = fs.readFileSync(sourceEnvPath, "utf8").match(/^\s*(?:export\s+)?PAPERCLIP_INSTANCE_ID\s*=\s*["']?([^\s"'#]+)["']?/m);
+  if (match?.[1]) sourceInstanceId = match[1];
+}
 fs.rmSync(completePath, { force: true });
+fs.rmSync(pendingPath, { force: true });
+const at = new Date().toISOString();
 fs.writeFileSync(
-  pendingPath,
+  manifestPath,
   `${JSON.stringify({
-    version: 1,
-    state: "pending",
-    sourceConfigPath: path.resolve(process.env.SOURCE_CONFIG_PATH),
+    version: 2,
+    source: {
+      instanceId: sourceInstanceId,
+      configPath: sourceConfigPath,
+    },
+    snapshotAt: null,
     seedMode: "minimal",
-    createdAt: new Date().toISOString(),
+    migrationRevision: null,
+    targetInstanceId: process.env.TARGET_INSTANCE_ID,
+    phase: "pending",
+    state: "pending",
+    attemptId: crypto.randomUUID(),
+    startedAt: null,
+    finishedAt: null,
+    diagnostics: [{ phase: "pending", status: "succeeded", at }],
   }, null, 2)}\n`,
   { mode: 0o600 },
 );
@@ -551,8 +636,14 @@ else
   created_worktree_config=1
 fi
 
-if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
-  write_seed_pending_marker
+# The target config can predate a deployment-mode change on the registered
+# source, and older/fallback CLI writers may default this field independently.
+# Reconcile it after either create or reuse so the final guest config always
+# carries the source's deployment/auth contract without replacing its database.
+reconcile_worktree_deployment_mode
+
+if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_manifest_path" && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
+  write_seed_pending_manifest
 fi
 
 list_base_node_modules_paths() {

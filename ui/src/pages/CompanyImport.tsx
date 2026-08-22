@@ -1621,7 +1621,7 @@ export function CompanyImport() {
     // company list has been refreshed, so the imported company is available
     // from the switcher.
     return (
-      <div className="px-5 py-5 space-y-4">
+      <div className="max-w-6xl space-y-4 px-5 py-5">
         <div>
           <h2 className="text-base font-semibold">Import completed</h2>
           <p className="text-xs text-muted-foreground mt-1">
@@ -1641,7 +1641,7 @@ export function CompanyImport() {
       (item) => activationChecked.has(item.key) && !activatedKeys.has(item.key),
     ).length;
     return (
-      <div className="px-5 py-5 space-y-4">
+      <div className="max-w-6xl space-y-4 px-5 py-5">
         <div>
           <h2 className="text-base font-semibold">Import complete</h2>
           <p className="text-xs text-muted-foreground mt-1">
@@ -1749,7 +1749,7 @@ export function CompanyImport() {
   // outcome above; failure returns to the form with an error toast).
   if (resumedWatchJobId) {
     return (
-      <div className="px-5 py-5 space-y-4">
+      <div className="max-w-6xl space-y-4 px-5 py-5">
         <div>
           <h2 className="text-base font-semibold">Resume watching import</h2>
           <p className="text-xs text-muted-foreground mt-1">
@@ -1771,7 +1771,7 @@ export function CompanyImport() {
   }
 
   return (
-    <div>
+    <div className="max-w-6xl">
       {/* Source form section */}
       <div className="border-b border-border px-5 py-5 space-y-4">
         <div>

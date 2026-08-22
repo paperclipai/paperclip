@@ -4,7 +4,7 @@ import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
   type Agent,
 } from "@paperclipai/shared";
-import { Shield, ShieldCheck, Trash2, Users } from "lucide-react";
+import { Shield, ShieldCheck, Trash2 } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
@@ -235,38 +236,20 @@ export function CompanyAccess() {
 
   return (
     <div className="max-w-6xl space-y-8">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Members</h1>
-        </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Manage the people who can work in {selectedCompany?.name}. Members can collaborate across the company by default.
-        </p>
-        <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-          Core keeps this page focused on membership, invite approvals, and safe member removal.
-        </div>
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">Company Members</h1>
       </div>
 
       {access && !access.currentUserRole && (
-        <div className="rounded-xl border border-amber-500/40 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+        <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           This account can manage access here through instance-admin privileges, but it does not currently hold an active company membership.
         </div>
       )}
 
       <section className="space-y-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-base font-semibold">Humans</h2>
-          </div>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Manage human company memberships and status here.
-          </p>
-        </div>
-
         {access?.canApproveJoinRequests && pendingHumanJoinRequests.length > 0 ? (
-          <div className="space-y-3 rounded-xl border border-border px-4 py-4">
+          <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold">Pending human joins</h3>
@@ -309,62 +292,79 @@ export function CompanyAccess() {
           </div>
         ) : null}
 
-        <div className="overflow-hidden rounded-xl border border-border">
-          <div className="grid grid-cols-(--gtc-24) gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <div>User account</div>
-            <div>Role</div>
-            <div>Status</div>
-            <div className="text-right">Action</div>
-          </div>
-          {members.length === 0 ? (
-            <div className="px-4 py-8 text-sm text-muted-foreground">No user memberships found for this company yet.</div>
-          ) : (
-            members.map((member) => {
-              const removalReason = member.removal?.reason ?? null;
-              const canArchive = member.removal?.canArchive ?? true;
-              return (
-                <div
-                  key={member.id}
-                  className="grid grid-cols-(--gtc-24) gap-3 border-b border-border px-4 py-3 last:border-b-0"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{member.user?.name?.trim() || member.user?.email || member.principalId}</div>
-                    <div className="truncate text-xs text-muted-foreground">{member.user?.email || member.principalId}</div>
-                  </div>
-                  <div className="text-sm">
-                    {member.membershipRole
-                      ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
-                      : "Unset"}
-                  </div>
-                  <div>
-                    <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
-                      {member.status.replace("_", " ")}
-                    </Badge>
-                  </div>
-                  <div className="space-y-1 text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setRemovingMemberId(member.id)}
-                        disabled={!canArchive}
-                        title={removalReason ?? undefined}
-                      >
-                        <Trash2 className="mr-1 h-3.5 w-3.5" />
-                        Remove
-                      </Button>
-                    </div>
-                    {removalReason ? (
-                      <div className="text-xs text-muted-foreground">{removalReason}</div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })
-          )}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-(--sz-44rem) text-left text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground">
+                <th className="px-3 py-2 font-medium">Name</th>
+                <th className="px-3 py-2 font-medium">Email</th>
+                <th className="px-3 py-2 font-medium">Role</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">
+                    No user memberships found for this company yet.
+                  </td>
+                </tr>
+              ) : members.map((member) => {
+                const removalReason = member.removal?.reason ?? null;
+                const canArchive = member.removal?.canArchive ?? true;
+                const displayName = memberDisplayName(member);
+                return (
+                  <tr key={member.id} className="border-b border-border last:border-b-0">
+                    <td className="px-3 py-3">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <Avatar size="sm">
+                          {member.user?.image ? <AvatarImage src={member.user.image} alt={displayName} /> : null}
+                          <AvatarFallback>{memberInitials(member)}</AvatarFallback>
+                        </Avatar>
+                        <span className="truncate font-medium">{displayName}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-muted-foreground">
+                      {member.user?.email || member.principalId}
+                    </td>
+                    <td className="px-3 py-3">
+                      {member.membershipRole
+                        ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
+                        : "Unset"}
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
+                        {member.status.replace("_", " ")}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
+                          Edit
+                        </Button>
+                        <span
+                          className="inline-flex"
+                          title={!canArchive ? removalReason ?? undefined : undefined}
+                        >
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setRemovingMemberId(member.id)}
+                            disabled={!canArchive}
+                            title={!canArchive ? removalReason ?? undefined : undefined}
+                          >
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />
+                            Remove
+                          </Button>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -588,6 +588,15 @@ function memberDisplayName(member: CompanyMember | null) {
   return member.user?.name?.trim() || member.user?.email || member.principalId;
 }
 
+function memberInitials(member: CompanyMember) {
+  const value = memberDisplayName(member).trim();
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length > 1) {
+    return `${parts[0]?.[0] ?? ""}${parts.at(-1)?.[0] ?? ""}`.toUpperCase();
+  }
+  return value.slice(0, 2).toUpperCase();
+}
+
 function isAssignableAgent(agent: Agent) {
   return agent.status !== "terminated" && agent.status !== "pending_approval";
 }
@@ -620,7 +629,7 @@ function PendingJoinRequestCard({
   onReject: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-border px-4 py-4">
+    <div className="py-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-2">
           <div>

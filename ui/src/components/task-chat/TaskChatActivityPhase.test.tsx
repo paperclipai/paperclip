@@ -15,6 +15,7 @@ describe("TaskChatActivityPhase", () => {
       items: [{ id: "tool-1", kind: "tool", name: "Read", status: "completed" }],
     }} renderChild={(child) => <button>{child.id}</button>} />));
     const summary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]')!;
+    expect(summary.firstElementChild?.tagName).toBe("svg");
     expect(summary.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("tool-1");
     flushSync(() => summary.click());

@@ -3,7 +3,7 @@
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, IssueRecoveryAction } from "@paperclipai/shared";
 import { IssueRecoveryActionCard, deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 
@@ -738,5 +738,308 @@ describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => 
     // The divergence diagnosis and repair action still render.
     expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
     expect(node.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
+  });
+});
+
+describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
+  const NOW = new Date("2026-08-18T12:00:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function at(offsetMs: number) {
+    return new Date(NOW.getTime() + offsetMs).toISOString();
+  }
+
+  const bothAgents = new Map([
+    [ownerAgent.id, ownerAgent],
+    [returnAgent.id, returnAgent],
+  ]);
+
+  /** Phase 1 — the original owner (CodexCoder) is retrying itself. */
+  function buildSourceLaneAction(overrides: Partial<IssueRecoveryAction> = {}) {
+    return buildAction({
+      kind: "deliberate_wait_without_target",
+      cause: "deliberate_wait_without_target",
+      ownerAgentId: returnAgent.id,
+      previousOwnerAgentId: returnAgent.id,
+      returnOwnerAgentId: returnAgent.id,
+      nextAction:
+        "The original owner must replace the parked summary with a terminal, live, blocked, monitored, or typed waiting disposition.",
+      wakePolicy: {
+        type: "bounded_owner_disposition_repair",
+        retryAgentId: returnAgent.id,
+        attempt: 2,
+        maxAttempts: 5,
+        baseBackoffMs: 60_000,
+        jitterMs: 3_000,
+        retryAt: at(3 * 60_000),
+        scheduledRunId: "00000000-0000-0000-0000-0000000000b1",
+      },
+      attemptCount: 2,
+      maxAttempts: 5,
+      timeoutAt: at(3 * 60_000),
+      ...overrides,
+    });
+  }
+
+  /** Phase 2 — a manager (ClaudeCoder) repairs the path; CodexCoder keeps the task. */
+  function buildRecoveryLaneAction(overrides: Partial<IssueRecoveryAction> = {}) {
+    return buildSourceLaneAction({
+      ownerAgentId: ownerAgent.id,
+      nextAction:
+        "Repair the source issue disposition or request an explicit reassignment decision without taking source ownership.",
+      evidence: {
+        summary: "Run finished but no disposition was chosen.",
+        sourceAttemptCount: 5,
+        sourceMaxAttempts: 5,
+      },
+      wakePolicy: {
+        type: "bounded_recovery_owner",
+        ownerAgentId: ownerAgent.id,
+        attempt: 1,
+        maxAttempts: 3,
+        retryAt: at(60_000),
+        scheduledRunId: "00000000-0000-0000-0000-0000000000b2",
+        preservesSourceAssignee: true,
+      },
+      attemptCount: 1,
+      maxAttempts: 3,
+      timeoutAt: at(60_000),
+      ...overrides,
+    });
+  }
+
+  it("stays quiet and names the retry lane while the original owner is being retried", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildSourceLaneAction()} agentMap={bothAgents} />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(section?.getAttribute("data-recovery-kind")).toBe("deliberate_wait_without_target");
+    expect(section?.getAttribute("data-recovery-lane")).toBe("source_owner");
+    expect(node.textContent).toContain("RECOVERY IN PROGRESS");
+    expect(node.textContent).not.toContain("RECOVERY NEEDED");
+    expect(node.textContent).toContain("Wait Without A Target");
+    expect(node.textContent).toContain("The task stays with its owner, and no action is needed yet.");
+    expect(node.textContent).toContain("Paperclip is retrying the original owner");
+  });
+
+  it("shows the five-attempt budget and the next due time", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildSourceLaneAction()} agentMap={bothAgents} />,
+    );
+    const progress = node.querySelector("[data-testid='recovery-retry-progress']");
+    expect(progress).not.toBeNull();
+    expect(progress?.getAttribute("data-recovery-lane")).toBe("source_owner");
+    expect(progress?.getAttribute("data-recovery-attempt")).toBe("2");
+    expect(progress?.getAttribute("data-recovery-max-attempts")).toBe("5");
+    expect(progress?.textContent).toContain("Attempt 2 of 5");
+    expect(node.querySelector("[data-testid='recovery-next-retry']")?.textContent).toBe(
+      "Next try in 3m",
+    );
+  });
+
+  it("keeps the source owner and the recovery owner as separate roles", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildRecoveryLaneAction()} agentMap={bothAgents} />,
+    );
+    const sourceOwner = node.querySelector("[data-testid='recovery-source-owner']");
+    const recoveryOwner = node.querySelector("[data-testid='recovery-recovery-owner']");
+    // CodexCoder is the original owner and keeps the deliverable.
+    expect(sourceOwner?.textContent).toContain("CodexCoder");
+    expect(sourceOwner?.textContent).toContain("keeps this task");
+    // ClaudeCoder only repairs the path.
+    expect(recoveryOwner?.textContent).toContain("ClaudeCoder");
+    expect(recoveryOwner?.textContent).toContain("repairs the next step only");
+    expect(recoveryOwner?.textContent).not.toContain("CodexCoder");
+    expect(node.textContent).toContain(
+      "the task itself still belongs to its original owner",
+    );
+  });
+
+  it("labels the source lane as the owner retrying itself", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildSourceLaneAction()} agentMap={bothAgents} />,
+    );
+    expect(
+      node.querySelector("[data-testid='recovery-recovery-owner']")?.textContent,
+    ).toContain("Original owner — retrying itself");
+  });
+
+  it("reports the spent source attempts once the manager lane opens", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildRecoveryLaneAction()} agentMap={bothAgents} />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-lane")).toBe("recovery_owner");
+    expect(section?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(
+      node.querySelector("[data-testid='recovery-source-attempts']")?.textContent,
+    ).toContain("The original owner used 5 of 5 automatic attempts.");
+    expect(
+      node.querySelector("[data-testid='recovery-retry-progress']")?.textContent,
+    ).toContain("Attempt 1 of 3");
+  });
+
+  it("warns strongly only once the automatic path is exhausted", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildSourceLaneAction({
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: returnAgent.id,
+            attempt: 5,
+            maxAttempts: 5,
+            retryAt: at(-60_000),
+          },
+          attemptCount: 5,
+        })}
+        agentMap={bothAgents}
+      />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(node.textContent).toContain("RECOVERY NEEDED");
+    expect(node.textContent).toContain("has used every automatic repair attempt");
+    expect(node.querySelector("[data-testid='recovery-next-retry']")?.textContent).toBe(
+      "Automatic retries used up",
+    );
+    // The follow-up line must not keep promising a retry that will never run, and the
+    // generic timeout chip must not reintroduce a stale due time next to it.
+    expect(node.textContent).toContain("Automatic retries are finished — a decision is needed");
+    expect(node.textContent).not.toContain("Paperclip is retrying the original owner");
+    expect(node.textContent).not.toContain("Times out");
+  });
+
+  it("warns strongly when the stored retry came due and never ran", () => {
+    // PAP-17561: this exact shape rendered "Recovery in progress · Attempt 1 of 5 · Next try
+    // 5m ago" — a calm card over a lane nothing was working on.
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildSourceLaneAction({
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: returnAgent.id,
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt: at(-5 * 60_000),
+            scheduledRunId: "00000000-0000-0000-0000-0000000000b2",
+          },
+          attemptCount: 1,
+          timeoutAt: at(-5 * 60_000),
+        })}
+        agentMap={bothAgents}
+      />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(node.textContent).toContain("RECOVERY NEEDED");
+    expect(node.textContent).not.toContain("RECOVERY IN PROGRESS");
+    const retry = node.querySelector("[data-testid='recovery-next-retry']");
+    expect(retry?.textContent).toBe("Retry missed 5m ago");
+    expect(retry?.getAttribute("data-recovery-retry-expired")).toBe("true");
+    // Nothing may still read as an upcoming attempt or as needing no action.
+    expect(node.textContent).not.toContain("Next try");
+    expect(node.textContent).not.toContain("no action is needed yet");
+    expect(node.textContent).toContain("came due and did not run");
+    expect(node.textContent).toContain("The scheduled retry did not run");
+    // The repair lane still must not move the deliverable off its original owner.
+    expect(node.querySelector("[data-testid='recovery-source-owner']")?.textContent).toContain(
+      "keeps this task",
+    );
+  });
+
+  it("stays quiet when the overdue attempt is a verified live run", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildSourceLaneAction({
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: returnAgent.id,
+            attempt: 2,
+            maxAttempts: 5,
+            retryAt: at(-5 * 60_000),
+            scheduledRunId: "00000000-0000-0000-0000-0000000000b2",
+          },
+          timeoutAt: at(-5 * 60_000),
+        })}
+        agentMap={bothAgents}
+        scheduledRetry={{
+          runId: "00000000-0000-0000-0000-0000000000b2",
+          status: "running",
+          agentId: returnAgent.id,
+          agentName: returnAgent.name,
+          retryOfRunId: null,
+          scheduledRetryAt: at(-5 * 60_000),
+          scheduledRetryAttempt: 2,
+          scheduledRetryReason: null,
+        }}
+      />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(node.querySelector("[data-testid='recovery-next-retry']")?.textContent).toBe(
+      "Attempt running now",
+    );
+    expect(node.textContent).not.toContain("Retry missed");
+  });
+
+  it("keeps timing in the retry-progress row only while a lane is live", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildSourceLaneAction()} agentMap={bothAgents} />,
+    );
+    expect(node.textContent).toContain("Paperclip is retrying the original owner");
+    expect(node.textContent).not.toContain("Times out");
+  });
+
+  it("shows the board escalation without implying the board owns the task", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildSourceLaneAction({
+          status: "escalated",
+          ownerType: "board",
+          ownerAgentId: null,
+          evidence: { sourceAttemptCount: 5, sourceMaxAttempts: 5 },
+          wakePolicy: {
+            type: "board_escalation",
+            reason: "recovery_owner_retry_exhausted",
+            attempt: 3,
+            maxAttempts: 3,
+            preservesSourceAssignee: true,
+          },
+          attemptCount: 3,
+          maxAttempts: 3,
+          timeoutAt: null,
+        })}
+        agentMap={bothAgents}
+      />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("escalated");
+    expect(section?.getAttribute("data-recovery-lane")).toBe("board");
+    expect(node.textContent).toContain("Automatic recovery is exhausted");
+    const recoveryOwner = node.querySelector("[data-testid='recovery-recovery-owner']");
+    expect(recoveryOwner?.textContent).toContain("Board");
+    expect(recoveryOwner?.textContent).toContain("decides the next step only");
+    expect(
+      node.querySelector("[data-testid='recovery-source-owner']")?.textContent,
+    ).toContain("CodexCoder");
+  });
+
+  it("leaves kinds without a bounded lineage on the original single owner row", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildAction()} agentMap={bothAgents} />,
+    );
+    expect(node.querySelector("section[aria-label]")?.getAttribute("data-recovery-lane")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-retry-progress']")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-source-owner']")).toBeNull();
+    expect(node.textContent).toContain("→ Returns to:");
   });
 });

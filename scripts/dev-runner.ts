@@ -90,6 +90,7 @@ const tailscaleAuthFlagNames = new Set([
 let tailscaleAuth = false;
 let bindMode: BindMode | null = null;
 let bindHost: string | null = null;
+const managedRuntimeExposure = process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https";
 const forwardedArgs: string[] = [];
 
 for (let index = 0; index < cliArgs.length; index += 1) {
@@ -133,6 +134,10 @@ if (!bindMode && process.env.npm_config_bind && BIND_MODES.includes(process.env.
 if (!bindHost && process.env.npm_config_bind_host) {
   bindHost = process.env.npm_config_bind_host;
 }
+if (managedRuntimeExposure) {
+  bindMode = "custom";
+  bindHost = "127.0.0.1";
+}
 if (bindMode === "custom" && !bindHost) {
   console.error("[paperclip] --bind custom requires --bind-host <host>");
   process.exit(1);
@@ -174,7 +179,7 @@ if (tailscaleAuth || bindMode) {
   } else {
     env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
     env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-    env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+    env.PAPERCLIP_AUTH_BASE_URL_MODE = managedRuntimeExposure ? "explicit" : "auto";
     console.log(
       `[paperclip] dev mode: authenticated/private (bind=${effectiveBind}${bindHost ? `:${bindHost}` : ""})`,
     );

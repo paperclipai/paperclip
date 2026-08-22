@@ -11,6 +11,7 @@ import {
   assertSyncOperationsConfined,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
+  type SandboxManagedRuntimeAsset,
   type SandboxManagedRuntimeClient,
   type SandboxSyncOperation,
   type SandboxSyncResult,
@@ -19,6 +20,7 @@ import {
   prepareCommandManagedRuntime,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+import { SYNC_OPERATION_CONCURRENCY_LIMIT } from "./sync-operation-schedule.js";
 import {
   createRuntimeSpanRunner,
   getActiveStepContext,
@@ -425,18 +427,86 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
     expect(runtimeStatuses).toEqual(expect.arrayContaining([
-      "config_sync:Syncing workspace to sandbox",
-      "config_sync:Syncing runtime assets to sandbox",
-      "restore:Restoring workspace from sandbox",
-      "finalize:Finalizing sandbox workspace",
+      "config_sync:Syncing workspace to environment",
+      "config_sync:Syncing runtime assets to environment",
+      "restore:Restoring workspace from environment",
+      "finalize:Finalizing workspace",
     ]));
     expect(runtimeStatuses).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^config_sync:Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
-      expect.stringMatching(/^config_sync:Syncing skills to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
-      expect.stringMatching(/^restore:Restoring workspace from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^config_sync:Syncing workspace to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^config_sync:Syncing skills to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^restore:Restoring workspace from environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
     ]));
-    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
+    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing workspace");
   });
+
+  it.each(["workspace", "git-workspace"])(
+    "rejects an asset key that collides with the reserved %s archive name",
+    async (reservedKey) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-asset-key-"));
+      cleanupDirs.push(rootDir);
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      const localAssetsDir = path.join(rootDir, "local-assets");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(localAssetsDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+
+      const client = makeFilesystemClient();
+      await expect(
+        prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-1",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "test-adapter",
+          client,
+          workspaceLocalDir: localWorkspaceDir,
+          assets: [{ key: reservedKey, localDir: localAssetsDir }],
+        }),
+      ).rejects.toThrow(/collides with a reserved runtime archive name/);
+
+      // The reserved-key guard fails before any workspace or asset archive is
+      // built, so nothing lands in the remote workspace directory.
+      await expect(readdir(remoteWorkspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.each(["skills/nested", "skills\\nested", "..", "../escape"])(
+    "rejects an asset key that is not a simple path segment: %s",
+    async (unsafeKey) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-asset-key-"));
+      cleanupDirs.push(rootDir);
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      const localAssetsDir = path.join(rootDir, "local-assets");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(localAssetsDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+
+      const client = makeFilesystemClient();
+      await expect(
+        prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-1",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "test-adapter",
+          client,
+          workspaceLocalDir: localWorkspaceDir,
+          assets: [{ key: unsafeKey, localDir: localAssetsDir }],
+        }),
+      ).rejects.toThrow(/is not a simple path segment/);
+    },
+  );
 
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
@@ -575,11 +645,11 @@ describe("sandbox managed runtime", () => {
     // check above).
     expect(runtimeStatuses.some((status) => (
       status.phase === "config_sync" &&
-      /^Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+      /^Syncing workspace to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
     ))).toBe(true);
     expect(runtimeStatuses.some((status) => (
       status.phase === "export" &&
-      /^Exporting git history from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+      /^Exporting git history from environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
     ))).toBe(true);
   });
 
@@ -1039,8 +1109,8 @@ describe("sandbox managed runtime", () => {
       },
     });
 
-    const uploadWorkspaceLines = lines.filter((line) => line.includes("Syncing workspace to sandbox"));
-    const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to sandbox"));
+    const uploadWorkspaceLines = lines.filter((line) => line.includes("Syncing workspace to environment"));
+    const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to environment"));
     expect(uploadWorkspaceLines.length).toBeGreaterThan(0);
     expect(uploadAssetLines.length).toBeGreaterThan(0);
     // 100 reported increments must be throttled to at most ~one line per 10% step.
@@ -1050,7 +1120,7 @@ describe("sandbox managed runtime", () => {
     expect(uploadWorkspaceLines.every((line) => /\(\d+\.\d\/\d+\.\d MB\)/.test(line))).toBe(true);
 
     await prepared.restoreWorkspace();
-    const restoreLines = lines.filter((line) => line.includes("Restoring workspace from sandbox"));
+    const restoreLines = lines.filter((line) => line.includes("Restoring workspace from environment"));
     expect(restoreLines.length).toBeGreaterThan(0);
     expect(restoreLines.length).toBeLessThanOrEqual(11);
     expect(restoreLines.some((line) => line.includes("100%"))).toBe(true);
@@ -1505,6 +1575,129 @@ describe("sandbox managed runtime", () => {
     ).resolves.toBe("keep\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "tracked.txt"), "utf8")).resolves.toBe("tracked\n");
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+  });
+
+  it("the workspace wipe command preserves in-flight sync scratch tarballs (.paperclip-upload-*)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-scratch-shape-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    // The wipe `find` runs before the extract. It must preserve the daytona
+    // scratch prefix so a concurrent referenced-project upload survives the wipe.
+    const wipeCommand = captured[0].postUploadCommands![0].command;
+    expect(wipeCommand).toContain("find ");
+    expect(wipeCommand).toContain("! -name '.paperclip-upload-*'");
+  });
+
+  it("the workspace wipe keeps an in-flight scratch tarball at the root but removes a stale sibling", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-scratch-race-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+    // Pre-seed the sandbox root. `.paperclip-upload-test.tar` simulates a
+    // concurrent referenced-project scratch tarball in flight; `stale-junk.txt`
+    // is an unrelated child that the wipe must remove.
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, ".paperclip-upload-test.tar"), "scratch\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, "stale-junk.txt"), "junk\n", "utf8");
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    // The real `find` wipe ran through `sh -c`. The scratch tarball survived and
+    // the unrelated sibling did not.
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, ".paperclip-upload-test.tar"), "utf8"),
+    ).resolves.toBe("scratch\n");
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "stale-junk.txt"), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("issues one merged syncIn operation for a git-backed workspace stage-sync with two ordered extract commands", async () => {
@@ -2053,14 +2246,17 @@ describe("sandbox managed runtime", () => {
       runtimeSpan,
     });
 
-    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "pack"]);
+    // The workspace stage task opens its own `stage.workspace` span, and the
+    // host tarball build opens the `pack` span inside it. The two pre-task
+    // sub-steps stay ahead of the task.
+    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "stage.workspace", "pack"]);
     // The tarball build still lands the workspace inside the span, so the wrap
     // changes no staging behavior.
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("workspace body\n");
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
-  it("nests the host pack span under the stage.sync step span", async () => {
+  it("nests the host pack span under the stage.workspace task span", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pack-nest-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -2114,13 +2310,16 @@ describe("sandbox managed runtime", () => {
     );
 
     const stageSpan = spans.find((span) => span.name === "stage.sync");
+    const workspaceSpan = spans.find((span) => span.name === "stage.workspace");
     const packSpan = spans.find((span) => span.name === "pack");
     expect(stageSpan).toBeDefined();
+    expect(workspaceSpan).toBeDefined();
     expect(packSpan).toBeDefined();
     expect(packSpan!.ended).toBe(true);
-    // The `pack` span parents to `stage.sync`, not to the root span, so it nests
-    // under the step in a real trace.
-    expect(packSpan!.parentName).toBe("stage.sync");
+    // The workspace stage task opens its own `stage.workspace` span under
+    // `stage.sync`, and the `pack` span nests under `stage.workspace`.
+    expect(workspaceSpan!.parentName).toBe("stage.sync");
+    expect(packSpan!.parentName).toBe("stage.workspace");
 
     // The two pre-`pack` staging sub-steps nest under `stage.sync` the same way,
     // so the previously hidden gap at the head of the step is now attributed.
@@ -2130,5 +2329,1133 @@ describe("sandbox managed runtime", () => {
       expect(span!.ended).toBe(true);
       expect(span!.parentName).toBe("stage.sync");
     }
+  });
+});
+
+// A deferred promise a test resolves or rejects by hand.
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function defer<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function settleTick(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A span recorder that captures each opened span name and the set of spans that
+// are open right now. `opened` records every span in open order. `openNow` holds
+// the names of the spans that started but did not end yet, so a test proves two
+// concurrent tasks keep their spans open at the same time.
+function makeSpanRecorder(): {
+  runtimeSpan: RuntimeSpanRunner;
+  opened: string[];
+  openNow: Set<string>;
+} {
+  const opened: string[] = [];
+  const openNow = new Set<string>();
+  const runtimeSpan: RuntimeSpanRunner = async (name, work) => {
+    opened.push(name);
+    openNow.add(name);
+    try {
+      return await work();
+    } finally {
+      openNow.delete(name);
+    }
+  };
+  return { runtimeSpan, opened, openNow };
+}
+
+// A controlled `syncIn` client. It labels each inbound operation, records the
+// start and settle order, and lets a test hold one upload open, release it, or
+// make it fail. One operation rides each `syncIn` call, so one call maps to one
+// label. This exercises the inbound coordinator's schedule, bound, failure
+// semantics, and startup barrier with deferred-promise fakes.
+interface SyncControl {
+  started: string[];
+  settled: string[];
+  waitForStart(label: string): Promise<void>;
+  hold(label: string): void;
+  release(label: string): void;
+  failWith(label: string, error: Error): void;
+}
+
+function labelOfOperation(operation: SandboxSyncOperation): string {
+  const bases = operation.files.map((mapping) => path.posix.basename(mapping.targetPath));
+  if (bases.some((base) => base === "workspace-upload.tar" || base === "git-workspace-upload.tar")) {
+    return "workspace";
+  }
+  const assetBase = bases.find((base) => base.endsWith("-upload.tar"));
+  if (assetBase) {
+    return assetBase.slice(0, -"-upload.tar".length);
+  }
+  const projectBase = bases.find((base) => base.startsWith("project-"));
+  if (projectBase) {
+    return projectBase;
+  }
+  return bases[0] ?? operation.operationId;
+}
+
+function makeControlledSyncClient(options: { concurrent: boolean }): {
+  client: SandboxManagedRuntimeClient;
+  control: SyncControl;
+} {
+  const started: string[] = [];
+  const settled: string[] = [];
+  const gates = new Map<string, Deferred<void>>();
+  const failures = new Map<string, Error>();
+  const startWaiters = new Map<string, Array<() => void>>();
+
+  const control: SyncControl = {
+    started,
+    settled,
+    waitForStart(label) {
+      if (started.includes(label)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const waiters = startWaiters.get(label) ?? [];
+        waiters.push(resolve);
+        startWaiters.set(label, waiters);
+      });
+    },
+    hold(label) {
+      if (!gates.has(label)) {
+        gates.set(label, defer<void>());
+      }
+    },
+    release(label) {
+      gates.get(label)?.resolve();
+    },
+    failWith(label, error) {
+      failures.set(label, error);
+      gates.get(label)?.resolve();
+    },
+  };
+
+  const noop = async (): Promise<void> => {};
+  const client: SandboxManagedRuntimeClient = {
+    makeDir: noop,
+    writeFile: noop,
+    readFile: async () => Buffer.alloc(0),
+    listFiles: async () => [],
+    remove: noop,
+    run: noop,
+    allowConcurrentSyncOperations: options.concurrent,
+    syncIn: async (operations) => {
+      const operation = operations[0]!;
+      const label = labelOfOperation(operation);
+      started.push(label);
+      const waiters = startWaiters.get(label) ?? [];
+      startWaiters.delete(label);
+      for (const waiter of waiters) {
+        waiter();
+      }
+      try {
+        const gate = gates.get(label);
+        if (gate) {
+          await gate.promise;
+        }
+        const failure = failures.get(label);
+        if (failure) {
+          throw failure;
+        }
+        return {
+          operations: [{
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          }],
+        };
+      } finally {
+        settled.push(label);
+      }
+    },
+  };
+
+  return { client, control };
+}
+
+describe("sandbox managed runtime inbound coordinator", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function makeSpec(remoteCwd: string) {
+    return {
+      transport: "sandbox" as const,
+      provider: "test",
+      sandboxId: "sandbox-1",
+      remoteCwd,
+      timeoutMs: 30_000,
+      apiKey: null,
+    };
+  }
+
+  // Create a temp root with one workspace directory and any named asset/project
+  // directories. Each directory carries one file, so the host tar step has bytes.
+  async function makeInboundDirs(names: string[]): Promise<{
+    rootDir: string;
+    workspaceDir: string;
+    dirOf: (name: string) => string;
+  }> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-inbound-coordinator-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "file.txt"), "workspace\n", "utf8");
+    const dirs = new Map<string, string>();
+    for (const name of names) {
+      const dir = path.join(rootDir, name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "file.txt"), `${name}\n`, "utf8");
+      dirs.set(name, dir);
+    }
+    return { rootDir, workspaceDir, dirOf: (name) => dirs.get(name)! };
+  }
+
+  // Resolve true when the label started within the window, false on timeout.
+  async function startedWithin(control: SyncControl, label: string, ms: number): Promise<boolean> {
+    return Promise.race([
+      control.waitForStart(label).then(() => true),
+      settleTick(ms).then(() => false),
+    ]);
+  }
+
+  it("with concurrency permitted, the home asset upload starts while the workspace upload is held open", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["home"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.hold("workspace");
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: dirOf("home") }],
+    });
+    prepared.catch(() => undefined);
+
+    // The workspace upload is open and held. The home asset upload still starts,
+    // so the coordinator runs the two operations concurrently.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "home", 4000)).toBe(true);
+    expect(control.settled).not.toContain("workspace");
+
+    control.release("workspace");
+    await prepared;
+    expect(control.settled).toContain("home");
+  });
+
+  it("with five operations and the bound of 4, the fifth operation does not start while four stay open", async () => {
+    expect(SYNC_OPERATION_CONCURRENCY_LIMIT).toBe(4);
+    const assetKeys = Array.from(
+      { length: SYNC_OPERATION_CONCURRENCY_LIMIT + 1 },
+      (_unused, index) => `asset-${index}`,
+    );
+    const { workspaceDir, dirOf } = await makeInboundDirs(assetKeys);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    for (const key of assetKeys) {
+      control.hold(key);
+    }
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: assetKeys.map((key) => ({ key, localDir: dirOf(key) })),
+    });
+    prepared.catch(() => undefined);
+
+    const firstFour = assetKeys.slice(0, SYNC_OPERATION_CONCURRENCY_LIMIT);
+    const fifth = assetKeys[SYNC_OPERATION_CONCURRENCY_LIMIT]!;
+    for (const key of firstFour) {
+      await control.waitForStart(key);
+    }
+    // The bound holds the fifth operation while four stay open.
+    expect(await startedWithin(control, fifth, 300)).toBe(false);
+    expect(control.started.slice().sort()).toEqual(firstFour.slice().sort());
+
+    // One release frees one slot, so the fifth operation starts.
+    control.release(firstFour[0]!);
+    expect(await startedWithin(control, fifth, 4000)).toBe(true);
+
+    for (const key of assetKeys) {
+      control.release(key);
+    }
+    await prepared;
+    expect(control.settled.slice().sort()).toEqual(assetKeys.slice().sort());
+  });
+
+  it("holds one upload open after another upload fails, and returns only after both settle", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-a", "asset-b"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.hold("asset-b");
+
+    let coordinatorSettled = false;
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        { key: "asset-a", localDir: dirOf("asset-a") },
+        { key: "asset-b", localDir: dirOf("asset-b") },
+      ],
+    });
+    const done = prepared.then(
+      () => { coordinatorSettled = true; },
+      () => { coordinatorSettled = true; },
+    );
+
+    control.failWith("asset-a", new Error("asset-a-fail"));
+    await control.waitForStart("asset-b");
+    await settleTick(100);
+
+    // The first upload already failed. The second upload is still open, so the
+    // coordinator must not return yet.
+    expect(coordinatorSettled).toBe(false);
+    expect(control.settled).toContain("asset-a");
+    expect(control.settled).not.toContain("asset-b");
+
+    control.release("asset-b");
+    await done;
+    expect(coordinatorSettled).toBe(true);
+    expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
+  });
+
+  it("records a referenced-project failure as nonfatal and finishes the other referenced-project uploads", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["good", "bad"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.failWith("project-bad", new Error("bad-upload"));
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      additionalSources: [
+        { localPath: dirOf("good"), projectId: "good" },
+        { localPath: dirOf("bad"), projectId: "bad" },
+      ],
+    });
+
+    // The healthy project synced; the failed project is a recorded, nonfatal
+    // outcome, so the coordinator resolved.
+    expect(Object.keys(prepared.additionalSourceDirs)).toEqual(["good"]);
+    expect(prepared.additionalSourceFailures.map((failure) => failure.projectId)).toEqual(["bad"]);
+    expect(prepared.additionalSourceFailures[0]!.error).toContain("bad-upload");
+    expect(control.settled).toContain("project-good");
+  });
+
+  it("raises an asset failure as fatal after the barrier", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-good", "asset-bad"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.failWith("asset-bad", new Error("asset-bad-fail"));
+
+    await expect(
+      prepareSandboxManagedRuntime({
+        spec: makeSpec("/remote/cwd"),
+        adapterKey: "codex",
+        client,
+        syncWorkspace: false,
+        workspaceLocalDir: workspaceDir,
+        assets: [
+          { key: "asset-good", localDir: dirOf("asset-good") },
+          { key: "asset-bad", localDir: dirOf("asset-bad") },
+        ],
+      }),
+    ).rejects.toThrow("asset-bad-fail");
+
+    // The barrier still settles the healthy asset before the coordinator raises.
+    expect(control.settled).toContain("asset-good");
+  });
+
+  it("raises the earlier required failure when the workspace and an asset both fail", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-a"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.failWith("workspace", new Error("workspace-fail"));
+    control.failWith("asset-a", new Error("asset-a-fail"));
+
+    // The workspace comes before the asset in stable operation order, so the
+    // coordinator raises the workspace failure.
+    await expect(
+      prepareSandboxManagedRuntime({
+        spec: makeSpec("/remote/cwd"),
+        adapterKey: "codex",
+        client,
+        workspaceLocalDir: workspaceDir,
+        assets: [{ key: "asset-a", localDir: dirOf("asset-a") }],
+      }),
+    ).rejects.toThrow("workspace-fail");
+  });
+
+  it("with concurrency forbidden, keeps the serial schedule in the current order", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-a"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: false });
+    control.hold("workspace");
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "asset-a", localDir: dirOf("asset-a") }],
+    });
+    prepared.catch(() => undefined);
+
+    // The workspace runs first and is held open. Serial mode runs one operation
+    // at a time, so the asset upload does not start until the workspace settles.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "asset-a", 300)).toBe(false);
+    expect(control.started).toEqual(["workspace"]);
+
+    control.release("workspace");
+    await control.waitForStart("asset-a");
+    await prepared;
+    // The serial order stays workspace first, then the asset.
+    expect(control.started).toEqual(["workspace", "asset-a"]);
+  });
+
+  it("opens one named span per inbound task: stage.workspace, stage.asset.<key>, stage.project.<id>", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["home", "proj"]);
+    const { client } = makeControlledSyncClient({ concurrent: false });
+    const { runtimeSpan, opened } = makeSpanRecorder();
+
+    await prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: dirOf("home") }],
+      additionalSources: [{ localPath: dirOf("proj"), projectId: "proj-1" }],
+      runtimeSpan,
+    });
+
+    // Each inbound task carries its own named span. The workspace task, the home
+    // asset task, and the referenced-project task each open one.
+    expect(opened).toContain("stage.workspace");
+    expect(opened).toContain("stage.asset.home");
+    expect(opened).toContain("stage.project.proj-1");
+  });
+
+  it("with concurrency permitted, the workspace and asset inbound task spans overlap in time", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["home"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    const { runtimeSpan, openNow } = makeSpanRecorder();
+    control.hold("workspace");
+    control.hold("home");
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: dirOf("home") }],
+      runtimeSpan,
+    });
+    prepared.catch(() => undefined);
+
+    // Both uploads are held open at their transfer. Each task span opens before
+    // its transfer and stays open while the transfer is held, so the two spans
+    // are open at the same time.
+    await control.waitForStart("workspace");
+    await control.waitForStart("home");
+    expect(openNow.has("stage.workspace")).toBe(true);
+    expect(openNow.has("stage.asset.home")).toBe(true);
+
+    control.release("workspace");
+    control.release("home");
+    await prepared;
+  });
+});
+
+// A controlled outbound restore. It reuses the deferred-promise fakes. The
+// native `syncOut` copies the sandbox workspace back into the restore temp
+// directory, and a gate holds the workspace restore open. Each asset carries a
+// controlled `restore` callback the test can hold, release, or make fail. One
+// label rides the workspace restore and one label rides each asset restore, so
+// a test can watch the outbound coordinator schedule, bound, failure semantics,
+// and teardown barrier.
+interface OutboundControl {
+  started: string[];
+  settled: string[];
+  restoreTempDirs: Map<string, string | undefined>;
+  waitForStart(label: string): Promise<void>;
+  hold(label: string): void;
+  release(label: string): void;
+  failWith(label: string, error: Error): void;
+}
+
+function makeOutboundControl(): {
+  control: OutboundControl;
+  gate: <T>(label: string, run: () => Promise<T>) => Promise<T>;
+} {
+  const started: string[] = [];
+  const settled: string[] = [];
+  const restoreTempDirs = new Map<string, string | undefined>();
+  const gates = new Map<string, Deferred<void>>();
+  const failures = new Map<string, Error>();
+  const startWaiters = new Map<string, Array<() => void>>();
+
+  const control: OutboundControl = {
+    started,
+    settled,
+    restoreTempDirs,
+    waitForStart(label) {
+      if (started.includes(label)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const waiters = startWaiters.get(label) ?? [];
+        waiters.push(resolve);
+        startWaiters.set(label, waiters);
+      });
+    },
+    hold(label) {
+      if (!gates.has(label)) {
+        gates.set(label, defer<void>());
+      }
+    },
+    release(label) {
+      gates.get(label)?.resolve();
+    },
+    failWith(label, error) {
+      failures.set(label, error);
+      gates.get(label)?.resolve();
+    },
+  };
+
+  // Record the task start, notify start waiters, wait for the gate, raise a set
+  // failure, then run the task body and record the settle. A gate that a test
+  // never holds resolves at once, so an unheld task runs straight through.
+  async function gate<T>(label: string, run: () => Promise<T>): Promise<T> {
+    started.push(label);
+    const waiters = startWaiters.get(label) ?? [];
+    startWaiters.delete(label);
+    for (const waiter of waiters) {
+      waiter();
+    }
+    try {
+      const held = gates.get(label);
+      if (held) {
+        await held.promise;
+      }
+      const failure = failures.get(label);
+      if (failure) {
+        throw failure;
+      }
+      return await run();
+    } finally {
+      settled.push(label);
+    }
+  }
+
+  return { control, gate };
+}
+
+// A native filesystem client whose `syncOut` copies the sandbox workspace back
+// through the gate. The inbound prepare step uses the base64-tar fallback
+// `syncIn`. The client opts into concurrency by the flag.
+function makeGatedOutboundClient(
+  concurrent: boolean,
+  gate: <T>(label: string, run: () => Promise<T>) => Promise<T>,
+): SandboxManagedRuntimeClient {
+  const client: SandboxManagedRuntimeClient = {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async (remotePath) => {
+      const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+      return entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+    },
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+    allowConcurrentSyncOperations: concurrent,
+    syncOut: async (operations) =>
+      gate("workspace", async () => {
+        for (const operation of operations) {
+          for (const mapping of operation.files) {
+            if (mapping.kind === "directory") {
+              await mirrorDirectory(mapping.sourcePath, mapping.targetPath);
+            } else {
+              await mkdir(path.dirname(mapping.targetPath), { recursive: true });
+              await writeFile(mapping.targetPath, await readFile(mapping.sourcePath));
+            }
+          }
+        }
+        return {
+          operations: operations.map((operation) => ({
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          })),
+        };
+      }),
+  };
+  attachFallbackSyncIn(client);
+  return client;
+}
+
+// Build one asset with a controlled `restore`. The restore records its own
+// temp directory, then runs through the gate. The temp directory proves that
+// two concurrent restore tasks keep separate scratch state.
+function makeControlledAsset(
+  key: string,
+  localDir: string,
+  control: OutboundControl,
+  gate: <T>(label: string, run: () => Promise<T>) => Promise<T>,
+): SandboxManagedRuntimeAsset {
+  return {
+    key,
+    localDir,
+    restore: async (ctx) => {
+      control.restoreTempDirs.set(key, ctx.tempDir);
+      await gate(key, async () => {
+        if (ctx.tempDir) {
+          await writeFile(path.join(ctx.tempDir, `scratch-${key}.txt`), key, "utf8");
+        }
+      });
+    },
+  };
+}
+
+describe("sandbox managed runtime outbound coordinator", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function makeSpec(remoteCwd: string) {
+    return {
+      transport: "sandbox" as const,
+      provider: "test",
+      sandboxId: "sandbox-1",
+      remoteCwd,
+      timeoutMs: 30_000,
+      apiKey: null,
+    };
+  }
+
+  // Create a temp root with one workspace directory and any named asset
+  // directories. Each directory carries one file, so the host tar step has
+  // bytes and the merge has content.
+  async function makeOutboundDirs(names: string[]): Promise<{
+    rootDir: string;
+    workspaceDir: string;
+    remoteWorkspaceDir: string;
+    dirOf: (name: string) => string;
+  }> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-outbound-coordinator-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "file.txt"), "workspace\n", "utf8");
+    const dirs = new Map<string, string>();
+    for (const name of names) {
+      const dir = path.join(rootDir, name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "file.txt"), `${name}\n`, "utf8");
+      dirs.set(name, dir);
+    }
+    return { rootDir, workspaceDir, remoteWorkspaceDir, dirOf: (name) => dirs.get(name)! };
+  }
+
+  // Resolve true when the label started within the window, false on timeout.
+  async function startedWithin(control: OutboundControl, label: string, ms: number): Promise<boolean> {
+    return Promise.race([
+      control.waitForStart(label).then(() => true),
+      settleTick(ms).then(() => false),
+    ]);
+  }
+
+  it("with concurrency permitted, an asset restore starts while the workspace restore is held open", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    control.hold("workspace");
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
+    });
+
+    const restore = prepared.restoreWorkspace();
+    restore.catch(() => undefined);
+
+    // The workspace restore is open and held. The home asset restore still
+    // starts, so the coordinator runs the two tasks concurrently.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "home", 4000)).toBe(true);
+    expect(control.settled).not.toContain("workspace");
+
+    control.release("workspace");
+    await restore;
+    expect(control.settled).toContain("home");
+    expect(control.settled).toContain("workspace");
+  });
+
+  it("holds one restore open after another restore fails, and returns only after both settle", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["asset-a", "asset-b"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        makeControlledAsset("asset-a", dirOf("asset-a"), control, gate),
+        makeControlledAsset("asset-b", dirOf("asset-b"), control, gate),
+      ],
+    });
+
+    control.hold("asset-b");
+    control.failWith("asset-a", new Error("asset-a-fail"));
+
+    let coordinatorSettled = false;
+    const done = prepared.restoreWorkspace().then(
+      () => { coordinatorSettled = true; },
+      () => { coordinatorSettled = true; },
+    );
+
+    await control.waitForStart("asset-b");
+    await settleTick(100);
+
+    // The first restore already failed. The second restore is still open, so
+    // the coordinator must not return yet.
+    expect(coordinatorSettled).toBe(false);
+    expect(control.settled).toContain("asset-a");
+    expect(control.settled).not.toContain("asset-b");
+
+    control.release("asset-b");
+    await done;
+    expect(coordinatorSettled).toBe(true);
+    expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
+  });
+
+  it("with concurrency forbidden, keeps the serial restore schedule in the current order", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["asset-a"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(false, gate);
+    control.hold("workspace");
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("asset-a", dirOf("asset-a"), control, gate)],
+    });
+
+    const restore = prepared.restoreWorkspace();
+    restore.catch(() => undefined);
+
+    // The workspace restore runs first and is held open. Serial mode runs one
+    // task at a time, so the asset restore does not start until the workspace
+    // restore settles.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "asset-a", 300)).toBe(false);
+    expect(control.started).toEqual(["workspace"]);
+
+    control.release("workspace");
+    await control.waitForStart("asset-a");
+    await restore;
+    // The serial order stays the workspace restore first, then the asset.
+    expect(control.started).toEqual(["workspace", "asset-a"]);
+  });
+
+  it("with concurrency permitted, two concurrent restore tasks use separate temporary state", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["asset-a", "asset-b"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        makeControlledAsset("asset-a", dirOf("asset-a"), control, gate),
+        makeControlledAsset("asset-b", dirOf("asset-b"), control, gate),
+      ],
+    });
+
+    control.hold("asset-a");
+    control.hold("asset-b");
+    const restore = prepared.restoreWorkspace();
+
+    // Both restore tasks start together under the bound. Each task carries its
+    // own restore temp directory, so the two directories differ.
+    await control.waitForStart("asset-a");
+    await control.waitForStart("asset-b");
+    const tempA = control.restoreTempDirs.get("asset-a");
+    const tempB = control.restoreTempDirs.get("asset-b");
+    expect(tempA).toBeTruthy();
+    expect(tempB).toBeTruthy();
+    expect(tempA).not.toBe(tempB);
+    expect(tempA!).toContain("paperclip-sandbox-restore-");
+    expect(tempB!).toContain("paperclip-sandbox-restore-");
+
+    control.release("asset-a");
+    control.release("asset-b");
+    await restore;
+    expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
+  });
+
+  it("opens one named span per outbound restore task: restore.workspace, restore.asset.<key>", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    const { runtimeSpan, opened } = makeSpanRecorder();
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
+      runtimeSpan,
+    });
+
+    await prepared.restoreWorkspace();
+
+    // Each outbound restore task carries its own named span. The workspace
+    // restore task and the home asset restore task each open one.
+    expect(opened).toContain("restore.workspace");
+    expect(opened).toContain("restore.asset.home");
+  });
+
+  it("with concurrency permitted, the workspace and asset restore task spans overlap in time", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    const { runtimeSpan, openNow } = makeSpanRecorder();
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
+      runtimeSpan,
+    });
+
+    control.hold("workspace");
+    control.hold("home");
+    const restore = prepared.restoreWorkspace();
+    restore.catch(() => undefined);
+
+    // Both restore tasks are held open. Each restore task span opens before its
+    // work and stays open while the work is held, so the two spans are open at
+    // the same time.
+    await control.waitForStart("workspace");
+    await control.waitForStart("home");
+    expect(openNow.has("restore.workspace")).toBe(true);
+    expect(openNow.has("restore.asset.home")).toBe(true);
+
+    control.release("workspace");
+    control.release("home");
+    await restore;
+  });
+});
+
+// The bundle export inside the workspace restore task selects its outbound
+// transport by the client. A client with native `syncOut` copies the bundle
+// straight into the host restore temp directory through one `kind: "file"`
+// mapping. A client without native `syncOut` reads the bundle back through
+// `readFile`. These tests build a git-backed workspace and assert the transport
+// branch, the confinement guard, and the full-bundle retry.
+describe("sandbox git-bundle export transport", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  // Copy a directory tree and drop each entry whose name matches an exclude
+  // term. This models a native provider `syncOut` for a directory mapping: it
+  // honors `exclude`, so `.git`, `node_modules`, and the runtime root never
+  // reach the host restore temp directory. The tar fallback drops the same set.
+  async function copyDirectoryWithExclude(
+    sourceDir: string,
+    targetDir: string,
+    exclude: string[] | undefined,
+  ): Promise<void> {
+    const excludeNames = new Set((exclude ?? []).map((entry) => entry.replace(/\/$/, "")));
+    await mkdir(targetDir, { recursive: true });
+    const entries = await readdir(sourceDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (excludeNames.has(entry.name)) continue;
+      const source = path.join(sourceDir, entry.name);
+      const target = path.join(targetDir, entry.name);
+      if (entry.isDirectory()) {
+        await copyDirectoryWithExclude(source, target, exclude);
+      } else if (entry.isSymbolicLink()) {
+        await symlink(await fsPromises.readlink(source), target);
+      } else {
+        await writeFile(target, await readFile(source));
+      }
+    }
+  }
+
+  interface TransportCapture {
+    syncOutOperations: SandboxSyncOperation[];
+    readFilePaths: string[];
+  }
+
+  // Build a git-backed managed-runtime client. `native` toggles the outbound
+  // `syncOut`. The client records every `syncOut` operation and every `readFile`
+  // remote path, so a test can prove which transport moved the bundle.
+  function makeTransportClient(native: boolean, capture: TransportCapture): SandboxManagedRuntimeClient {
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => {
+        capture.readFilePaths.push(remotePath);
+        return await readFile(remotePath);
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    attachFallbackSyncIn(client);
+    if (native) {
+      client.syncOut = async (operations) => {
+        for (const operation of operations) {
+          capture.syncOutOperations.push(operation);
+          for (const mapping of operation.files) {
+            if (mapping.kind === "directory") {
+              await copyDirectoryWithExclude(mapping.sourcePath, mapping.targetPath, mapping.exclude);
+            } else {
+              await mkdir(path.dirname(mapping.targetPath), { recursive: true });
+              await writeFile(mapping.targetPath, await readFile(mapping.sourcePath));
+            }
+          }
+        }
+        return {
+          operations: operations.map((operation) => ({
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          })),
+        };
+      };
+    }
+    return client;
+  }
+
+  const gitSpec = (remoteWorkspaceDir: string) => ({
+    transport: "sandbox" as const,
+    provider: "test",
+    sandboxId: "sandbox-1",
+    remoteCwd: remoteWorkspaceDir,
+    timeoutMs: 30_000,
+    apiKey: null,
+  });
+
+  // Create a git repository with one commit and a linked worktree. Return the
+  // host worktree directory and the sandbox workspace directory the prepare step
+  // fills through a shallow standalone clone.
+  async function setupGitBackedWorkspace(prefix: string): Promise<{
+    localWorkspaceDir: string;
+    remoteWorkspaceDir: string;
+  }> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, ".gitignore"), "node_modules/\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "base\n", "utf8");
+    await git(sourceRepoDir, ["add", "-A"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+    return { localWorkspaceDir, remoteWorkspaceDir };
+  }
+
+  // Advance the sandbox history by one commit that also adds a new file. The
+  // caller runs the restore after this, so the export moves this new history.
+  async function commitInSandbox(remoteWorkspaceDir: string): Promise<void> {
+    await git(remoteWorkspaceDir, ["config", "user.name", "Paperclip Sandbox"]);
+    await git(remoteWorkspaceDir, ["config", "user.email", "sandbox@paperclip.dev"]);
+    await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "from sandbox\n", "utf8");
+    await git(remoteWorkspaceDir, ["add", "-A"]);
+    await git(remoteWorkspaceDir, ["commit", "-m", "sandbox update"]);
+  }
+
+  function bundleFileMappings(capture: TransportCapture) {
+    return capture.syncOutOperations
+      .flatMap((operation) => operation.files)
+      .filter((mapping) => path.posix.basename(mapping.sourcePath) === "git-delta.bundle");
+  }
+
+  it("moves the bundle through one native syncOut file mapping, never through readFile", async () => {
+    const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-bundle-native-");
+    const client = makeTransportClient(true, capture);
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir),
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await commitInSandbox(remoteWorkspaceDir);
+    await prepared.restoreWorkspace();
+
+    // The restore imported the sandbox commit and its new file.
+    expect(await git(localWorkspaceDir, ["log", "-1", "--pretty=%s"])).toBe("sandbox update");
+    await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("from sandbox\n");
+
+    // The bundle rode exactly one native `kind: "file"` mapping into the host
+    // restore temp directory; `readFile` never touched the bundle.
+    const mappings = bundleFileMappings(capture);
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0]!.kind).toBe("file");
+    expect(path.posix.basename(mappings[0]!.targetPath)).toBe("git-delta.bundle");
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(false);
+
+    // The small status file stays on `readFile`; the change does not migrate it.
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("workspace-status.txt"))).toBe(true);
+  });
+
+  it("reads the bundle through readFile when the client has no native syncOut", async () => {
+    const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-bundle-fallback-");
+    const client = makeTransportClient(false, capture);
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir),
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await commitInSandbox(remoteWorkspaceDir);
+    await prepared.restoreWorkspace();
+
+    expect(await git(localWorkspaceDir, ["log", "-1", "--pretty=%s"])).toBe("sandbox update");
+    await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("from sandbox\n");
+
+    // Without native `syncOut` the fallback path is unchanged: no sync operation
+    // ran and the bundle came back through `readFile`.
+    expect(client.syncOut).toBeUndefined();
+    expect(capture.syncOutOperations).toHaveLength(0);
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(true);
+  });
+
+  it("retries the full bundle through the native branch when the delta misses its prerequisite", async () => {
+    const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bundle-retry-"));
+    cleanupDirs.push(rootDir);
+    // A standalone host repository, so the test controls object reachability. A
+    // linked worktree shares the source object store, and the boundary commit
+    // stays reachable there; a standalone repository lets `gc` prune it.
+    const localWorkspaceDir = path.join(rootDir, "local-repo");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await git(localWorkspaceDir, ["init"]);
+    await git(localWorkspaceDir, ["checkout", "-b", "work"]);
+    await git(localWorkspaceDir, ["config", "user.name", "Paperclip Test"]);
+    await git(localWorkspaceDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "base\n", "utf8");
+    await git(localWorkspaceDir, ["add", "-A"]);
+    await git(localWorkspaceDir, ["commit", "-m", "base"]);
+    const firstCommit = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(localWorkspaceDir, "tracked.txt"), "second\n", "utf8");
+    await git(localWorkspaceDir, ["add", "-A"]);
+    await git(localWorkspaceDir, ["commit", "-m", "second"]);
+    const stagedBase = await git(localWorkspaceDir, ["rev-parse", "HEAD"]);
+
+    const client = makeTransportClient(true, capture);
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir),
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await commitInSandbox(remoteWorkspaceDir);
+    const sandboxHead = await git(remoteWorkspaceDir, ["rev-parse", "HEAD"]);
+
+    // The host drops below the staged base commit and prunes it. The delta
+    // bundle names that boundary commit as a prerequisite the host no longer
+    // holds, so the import fails and forces the full-bundle retry.
+    await git(localWorkspaceDir, ["reset", "--hard", firstCommit]);
+    await git(localWorkspaceDir, ["reflog", "expire", "--expire=now", "--all"]);
+    await git(localWorkspaceDir, ["gc", "--prune=now"]);
+    await expect(git(localWorkspaceDir, ["cat-file", "-e", `${stagedBase}^{commit}`])).rejects.toThrow();
+
+    await prepared.restoreWorkspace();
+
+    // Two bundle exports rode native file mappings: the delta attempt and the
+    // full-bundle retry. `readFile` never moved the bundle on either attempt.
+    const mappings = bundleFileMappings(capture);
+    expect(mappings).toHaveLength(2);
+    expect(mappings.every((mapping) => mapping.kind === "file")).toBe(true);
+    expect(capture.readFilePaths.some((remotePath) => remotePath.endsWith("git-delta.bundle"))).toBe(false);
+
+    // The full bundle was self-contained: the host repository now holds the
+    // sandbox head commit.
+    await expect(git(localWorkspaceDir, ["cat-file", "-e", `${sandboxHead}^{commit}`])).resolves.toBe("");
   });
 });

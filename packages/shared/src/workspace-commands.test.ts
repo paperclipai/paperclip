@@ -75,4 +75,55 @@ describe("workspace command helpers", () => {
 
     expect(match).toBeNull();
   });
+
+  it("matches an exposed dev runtime whose bind command was hardened to loopback", () => {
+    const workspaceRuntime = {
+      commands: [
+        { id: "web", name: "paperclip-dev", kind: "service", command: "pnpm dev --bind lan" },
+      ],
+    };
+    const command = findWorkspaceCommandDefinition(workspaceRuntime, "web");
+    expect(command).not.toBeNull();
+
+    const match = matchWorkspaceRuntimeServiceToCommand(command!, [
+      {
+        id: "runtime-web",
+        serviceName: "paperclip-dev",
+        command: "pnpm dev --bind loopback",
+        cwd: "/repo",
+        configIndex: null,
+        exposure: {
+          provider: "tailscale_https",
+          state: "ready",
+          publicUrl: "https://paperclip-dev.example.ts.net:42012",
+          hostname: "paperclip-dev.example.ts.net",
+          listeners: [],
+          brokerRef: "broker-1",
+          lastError: null,
+          updatedAt: "2026-08-20T00:00:00.000Z",
+        },
+      },
+    ]);
+
+    expect(match).toEqual(expect.objectContaining({ id: "runtime-web" }));
+  });
+
+  it("does not equate a loopback command with a lan command without managed exposure", () => {
+    const command = findWorkspaceCommandDefinition({
+      services: [{ name: "paperclip-dev", command: "pnpm dev --bind lan" }],
+    }, "service:paperclip-dev");
+
+    const match = matchWorkspaceRuntimeServiceToCommand(command!, [
+      {
+        id: "runtime-web",
+        serviceName: "paperclip-dev",
+        command: "pnpm dev --bind loopback",
+        cwd: "/repo",
+        configIndex: null,
+        exposure: null,
+      },
+    ]);
+
+    expect(match).toBeNull();
+  });
 });

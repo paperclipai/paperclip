@@ -203,7 +203,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "grok");
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
-  const permissionMode = asString(config.permissionMode, "dontAsk").trim() || "dontAsk";
+  // No default permission mode: Grok >= 1.0 enforces `dontAsk` as
+  // deny-by-default and it overrides --always-approve, so passing it broke
+  // every unattended run (the first tool call died with "User cancelled the
+  // execution for tool ..."). --always-approve alone is the unattended policy.
+  const permissionMode = asString(config.permissionMode, "").trim();
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);

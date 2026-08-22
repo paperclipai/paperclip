@@ -11,6 +11,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
+import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
@@ -129,11 +130,13 @@ function describeEnvironment(
   environment: Environment,
   capabilities?: EnvironmentCapabilities | null,
 ): EnvironmentDescriptor {
-  const detail = environment.driver === "sandbox"
-    ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
-    : environment.driver === "local"
-      ? "Paperclip host"
-      : formatEnvironmentDriver(environment.driver);
+  const detail = isPlatformManagedEnvironment(environment)
+    ? "Managed by Paperclip"
+    : environment.driver === "sandbox"
+      ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
+      : environment.driver === "local"
+        ? "Paperclip host"
+        : formatEnvironmentDriver(environment.driver);
 
   return {
     label: environment.name,

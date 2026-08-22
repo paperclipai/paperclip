@@ -36,6 +36,11 @@ export type HealthStatus = {
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;
   cloud?: CloudInstanceHealthStatus;
+  /**
+   * Settings surfaces hidden by the hosting operator (keys from the shared
+   * settings-visibility registry). Absent when nothing is hidden.
+   */
+  hiddenSettings?: string[];
 };
 
 export const healthApi = {

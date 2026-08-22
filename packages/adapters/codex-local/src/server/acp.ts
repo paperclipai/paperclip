@@ -48,7 +48,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "22.13.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type CodexExecutionEngine = "cli" | "acp";
 
@@ -628,8 +628,8 @@ export async function testCodexAcpEnvironment(
       checks.push({
         code: ADAPTER_AUTH_MISSING_CHECK_CODE,
         level: "warn",
-        message: "The sandbox has no ready authentication for this adapter.",
-        hint: "Provide credentials for this adapter, or start login in the sandbox.",
+        message: "This environment has no ready authentication for this adapter.",
+        hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
   }

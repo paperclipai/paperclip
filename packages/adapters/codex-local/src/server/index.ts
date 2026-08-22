@@ -32,7 +32,7 @@ export {
   type DeviceLoginResult,
   type RunDeviceLoginOptions,
 } from "./device-login-runner.js";
-export { DEVICE_LOGIN_URL, type DeviceLoginPrompt } from "./device-login-parse.js";
+export { DEVICE_LOGIN_URL, parseDeviceLoginPrompt, type DeviceLoginPrompt } from "./device-login-parse.js";
 export {
   promoteDeviceLoginCredential,
   checkStagedCredentialReadiness,

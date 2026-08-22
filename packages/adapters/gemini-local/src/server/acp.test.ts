@@ -244,9 +244,9 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("checks the Node version required by the Gemini ACP runtime", () => {
-    setNodeVersion("v19.9.0");
+    setNodeVersion("v24.10.0");
     expect(nodeVersionMeetsGeminiAcpMinimum()).toBe(false);
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
     expect(nodeVersionMeetsGeminiAcpMinimum()).toBe(true);
   });
 
@@ -255,7 +255,7 @@ describe("gemini_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "gemini");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
 
     expect(resolveGeminiExecutionEngine({})).toEqual({ engine: "acp", explicit: false });
     await expect(
@@ -275,7 +275,7 @@ describe("gemini_local ACP lane", () => {
       explicit: true,
     });
 
-    setNodeVersion("v19.9.0");
+    setNodeVersion("v24.10.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { command: commandPath },
@@ -295,7 +295,7 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { agentCommand: "gemini --acp" },
@@ -323,7 +323,7 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: {},
@@ -342,7 +342,7 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { agentCommand: "gemini --acp" },
@@ -681,7 +681,7 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { agentCommand: "gemini --acp" },
@@ -706,7 +706,7 @@ describe("gemini_local ACP lane", () => {
     await fs.writeFile(path.join(bin, "gemini"), "#!/usr/bin/env sh\n", "utf8");
     process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
     process.env.GEMINI_API_KEY = "test-key";
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
 
     const result = await testGeminiAcpEnvironment({
       adapterType: "gemini_local",

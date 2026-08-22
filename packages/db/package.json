@@ -53,10 +53,13 @@
     "postgres": "^3.4.9"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.0.0",
     "drizzle-kit": "^0.31.10",
-    "tsx": "^4.23.1",
+    "tsx": "^4.23.12",
     "typescript": "^5.7.3",
     "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

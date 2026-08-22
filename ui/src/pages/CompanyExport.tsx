@@ -41,8 +41,11 @@ import { buildPortableSidebarOrder } from "../lib/company-portability-sidebar";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
 import {
   Download,
+  LoaderCircle,
   Package,
+  RotateCcw,
   Search,
+  X,
 } from "lucide-react";
 import {
   type FileTreeNode,
@@ -498,15 +501,40 @@ function generateReadmeFromSelection(
 
 // ── Preview pane ──────────────────────────────────────────────────────
 
+export function resolveExportPreviewImageSrc(input: {
+  src: string;
+  selectedFile: string;
+  allFiles: Record<string, CompanyPortabilityFileEntry>;
+  orgChartPreviewUrl?: string;
+}): string | null {
+  const { src, selectedFile, allFiles, orgChartPreviewUrl } = input;
+  if (/^(?:https?:|data:)/i.test(src)) return null;
+
+  // Preview generation deliberately avoids the comparatively expensive PNG
+  // renderer. Use the independently generated SVG endpoint so the README
+  // never shows a broken image; downloaded bundles still contain the PNG.
+  if (src.replace(/^\.\//, "") === "images/org-chart.png" && orgChartPreviewUrl) {
+    return orgChartPreviewUrl;
+  }
+
+  const dir = selectedFile.includes("/") ? selectedFile.slice(0, selectedFile.lastIndexOf("/") + 1) : "";
+  const resolved = dir + src;
+  const entry = allFiles[resolved] ?? allFiles[src];
+  if (!entry) return null;
+  return getPortableFileDataUrl(resolved in allFiles ? resolved : src, entry);
+}
+
 function ExportPreviewPane({
   selectedFile,
   content,
   allFiles,
+  orgChartPreviewUrl,
   onSkillClick,
 }: {
   selectedFile: string | null;
   content: CompanyPortabilityFileEntry | null;
   allFiles: Record<string, CompanyPortabilityFileEntry>;
+  orgChartPreviewUrl?: string;
   onSkillClick?: (skill: string) => void;
 }) {
   if (!selectedFile || content === null) {
@@ -522,16 +550,7 @@ function ExportPreviewPane({
 
   // Resolve relative image paths within the export package (e.g. images/org-chart.png)
   const resolveImageSrc = isMarkdown
-    ? (src: string) => {
-        // Skip absolute URLs and data URIs
-        if (/^(?:https?:|data:)/i.test(src)) return null;
-        // Resolve relative to the directory of the current markdown file
-        const dir = selectedFile.includes("/") ? selectedFile.slice(0, selectedFile.lastIndexOf("/") + 1) : "";
-        const resolved = dir + src;
-        const entry = allFiles[resolved] ?? allFiles[src];
-        if (!entry) return null;
-        return getPortableFileDataUrl(resolved in allFiles ? resolved : src, entry);
-      }
+    ? (src: string) => resolveExportPreviewImageSrc({ src, selectedFile, allFiles, orgChartPreviewUrl })
     : undefined;
 
   return (
@@ -589,22 +608,40 @@ function expandAncestors(filePath: string): string[] {
   return dirs;
 }
 
+interface ExportPreviewMutationInput {
+  includeIssues: boolean;
+  includeSkills: boolean;
+  requestId: number;
+  signal: AbortSignal;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+}
+
+function previewErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Failed to load export data.";
+}
+
 export function CompanyExport() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const navigate = useNavigate();
   const location = useLocation();
-  const { data: session, isFetched: isSessionFetched } = useQuery({
+  const initialFileFromUrl = useRef(filePathFromLocation(location.pathname));
+  const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  const { data: agents = [], isFetched: areAgentsFetched } = useQuery({
+  const { data: agents = [] } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: projects = [], isFetched: areProjectsFetched } = useQuery({
+  const { data: projects = [] } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -618,11 +655,21 @@ export function CompanyExport() {
   const [exportData, setExportData] = useState<CompanyPortabilityExportPreviewResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [categories, setCategories] = useState<ExportCategorySelection>(buildDefaultExportCategorySelection);
+  const [categories, setCategories] = useState<ExportCategorySelection>(() => ({
+    ...buildDefaultExportCategorySelection(),
+    // Task history is the expensive part of a large-company export. Keep it
+    // opt-in so opening this settings page uses the lightweight preview path.
+    tasks: false,
+    routines: false,
+    attachments: false,
+  }));
   const [treeSearch, setTreeSearch] = useState("");
   const [taskLimit, setTaskLimit] = useState(TASKS_PAGE_SIZE);
+  const [previewCancelled, setPreviewCancelled] = useState(false);
   const savedExpandedRef = useRef<Set<string> | null>(null);
-  const initialFileFromUrl = useRef(filePathFromLocation(location.pathname));
+  const previewAbortControllerRef = useRef<AbortController | null>(null);
+  const previewRequestIdRef = useRef(0);
+  const previewCompanyIdRef = useRef<string | null>(null);
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const visibleAgents = useMemo(
     () => agents.filter((agent: Agent) => agent.status !== "terminated"),
@@ -651,10 +698,7 @@ export function CompanyExport() {
     }),
     [orderedAgents, orderedProjects, visibleAgents, visibleProjects],
   );
-  const sidebarOrderKey = useMemo(
-    () => JSON.stringify(sidebarOrder ?? null),
-    [sidebarOrder],
-  );
+  const includeIssues = categories.tasks || categories.routines;
 
   // Navigate-aware file selection: updates state + URL without page reload.
   // `replace` = true skips history entry (used for initial load); false = pushes (used for clicks).
@@ -696,12 +740,13 @@ export function CompanyExport() {
   }, [selectedCompany?.name, setBreadcrumbs]);
 
   const exportPreviewMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: ({ includeIssues: withIssues, includeSkills, signal }: ExportPreviewMutationInput) =>
       companiesApi.exportPreview(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: withIssues, skills: includeSkills },
         sidebarOrder,
-      }),
-    onSuccess: (result) => {
+      }, { signal }),
+    onSuccess: (result, request) => {
+      if (request.requestId !== previewRequestIdRef.current) return;
       setExportData(result);
       // Expand top-level dirs (except tasks — collapsed by default)
       const tree = buildFileTree(result.files);
@@ -727,19 +772,36 @@ export function CompanyExport() {
         setExpandedDirs(topDirs);
       }
     },
-    onError: (err) => {
+    onError: (err, request) => {
+      if (request.requestId !== previewRequestIdRef.current || isAbortError(err)) return;
       pushToast({
         tone: "error",
         title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to load export data.",
+        body: previewErrorMessage(err),
       });
     },
   });
 
+  function startPreviewRequest() {
+    if (!selectedCompanyId) return;
+    previewAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = previewRequestIdRef.current + 1;
+    previewRequestIdRef.current = requestId;
+    previewAbortControllerRef.current = controller;
+    setPreviewCancelled(false);
+    exportPreviewMutation.mutate({
+      includeIssues,
+      includeSkills: categories.skills,
+      requestId,
+      signal: controller.signal,
+    });
+  }
+
   const downloadMutation = useMutation({
     mutationFn: () =>
       companiesApi.exportBundle(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: includeIssues, skills: categories.skills },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,
       }),
@@ -762,12 +824,20 @@ export function CompanyExport() {
   });
 
   useEffect(() => {
-    if (!selectedCompanyId || exportPreviewMutation.isPending) return;
-    if (!isSessionFetched || !areAgentsFetched || !areProjectsFetched) return;
-    setExportData(null);
-    exportPreviewMutation.mutate();
+    if (!selectedCompanyId) return;
+    if (previewCompanyIdRef.current !== selectedCompanyId) {
+      previewCompanyIdRef.current = selectedCompanyId;
+      setExportData(null);
+      setSelectedFile(null);
+    }
+    startPreviewRequest();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey]);
+  }, [selectedCompanyId, includeIssues, categories.skills]);
+
+  useEffect(() => () => {
+    previewRequestIdRef.current += 1;
+    previewAbortControllerRef.current?.abort();
+  }, []);
 
   const tree = useMemo(
     () => (exportData ? buildFileTree(exportData.files) : []),
@@ -945,6 +1015,14 @@ export function CompanyExport() {
     downloadMutation.mutate();
   }
 
+  function handleCancelPreview() {
+    previewRequestIdRef.current += 1;
+    previewAbortControllerRef.current?.abort();
+    previewAbortControllerRef.current = null;
+    exportPreviewMutation.reset();
+    setPreviewCancelled(true);
+  }
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Package} message="Select a company to export." />;
   }
@@ -953,8 +1031,44 @@ export function CompanyExport() {
     return <PageSkeleton variant="detail" />;
   }
 
+  if (previewCancelled && !exportData) {
+    return (
+      <EmptyState
+        icon={Package}
+        title="Export preview cancelled"
+        message="The preview request was cancelled. Your export settings are unchanged."
+        action="Retry preview"
+        onAction={startPreviewRequest}
+        hideActionIcon
+      />
+    );
+  }
+
+  if (exportPreviewMutation.isError && !exportData) {
+    return (
+      <EmptyState
+        icon={Package}
+        title="Export preview failed"
+        message={previewErrorMessage(exportPreviewMutation.error)}
+        description="Retry the preview. You do not need to reload this page."
+        action="Retry preview"
+        onAction={startPreviewRequest}
+        hideActionIcon
+      />
+    );
+  }
+
   if (!exportData) {
-    return <EmptyState icon={Package} message="Loading export data..." />;
+    return (
+      <EmptyState
+        icon={Package}
+        title="Export preview unavailable"
+        message="No export preview is loaded."
+        action="Load preview"
+        onAction={startPreviewRequest}
+        hideActionIcon
+      />
+    );
   }
 
   const previewContent = selectedFile
@@ -964,7 +1078,7 @@ export function CompanyExport() {
     : null;
 
   return (
-    <div>
+    <div className="max-w-6xl">
       {/* Sticky top action bar */}
       <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -985,7 +1099,13 @@ export function CompanyExport() {
           <Button
             size="sm"
             onClick={handleDownload}
-            disabled={selectedCount === 0 || downloadMutation.isPending}
+            disabled={
+              selectedCount === 0
+              || downloadMutation.isPending
+              || exportPreviewMutation.isPending
+              || exportPreviewMutation.isError
+              || previewCancelled
+            }
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
@@ -1036,6 +1156,8 @@ export function CompanyExport() {
                 const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
                 const checked = categories[key] && !disabled;
                 const count = categoryCounts?.[key] ?? 0;
+                const countLoaded = exportData.manifest.includes.issues
+                  || (key !== "tasks" && key !== "routines" && key !== "attachments");
                 return (
                   <label
                     key={key}
@@ -1058,11 +1180,16 @@ export function CompanyExport() {
                       data-export-category={key}
                     />
                     <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
-                    <span className="text-xs text-muted-foreground">{count.toLocaleString()}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {countLoaded ? count.toLocaleString() : "—"}
+                    </span>
                   </label>
                 );
               })}
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Task and routine history is opt-in because it can be large.
+            </p>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
@@ -1101,8 +1228,74 @@ export function CompanyExport() {
             )}
           </div>
         </aside>
-        <div className="min-w-0 overflow-y-auto xl:pl-6">
-          <ExportPreviewPane selectedFile={selectedFile} content={previewContent} allFiles={effectiveFiles} onSkillClick={handleSkillClick} />
+        <div className="relative min-w-0 overflow-y-auto xl:pl-6">
+          <ExportPreviewPane
+            selectedFile={selectedFile}
+            content={previewContent}
+            allFiles={effectiveFiles}
+            orgChartPreviewUrl={`/api/companies/${encodeURIComponent(selectedCompanyId)}/org.svg`}
+            onSkillClick={handleSkillClick}
+          />
+          {exportPreviewMutation.isPending ? (
+            <div
+              className="absolute inset-0 z-10 flex min-h-(--sz-520px) items-center justify-center bg-background/90 px-6 text-center"
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+              data-export-preview-state="loading"
+            >
+              <div className="flex max-w-md flex-col items-center gap-3">
+                <LoaderCircle className="h-6 w-6 animate-spin text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Updating export preview…</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Large task histories can take a minute. You can untick Tasks or cancel this update.
+                  </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={handleCancelPreview}>
+                  <X />
+                  Cancel update
+                </Button>
+              </div>
+            </div>
+          ) : previewCancelled ? (
+            <div
+              className="absolute inset-0 z-10 flex min-h-(--sz-520px) items-center justify-center bg-background/90 px-6 text-center"
+              data-export-preview-state="cancelled"
+            >
+              <div className="flex max-w-md flex-col items-center gap-3">
+                <div>
+                  <p className="text-sm font-medium">Preview update cancelled</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    The previous preview remains available. Retry when you are ready.
+                  </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
+                  <RotateCcw />
+                  Retry preview
+                </Button>
+              </div>
+            </div>
+          ) : exportPreviewMutation.isError ? (
+            <div
+              className="absolute inset-0 z-10 flex min-h-(--sz-520px) items-center justify-center bg-background/90 px-6 text-center"
+              role="alert"
+              data-export-preview-state="error"
+            >
+              <div className="flex max-w-md flex-col items-center gap-3">
+                <div>
+                  <p className="text-sm font-medium text-destructive">Export preview failed</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {previewErrorMessage(exportPreviewMutation.error)}
+                  </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
+                  <RotateCcw />
+                  Retry preview
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

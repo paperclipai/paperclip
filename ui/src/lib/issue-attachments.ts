@@ -1,11 +1,6 @@
 import type { IssueAttachment } from "@paperclipai/shared";
+import { isMarkdownAttachmentContent } from "@paperclipai/shared";
 import { isVideoLikeOutput } from "./issue-output";
-
-const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
-  "application/octet-stream",
-  "binary/octet-stream",
-  "application/x-binary",
-]);
 
 type AttachmentPathLike = {
   contentPath: string;
@@ -42,17 +37,5 @@ export function isVideoAttachment(
 export function isMarkdownAttachment(
   attachment: Pick<IssueAttachment, "contentType" | "originalFilename">,
 ) {
-  const contentType = normalizedContentType(attachment);
-  if (
-    contentType === "text/markdown" ||
-    contentType === "text/x-markdown" ||
-    contentType === "application/markdown" ||
-    contentType === "application/x-markdown"
-  ) {
-    return true;
-  }
-
-  const filename = (attachment.originalFilename ?? "").toLowerCase();
-  if (!filename.endsWith(".md") && !filename.endsWith(".markdown")) return false;
-  return contentType === "text/plain" || GENERIC_ATTACHMENT_CONTENT_TYPES.has(contentType);
+  return isMarkdownAttachmentContent(attachment);
 }

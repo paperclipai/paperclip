@@ -88,6 +88,7 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
       className="group flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
       data-testid="task-chat-turn-summary"
     >
+      <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} aria-hidden />
       {timestampPrefix ? (
         <>
           <span className="text-(length:--text-micro)">{timestampPrefix}</span>
@@ -101,16 +102,12 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
         // DOM (and the accessible tree) but fades in only on hover/focus so the
         // settled line reads as "2:34 PM · ✓ Worked" at rest. Revealed too when
         // the fold is open, so the metrics don't vanish while you read below.
-        <span
-          className={cn(
-            "font-mono text-(length:--text-micro) transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100",
-            open ? "opacity-100" : "opacity-0",
-          )}
-        >
-          {turnSummaryMetrics(item.summary)}
+        <span className="tc-turn-metrics" data-visible={open ? "true" : "false"}>
+          <span className="min-w-0 overflow-hidden whitespace-nowrap font-mono text-(length:--text-micro)">
+            {turnSummaryMetrics(item.summary)}
+          </span>
         </span>
       ) : null}
-      <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} />
     </button>
   ) : parentRow ? (
     // The pill renders the expand button itself, wrapped around only the

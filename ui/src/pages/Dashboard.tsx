@@ -4,7 +4,6 @@ import {
   onboardingStepForCompany,
   shouldRouteAgentlessCompanyToOnboarding,
 } from "../lib/onboarding-route";
-import { useCompanyMission } from "../hooks/useCompanyMission";
 import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -79,8 +78,6 @@ export function Dashboard() {
   // start the wizard at the front door with no company, and the new-company
   // path there would create a *second* company instead of giving this one an
   // agent.
-  const { hasMission: companyHasMission, settled: missionSettled } =
-    useCompanyMission(selectedCompanyId);
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
@@ -93,16 +90,14 @@ export function Dashboard() {
   // companies already offered; see it for why that outlives this component.
   useEffect(() => {
     if (!shouldOpenOnboarding || !selectedCompanyId) return;
-    // Wait for the mission lookup to settle before opening: the wizard applies
-    // the step it is given once, so a step chosen before the answer is in is
-    // the step the customer is left on.
-    if (!missionSettled) return;
     if (!claimOnboardingOffer(selectedCompanyId)) return;
     openOnboarding({
       companyId: selectedCompanyId,
-      initialStep: onboardingStepForCompany(companyHasMission),
+      initialStep: onboardingStepForCompany(),
     });
-  }, [shouldOpenOnboarding, selectedCompanyId, missionSettled, companyHasMission, openOnboarding]);
+    // No mission lookup to wait on any more: the step this opens is the same
+    // whatever the goals say, so waiting only delayed the open.
+  }, [shouldOpenOnboarding, selectedCompanyId, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
@@ -277,7 +272,7 @@ export function Dashboard() {
             </p>
           </div>
           <button
-            onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
+            onClick={() => openOnboarding({ initialStep: 3, companyId: selectedCompanyId! })}
             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
           >
             Create one here

@@ -169,7 +169,7 @@ describe("adapter routes", () => {
       agentId: "codex",
       skillsMode: "ephemeral",
       prerequisites: {
-        nodeRange: ">=22.13.0",
+        nodeRange: ">=24.11.0",
         packages: ["@agentclientprotocol/codex-acp"],
       },
     });
@@ -205,7 +205,7 @@ describe("adapter routes", () => {
       agentId: "gemini",
       skillsMode: "ephemeral",
       prerequisites: {
-        nodeRange: ">=20.0.0",
+        nodeRange: ">=24.11.0",
         packages: ["@google/gemini-cli"],
       },
     });
@@ -218,6 +218,24 @@ describe("adapter routes", () => {
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
       supportsAcp: false,
+    });
+
+    const kimiAdapter = res.body.find((a: any) => a.type === "kimi_local");
+    expect(kimiAdapter).toBeDefined();
+    expect(kimiAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+      supportsAcp: true,
+    });
+    expect(kimiAdapter.acp).toMatchObject({
+      agentId: "kimi",
+      skillsMode: "ephemeral",
+      prerequisites: {
+        nodeRange: ">=20.0.0",
+        packages: ["@moonshot-ai/kimi-code"],
+      },
     });
 
     const hermesLocal = res.body.find((a: any) => a.type === "hermes_local");

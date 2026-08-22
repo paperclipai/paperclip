@@ -889,7 +889,13 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         effect: "include",
         toolName: gatewayToolName,
       });
+      // Pin the clock so every request in this test shares one rate-limit
+      // window. The window boundary aligns to wall-clock time, so a real clock
+      // can advance past the boundary between two paired requests and reset the
+      // counter. That reset makes the second request return 200 instead of 429.
+      const fixedNow = Date.now();
       const gateway = createTestToolGatewayService(db, {
+        now: () => fixedNow,
         mcpGatewayProtocolLimits: {
           gatewayRequests: { max: 1, windowMs: 60_000 },
           tokenRequests: { max: 1, windowMs: 60_000 },

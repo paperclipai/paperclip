@@ -18,7 +18,6 @@ import {
  * exactly that failing condition.
  */
 
-const MISSION = "Verify the first-task launch survives the wizard handoff.";
 const FIRST_TASK_TITLE = "Paperclip onboarding";
 
 /**
@@ -77,14 +76,13 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   await page.getByPlaceholder("Acme Corp").fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();
 
-  // Step 2: mission (direct path default).
-  await page.getByPlaceholder("What is your team trying to achieve?").fill(MISSION);
-  await page.getByRole("button", { name: /Confirm mission/ }).click();
+  // Step 1's "Next" creates the company; the mission step no longer runs.
 
-  // Step 3: lead name (prefilled) → Next.
-  await page.waitForSelector('input[placeholder="Chief of staff"]', {
-    timeout: 15_000,
-  });
+  // Step 3: the lead's role, then its name. The role gates "Next", and
+  // choosing one fills the name — so the walk only types here to override it.
+  await page.waitForSelector("#onboarding-agent-role", { timeout: 15_000 });
+  await page.locator("#onboarding-agent-role").click();
+  await page.getByRole("option", { name: "CEO", exact: true }).click();
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 4: adapter (claude_local default); heartbeat is intercepted.

@@ -101,7 +101,6 @@ export function PluginManager() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
@@ -190,7 +189,7 @@ export function PluginManager() {
   if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />

@@ -42,7 +42,7 @@ describe("resolveRouteOnboardingOptions", () => {
         companyPrefix: "pap",
         companies: [{ id: "company-1", issuePrefix: "PAP" }],
       }),
-    ).toEqual({ initialStep: 2, companyId: "company-1" });
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "company-1" });
   });
 
   it("falls back to company creation when the prefixed company is missing", () => {
@@ -152,7 +152,7 @@ describe("companyPrefixFromOnboardingPath", () => {
         companyPrefix: companyPrefixFromOnboardingPath(pathname),
         companies,
       }),
-    ).toEqual({ initialStep: 2, companyId: "c1" });
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
   });
 });
 
@@ -170,7 +170,7 @@ describe("navigating away from a company's onboarding route", () => {
       companyPrefix: companyPrefixFromOnboardingPath("/PC1/onboarding"),
       companies,
     });
-    expect(onCompanyRoute).toEqual({ initialStep: 2, companyId: "c1" });
+    expect(onCompanyRoute).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
 
     const afterNavigating = resolveRouteOnboardingOptions({
       pathname: "/onboarding",
@@ -244,41 +244,32 @@ describe("shouldRouteAgentlessCompanyToOnboarding", () => {
 describe("resolveRouteOnboardingOptions — the agent step", () => {
   const companies = [{ id: "c1", issuePrefix: "PC1" }];
 
-  it("opens a company that already has its mission on the agent step", () => {
-    // Cloud collected the mission at signup and the seed wrote it as a
-    // company-level goal. Re-asking it is the seam the seeded arc removes.
+  it("opens an existing company on the agent step", () => {
     expect(
       resolveRouteOnboardingOptions({
         pathname: "/PC1/onboarding",
         companyPrefix: "PC1",
         companies,
-        companyHasMission: true,
       }),
     ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
   });
 
-  it("still asks for the mission when the company has none", () => {
-    expect(
-      resolveRouteOnboardingOptions({
-        pathname: "/PC1/onboarding",
-        companyPrefix: "PC1",
-        companies,
-        companyHasMission: false,
-      }),
-    ).toEqual({ initialStep: 2, companyId: "c1" });
-  });
-
-  it("treats an unknown mission as absent while the goal query is in flight", () => {
-    // Costing the mission step is recoverable; skipping a question that was
-    // never answered leaves the company without one.
-    expect(
-      resolveRouteOnboardingOptions({
-        pathname: "/PC1/onboarding",
-        companyPrefix: "PC1",
-        companies,
-        companyHasMission: undefined,
-      }),
-    ).toEqual({ initialStep: 2, companyId: "c1" });
+  it("takes no mission input, so no goal state can route around the agent step", () => {
+    // Three cases used to live here — mission present, absent, and in flight —
+    // and two of them routed to the mission step. The resolver no longer
+    // accepts the input at all, which is what collapses them into one: there is
+    // no value a caller could pass that reaches a different step.
+    //
+    // Asserted on the accepted keys rather than by example, because the
+    // property being defended is that nothing can be passed. A test that tried
+    // would not fail, it would not compile.
+    const resolved = resolveRouteOnboardingOptions({
+      pathname: "/PC1/onboarding",
+      companyPrefix: "PC1",
+      companies,
+    });
+    expect(resolved).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+    expect(resolved!.initialStep).not.toBe(ONBOARDING_MISSION_STEP);
   });
 
   it("keeps sending an unmatched prefix to company creation", () => {
@@ -287,26 +278,27 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
         pathname: "/NOPE/onboarding",
         companyPrefix: "NOPE",
         companies,
-        companyHasMission: true,
       }),
     ).toEqual({ initialStep: 1 });
   });
 });
 
 describe("onboardingStepForCompany", () => {
-  it("skips the mission question for a company that has one", () => {
-    expect(onboardingStepForCompany(true)).toBe(ONBOARDING_AGENT_STEP);
+  it("opens an existing company on the agent step", () => {
+    expect(onboardingStepForCompany()).toBe(ONBOARDING_AGENT_STEP);
   });
 
-  it("asks for the mission when the company has none", () => {
-    expect(onboardingStepForCompany(false)).toBe(ONBOARDING_MISSION_STEP);
-  });
-
-  it("asks for the mission when the lookup has not answered", () => {
-    // Both an in-flight and a failed lookup arrive here as `undefined`.
-    // Costing the mission step is recoverable — the customer answers it. The
-    // opposite error skips a question nobody answered and leaves the company
-    // without a mission.
-    expect(onboardingStepForCompany(undefined)).toBe(ONBOARDING_MISSION_STEP);
+  it("never opens on the mission step, whatever the company's goals say", () => {
+    // This used to branch on whether the company had a mission, and a company
+    // without one was sent to ask for it first. Onboarding stopped asking — the
+    // mission is collected later, in the tenant app — but the branch outlived
+    // the question, and because Cloud's naming screen had dropped its own
+    // mission field, *every* Cloud-created company arrived looking mission-less
+    // and took the detour.
+    //
+    // There is no argument left to vary, which is the point: the assertion is
+    // that the mission step is unreachable from here rather than merely
+    // unlikely.
+    expect(onboardingStepForCompany()).not.toBe(ONBOARDING_MISSION_STEP);
   });
 });

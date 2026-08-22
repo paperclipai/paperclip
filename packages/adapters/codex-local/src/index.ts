@@ -129,5 +129,5 @@ Notes:
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
-- Codex ACP is the preferred auto lane when Node >=22.13.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
+- Codex ACP is the preferred auto lane when Node >=24.11.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 `;

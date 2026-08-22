@@ -715,7 +715,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       effectiveEffort = "";
       await onLog(
         "stderr",
-        `[paperclip] Claude CLI in the sandbox does not advertise --effort; omitting configured effort "${effort}". Upgrade the sandbox CLI/image to restore reasoning-effort control.\n`,
+        `[paperclip] Claude CLI in the environment does not advertise --effort; omitting configured effort "${effort}". Upgrade the environment CLI/image to restore reasoning-effort control.\n`,
       );
     }
   }

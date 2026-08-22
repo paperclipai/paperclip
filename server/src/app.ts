@@ -1,9 +1,10 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -30,6 +31,15 @@ import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
+import {
+  buildSetupTokenLoginTransport,
+  createProductionSetupTokenSandboxProvider,
+  createProductionSetupTokenCleanupStore,
+  createSetupTokenSecretWriter,
+  createWorkerBoundSetupTokenPtyOpener,
+} from "./services/setup-token-transport-binding.js";
+import { environmentService } from "./services/environments.js";
+import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -131,16 +141,41 @@ export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
 }
 
 export function resolveViteHmrPort(serverPort: number): number {
-  if (serverPort <= 55_535) {
-    return serverPort + 10_000;
-  }
-  return Math.max(1_024, serverPort - 10_000);
+  return derivePaperclipViteHmrPort(serverPort);
 }
 
 export function resolveViteHmrHost(bindHost: string): string | undefined {
   const normalized = bindHost.trim().toLowerCase();
-  if (normalized === "0.0.0.0" || normalized === "::") return undefined;
+  if (
+    normalized === "0.0.0.0"
+    || normalized === "::"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "localhost"
+  ) return undefined;
   return bindHost;
+}
+
+export function resolveViteHmrProtocol(value: string | undefined): "ws" | "wss" | undefined {
+  if (!value) return undefined;
+  if (value === "ws" || value === "wss") return value;
+  throw new Error("PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss");
+}
+
+export function listenViteHmrServer(server: HttpServer, port: number, bindHost: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, bindHost);
+  });
 }
 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
@@ -400,25 +435,68 @@ export async function createApp(
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  // The production server does not bind `setupTokenLogin` yet, so the start route
-  // fails closed with a fixed no-secret 503 and the login never spawns a process
-  // or holds a lease. This is a deliberate staged rollout: the live transport
-  // needs a real sandbox-lease manager, a live pseudo-terminal factory over the
-  // sandbox provider, and a durable cleanup store (the in-router default store is
-  // in-memory only). Each of those is a separate follow-up that goes through its
-  // own security review before the production server binds `setupTokenLogin`.
+  // The explicit operator declaration that a platform edge terminates TLS for
+  // every client request (SR-7). This complements the allowlist for managed
+  // platforms (Railway, Render, Fly, and the like) where the app socket is
+  // always plain HTTP and the edge-proxy peer addresses are not stable or
+  // documented, so `CLAUDE_LOGIN_TRUSTED_PROXIES` cannot express them. It is a
+  // dedicated, single-purpose setting; the guard still never reads the global
+  // `TRUST_PROXY` value.
+  const setupTokenLoginEdgeTlsTerminated = /^(1|true|yes|on)$/i.test(
+    (process.env.CLAUDE_LOGIN_EDGE_TLS_TERMINATED ?? "").trim(),
+  );
+  // Bind the production setup-token login transport. It carries the live lease
+  // manager, the login-process factory over the sandbox pseudo-terminal, and the
+  // durable cleanup store. The factory passes only the fixed command
+  // `CLAUDE_SETUP_TOKEN_COMMAND`; it never reads a command from a
+  // route, a request body, or an adapter configuration. The durable store and the
+  // startup reaper are live now, so a restart reaps a leftover lease.
+  //
+  // The live sandbox pseudo-terminal opener binds inside the sandbox provider
+  // worker, so the server process does not hold the raw sandbox process. The
+  // opener drives the worker through the plugin worker manager route gate.
+  // The manager mints a host-owned route identifier, permits one
+  // active credential pseudo-terminal per worker, binds the worker session
+  // identifier one time for output only, and terminalizes the route on every open
+  // failure path. With the opener supplied, the provider acquires a lease and the
+  // start route drives a live login instead of the fixed 503.
+  const setupTokenLoginTransport = buildSetupTokenLoginTransport({
+    sandbox: createProductionSetupTokenSandboxProvider({
+      environments: environmentService(db),
+      environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+      openLivePtySession: createWorkerBoundSetupTokenPtyOpener({
+        workerManager,
+        environments: environmentService(db),
+        log: (line) => logger.info(line),
+      }),
+      log: (line) => logger.info(line),
+    }),
+    store: createProductionSetupTokenCleanupStore(db),
+    // Bind the atomic credential-claim writer, so a completed login transitions
+    // the durable row to `stored` and stores the minted token in one control-plane
+    // transaction. The writer reads the company and the owner only from the
+    // immutable session scope. The confirm-replacement flow owns rotation. Without
+    // this writer the router falls back to the deferred, fail-closed 503 and never
+    // stores the token.
+    completeCredential: createSetupTokenSecretWriter({ db }),
+    // Forward the login runner diagnostic lines to the server logger. The
+    // runner is the sole producer, and every line is a fixed, non-secret
+    // literal. Without this sink the diagnostics fall back to a no-op in
+    // production, so a failed login leaves no log trail.
+    log: (line) => logger.info(line),
+  });
   api.use(
     agentRoutes(db, {
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,
+      setupTokenLogin: setupTokenLoginTransport,
       onSetupTokenLoginService: (service) => {
+        // Capture the service, so the graceful-shutdown hook cancels every live
+        // session and releases each lease. The standalone scheduled reaper owns
+        // the startup and interval lease cleanup now (SR-4).
         setupTokenLoginService = service;
-        // Startup reaper (SR-4): release any lease whose login session is
-        // terminal or past its deadline after a restart. The DB is ready here.
-        void service.reap().catch((err) => {
-          logger.error({ err }, "Setup-token login startup reaper failed");
-        });
       },
     }),
   );
@@ -512,6 +590,8 @@ export async function createApp(
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
+  let viteDevServer: { close(): Promise<void> } | null = null;
+  let viteHmrServer: HttpServer | null = null;
   const loader = pluginLoader(
     db,
     {
@@ -642,20 +722,39 @@ export async function createApp(
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const hmrHost = resolveViteHmrHost(opts.bindHost);
+    const hmrProtocol = resolveViteHmrProtocol(process.env.PAPERCLIP_VITE_HMR_PROTOCOL);
+    const hmrServer = createHttpServer((_req, res) => {
+      res.writeHead(426, { "Content-Type": "text/plain" });
+      res.end("Upgrade Required");
+    });
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
       appType: "custom",
       server: {
+        // Listener binding and browser HMR hostname are deliberately separate:
+        // exposed branch runtimes stay loopback-only while the browser uses the
+        // current MagicDNS hostname through the broker's HTTPS listener.
+        host: opts.bindHost,
         middlewareMode: true,
         hmr: {
+          server: hmrServer,
           ...(hmrHost ? { host: hmrHost } : {}),
+          ...(hmrProtocol ? { protocol: hmrProtocol } : {}),
           port: hmrPort,
           clientPort: hmrPort,
         },
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
+    try {
+      await listenViteHmrServer(hmrServer, hmrPort, opts.bindHost);
+    } catch (error) {
+      await vite.close();
+      throw error;
+    }
+    viteDevServer = vite;
+    viteHmrServer = hmrServer;
     viteHtmlRenderer = createCachedViteHtmlRenderer({
       vite,
       uiRoot,
@@ -818,26 +917,40 @@ export async function createApp(
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
-  let appServicesShutdown = false;
-  const shutdownAppServices = () => {
-    if (appServicesShutdown) return;
-    appServicesShutdown = true;
-    disableFeedbackExportFlushes();
-    if (importTransferSweepTimer) {
-      clearInterval(importTransferSweepTimer);
-      importTransferSweepTimer = null;
-    }
-    devWatcher?.close();
-    viteHtmlRenderer?.dispose();
-    hostServiceCleanup.disposeAll();
-    hostServiceCleanup.teardown();
-    // Cancel every live setup-token login session, so each direct child stops
-    // before the server releases each lease (SR-4).
-    void setupTokenLoginService?.shutdown();
+  // The shutdown hook runs at most once. It caches the in-flight promise, so a
+  // second caller (for example the `exit` handler) awaits the same completion
+  // instead of starting a second teardown.
+  let appServicesShutdown: Promise<void> | null = null;
+  const shutdownAppServices = (): Promise<void> => {
+    if (appServicesShutdown) return appServicesShutdown;
+    appServicesShutdown = (async () => {
+      disableFeedbackExportFlushes();
+      if (importTransferSweepTimer) {
+        clearInterval(importTransferSweepTimer);
+        importTransferSweepTimer = null;
+      }
+      devWatcher?.close();
+      viteHtmlRenderer?.dispose();
+      void viteDevServer?.close().catch(() => undefined);
+      viteHmrServer?.close();
+      hostServiceCleanup.disposeAll();
+      hostServiceCleanup.teardown();
+      // Cancel every live setup-token login session and AWAIT the cancellation,
+      // so each direct child stops and the server releases each lease before the
+      // caller stops the database and the provider. A lease release that
+      // fails stays a durable record for the startup reaper.
+      await setupTokenLoginService?.shutdown();
+    })();
+    return appServicesShutdown;
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
-  process.once("exit", shutdownAppServices);
+  // The `exit` event is synchronous. It cannot await the teardown, so it runs
+  // the best-effort cleanup and drops the returned promise. The orderly signal
+  // path awaits `shutdownAppServices` in full before the process exits.
+  process.once("exit", () => {
+    void shutdownAppServices();
+  });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });

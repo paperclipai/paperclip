@@ -40,6 +40,7 @@
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
+    "check:node-version": "node scripts/check-node-version-policy.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "test:install-sh-docker": "./scripts/test-install-sh-docker.sh",
@@ -69,14 +70,14 @@
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.1",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.1",
     "typescript": "^5.7.3",
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.11.0"
   },
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
@@ -86,8 +87,8 @@
     },
     "overrides": {
       "rollup": ">=4.59.0",
-      "react": "^19.2.7",
-      "react-dom": "^19.2.7",
+      "react": "^19.2.8",
+      "react-dom": "^19.2.8",
       "lexical": "0.49.0",
       "@lexical/clipboard": "0.49.0",
       "@lexical/link": "0.49.0",

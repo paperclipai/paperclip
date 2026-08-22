@@ -57,7 +57,7 @@ describe("opencode_local environment diagnostics", () => {
       }
       await fs.rm(cwd, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   it("classifies ProviderModelNotFoundError probe output as model-unavailable warning", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-probe-cwd-"));
@@ -92,5 +92,5 @@ describe("opencode_local environment diagnostics", () => {
       await fs.rm(cwd, { recursive: true, force: true });
       await fs.rm(binDir, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 });

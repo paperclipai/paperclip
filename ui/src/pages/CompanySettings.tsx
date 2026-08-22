@@ -11,9 +11,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
-import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { Settings, Download, Upload } from "lucide-react";
+import { SlidersHorizontal } from "lucide-react";
 import {
   InteractionGovernancePanel,
   applyGovernanceChange,
@@ -25,6 +24,7 @@ import {
   Field,
   ToggleField,
 } from "../components/agent-config-primitives";
+import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 
 const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
@@ -195,18 +195,18 @@ export function CompanySettings() {
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-6xl space-y-8">
       <div className="flex items-center gap-2">
-        <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">General</h1>
       </div>
 
       {/* General */}
-      <div className="space-y-4">
+      <div className="max-w-2xl space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           General
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3">
           <Field label="Company name" hint="The display name for your company.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -231,11 +231,11 @@ export function CompanySettings() {
       </div>
 
       {/* Appearance */}
-      <div className="space-y-4">
+      <div className="max-w-2xl space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Appearance
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
               <CompanyPatternIcon
@@ -376,11 +376,11 @@ export function CompanySettings() {
       )}
 
       {/* Hiring */}
-      <div className="space-y-4" data-testid="company-settings-team-section">
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Hiring
         </div>
-        <div className="rounded-md border border-border px-4 py-3">
+        <div>
           <ToggleField
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
@@ -405,35 +405,14 @@ export function CompanySettings() {
         }
       />
 
-      {/* Import / Export */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
-        </div>
-        <div className="rounded-md border border-border px-4 py-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="outline" asChild>
-              <Link to="/company/export">
-                <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
-              </Link>
-            </Button>
-            <Button size="sm" variant="outline" asChild>
-              <Link to="/company/import">
-                <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
-              </Link>
-            </Button>
-          </div>
-        </div>
-      </div>
+      <InstanceGeneralSettings embedded />
 
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
           Danger Zone
         </div>
-        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+        <div className="space-y-3 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Archive this company to hide it from the sidebar. This persists in
             the database.

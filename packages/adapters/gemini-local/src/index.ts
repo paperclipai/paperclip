@@ -68,7 +68,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Gemini ACP is the preferred auto lane when Node >=20 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Auto selection falls back to the CLI lane when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
+- Gemini ACP is the preferred auto lane when Node >=24.11.0 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Auto selection falls back to the CLI lane when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 - Runs use --prompt for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.

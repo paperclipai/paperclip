@@ -3,6 +3,7 @@ import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
+import { redactWorkspaceHandoffTicket } from "../auth/workspace-login-handoff.js";
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -29,12 +30,14 @@ export const httpLogger = pinoHttp({
     return "info";
   },
   customSuccessMessage(req, res) {
-    return `${req.method} ${req.url} ${res.statusCode}`;
+    // A workspace login handoff ticket is a bearer credential that rides in the
+    // query string, so the request line has to be redacted before it is logged.
+    return `${req.method} ${redactWorkspaceHandoffTicket(req.url ?? "")} ${res.statusCode}`;
   },
   customErrorMessage(req, res, err) {
     const ctx = (res as any).__errorContext;
     const errMsg = ctx?.error?.message || err?.message || (res as any).err?.message || "unknown error";
-    return `${req.method} ${req.url} ${res.statusCode} — ${errMsg}`;
+    return `${req.method} ${redactWorkspaceHandoffTicket(req.url ?? "")} ${res.statusCode} — ${errMsg}`;
   },
   customProps(req, res) {
     if (res.statusCode >= 400) {

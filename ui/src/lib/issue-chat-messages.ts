@@ -18,6 +18,7 @@ import {
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
 import { isLiveIssueRun } from "./liveIssueIds";
+import { findUIAdapter } from "../adapters/registry";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
@@ -86,6 +87,19 @@ export interface IssueChatTranscriptEntry {
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
+
+// Adapters whose backends stream verbosely can declare a wider window via
+// their UI adapter module (transcriptPresentation.maxVisibleEntries); every
+// adapter without a declaration keeps the long-standing 30-entry window.
+// Resolved through the registry so shared code never branches on adapter
+// identities.
+function issueChatTranscriptMaxVisibleEntries(adapterType: string | null | undefined): number {
+  if (!adapterType) return ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES;
+  return (
+    findUIAdapter(adapterType)?.transcriptPresentation?.maxVisibleEntries ??
+    ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES
+  );
+}
 
 type MessageWithOrder = {
   createdAtMs: number;
@@ -789,7 +803,7 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
@@ -1006,7 +1020,7 @@ function createLiveRunMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
 }) {
   const { run, transcript } = args;
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"

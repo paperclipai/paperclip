@@ -43,6 +43,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -258,6 +259,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
         ?? { state: "unknown", headRef: null, headSha: null }
       ),
+      // Disable the reaper cooldown for the delivery, terminal, race, and
+      // cleanup tests. They assert immediate reaping. The cooldown gets its own
+      // tests further down.
+      workspaceReaperCooldownDays: 0,
     });
   }, 20_000);
 
@@ -549,6 +554,54 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  it("fails closed before archive when git status inspection is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockRejectedValue(new Error("scan queue unavailable"));
+
+    try {
+      const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      expect(readiness).toMatchObject({
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+        blockingReasons: [
+          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+        ],
+      });
+
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+      const [workspace] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      expect(workspace?.status).toBe("active");
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it("fails the final cleanup fence when a later git status scan is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const originalRun = workspaceGitOperationScheduler.run.bind(workspaceGitOperationScheduler);
+    let statusScanCount = 0;
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockImplementation(async (input) => {
+        statusScanCount += 1;
+        if (statusScanCount > 1) throw new Error("scan timed out");
+        return originalRun(input);
+      });
+
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, cleanupFailed: 1 });
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
   it("skips a sweep that starts while another sweep runs", async () => {
     // The scheduler can start a second sweep before the first one finishes. The
     // sweeps share the cursor and the boundary. A concurrent sweep must skip
@@ -638,6 +691,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     // workspace first.
     const service = executionWorkspaceService(db, {
       resolvePullRequestDetails: async () => ({ state: "unknown", headRef: null, headSha: null }),
+      workspaceReaperCooldownDays: 0,
     });
 
     const firstSweep = await service.sweepTerminalWorkspaces(1);
@@ -678,6 +732,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const service = executionWorkspaceService(db, {
       resolvePullRequestDetails: async () => ({ state: "unknown", headRef: null, headSha: null }),
       now: () => new Date(clockMs),
+      workspaceReaperCooldownDays: 0,
     });
 
     // An eligible ancestry workspace with an old updatedAt. Its source issue
@@ -779,6 +834,105 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
     expect(finalState?.status).toBe("archived");
   }, 30_000);
+
+  describe("reaper cooldown", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const nowMs = Date.UTC(2026, 5, 1);
+
+    function cooldownService(cooldownDays: number) {
+      return executionWorkspaceService(db, {
+        resolvePullRequestDetails: async (companyId, reference) =>
+          pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+          ?? { state: "unknown", headRef: null, headSha: null },
+        now: () => new Date(nowMs),
+        workspaceReaperCooldownDays: cooldownDays,
+      });
+    }
+
+    async function statusOf(executionWorkspaceId: string) {
+      const [row] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, executionWorkspaceId));
+      return row?.status ?? null;
+    }
+
+    it("skips a terminal tree that is younger than the cooldown", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      // Keep the workspace inside the sweep boundary that the fixed clock sets.
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // The issue became terminal one day ago. A cooldown of seven days is not
+      // over yet.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 0, skippedCooldown: 1 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("active");
+    }, 20_000);
+
+    it("archives a terminal tree that is older than the cooldown", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // The issue became terminal ten days ago. The seven-day cooldown is over.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs - 10 * DAY_MS) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 1, skippedCooldown: 0 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("archived");
+    }, 20_000);
+
+    it("archives immediately when the cooldown is zero", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // The issue became terminal now. A cooldown of zero disables the wait.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(0).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 1, skippedCooldown: 0 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("archived");
+    }, 20_000);
+
+    it("falls back to updatedAt when completedAt is null and gates the archive", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      // The done issue has no completedAt. The anchor falls back to updatedAt.
+      // Set updatedAt two days ago, inside the seven-day cooldown, so the sweep
+      // must skip.
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - 2 * DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      await db
+        .update(issues)
+        .set({ completedAt: null, updatedAt: new Date(nowMs - 2 * DAY_MS) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 0, skippedCooldown: 1 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("active");
+    }, 20_000);
+  });
 
   it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
@@ -916,6 +1070,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         await fs.writeFile(path.join(seeded.worktreePath, "late-work.txt"), "not delivered\n", "utf8");
       },
@@ -945,6 +1100,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async (workspace) => {
         // Stand in for a reopen and a fresh archive that ran after this sweep
         // captured the generation. Raise the generation past the captured value,
@@ -1548,6 +1704,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async (workspace) => {
         await db
           .update(executionWorkspaces)
@@ -1583,13 +1740,17 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db.update(executionWorkspaces).set({
-      metadata: { createdByRuntime: true },
+      metadata: {
+        createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
+      },
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     let commitFailure = "";
     let refUpdateFailure = "";
     const lockingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         try {
           await runGit(seeded.worktreePath, ["commit", "--allow-empty", "-m", "Late commit"]);
@@ -3948,6 +4109,186 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   });
 
+  it("serializes the verified HTTPS URL as canonical and never falls back to the HTTP backend", async () => {
+    // PAP-17158: the UI's workspace/project/issue launch links read `url` off the
+    // serialized runtime service. Two things have to hold for a managed HTTPS
+    // runtime: once exposure is `ready` the canonical `url` is the HTTPS public
+    // URL, and while exposure is *not* ready the canonical `url` stays null even
+    // though the row still knows its loopback `backendUrl`. Serializing that
+    // backend URL would put `http://…` back into a launch link, which is exactly
+    // the fail-closed contract this feature exists to enforce.
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const readyWorkspaceId = randomUUID();
+    const provisioningWorkspaceId = randomUUID();
+    const readyServiceId = randomUUID();
+    const provisioningServiceId = randomUUID();
+    const hostname = "paperclip-dev.tail29c1aa.ts.net";
+    const httpsUrl = `https://${hostname}:42010`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "HTTPS URL serialization",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/https-url-serialization",
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime: { services: [{ name: "paperclip-dev", command: "pnpm dev" }] },
+          desiredState: "running",
+        },
+      },
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: readyWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "dedicated_worktree",
+        strategyType: "git_worktree",
+        name: "Exposed workspace",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: "/tmp/https-url-serialization/ready",
+      },
+      {
+        id: provisioningWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "dedicated_worktree",
+        strategyType: "git_worktree",
+        name: "Provisioning workspace",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: "/tmp/https-url-serialization/provisioning",
+      },
+    ]);
+    await db.insert(workspaceRuntimeServices).values([
+      {
+        id: readyServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId: readyWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: readyWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "ready-dev",
+        command: "pnpm dev",
+        cwd: "/tmp/https-url-serialization/ready",
+        port: 42_010,
+        url: httpsUrl,
+        // The loopback backend is still recorded; it must never be serialized.
+        backendUrl: "http://127.0.0.1:42010",
+        provider: "local_process",
+        healthStatus: "healthy",
+        exposure: {
+          provider: "tailscale_https",
+          state: "ready",
+          publicUrl: httpsUrl,
+          hostname,
+          listeners: [
+            { purpose: "app", publicPort: 42_010, targetPort: 42_010 },
+            { purpose: "vite_hmr", publicPort: 52_010, targetPort: 52_010 },
+          ],
+          brokerRef: "broker-ref-1",
+          lastError: null,
+          updatedAt: "2026-08-12T10:00:00.000Z",
+        },
+        updatedAt: new Date("2026-08-12T10:00:00.000Z"),
+      },
+      {
+        id: provisioningServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId: provisioningWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: provisioningWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "provisioning-dev",
+        command: "pnpm dev",
+        cwd: "/tmp/https-url-serialization/provisioning",
+        port: 42_020,
+        url: null,
+        backendUrl: "http://127.0.0.1:42020",
+        provider: "local_process",
+        healthStatus: "healthy",
+        exposure: {
+          provider: "tailscale_https",
+          state: "pending",
+          publicUrl: null,
+          hostname,
+          listeners: [],
+          brokerRef: null,
+          lastError: null,
+          updatedAt: "2026-08-12T10:00:00.000Z",
+        },
+        updatedAt: new Date("2026-08-12T10:00:00.000Z"),
+      },
+    ]);
+
+    const workspaces = await svc.list(companyId);
+    const readyService = workspaces
+      .find((workspace) => workspace.id === readyWorkspaceId)
+      ?.runtimeServices.find((service) => service.id === readyServiceId);
+    expect(readyService).toMatchObject({
+      url: httpsUrl,
+      port: 42_010,
+      exposure: { provider: "tailscale_https", state: "ready", publicUrl: httpsUrl, hostname },
+    });
+    // Lease handles are server-private and must never reach a serialized DTO.
+    expect(readyService).not.toHaveProperty("exposureHandle");
+
+    const provisioningService = workspaces
+      .find((workspace) => workspace.id === provisioningWorkspaceId)
+      ?.runtimeServices.find((service) => service.id === provisioningServiceId);
+    expect(provisioningService?.url).toBeNull();
+    expect(provisioningService?.exposure).toMatchObject({ state: "pending", publicUrl: null });
+    expect(JSON.stringify(provisioningService)).not.toContain("http://127.0.0.1:42020");
+
+    // The overview feeds the workspace list launch links.
+    const overview = await svc.listOverview(companyId, { limit: 10, offset: 0 });
+    const readyItem = overview.items.find((item) => item.workspaceId === readyWorkspaceId);
+    expect(readyItem?.primaryService).toMatchObject({
+      id: readyServiceId,
+      status: "running",
+      url: httpsUrl,
+      exposure: { state: "ready", publicUrl: httpsUrl },
+    });
+    expect(new URL(readyItem!.primaryService!.url!).protocol).toBe("https:");
+
+    const provisioningItem = overview.items.find((item) => item.workspaceId === provisioningWorkspaceId);
+    expect(provisioningItem?.primaryService).toMatchObject({
+      id: provisioningServiceId,
+      status: "running",
+      url: null,
+      exposure: { state: "pending" },
+    });
+    expect(JSON.stringify(provisioningItem)).not.toContain("http://127.0.0.1:42020");
+  }, 30_000);
+
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
@@ -4319,6 +4660,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
       metadata: {
         createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
         config: {
           cleanupCommand: "printf 'workspace cleanup\\n'",
         },
@@ -4357,5 +4699,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+
+    await db.update(executionWorkspaces).set({
+      metadata: { createdByRuntime: true },
+    }).where(eq(executionWorkspaces.id, executionWorkspaceId));
+    const legacyReadiness = await svc.getCloseReadiness(executionWorkspaceId);
+    expect(legacyReadiness?.git?.createdByRuntime).toBe(false);
+    expect(legacyReadiness?.plannedActions.map((action) => action.kind)).not.toContain("git_branch_delete");
   }, 20_000);
 });

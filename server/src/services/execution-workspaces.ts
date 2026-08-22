@@ -54,6 +54,8 @@ import {
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -66,6 +68,24 @@ type RuntimeServiceReadDb = Pick<Db, "select">;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+// Return the timestamp when an issue became terminal. A `done` issue uses
+// `completedAt`. A `cancelled` issue uses `cancelledAt`. The reaper cooldown
+// measures the age of the terminal transition from this timestamp. Fall back to
+// `updatedAt` when the terminal timestamp is null, so an old issue that lacks a
+// recorded transition time still gates the cooldown. Return null for a
+// non-terminal issue.
+function issueTerminalTimestamp(issue: {
+  status: string;
+  completedAt: Date | null;
+  cancelledAt: Date | null;
+  updatedAt: Date;
+}): Date | null {
+  if (issue.status === "done") return issue.completedAt ?? issue.updatedAt;
+  if (issue.status === "cancelled") return issue.cancelledAt ?? issue.updatedAt;
+  return null;
+}
+
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
@@ -207,6 +227,10 @@ export type ExecutionWorkspaceServiceOptions = {
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
   beforeTerminalWorkspaceCleanup?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
+  // The terminal-workspace reaper waits this many days after an issue tree
+  // becomes terminal before it archives the workspace. A value of 0 disables
+  // the cooldown. The default is 7 days.
+  workspaceReaperCooldownDays?: number;
 };
 
 function parseGitHubRepository(repoUrl: string | null) {
@@ -374,6 +398,21 @@ async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
+async function runExpensiveGitStatus(input: {
+  args: readonly string[];
+  cwd: string;
+  operation: string;
+  fairnessKeys?: readonly string[];
+}) {
+  return workspaceGitOperationScheduler.run({
+    workspacePath: input.cwd,
+    args: input.args,
+    operation: input.operation,
+    fairnessKeys: input.fairnessKeys,
+    cacheTtlMs: 0,
+  });
+}
+
 async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
   const output = await runGit(args, cwd);
   return output.stdout.trim() || null;
@@ -502,7 +541,15 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
   }
 
-  const status = await runGit(["status", "--porcelain", "--untracked-files=all"], worktreePath)
+  const status = await runExpensiveGitStatus({
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd: worktreePath,
+    operation: "execution_workspaces.branch_reconcile_status",
+    fairnessKeys: [
+      `workspace:${workspace.id}`,
+      ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+    ],
+  })
     .then((output) => output.stdout)
     .catch(() => null);
   const statusLines = status === null
@@ -739,21 +786,24 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
+  statusInspectionSucceeded: boolean;
 }> {
   const warnings: string[] = [];
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-  const createdByRuntime = workspace.metadata?.createdByRuntime === true;
+  const createdByRuntime = workspace.providerType === "git_worktree"
+    ? isRuntimeOwnedGitBranch(workspace.metadata)
+    : workspace.metadata?.createdByRuntime === true;
   const expectsGitInspection =
     workspace.providerType === "git_worktree" ||
     Boolean(workspace.repoUrl || workspace.baseRef || workspace.branchName || workspacePath);
 
   if (!expectsGitInspection) {
-    return { git: null, warnings };
+    return { git: null, warnings, statusInspectionSucceeded: true };
   }
 
   if (!workspacePath) {
     warnings.push("Workspace has no local path, so Paperclip cannot inspect git status before close.");
-    return { git: null, warnings };
+    return { git: null, warnings, statusInspectionSucceeded: false };
   }
 
   if (!(await pathExists(workspacePath))) {
@@ -774,6 +824,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         createdByRuntime,
       },
       warnings,
+      statusInspectionSucceeded: true,
     };
   }
 
@@ -797,9 +848,19 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
+  let statusInspectionSucceeded = false;
   if (repoRoot) {
     try {
-      const statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
+      const statusOutput = (await runExpensiveGitStatus({
+        args: ["status", "--porcelain=v1", "--untracked-files=all"],
+        cwd: workspacePath,
+        operation: "execution_workspaces.close_readiness_status",
+        fairnessKeys: [
+          `company:${workspace.companyId}`,
+          `workspace:${workspace.id}`,
+          ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+        ],
+      })).stdout;
       for (const line of statusOutput.split(/\r?\n/)) {
         if (!line) continue;
         if (line.startsWith("??")) {
@@ -808,6 +869,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         }
         dirtyEntryCount += 1;
       }
+      statusInspectionSucceeded = true;
     } catch (error) {
       warnings.push(
         `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
@@ -862,6 +924,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       createdByRuntime,
     },
     warnings,
+    statusInspectionSucceeded,
   };
 }
 
@@ -981,6 +1044,7 @@ function toRuntimeService(
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    exposure: (row.exposure as WorkspaceRuntimeService["exposure"]) ?? null,
     configIndex: row.configIndex ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1059,6 +1123,7 @@ function toWorkspaceOverviewPrimaryService(
     url: service.url,
     port: service.port,
     healthStatus: service.healthStatus,
+    exposure: service.exposure ?? null,
     updatedAt: service.updatedAt,
   };
 }
@@ -1190,6 +1255,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
+  // The reaper waits this long after an issue tree becomes terminal before it
+  // archives the workspace. A value of 0 disables the cooldown, so the reaper
+  // archives a terminal workspace on the same sweep. A negative value also
+  // disables the cooldown.
+  const workspaceReaperCooldownMs = Math.max(
+    0,
+    (opts.workspaceReaperCooldownDays ?? 7) * 24 * 60 * 60 * 1000,
+  );
   const pullRequestStateCache = new Map<
     string,
     {
@@ -1228,6 +1301,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .select({
         id: issues.id,
         status: issues.status,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(
@@ -1283,6 +1359,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
     const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
     const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
+    // The cooldown anchor is the most recent terminal timestamp across the whole
+    // issue tree. The reaper compares it against the cooldown window. A null
+    // anchor means no issue in the tree is terminal yet, so the cooldown never
+    // applies (the terminal-tree gates above already block the archive).
+    let cooldownAnchor: Date | null = null;
+    for (const issue of issueTree) {
+      const terminalAt = issueTerminalTimestamp(issue);
+      if (terminalAt && (!cooldownAnchor || terminalAt.getTime() > cooldownAnchor.getTime())) {
+        cooldownAnchor = terminalAt;
+      }
+    }
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
     const workspaceHeadSha = git?.repoRoot && git.workspacePath
@@ -1346,6 +1433,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }),
       sourceIssueTerminal,
       subtreeTerminal,
+      cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
     };
@@ -1366,6 +1454,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
       readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
     ]);
+    if (!current.statusInspectionSucceeded) {
+      throw new Error("Refusing terminal workspace cleanup because the git status could not be verified");
+    }
     if (
       !current.git?.repoRoot
       || current.git.hasDirtyTrackedFiles
@@ -2130,6 +2221,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
+      const { refreshPersistedRuntimeServiceHealth } = await import("./workspace-runtime.js");
+      await refreshPersistedRuntimeServiceHealth({
+        db,
+        companyId: row.companyId,
+        executionWorkspaceId: row.id,
+        projectWorkspaceId: row.projectWorkspaceId,
+      });
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
       return hydrateWorkspace(
         row,
@@ -2204,10 +2302,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
-      const { git, warnings: gitWarnings } = await inspectGitCloseReadiness(executionWorkspace);
+      const {
+        git,
+        warnings: gitWarnings,
+        statusInspectionSucceeded,
+      } = await inspectGitCloseReadiness(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      if (!statusInspectionSucceeded) {
+        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+      }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
@@ -2410,6 +2515,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedUndelivered: 0,
           skippedRace: 0,
           skippedReopened: 0,
+          skippedCooldown: 0,
           clearedStaleReopenPending: 0,
         };
       }
@@ -2473,12 +2579,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedUndelivered: 0,
         skippedRace: 0,
         skippedReopened: 0,
+        skippedCooldown: 0,
         clearedStaleReopenPending: 0,
       };
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git } = await inspectGitCloseReadiness(executionWorkspace);
+        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        if (!statusInspectionSucceeded) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
         const assessment = await assessDelivery(workspace, git);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
@@ -2508,6 +2619,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           result.skippedUndelivered += 1;
+          continue;
+        }
+        // Hold the archive during the cooldown window. The anchor is the most
+        // recent terminal timestamp across the issue tree. A person can reopen
+        // the work inside this window. A cooldown of 0 disables the check, so the
+        // reaper archives the workspace on the same sweep. The archive statement
+        // below re-checks the same cutoff under the lifecycle lock, so the loop
+        // check and the guarded statement agree.
+        const cooldownCutoff = workspaceReaperCooldownMs > 0
+          ? new Date(now().getTime() - workspaceReaperCooldownMs)
+          : null;
+        if (
+          cooldownCutoff
+          && assessment.cooldownAnchor
+          && assessment.cooldownAnchor.getTime() > cooldownCutoff.getTime()
+        ) {
+          result.skippedCooldown += 1;
           continue;
         }
         if (reopenPending) {
@@ -2635,6 +2763,34 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                 )
                 SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
               )`,
+              // Re-check the cooldown under the lifecycle lock. This predicate
+              // matches the loop check above: block the archive when any issue in
+              // the tree became terminal after the cutoff. The tree walk mirrors
+              // the terminal-tree walk above. A null cutoff means the cooldown is
+              // disabled, so this predicate drops out of the guard.
+              cooldownCutoff
+                ? sql<boolean>`NOT EXISTS (
+                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at) AS (
+                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at
+                  FROM ${issues} root
+                  WHERE root.company_id = ${workspace.companyId}
+                    AND root.id = ${workspace.sourceIssueId}
+                  UNION ALL
+                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at
+                  FROM ${issues} child
+                  JOIN cooldown_tree parent ON child.parent_id = parent.id
+                  WHERE child.company_id = ${workspace.companyId}
+                )
+                SELECT 1 FROM cooldown_tree
+                WHERE COALESCE(
+                  CASE
+                    WHEN status = 'done' THEN completed_at
+                    WHEN status = 'cancelled' THEN cancelled_at
+                  END,
+                  updated_at
+                ) > ${cooldownCutoff.toISOString()}::timestamptz
+              )`
+                : undefined,
             ))
             .returning()
             .then((rows) => rows[0] ?? null);

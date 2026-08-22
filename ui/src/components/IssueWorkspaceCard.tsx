@@ -97,7 +97,7 @@ function workspaceModeLabel(mode: string | null | undefined) {
   switch (mode) {
     case "isolated_workspace": return "Isolated workspace";
     case "operator_branch": return "Operator branch";
-    case "cloud_sandbox": return "Cloud sandbox";
+    case "cloud_sandbox": return "Cloud environment";
     case "adapter_managed": return "Adapter managed";
     default: return "Workspace";
   }

@@ -515,6 +515,36 @@ describe("issue attachment routes", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
+  it("declares utf-8 for inline markdown attachments", async () => {
+    const storage = createStorageService(Buffer.from("# Hello\n"));
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("text/markdown", "notes.md"),
+      byteSize: 8,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/markdown; charset=utf-8");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("keeps the charset declaration on forced markdown downloads", async () => {
+    const storage = createStorageService(Buffer.from("# Hello\n"));
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("text/markdown", "notes.md"),
+      byteSize: 8,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content?download=1");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/markdown; charset=utf-8");
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="notes.md"');
+  });
+
   it("keeps image attachments inline for previews", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));

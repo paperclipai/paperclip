@@ -429,7 +429,7 @@ function InviteResultPreview({
             <div className="border border-zinc-800 p-3">
               <p className="mb-1 text-xs text-zinc-500">Approval page</p>
               <a className="text-sm text-zinc-200 underline underline-offset-2" href="/company/settings/members">
-                Company Settings → Members
+                Settings → Members
               </a>
             </div>
             <p className="text-xs text-zinc-500">
@@ -902,7 +902,7 @@ export function InviteUxLab() {
           />
           <InviteResultPreview
             title="Request to join Acme Robotics"
-            description="Ask them to visit Company Settings → Members to approve your request."
+            description="Ask them to visit Settings → Members to approve your request."
           />
         </div>
       </LabSection>
@@ -920,7 +920,7 @@ export function InviteUxLab() {
       </LabSection>
 
       <LabSection
-        eyebrow="Company settings"
+        eyebrow="Settings"
         title="Company invite management"
         description="This section captures the board-side invite creation flow, copied-link state, audit table, and the edge states that are otherwise tedious to stage."
         accentClassName="bg-[linear-gradient(180deg,rgba(244,114,182,0.06),transparent_28%),var(--background)]"

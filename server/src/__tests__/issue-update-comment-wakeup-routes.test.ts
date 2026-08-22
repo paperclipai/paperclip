@@ -262,7 +262,10 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    // The route dispatches the wake after it sends the response, so wait for
+    // the fire-and-forget dispatch to settle. This keeps the wake inside this
+    // test and stops it from leaking into the next test as an extra call.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({

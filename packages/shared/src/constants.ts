@@ -37,6 +37,7 @@ export const AGENT_ADAPTER_TYPES = [
   "grok_local",
   "hermes_gateway",
   "hermes_local",
+  "kimi_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -377,6 +378,7 @@ export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number]
 
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",
+  "deliberate_wait_without_target",
   "stranded_assigned_issue",
   "workspace_validation",
   "configuration_validation",
@@ -384,6 +386,8 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "issue_graph_liveness",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
+
+export const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 
 export const ISSUE_RECOVERY_ACTION_STATUSES = [
   "active",

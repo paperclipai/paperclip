@@ -78,11 +78,13 @@ export function CompanySettingsPluginPage() {
   }
 
   return (
-    <PluginSlotMount
-      slot={pageSlot}
-      context={{ companyId: resolvedCompanyId, companyPrefix }}
-      className="min-h-(--sz-200px)"
-      missingBehavior="placeholder"
-    />
+    <div className="max-w-6xl">
+      <PluginSlotMount
+        slot={pageSlot}
+        context={{ companyId: resolvedCompanyId, companyPrefix }}
+        className="min-h-(--sz-200px)"
+        missingBehavior="placeholder"
+      />
+    </div>
   );
 }

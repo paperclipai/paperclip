@@ -18,6 +18,8 @@ export type {
   RequestConfirmationIssueDocumentTarget,
   RequestConfirmationPayload,
   RequestConfirmationResult,
+  RequestConfirmationSecretProposalPayload,
+  RequestConfirmationSecretProposalResult,
   RequestConfirmationTarget,
   RequestConfirmationToolActionPayload,
   RequestConfirmationToolActionResult,

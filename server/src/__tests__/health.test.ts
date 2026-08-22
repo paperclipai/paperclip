@@ -116,6 +116,26 @@ describe("GET /health", () => {
     });
   });
 
+  it("lists operator-hidden settings and drops unknown keys", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.adapters,instance.bogus",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.hiddenSettings).toEqual(["instance.plugins", "instance.adapters"]);
+  });
+
+  it("omits hiddenSettings entirely when nothing is hidden", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {});
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(Object.prototype.hasOwnProperty.call(res.body, "hiddenSettings")).toBe(false);
+  });
+
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

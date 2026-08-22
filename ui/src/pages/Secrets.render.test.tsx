@@ -778,6 +778,7 @@ describe("Secrets page layout", () => {
 
     const listContainer = container.querySelector('[data-testid="secrets-list-container"]');
     const tableView = container.querySelector('[data-testid="secrets-table-view"]');
+    expect(listContainer?.parentElement?.className).not.toContain("overflow-y-auto");
     const cardView = container.querySelector('[data-testid="secrets-card-view"]');
     expect(listContainer?.className).toContain("@container");
     expect(tableView?.className).toContain("@min-[40rem]:block");

@@ -122,7 +122,6 @@ export function PluginSettings() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins", href: "/company/settings/instance/plugins" },
       { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
@@ -158,7 +157,7 @@ export function PluginSettings() {
   const driverLabel = environmentDriverNames.join(", ");
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="max-w-6xl space-y-6">
       <div className="flex items-center gap-4">
         <Link to="/company/settings/instance/plugins">
           <Button variant="outline" size="icon" className="h-8 w-8">
@@ -259,7 +258,7 @@ export function PluginSettings() {
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Instance Settings → Environments.</p>
+                  <p className="font-medium text-foreground">Configure this plugin from Settings → Environments.</p>
                   <p className="mt-1 text-muted-foreground">
                     {driverLabel || "This plugin"} registers environment runtime settings there so the execution target
                     stays instance-scoped while secret bindings still resolve through the selected company context.

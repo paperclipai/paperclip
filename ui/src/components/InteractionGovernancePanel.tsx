@@ -240,7 +240,7 @@ export function InteractionGovernancePanel({
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         Interaction governance
       </div>
-      <div className="space-y-4 rounded-md border border-border px-4 py-4">
+      <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Thread interactions are open by default:{" "}
           <span className="font-medium text-foreground">Anyone</span> in the company — the

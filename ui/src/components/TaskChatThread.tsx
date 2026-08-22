@@ -696,7 +696,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       emptyMessage={
                         tailStatus === "queued"
                           ? "Waiting to start..."
-                          : "Waiting for transcript..."
+                          : // Before the first transcript token, surface the run's
+                            // live runtime status (sandbox preparation phases like
+                            // "Syncing workspace to environment" emitted via
+                            // onRuntimeProgress) instead of an opaque wait message.
+                            (liveRun && liveRun.id === tailRunId
+                              ? liveRun.currentStatusMessage
+                              : null) || "Waiting for transcript..."
                       }
                     />
                   </div>
@@ -726,9 +732,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             isMobile
               ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
               : "bottom-0 z-10",
-            // Match the thread width on mobile. Keep the intentionally
-            // narrower composer on larger screens.
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:w-(--pct-80)",
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
           )}
         >
           {composerAccessory}

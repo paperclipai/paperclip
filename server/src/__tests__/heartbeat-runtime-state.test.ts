@@ -147,7 +147,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       const heartbeat = heartbeatService(db);
       const status = await heartbeat.recordRuntimeProgress(run, {
         phase: "config_sync",
-        message: "Syncing workspace to sandbox",
+        message: "Syncing workspace to environment",
         currentToolName: "bash",
         lastAssistantSnippet: "Inspecting the repository",
         lastEventAt: "2026-06-24T00:00:05.000Z",
@@ -159,7 +159,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
         agentId,
         runId,
         phase: "config_sync",
-        message: "Syncing workspace to sandbox",
+        message: "Syncing workspace to environment",
         currentToolName: "bash",
         lastAssistantSnippet: "Inspecting the repository",
         lastEventAt: new Date("2026-06-24T00:00:05.000Z"),
@@ -171,7 +171,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
         issueId,
         status: "running",
       })).toMatchObject({
-        currentStatusMessage: "Syncing workspace to sandbox",
+        currentStatusMessage: "Syncing workspace to environment",
         currentToolName: "bash",
         lastAssistantSnippet: "Inspecting the repository",
         lastEventAt: new Date("2026-06-24T00:00:05.000Z"),
@@ -184,7 +184,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
           agentId,
           issueId,
           phase: "config_sync",
-          message: "Syncing workspace to sandbox",
+          message: "Syncing workspace to environment",
           currentToolName: "bash",
           lastAssistantSnippet: "Inspecting the repository",
           lastEventAt: "2026-06-24T00:00:05.000Z",
@@ -245,7 +245,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       const heartbeat = heartbeatService(db);
       await heartbeat.recordRuntimeProgress(staleRunningRun, {
         phase: "config_sync",
-        message: "Syncing workspace to sandbox",
+        message: "Syncing workspace to environment",
       }, issueId);
 
       expect(getHeartbeatRunRuntimeStatus(runId)).toMatchObject({
@@ -265,7 +265,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
 
       const lateStatus = await heartbeat.recordRuntimeProgress(staleRunningRun, {
         phase: "finalize",
-        message: "Finalizing sandbox workspace",
+        message: "Finalizing workspace",
       }, issueId);
 
       expect(lateStatus).toBeNull();

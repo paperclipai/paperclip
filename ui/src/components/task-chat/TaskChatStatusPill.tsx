@@ -263,7 +263,7 @@ interface TaskChatStatusPillProps {
   onApprovalDecision?: (optionId: string) => void;
   /**
    * When set, the live line is the header of an expandable parent row
-   * (TaskChatTurn): render a trailing chevron reflecting the open state —
+   * (TaskChatTurn): render a leading chevron reflecting the open state —
    * the same expand grammar as tool rows and the settled "Worked ·" line.
    */
   chevronOpen?: boolean;
@@ -317,6 +317,12 @@ export function TaskChatStatusPill({
       : item.label;
     const statusLine = (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
+        {chevronOpen !== undefined ? (
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
+            aria-hidden
+          />
+        ) : null}
         {/* Fixed-size lead slot keeps the label from moving as tool icons
             come and go; the pulse dot renders unconditionally. */}
         <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
@@ -346,12 +352,6 @@ export function TaskChatStatusPill({
             </span>
           ) : null}
         </span>
-        {chevronOpen !== undefined ? (
-          <ChevronRight
-            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
-            aria-hidden
-          />
-        ) : null}
       </div>
     );
     // The interstitial row is PERMANENTLY RESERVED while the turn is live
