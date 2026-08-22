@@ -2715,6 +2715,67 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("resyncs a project's skill folder once per scan, not once per skill (#11365)", async () => {
+    // ensureProjectFolder's resync takes a `pg_advisory_xact_lock` inside its
+    // own db.transaction, once per call. Scanning N skills that all belong to
+    // the same project must resolve/resync that project's folder once, not N
+    // times, so the db.transaction call count for the scan must not scale
+    // with the number of imported skills. Two otherwise-identical companies
+    // are scanned (one with 1 skill, one with 3) and their transaction counts
+    // compared, so the assertion doesn't depend on unrelated transactions
+    // (e.g. bundled-skill reconciliation) that also run once per scan.
+    async function seedProjectWithSkills(skillNames: string[]) {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const workspaceId = randomUUID();
+      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-project-folder-count-"));
+      cleanupDirs.add(workspaceDir);
+      for (const skillName of skillNames) {
+        const skillDir = path.join(workspaceDir, "skills", skillName);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(path.join(skillDir, "SKILL.md"), `---\nname: ${skillName}\n---\n`, "utf8");
+      }
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+      await db.insert(projectWorkspaces).values({
+        id: workspaceId,
+        companyId,
+        projectId,
+        name: "Primary",
+        cwd: workspaceDir,
+        isPrimary: true,
+      });
+      return { companyId, projectId };
+    }
+
+    async function scanAndCountTransactions(companyId: string, projectId: string, expectedImportCount: number) {
+      const originalTransaction = db.transaction.bind(db);
+      const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(
+        ((...args: Parameters<typeof db.transaction>) => originalTransaction(...args)) as typeof db.transaction,
+      );
+      try {
+        const result = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] });
+        expect(result.imported).toHaveLength(expectedImportCount);
+        return transactionSpy.mock.calls.length;
+      } finally {
+        transactionSpy.mockRestore();
+      }
+    }
+
+    const single = await seedProjectWithSkills(["alpha"]);
+    const multiple = await seedProjectWithSkills(["alpha", "bravo", "charlie"]);
+
+    const singleSkillTransactionCount = await scanAndCountTransactions(single.companyId, single.projectId, 1);
+    const multiSkillTransactionCount = await scanAndCountTransactions(multiple.companyId, multiple.projectId, 3);
+
+    expect(multiSkillTransactionCount).toBe(singleSkillTransactionCount);
+  });
+
   async function seedCompany(companyId: string) {
     await db.insert(companies).values({
       id: companyId,
