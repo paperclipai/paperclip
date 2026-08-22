@@ -108,6 +108,7 @@ export type AuthorizationDecision = {
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
     | "allow_direct_parent_report"
+    | "allow_agent_comment_grant"
     | "allow_visible_issue_write"
     | "allow_self"
     | "allow_company_agent"
@@ -170,6 +171,11 @@ function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
   if (!agent.permissions || typeof agent.permissions !== "object") return false;
   return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+}
+
+function canCommentAnyIssueGrant(agent: { permissions: unknown }) {
+  if (!agent.permissions || typeof agent.permissions !== "object") return false;
+  return (agent.permissions as Record<string, unknown>).canCommentAnyIssue === true;
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -2153,6 +2159,13 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (input.action === "issue:comment" && canCommentAnyIssueGrant(actorAgent)) {
+        return allow({
+          action: input.action,
+          reason: "allow_agent_comment_grant",
+          explanation: "Allowed by the agent's canCommentAnyIssue permission.",
         });
       }
       if (
