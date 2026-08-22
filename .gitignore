@@ -77,6 +77,13 @@ diagnostics/
 .claude/settings.local.json
 .paperclip-local/
 .paperclip-runtime/
+
+# Host-local agent/tool config + scratch (ETS-452)
+opencode.jsonc
+opencode.json
+.env.bak-*
+scratch/
+.paperclip-*/
 /.idea/
 /.agents/
 
