@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "paperclip-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./container/Dockerfile",
+      // Paperclip control plane + embedded Postgres + agent CLI processes.
+      // Shrink at your own risk; embedded Postgres alone wants real memory.
+      "instance_type": { "vcpu": 2, "memory_mib": 8192, "disk_mb": 10240 },
+      // One control plane per deployment — a fixed sandbox id routes every
+      // request to the same instance, so extra instances would sit idle.
+      "max_instances": 1,
+      "name": "paperclip-sandbox"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "Sandbox", "name": "Sandbox" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  // Optional (experimental): durable attachment storage. Paperclip's upload
+  // directory is FUSE-mounted from this bucket (credential-less, via the
+  // Worker binding), so attachments survive container recycling. To enable:
+  //   1. npx wrangler r2 bucket create paperclip-attachments
+  //   2. Uncomment the block below and redeploy.
+  // See docs/deploy/cloudflare.md#durable-attachments-via-r2-optional-experimental.
+  // "r2_buckets": [
+  //   { "binding": "ARTIFACTS", "bucket_name": "paperclip-attachments" }
+  // ],
+  "vars": {
+    // Defaults follow docs/deploy/deployment-modes.md. Embedded Postgres
+    // currently requires "private" exposure; switch to "public" only with an
+    // external DATABASE_URL (see docs/deploy/cloudflare.md#data-durability).
+    "PAPERCLIP_DEPLOYMENT_MODE": "authenticated",
+    "PAPERCLIP_DEPLOYMENT_EXPOSURE": "private",
+    // Leave empty to default to the request origin (your workers.dev URL).
+    "PAPERCLIP_PUBLIC_URL": "",
+    // The deployment starts fail-closed: it serves nothing until you set the
+    // BOOTSTRAP_TOKEN secret (protects the unclaimed operator invite). After
+    // claiming the operator account, flip this to "true" to open the login
+    // page to your team — Paperclip's own auth takes over from there.
+    "DISABLE_BOOTSTRAP_GATE": "false"
+  },
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,5 @@
+# Wrangler local state (miniflare D1/KV/DO/R2 sqlite files) — never commit.
+.wrangler/
+# Local secrets for `wrangler dev`.
+.dev.vars
+node_modules/
