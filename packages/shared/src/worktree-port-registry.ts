@@ -18,6 +18,8 @@ const WORKTREE_PORT_REGISTRY_LOCK_STALE_MS = 5_000;
 const WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS = 10_000;
 const WORKTREE_PORT_REGISTRY_LOCK_HEARTBEAT_MS = 1_000;
 const WORKTREE_PORT_REGISTRY_LOCK_PROBE_TIMEOUT_MS = 500;
+const WORKTREE_PORT_REGISTRY_RENAME_TIMEOUT_MS = 2_000;
+const WORKTREE_PORT_REGISTRY_RENAME_RETRY_MS = 10;
 const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 type RegistryLockOwner = {
@@ -95,9 +97,12 @@ server.listen(0, "127.0.0.1", () => {
     return;
   }
   Atomics.store(control, 2, address.port);
+  // Take the first ownership reading before releasing the parent. The parent
+  // rewrites owner.json as soon as it wakes, and on Windows renaming onto a
+  // file this worker still has open fails with EPERM.
+  touchOwnedLock();
   Atomics.store(control, 0, 1);
   Atomics.notify(control, 0);
-  touchOwnedLock();
   timer = setInterval(() => {
     if (Atomics.load(control, 1) !== 0 || touchOwnedLock() === "lost") finish();
   }, workerData.heartbeatMs);
@@ -160,6 +165,31 @@ function readRegistryLockOwner(lockPath: string): RegistryLockOwner | null {
   return null;
 }
 
+/**
+ * Replace `to` with `from`, tolerating the destination being briefly held open.
+ *
+ * POSIX renames over an open destination without complaint. Windows returns
+ * EPERM, EACCES or EBUSY instead, and several things here open these files for
+ * short reads: the heartbeat worker checks ownership on an interval, and virus
+ * scanners and the search indexer both touch newly created files. Retrying for
+ * a bounded window turns a hard failure back into the atomic replace the rest
+ * of this module assumes it has.
+ */
+function renameWithRetrySync(from: string, to: string): void {
+  const deadline = Date.now() + WORKTREE_PORT_REGISTRY_RENAME_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : null;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") throw error;
+      if (Date.now() >= deadline) throw error;
+      Atomics.wait(sleepSyncBuffer, 0, 0, WORKTREE_PORT_REGISTRY_RENAME_RETRY_MS);
+    }
+  }
+}
+
 function writeRegistryLockOwner(lockPath: string, owner: RegistryLockOwner): void {
   const contents = `${JSON.stringify(owner)}\n`;
   for (const ownerFile of [
@@ -169,7 +199,7 @@ function writeRegistryLockOwner(lockPath: string, owner: RegistryLockOwner): voi
     const ownerPath = path.join(lockPath, ownerFile);
     const temporaryPath = `${ownerPath}.${owner.token}.tmp`;
     fs.writeFileSync(temporaryPath, contents, { mode: 0o600 });
-    fs.renameSync(temporaryPath, ownerPath);
+    renameWithRetrySync(temporaryPath, ownerPath);
   }
 }
 
@@ -407,5 +437,5 @@ export function writeWorktreePortRegistry(homeDir: string, configPaths: Iterable
   };
   const temporaryPath = `${registryPath}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporaryPath, registryPath);
+  renameWithRetrySync(temporaryPath, registryPath);
 }
