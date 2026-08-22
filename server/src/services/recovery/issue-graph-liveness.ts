@@ -28,6 +28,18 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  labelNames?: string[];
+}
+
+export const PARKED_V1_LABEL_NAME = "parked";
+export const PARKED_V1_POLICY_VERSION = "parked-v1";
+
+export interface IssueLivenessSuppression {
+  reason: "parked_v1";
+  policyVersion: typeof PARKED_V1_POLICY_VERSION;
+  issueId: string;
+  companyId: string;
+  suppressedState: "blocked_by_unassigned_issue" | "blocked_by_assigned_backlog_issue";
 }
 
 export interface IssueLivenessRelationInput {
@@ -127,6 +139,14 @@ export interface IssueGraphLivenessInput {
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
   now?: Date | string;
+  enableParkedV1Suppression?: boolean;
+  onSuppression?: (suppression: IssueLivenessSuppression) => void;
+}
+
+export function parkedV1SuppressionFor(issue: IssueLivenessIssueInput, state: IssueLivenessState, enabled = true): IssueLivenessSuppression | null {
+  if (!enabled || issue.status !== "backlog" || !issue.labelNames?.includes(PARKED_V1_LABEL_NAME) ||
+    (state !== "blocked_by_unassigned_issue" && state !== "blocked_by_assigned_backlog_issue")) return null;
+  return { reason: "parked_v1", policyVersion: PARKED_V1_POLICY_VERSION, issueId: issue.id, companyId: issue.companyId, suppressedState: state };
 }
 
 function issueLabel(issue: IssueLivenessIssueInput) {
@@ -620,6 +640,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     }
 
     if (blocker.status === "backlog" && blocker.assigneeAgentId) {
+      const suppression = parkedV1SuppressionFor(blocker, "blocked_by_assigned_backlog_issue", input.enableParkedV1Suppression);
+      if (suppression) { input.onSuppression?.(suppression); return null; }
       return finding({
         issue: source,
         state: "blocked_by_assigned_backlog_issue",
@@ -635,6 +657,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     }
 
     if (!blocker.assigneeAgentId && !blocker.assigneeUserId) {
+      const suppression = parkedV1SuppressionFor(blocker, "blocked_by_unassigned_issue", input.enableParkedV1Suppression);
+      if (suppression) { input.onSuppression?.(suppression); return null; }
       return finding({
         issue: source,
         state: "blocked_by_unassigned_issue",

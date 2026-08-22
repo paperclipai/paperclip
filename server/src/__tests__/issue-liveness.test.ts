@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyIssueGraphLiveness } from "../services/issue-liveness.ts";
+import { classifyIssueGraphLiveness, PARKED_V1_LABEL_NAME } from "../services/issue-liveness.ts";
 
 const companyId = "company-1";
 const managerId = "manager-1";
@@ -185,6 +185,31 @@ describe("issue graph liveness classifier", () => {
       ],
       incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_by_assigned_backlog_issue:${blockerId}`,
     });
+  });
+
+  it.each([
+    { assigneeAgentId: null, state: "blocked_by_unassigned_issue" },
+    { assigneeAgentId: "blocker-agent", state: "blocked_by_assigned_backlog_issue" },
+  ])("suppresses $state for parked backlog and records parked-v1", ({ assigneeAgentId, state }) => {
+    const suppressions: unknown[] = [];
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue(), issue({ id: blockerId, status: "backlog", assigneeAgentId, labelNames: [PARKED_V1_LABEL_NAME] })],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", reportsTo: managerId })],
+      onSuppression: (suppression) => suppressions.push(suppression),
+    });
+    expect(findings).toEqual([]);
+    expect(suppressions).toEqual([expect.objectContaining({ reason: "parked_v1", policyVersion: "parked-v1", suppressedState: state })]);
+  });
+
+  it("keeps parked-v1 narrow and reversible", () => {
+    const parked = issue({ id: blockerId, status: "backlog", assigneeAgentId: null, labelNames: [PARKED_V1_LABEL_NAME] });
+    const base = { issues: [issue(), parked], relations: blocks, agents: [agent(), manager] };
+    expect(classifyIssueGraphLiveness({ ...base, enableParkedV1Suppression: false })[0]?.state).toBe("blocked_by_unassigned_issue");
+    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, labelNames: [] }] })[0]?.state).toBe("blocked_by_unassigned_issue");
+    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, labelNames: ["Parked"] }] })[0]?.state).toBe("blocked_by_unassigned_issue");
+    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, status: "todo" }] })[0]?.state).toBe("blocked_by_unassigned_issue");
+    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, status: "cancelled" }] })[0]?.state).toBe("blocked_by_cancelled_issue");
   });
 
   it("does not flag an assigned backlog blocker that has an explicit waiting path", () => {

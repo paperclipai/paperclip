@@ -25,8 +25,10 @@ import {
   issueApprovals,
   issueRecoveryActions,
   issueRelations,
+  issueLabels,
   issueThreadInteractions,
   issues,
+  labels,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -5481,6 +5483,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       approvalRows,
       recoveryIssueRows,
       recoveryActionRows,
+      issueLabelRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -5594,7 +5597,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ),
             );
       }),
+      issueRowsPromise.then((rows) => {
+        const issueIdsUnderAnalysis = rows.map((row) => row.id);
+        return issueIdsUnderAnalysis.length === 0
+          ? []
+          : db
+            .select({
+              issueId: issueLabels.issueId,
+              companyId: issueLabels.companyId,
+              labelName: labels.name,
+            })
+            .from(issueLabels)
+            .innerJoin(labels, and(
+              eq(issueLabels.labelId, labels.id),
+              eq(issueLabels.companyId, labels.companyId),
+            ))
+            .where(inArray(issueLabels.issueId, issueIdsUnderAnalysis));
+      }),
     ]);
+
+    const labelNamesByIssueKey = new Map<string, string[]>();
+    for (const row of issueLabelRows) {
+      const issueKey = `${row.companyId}:${row.issueId}`;
+      const labelNames = labelNamesByIssueKey.get(issueKey) ?? [];
+      labelNames.push(row.labelName);
+      labelNamesByIssueKey.set(issueKey, labelNames);
+    }
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
@@ -5639,7 +5667,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     );
 
     return classifyIssueGraphLiveness({
-      issues: issueRows,
+      issues: issueRows.map((issue) => ({
+        ...issue,
+        labelNames: labelNamesByIssueKey.get(`${issue.companyId}:${issue.id}`) ?? [],
+      })),
       relations: relationRows,
       agents: agentRows,
       activeRuns: activeRunRows.map((row) => ({
@@ -5663,6 +5694,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingApprovals: approvalRows,
       openRecoveryIssues: openRecoveryIssues.concat(healthyRecoveryActions),
       now: new Date(),
+      enableParkedV1Suppression: process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION !== "false",
+      onSuppression: (suppression) => logger.info({ event: "issue_graph_liveness_suppressed", ...suppression }, "Suppressed issue graph liveness finding"),
     });
   }
 
