@@ -202,6 +202,7 @@ describe("issue execution policy routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      limit: async () => [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }],
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
           Promise.resolve([{
