@@ -10,6 +10,7 @@ import {
   agents,
   agentRuntimeState,
   agentWakeupRequests,
+  approvals,
   authUsers,
   budgetPolicies,
   companySecretBindings,
@@ -28,6 +29,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
@@ -447,6 +449,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.delete(projects);
       await db.delete(issuePlanDecompositions);
       await db.delete(issueThreadInteractions);
+      await db.delete(issueApprovals);
+      await db.delete(approvals);
       await db.delete(documentAnnotationComments);
       await db.delete(documentAnnotationAnchorSnapshots);
       await db.delete(documentAnnotationThreads);
@@ -5895,6 +5899,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
+  });
+
+  it("skips stranded recovery when a pending approval card is linked to the issue", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
+      await seedInReviewParticipantRunFixture({
+        wakeReason: "execution_review_participant_recovery",
+        retryReason: "execution_review_participant_recovery",
+      });
+    const approvalId = randomUUID();
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+
+    // Make the participant run terminal so stall-recovery would normally escalate
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "failed", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+        errorCode: "adapter_failed",
+        error: "review recovery failed before submitting a decision",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // Link a pending board approval card to the issue — stall-recovery must
+    // detect this and skip escalation (card-escalator owns the next action).
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Approve merge", summary: "Ready to ship." },
+    });
+    await db.insert(issueApprovals).values({ companyId, issueId, approvalId });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    const updatedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("in_review");
   });
 
   it("requeues accepted interaction continuations stranded in_review without execution state", async () => {
