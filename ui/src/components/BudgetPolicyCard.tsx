@@ -97,7 +97,9 @@ export function BudgetPolicyCard({
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
+        <span className={summary.status === "hard_stop" ? "text-red-400 font-medium" : summary.status === "warning" ? "text-amber-300 font-medium" : ""}>
+          {summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}
+        </span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
