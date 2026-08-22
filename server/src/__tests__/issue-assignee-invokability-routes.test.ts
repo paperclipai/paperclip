@@ -15,6 +15,7 @@ const agentStatusById: Record<string, string> = {
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   findOpenAncestorCreatedByAgent: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
@@ -156,15 +157,34 @@ function agentActor(): Actor {
   };
 }
 
-// Minimal chainable/thenable db stub: any query resolves to an empty row set.
-// Run containment is mocked because this suite targets assignee invokability.
+// Minimal chainable/thenable db stub: any query resolves to an empty row set,
+// except the heartbeat-run lookup, which reads as a live run. Run containment
+// is mocked because this suite targets assignee invokability, and agent writes
+// now re-lock the run inside the transaction that mutates (FAI-9983).
 function stubDb(): any {
-  const query: any = {};
-  for (const method of ["select", "from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "groupBy", "for"]) {
-    query[method] = () => query;
-  }
-  query.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([]));
-  return { select: () => query };
+  const liveRun = {
+    id: AGENT_RUN_ID,
+    companyId: "company-1",
+    agentId: AGENT_ACTOR_ID,
+    status: "running",
+    responsibleUserId: null,
+    contextSnapshot: null,
+  };
+  const buildQuery = (rows: unknown[]) => {
+    const query: any = {};
+    for (const method of ["from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "groupBy", "for"]) {
+      query[method] = () => query;
+    }
+    query.then = (resolve: (selected: unknown[]) => unknown) => Promise.resolve(resolve(rows));
+    return query;
+  };
+  const db: any = {
+    select: (selection: Record<string, unknown> = {}) =>
+      buildQuery("status" in selection && "contextSnapshot" in selection ? [liveRun] : []),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(db),
+    insert: () => ({ values: async () => undefined }),
+  };
+  return db;
 }
 
 function createApp(actor: Actor) {
