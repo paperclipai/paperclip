@@ -162,6 +162,11 @@ import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
+  ISSUE_LIST_QUERY_PARAM_HINTS,
+  ISSUE_LIST_SUPPORTED_QUERY_PARAM_SET,
+  rejectUnsupportedQueryParams,
+} from "./query-params.js";
+import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -5932,6 +5937,16 @@ export function issueRoutes(
       res.status(403).json({ error: "Task bridge keys cannot use company-wide issue list APIs" });
       return;
     }
+    if (
+      rejectUnsupportedQueryParams(
+        req,
+        res,
+        ISSUE_LIST_SUPPORTED_QUERY_PARAM_SET,
+        ISSUE_LIST_QUERY_PARAM_HINTS,
+      )
+    ) {
+      return;
+    }
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
@@ -6000,7 +6015,10 @@ export function issueRoutes(
       res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}` });
       return;
     }
-    if (rawOffset !== undefined && (parsedOffset === null || !Number.isInteger(parsedOffset) || parsedOffset < 0)) {
+    // isSafeInteger, not isInteger: Number.isInteger(1e20) is true, so a digit-only
+    // offset past MAX_SAFE_INTEGER cleared this guard and reached Postgres, which
+    // rejects it — a 500 where the endpoint documents a 400.
+    if (rawOffset !== undefined && (parsedOffset === null || !Number.isSafeInteger(parsedOffset) || parsedOffset < 0)) {
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }

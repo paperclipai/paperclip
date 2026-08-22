@@ -9,6 +9,12 @@ import {
   resubmitApprovalSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
+import {
+  APPROVAL_LIST_QUERY_PARAM_HINTS,
+  APPROVAL_LIST_SUPPORTED_QUERY_PARAM_SET,
+  rejectUnsupportedQueryParams,
+} from "./query-params.js";
+import { APPROVAL_LIST_MAX_LIMIT } from "../services/approvals.js";
 import { logger } from "../middleware/logger.js";
 import {
   approvalService,
@@ -208,8 +214,68 @@ export function approvalRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
-    const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    if (
+      rejectUnsupportedQueryParams(
+        req,
+        res,
+        APPROVAL_LIST_SUPPORTED_QUERY_PARAM_SET,
+        APPROVAL_LIST_QUERY_PARAM_HINTS,
+      )
+    ) {
+      return;
+    }
+
+    // Express parses `?status=a&status=b` (and `?status[]=a`) into an array,
+    // which `eq()` cannot filter on. Unlike the issues endpoint, this one has
+    // never supported repeated values — say so instead of building a bad query.
+    const rawStatus = req.query.status;
+    if (rawStatus !== undefined && typeof rawStatus !== "string") {
+      res.status(400).json({ error: "status must be a single string value" });
+      return;
+    }
+    const status = rawStatus;
+
+    const rawDedupKey = req.query.dedupKey;
+    if (rawDedupKey !== undefined && typeof rawDedupKey !== "string") {
+      res.status(400).json({ error: "dedupKey must be a single string value" });
+      return;
+    }
+
+    const rawLimit = req.query.limit as string | undefined;
+    const parsedLimit = rawLimit !== undefined && /^\d+$/.test(rawLimit)
+      ? Number.parseInt(rawLimit, 10)
+      : null;
+    if (rawLimit !== undefined && (parsedLimit === null || parsedLimit <= 0 || parsedLimit > APPROVAL_LIST_MAX_LIMIT)) {
+      res.status(400).json({
+        error: `limit must be a positive integer up to ${APPROVAL_LIST_MAX_LIMIT}`,
+      });
+      return;
+    }
+
+    const rawOffset = req.query.offset as string | undefined;
+    const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
+      ? Number.parseInt(rawOffset, 10)
+      : null;
+    // isSafeInteger, not just a digit check: `?offset=99999999999999999999` parses
+    // to an imprecise float that Postgres rejects, turning a malformed request into
+    // a 500 instead of the 400 this endpoint documents.
+    if (rawOffset !== undefined && (parsedOffset === null || !Number.isSafeInteger(parsedOffset))) {
+      res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+    // `offset` without `limit` would otherwise be silently dropped — the exact
+    // fail-open this endpoint is being fixed for.
+    if (rawOffset !== undefined && rawLimit === undefined) {
+      res.status(400).json({ error: "offset requires limit" });
+      return;
+    }
+
+    const result = await svc.list(companyId, {
+      status,
+      dedupKey: rawDedupKey,
+      limit: parsedLimit ?? undefined,
+      offset: parsedOffset ?? undefined,
+    });
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 

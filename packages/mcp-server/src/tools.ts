@@ -420,11 +420,24 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipListApprovals",
-      "List approvals in a company",
-      z.object({ companyId: companyIdOptional, status: z.string().optional() }),
-      async ({ companyId, status }) => {
-        const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-        return client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/approvals${qs}`);
+      "List approvals in a company. Pass dedupKey to check whether an approval already exists for an artifact before filing a new one — an empty result means none is pending.",
+      z.object({
+        companyId: companyIdOptional,
+        status: z.string().optional(),
+        dedupKey: z
+          .string()
+          .optional()
+          .describe("Exact match on payload.dedupKey, e.g. issue:ENG-1234"),
+      }),
+      async ({ companyId, status, dedupKey }) => {
+        const params = new URLSearchParams();
+        if (status) params.set("status", status);
+        if (dedupKey) params.set("dedupKey", dedupKey);
+        const qs = params.toString();
+        return client.requestJson(
+          "GET",
+          `/companies/${client.resolveCompanyId(companyId)}/approvals${qs ? `?${qs}` : ""}`,
+        );
       },
     ),
     makeTool(

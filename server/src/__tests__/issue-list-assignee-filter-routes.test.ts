@@ -1008,4 +1008,113 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       liveDescendantCount: 1,
     });
   });
+
+  describe("unknown query params fail loud instead of returning the full set", () => {
+    async function seedCompanyWithIssues(titles: string[]) {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: uniqueIssuePrefix(),
+        requireBoardApprovalForNewAgents: false,
+      });
+      await seedCloudTenantMember(companyId);
+      await db.insert(issues).values(
+        titles.map((title) => ({
+          id: randomUUID(),
+          companyId,
+          title,
+          status: "todo",
+          priority: "medium",
+        })),
+      );
+      return companyId;
+    }
+
+    // The bug: `?search=` was silently dropped, so a dedup search returned every
+    // issue and read exactly like a working search returning unrelated results.
+    it("rejects ?search= (the near-miss for ?q=) rather than ignoring it", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha", "Beta", "Gamma"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ search: "zzzznonsense" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toContain("search");
+      expect(res.body.error).toContain("use q=");
+      expect(res.body.unsupported).toEqual(["search"]);
+    });
+
+    // The bug: `?page=` was dropped, so looping page=1..N re-fetched page 1 and
+    // inflated any count derived from the loop.
+    it("rejects ?page= rather than silently re-returning the first page", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha", "Beta"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ page: "2" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toContain("page");
+      expect(res.body.error).toContain("offset=");
+    });
+
+    // Number.isInteger(1e20) is true, so a digit-only offset past MAX_SAFE_INTEGER
+    // cleared the guard and reached Postgres, which rejects it outright — a 500
+    // where this endpoint documents a 400.
+    it("rejects an offset past the safe-integer range instead of failing in the database", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ offset: "99999999999999999999", limit: "5" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toContain("offset must be");
+    });
+
+    it("lists every unsupported param and advertises the supported set", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ nonsense: "1", search: "x" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.unsupported).toEqual(["nonsense", "search"]);
+      expect(res.body.supported).toContain("q");
+      expect(res.body.supported).toContain("limit");
+    });
+
+    it("still honours the supported params it advertises", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha", "Beta"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ status: "todo", limit: "25" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toHaveLength(2);
+    });
+
+    // A nonsense value on a *supported* filter must yield 0 rows, never the
+    // unfiltered set.
+    it("returns 0 rows for a nonsense ?q= value, not the full list", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha", "Beta", "Gamma"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ q: "zzzznonsense" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toHaveLength(0);
+    });
+  });
 });

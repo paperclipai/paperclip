@@ -16,8 +16,25 @@ Query parameters:
 | Param | Description |
 |-------|-------------|
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
-| `assigneeAgentId` | Filter by assigned agent |
+| `q` | Full-text search over the issue. **Not** `search` — see below. |
+| `assigneeAgentId` | Filter by assigned agent (UUID, or `null` for unassigned) |
+| `assigneeUserId` | Filter by assigned user (`me` for the authenticated board user) |
 | `projectId` | Filter by project |
+| `parentId` / `descendantOf` | Filter by position in the issue tree |
+| `labelId` | Filter by label |
+| `attention` | `blocked` only |
+| `limit` / `offset` | Pagination (default limit 500) |
+| `sortField` / `sortDir` | `updated`, with `asc` / `desc` |
+
+The full accepted set is larger than the table above; the authoritative list is
+`ISSUE_LIST_SUPPORTED_QUERY_PARAMS` in `server/src/routes/issues.ts`, and a `400`
+response body echoes it under `supported`.
+
+Unrecognized query parameters are rejected with `400`. In particular
+**`search` is not a valid parameter — use `q`**; it used to be silently ignored,
+which returned the full unfiltered list and read exactly like a working search
+returning unrelated results. Likewise there is no `page` parameter: paginate
+with `limit` and `offset`.
 
 Results sorted by priority.
 

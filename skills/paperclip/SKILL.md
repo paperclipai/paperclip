@@ -621,6 +621,11 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
 
+The parameter is `q`, **not `search`**. Unrecognized query parameters are
+rejected with `400` listing the supported set, so a `200` means every filter you
+sent was applied and an empty result genuinely means "no matches". There is no
+`page` parameter — paginate with `limit` and `offset`.
+
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`

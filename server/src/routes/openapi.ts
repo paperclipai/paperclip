@@ -237,6 +237,23 @@ import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
   companyImportTransferDeclarationSchema,
 } from "@paperclipai/shared/company-import-transfer";
+import {
+  APPROVAL_LIST_SUPPORTED_QUERY_PARAMS,
+  ISSUE_LIST_SUPPORTED_QUERY_PARAMS,
+} from "./query-params.js";
+
+/**
+ * Build a query schema from a route's supported-param allow-list, so the spec
+ * and the handler's 400 guard are driven by the same source and cannot drift.
+ */
+function optionalStringQuery(names: readonly string[]) {
+  return z.object(
+    Object.fromEntries(names.map((name) => [name, z.string().optional()])) as Record<
+      string,
+      z.ZodOptional<z.ZodString>
+    >,
+  );
+}
 
 type JsonSchema = Record<string, unknown>;
 type OpenApiResponse = Record<string, unknown>;
@@ -2232,12 +2249,21 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
-  description: "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+  description:
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. "
+    + "Unrecognized query parameters are rejected with 400 — note the search parameter is `q`, not `search`, and pagination is `limit`/`offset`, not `page`.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    query: optionalStringQuery(ISSUE_LIST_SUPPORTED_QUERY_PARAMS).extend({
+      view: z.enum(["compact"]).optional(),
+    }),
   },
-  responses: { 200: r.ok(), 304: { description: "Not Modified" }, 401: r.unauthorized },
+  responses: {
+    200: r.ok(),
+    304: { description: "Not Modified" },
+    400: r.badRequest,
+    401: r.unauthorized,
+  },
 });
 
 registry.registerPath({
@@ -3236,8 +3262,14 @@ registry.registerPath({
   path: "/api/companies/{companyId}/approvals",
   tags: ["approvals"],
   summary: "List approvals in a company",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description:
+    "Filter by `status` and/or `dedupKey` (exact match on `payload.dedupKey`, the server-side duplicate check before filing an approval). "
+    + "Pagination is opt-in: omit `limit` for the full set; `offset` requires `limit`. Unrecognized query parameters are rejected with 400.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: optionalStringQuery(APPROVAL_LIST_SUPPORTED_QUERY_PARAMS),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
