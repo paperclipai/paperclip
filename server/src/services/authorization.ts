@@ -20,7 +20,12 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  extractUserMentionIds,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -107,6 +112,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_issue_user_participation_grant"
     | "allow_direct_parent_report"
     | "allow_visible_issue_write"
     | "allow_self"
@@ -1378,11 +1384,177 @@ export function authorizationService(db: Db) {
     return false;
   }
 
+  // Цепочка задачи — её предки и её собственное поддерево. Поддеревья предков
+  // (соседние ветки) в цепочку не входят: упоминание в соседней ветке не должно
+  // давать доступ к этой задаче.
+  async function issueChainIds(companyId: string, issueId: string) {
+    const rows = await db.execute(sql`
+      WITH RECURSIVE ancestors(id, parent_id, depth) AS (
+        SELECT id, parent_id, 0
+        FROM issues
+        WHERE company_id = ${companyId}
+          AND id = ${issueId}
+        UNION ALL
+        SELECT parent.id, parent.parent_id, ancestors.depth + 1
+        FROM issues parent
+        JOIN ancestors ON parent.id = ancestors.parent_id
+        WHERE parent.company_id = ${companyId}
+          AND ancestors.depth < ${LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH - 1}
+      ),
+      descendants(id, depth) AS (
+        SELECT id, 0
+        FROM issues
+        WHERE company_id = ${companyId}
+          AND id = ${issueId}
+        UNION ALL
+        SELECT child.id, descendants.depth + 1
+        FROM issues child
+        JOIN descendants ON child.parent_id = descendants.id
+        WHERE child.company_id = ${companyId}
+          AND descendants.depth < ${LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH - 1}
+      )
+      SELECT id FROM ancestors
+      UNION
+      SELECT id FROM descendants
+    `);
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => typeof row === "object" && row ? (row as Record<string, unknown>).id : null)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+  }
+
+  function commentAuthorCanGrantUserParticipation(input: {
+    targetUserId: string;
+    issueAssigneeAgentId: string | null;
+    authorAgentId: string | null;
+    authorUserId: string | null;
+    activeAuthorUserIds: Set<string>;
+  }) {
+    if (input.authorAgentId) {
+      return input.issueAssigneeAgentId === input.authorAgentId;
+    }
+    if (input.authorUserId) {
+      if (input.authorUserId === input.targetUserId) return true;
+      return input.activeAuthorUserIds.has(input.authorUserId);
+    }
+    return false;
+  }
+
+  async function userHasParticipationGrantOnIssue(input: {
+    action: AuthorizationAction;
+    companyId: string;
+    issueId: string;
+    actorUserId: string;
+  }) {
+    const targetIssue = await loadIssue(input.issueId);
+    if (!targetIssue || targetIssue.companyId !== input.companyId) return false;
+    if (targetIssue.status === "done" || targetIssue.status === "cancelled") return false;
+
+    const chainIds = await issueChainIds(input.companyId, input.issueId);
+    if (chainIds.length === 0) return false;
+
+    const assigned = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        inArray(issues.id, chainIds),
+        eq(issues.assigneeUserId, input.actorUserId),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (assigned) {
+      logger.info({
+        actorUserId: input.actorUserId,
+        issueId: input.issueId,
+        companyId: input.companyId,
+        grantedAction: input.action,
+        grant: "issue_user_participation_assignee",
+      }, "authorized issue user participation grant");
+      return true;
+    }
+
+    const commentRows = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        issueAssigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issueComments)
+      .innerJoin(issues, eq(issueComments.issueId, issues.id))
+      .where(and(
+        eq(issueComments.companyId, input.companyId),
+        inArray(issueComments.issueId, chainIds),
+        isNull(issueComments.deletedAt),
+      ));
+
+    if (commentRows.some((row) => row.authorUserId === input.actorUserId)) {
+      logger.info({
+        actorUserId: input.actorUserId,
+        issueId: input.issueId,
+        companyId: input.companyId,
+        grantedAction: input.action,
+        grant: "issue_user_participation_author",
+      }, "authorized issue user participation grant");
+      return true;
+    }
+
+    const mentionRows = commentRows.filter((row) => extractUserMentionIds(row.body).includes(input.actorUserId));
+    const authorUserIds = [...new Set(mentionRows.flatMap((row) => row.authorUserId ? [row.authorUserId] : []))];
+    const activeAuthorUserIds = new Set(
+      authorUserIds.length === 0
+        ? []
+        : await db
+          .select({ principalId: companyMemberships.principalId })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, input.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.status, "active"),
+            inArray(companyMemberships.principalId, authorUserIds),
+          ))
+          .then((memberships) => memberships.map((membership) => membership.principalId)),
+    );
+
+    for (const row of mentionRows) {
+      if (
+        commentAuthorCanGrantUserParticipation({
+          targetUserId: input.actorUserId,
+          issueAssigneeAgentId: row.issueAssigneeAgentId,
+          authorAgentId: row.authorAgentId,
+          authorUserId: row.authorUserId,
+          activeAuthorUserIds,
+        })
+      ) {
+        logger.info({
+          actorUserId: input.actorUserId,
+          issueId: input.issueId,
+          companyId: input.companyId,
+          commentId: row.id,
+          grantedAction: input.action,
+          grant: "issue_user_participation_mention",
+        }, "authorized issue user participation grant");
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecision {
     return allow({
       action,
       reason: "allow_issue_mention_grant",
       explanation: "Allowed by a mention-scoped issue comment grant.",
+    });
+  }
+
+  function allowIssueUserParticipationGrant(action: AuthorizationAction): AuthorizationDecision {
+    return allow({
+      action,
+      reason: "allow_issue_user_participation_grant",
+      explanation: "Allowed by an active issue user participation grant.",
     });
   }
 
@@ -1717,6 +1889,26 @@ export function authorizationService(db: Db) {
       }
       if (!permissionKey) {
         if (input.action === "issue:comment" || input.action === "issue:mutate") {
+          const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+          if (input.action === "issue:comment" && !membership) {
+            if (
+              input.resource.type === "issue" &&
+              input.resource.issueId &&
+              await userHasParticipationGrantOnIssue({
+                action: input.action,
+                companyId,
+                issueId: input.resource.issueId,
+                actorUserId: input.actor.userId,
+              })
+            ) {
+              return allowIssueUserParticipationGrant(input.action);
+            }
+            return deny({
+              action: input.action,
+              reason: "deny_missing_membership",
+              explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            });
+          }
           if (
             input.resource.type !== "issue" ||
             !input.resource.issueId ||
@@ -1730,7 +1922,6 @@ export function authorizationService(db: Db) {
               explanation: `No board permission mapping exists for ${input.action}.`,
             });
           }
-          const membership = await getActiveMembership(companyId, "user", input.actor.userId);
           if (membership && membership.membershipRole !== "viewer") {
             return allow({
               action: input.action,
@@ -1784,6 +1975,19 @@ export function authorizationService(db: Db) {
               reason: "deny_missing_grant",
               explanation: `Viewer membership does not grant ${input.action}.`,
             });
+          }
+          if (
+            input.action === "issue:read" &&
+            input.resource.type === "issue" &&
+            input.resource.issueId &&
+            await userHasParticipationGrantOnIssue({
+              action: input.action,
+              companyId,
+              issueId: input.resource.issueId,
+              actorUserId: input.actor.userId,
+            })
+          ) {
+            return allowIssueUserParticipationGrant(input.action);
           }
           return deny({
             action: input.action,

@@ -23,6 +23,9 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  // Comment routes now run a boundary decision for non-agent actors too; these
+  // cases are about the closed-workspace guard, so the boundary always allows.
+  decide: vi.fn(async () => ({ allowed: true, reason: "allow_self" })),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({

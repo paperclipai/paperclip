@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   create: vi.fn(),
+  createAttachment: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
   getAttachmentById: vi.fn(),
@@ -452,6 +453,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.create.mockReset();
+    mockIssueService.createAttachment.mockReset();
     mockIssueService.createChild.mockReset();
     mockIssueService.decomposeAcceptedPlan.mockReset();
     mockIssueService.getAttachmentById.mockReset();
@@ -719,6 +721,23 @@ describe("agent issue mutation checkout ownership", () => {
       byteSize: 6,
       sha256: "sha256",
       originalFilename: "upload.txt",
+    });
+    mockIssueService.createAttachment.mockResolvedValue({
+      id: "attachment-upload",
+      issueId,
+      companyId,
+      issueCommentId: null,
+      assetId: "asset-upload",
+      provider: "local_disk",
+      objectKey: "issues/upload.txt",
+      contentType: "text/plain",
+      byteSize: 6,
+      sha256: "sha256",
+      originalFilename: "upload.txt",
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     mockStorageService.getObject.mockResolvedValue({
       stream: Readable.from(Buffer.from("report")),
@@ -1037,6 +1056,130 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(401);
     expect(res.body.error).toBe("Agent run id required");
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
+  it("allows user participation grants to upload issue attachments without issue mutation", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_user_participation_grant" : "deny_missing_membership",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by an active issue user participation grant."
+          : "Missing membership.",
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "anna-user",
+      companyIds: [],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+      .attach("file", Buffer.from("report"), { filename: "qa.txt", contentType: "text/plain" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockStorageService.putFile).toHaveBeenCalledWith(expect.objectContaining({
+      companyId,
+      namespace: `issues/${issueId}`,
+      originalFilename: "qa.txt",
+      contentType: "text/plain",
+      body: expect.any(Buffer),
+    }));
+    expect(mockIssueService.createAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      issueId,
+      createdByAgentId: null,
+      createdByUserId: "anna-user",
+    }));
+  });
+
+  it("allows user participation grants to read issue attachments without company membership", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_issue_user_participation_grant" : "deny_missing_membership",
+      explanation:
+        input.action === "issue:read"
+          ? "Allowed by an active issue user participation grant."
+          : "Missing membership.",
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "anna-user",
+      companyIds: [],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const attachments = await request(app).get(`/api/issues/${issueId}/attachments`);
+    const content = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(attachments.status, JSON.stringify(attachments.body)).toBe(200);
+    expect(attachments.body).toEqual([]);
+    expect(content.status).toBe(200);
+    expect(content.text).toBe("report");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    expect(mockIssueService.listAttachments).toHaveBeenCalledWith(issueId);
+    expect(mockStorageService.getObject).toHaveBeenCalled();
+  });
+
+  it("hides issue attachments from non-members without a participation grant", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_membership",
+      explanation: "Missing membership.",
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "unrelated-user",
+      companyIds: [],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const attachments = await request(app).get(`/api/issues/${issueId}/attachments`);
+    const content = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(attachments.status, JSON.stringify(attachments.body)).toBe(404);
+    expect(attachments.body.error).toBe("Issue not found");
+    expect(content.status, JSON.stringify(content.body)).toBe(404);
+    expect(content.body.error).toBe("Attachment not found");
+    expect(mockIssueService.listAttachments).not.toHaveBeenCalled();
+    expect(mockStorageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("hides attachment upload issue existence from a non-member without a participation grant", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_membership",
+      explanation: "Missing membership.",
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "unrelated-user",
+      companyIds: [],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+      .attach("file", Buffer.from("report"), { filename: "qa.txt", contentType: "text/plain" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
   });
 

@@ -160,7 +160,13 @@ import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+  hasCompanyAccess,
+} from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -3905,13 +3911,46 @@ export function issueRoutes(
     return false as const;
   }
 
-  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+  function getIssueReadDecision(req: Request, issue: Parameters<typeof decideIssueAccess>[1]) {
     const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
-    const value = memoizeIssueReadDecision(req, key, () => decideIssueAccess(req, issue, "issue:read"));
-    const decision = await value;
+    return memoizeIssueReadDecision(req, key, () => decideIssueAccess(req, issue, "issue:read"));
+  }
+
+  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+    const decision = await getIssueReadDecision(req, issue);
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
     return false;
+  }
+
+  /**
+   * Fetch an issue for a read route without making company membership the only
+   * entry point. A participating board user may hold an issue-scoped read grant
+   * without membership; every other cross-company actor still gets the same 404
+   * as a missing resource so the exception does not become an existence oracle.
+   */
+  async function getReadableIssue(
+    req: Request,
+    res: Response,
+    id: string,
+    notFoundMessage = "Issue not found",
+  ) {
+    const issue = await getIssueById(req, id);
+    if (!issue) {
+      res.status(404).json({ error: notFoundMessage });
+      return null;
+    }
+    if (hasCompanyAccess(req, issue.companyId)) {
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return null;
+      return issue;
+    }
+    if (req.actor.type !== "agent") {
+      const decision = await getIssueReadDecision(req, issue);
+      if (decision.allowed && decision.reason === "allow_issue_user_participation_grant") return issue;
+    }
+    res.status(404).json({ error: notFoundMessage });
+    return null;
   }
 
   async function assertIssueWriteInfluenceAllowed(
@@ -3929,7 +3968,29 @@ export function issueRoutes(
     return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(decision));
   }
 
-  async function assertAgentIssueCommentAllowed(
+  // Загрузка задачи для записи комментария. Участнику компании — как раньше.
+  // Пользователю без членства доступ может давать грант участия в цепочке задачи,
+  // поэтому мембершип здесь не единственный ключ; отказ по-прежнему отвечает 404,
+  // чтобы не подтверждать существование чужой задачи.
+  async function getCommentableIssue(req: Request, res: Response, id: string) {
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return null;
+    }
+    if (hasCompanyAccess(req, issue.companyId)) {
+      assertCompanyAccess(req, issue.companyId);
+      return issue;
+    }
+    if (req.actor.type !== "agent") {
+      const decision = await decideIssueAccess(req, issue, "issue:comment");
+      if (decision.allowed && decision.reason === "allow_issue_user_participation_grant") return issue;
+    }
+    res.status(404).json({ error: "Issue not found" });
+    return null;
+  }
+
+  async function assertIssueCommentAllowed(
     req: Request,
     res: Response,
     issue: {
@@ -3944,10 +4005,25 @@ export function issueRoutes(
       identifier?: string | null;
     },
   ) {
-    if (req.actor.type !== "agent") return true;
+    if (req.actor.type !== "agent") {
+      const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
+      if (!boundaryDecision.allowed) {
+        res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+        return false;
+      }
+      // Board/user writes keep recording their historical authorization reason;
+      // only the new participation grant surfaces itself on the comment.
+      return boundaryDecision.reason === "allow_issue_user_participation_grant"
+        ? boundaryDecision
+        : true;
+    }
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (req.actor.companyId !== issue.companyId) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -6359,9 +6435,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    const issue = await getReadableIssue(req, res, id);
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
@@ -6647,9 +6722,8 @@ export function issueRoutes(
   router.get("/issues/:id", async (req, res) => {
     const requestStartedAt = performance.now();
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    const issue = await getReadableIssue(req, res, id);
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
       ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
       : Promise.resolve({});
@@ -6734,9 +6808,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    const issue = await getReadableIssue(req, res, id);
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     res.json(await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id));
   });
 
@@ -12126,7 +12199,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getCommentableIssue(req, res, id);
     if (!issue) return;
     if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
       await auditAgentIssueCommentAttributionSpoof({
@@ -12139,7 +12212,7 @@ export function issueRoutes(
       await denyIssueWrite(req, res, issue, "issue_write_attribution_spoof_rejected");
       return;
     }
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    const commentAccessDecision = await assertIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     const commentAuthorizationReason = issueWriteAuthorizationReason(req, commentAccessDecision);
     if (!assertStructuredCommentFieldsAllowed(req, res, {
@@ -12971,9 +13044,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, getIssueById(req, issueId), "Issue not found");
+    const issue = await getReadableIssue(req, res, issueId);
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });
@@ -12981,17 +13053,19 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
-    const issue = await svc.getById(issueId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    // Намеренно без assertCompanyAccess: доступ здесь даёт грант участия в цепочке
+    // задачи, а не членство в компании — в этом и состоит смысл изменения.
+    const issue = await getCommentableIssue(req, res, issueId);
+    if (!issue) return;
     if (issue.companyId !== companyId) {
       res.status(422).json({ error: "Issue does not belong to company" });
       return;
     }
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (req.actor.type === "agent") {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    } else if (!(await assertIssueCommentAllowed(req, res, issue))) {
+      return;
+    }
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     const company = await companiesSvc.getById(companyId);
@@ -13076,14 +13150,13 @@ export function issueRoutes(
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {
     const attachmentId = req.params.attachmentId as string;
-    const attachment = await getAccessibleResource(req, res, svc.getAttachmentById(attachmentId), "Attachment not found");
-    if (!attachment) return;
-    const issue = await svc.getById(attachment.issueId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
+    const attachment = await svc.getAttachmentById(attachmentId);
+    if (!attachment) {
+      res.status(404).json({ error: "Attachment not found" });
       return;
     }
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const issue = await getReadableIssue(req, res, attachment.issueId, "Attachment not found");
+    if (!issue) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
