@@ -602,7 +602,7 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   }
 }
 
-type BackupWriteSink = {
+export type BackupWriteSink = {
   write(chunk: string | Buffer): Promise<void>;
   close(): Promise<void>;
   abort(): Promise<void>;
@@ -613,7 +613,7 @@ type BackupWriteSink = {
  * Coalesces small `emit()` calls into larger writes so callers get backpressure
  * awareness (via the sink) without buffering the whole dump in memory.
  */
-function createBufferedWriter(sink: BackupWriteSink, maxBufferedBytes: number, label: string) {
+export function createBufferedWriter(sink: BackupWriteSink, maxBufferedBytes: number, label: string) {
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
@@ -661,10 +661,16 @@ function createBufferedWriter(sink: BackupWriteSink, maxBufferedBytes: number, l
     },
     async close() {
       if (closed) return;
-      closed = true;
       flushBufferedLines();
       await pendingWrite;
       await sink.close();
+      // Only mark closed after the sink has actually finished successfully.
+      // If sink.close() throws (e.g. the gzip/file pipeline fails while
+      // finalizing), `closed` must stay false so the caller's catch-block
+      // abort() call still runs and removes the truncated .sql.gz instead of
+      // silently no-op'ing and leaving an invalid artifact that a later
+      // health check could mistake for the latest good backup.
+      closed = true;
     },
     async abort() {
       if (closed) return;

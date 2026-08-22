@@ -7,9 +7,11 @@ import postgres from "postgres";
 import {
   assertSufficientBackupFreeSpace,
   createBufferedTextFileWriter,
+  createBufferedWriter,
   runDatabaseBackup,
   runDatabaseRestore,
   sweepOrphanedBackupIntermediates,
+  type BackupWriteSink,
 } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
@@ -56,6 +58,38 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres backup tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("createBufferedWriter", () => {
+  it("leaves the writer unclosed and lets abort() clean up when sink.close() rejects", async () => {
+    let aborted = false;
+    let closeAttempts = 0;
+    const failingSink: BackupWriteSink = {
+      async write() {},
+      async close() {
+        closeAttempts += 1;
+        throw new Error("simulated finalize failure (e.g. gzip/file pipeline error)");
+      },
+      async abort() {
+        aborted = true;
+      },
+    };
+
+    const writer = createBufferedWriter(failingSink, 16, "failing-sink-test");
+    writer.emit("some data");
+
+    await expect(writer.close()).rejects.toThrow("simulated finalize failure");
+    expect(closeAttempts).toBe(1);
+
+    // Regression guard: close() must not mark the writer `closed` before
+    // sink.close() actually succeeds. Otherwise the caller's catch-block
+    // abort() call (see runDatabaseBackup's catch) becomes a silent no-op
+    // and the truncated .sql.gz artifact from the failed finalize is never
+    // removed, leaving an invalid file a later health check could mistake
+    // for the latest good backup.
+    await writer.abort();
+    expect(aborted).toBe(true);
+  });
+});
 
 describe("createBufferedTextFileWriter", () => {
   it("preserves line boundaries across buffered flushes", async () => {
