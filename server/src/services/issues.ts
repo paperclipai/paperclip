@@ -1347,7 +1347,8 @@ async function getProjectDefaultGoalId(
     .from(projects)
     .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
-  return row?.goalId ?? null;
+  if (!row) throw notFound("Project not found");
+  return row.goalId ?? null;
 }
 
 async function getWorkspaceInheritanceIssue(
@@ -7081,6 +7082,9 @@ export function issueService(db: Db) {
         if (idempotencyKey) {
           const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
+        }
+        if (issueData.projectId != null) {
+          await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
