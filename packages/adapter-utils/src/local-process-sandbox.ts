@@ -79,6 +79,16 @@ function normalizeAbsolutePath(candidate: string, label: string): string {
   return path.resolve(trimmed);
 }
 
+function pathDepth(candidate: string): number {
+  let depth = 0;
+  let current = path.resolve(candidate);
+  while (current !== path.dirname(current)) {
+    depth += 1;
+    current = path.dirname(current);
+  }
+  return depth;
+}
+
 async function pathExists(candidate: string): Promise<boolean> {
   return fs.lstat(candidate).then(() => true).catch(() => false);
 }
@@ -407,9 +417,25 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     if (networkScope === "allowlist") {
       for (const nodePath of await executableReadPaths(process.execPath)) await mount(nodePath, "ro");
     }
-    for (const managedPath of input.options.managedPaths ?? []) await mount(managedPath.path, managedPath.access);
-    for (const extraPath of input.options.extraPaths ?? []) await mount(extraPath.path, extraPath.access);
-    await mount(workspaceDir, "rw");
+    // Bubblewrap applies later bind mounts over earlier parent mounts. Mount
+    // ancestors first so a more specific extra or managed path keeps its
+    // declared access mode inside the workspace (and the workspace remains
+    // writable when a read-only path contains it).
+    const orderedMounts = [
+      ...(input.options.managedPaths ?? []),
+      ...(input.options.extraPaths ?? []),
+      { path: workspaceDir, access: "rw" as const },
+    ]
+      .map((entry, index) => ({
+        ...entry,
+        normalizedPath: normalizeAbsolutePath(entry.path, "Sandbox path"),
+        index,
+      }))
+      .sort(
+        (left, right) =>
+          pathDepth(left.normalizedPath) - pathDepth(right.normalizedPath) || left.index - right.index,
+      );
+    for (const entry of orderedMounts) await mount(entry.normalizedPath, entry.access);
     for (const [index, alias] of (input.options.pathAliases ?? []).entries()) {
       const aliasPath = normalizeAbsolutePath(alias.path, `Sandbox pathAliases[${index}].path`);
       const aliasTarget = normalizeAbsolutePath(alias.target, `Sandbox pathAliases[${index}].target`);
