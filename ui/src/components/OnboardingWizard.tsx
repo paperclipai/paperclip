@@ -1419,7 +1419,10 @@ function OnboardingWizardInner({
       // yet — two goals for one mission, two agents for one hire.
       if (loading) return;
       if (step === 0) return; // front door requires click
-      if (step === 1 && companyName.trim()) void handleCreateCompany();
+      if (step === 1 && companyName.trim()) {
+        if (skipsMissionStep) void handleCreateCompany();
+        else setStep(2);
+      }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
       else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
@@ -1433,6 +1436,24 @@ function OnboardingWizardInner({
   // The arc strip stands in for the full-length bar only when the run began on
   // the arc — the Cloud-first path, where the company already exists and steps
   // 1-2 never happen. A run that started at step 1 keeps one continuous count.
+  // Step 2 is two different screens wearing one number: the grow path's "tell us
+  // about your team" questionnaire, and the create path's mission step.
+  // Onboarding stopped asking for the mission, but the questionnaire is still
+  // how a grow run describes the team it is levelling up — its answers seed the
+  // lead agent — so only the create path skips ahead.
+  const skipsMissionStep = onboardingPath !== "grow";
+
+  // Back lands on whatever came before this step *for this run*, which is not
+  // always `step - 1`. A create run went 1 → 3, so stepping blindly would walk
+  // it into the mission screen it never saw. Two runs still belong on step 2
+  // going back: a grow run, whose step 2 is the questionnaire rather than the
+  // mission, and a run that *entered* on the mission step because something
+  // opened it there — it has seen that screen, so Back owes it the way back.
+  function backStepFrom(current: Step): Step {
+    if (current === 3 && skipsMissionStep && entryStep !== 2) return 1;
+    return (current - 1) as Step;
+  }
+
   const isAgentArcStep = agentArcStepFor(step) !== null;
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
 
@@ -1730,8 +1751,8 @@ function OnboardingWizardInner({
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && companyName.trim()) {
                           e.preventDefault();
-                          if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                          setStep(2);
+                          if (skipsMissionStep) void handleCreateCompany();
+                          else setStep(2);
                         }
                       }}
                       autoFocus
@@ -2396,7 +2417,7 @@ function OnboardingWizardInner({
                 <FooterNav
                   onBack={
                     canGoBackFromOnboardingStep({ currentStep: step, entryStep })
-                      ? () => setStep((step - 1) as Step)
+                      ? () => setStep(backStepFrom(step))
                       : undefined
                   }
                   // The prototype's cloud flow hires on this step and calls the
@@ -2429,7 +2450,7 @@ function OnboardingWizardInner({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setStep((step - 1) as Step)}
+                      onClick={() => setStep(backStepFrom(step))}
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
@@ -2442,7 +2463,10 @@ function OnboardingWizardInner({
                     <Button
                       size="sm"
                       disabled={!companyName.trim() || loading}
-                      onClick={handleCreateCompany}
+                      onClick={() => {
+                        if (skipsMissionStep) void handleCreateCompany();
+                        else setStep(2);
+                      }}
                     >
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
