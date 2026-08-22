@@ -2456,14 +2456,97 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.update(routines).set({ createdAt: new Date("2025-01-01T00:00:01.000Z") }).where(eq(routines.id, newRoutine.id));
     const { trigger: oldTrigger } = await svc.createTrigger(oldRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     const { trigger: newTrigger } = await svc.createTrigger(newRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const tickNow = new Date("2026-07-16T02:30:00.000Z");
     await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, oldTrigger.id));
-    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, newTrigger.id));
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2026-07-16T02:00:00.000Z") }).where(eq(routineTriggers.id, newTrigger.id));
 
-    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 1 });
+    expect(await svc.tickScheduledTriggers(tickNow)).toEqual({ triggered: 1 });
     const oldRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, oldRoutine.id));
     expect(oldRuns).toMatchObject([{ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null }]);
     const newRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, newRoutine.id));
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
+  });
+
+  it("suppresses stale skip_missed schedules with multiple due occurrences", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+    const scheduledFor = new Date("2026-07-16T00:00:00.000Z");
+    const now = new Date("2026-07-16T02:30:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: scheduledFor }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(now)).toEqual({ triggered: 0 });
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
+
+    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(run).toMatchObject({
+      source: "schedule",
+      status: "skipped",
+      failureReason: "missed_schedule",
+      linkedIssueId: null,
+      triggerPayload: {
+        catchUpPolicy: "skip_missed",
+        scheduledFor: scheduledFor.toISOString(),
+        nextMissedOccurrenceAt: "2026-07-16T01:00:00.000Z",
+        suppressedAt: now.toISOString(),
+        nextRunAt: "2026-07-16T03:00:00.000Z",
+      },
+    });
+    expect(run?.completedAt).not.toBeNull();
+
+    const updatedTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T03:00:00.000Z"));
+    expect(updatedTrigger?.lastResult).toMatch(/missed/i);
+
+    const [audit] = await db.select().from(activityLog).where(eq(activityLog.entityId, run!.id));
+    expect(audit).toMatchObject({
+      action: "routine.run_skipped",
+      entityType: "routine_run",
+      details: {
+        routineId: routine.id,
+        triggerId: trigger.id,
+        source: "schedule",
+        status: "skipped",
+        reason: "missed_schedule",
+        catchUpPolicy: "skip_missed",
+        scheduledFor: scheduledFor.toISOString(),
+        nextMissedOccurrenceAt: "2026-07-16T01:00:00.000Z",
+        suppressedAt: now.toISOString(),
+        nextRunAt: "2026-07-16T03:00:00.000Z",
+      },
+    });
+  });
+
+  it("dispatches one ordinarily due skip_missed schedule occurrence", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-07-16T02:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T02:30:00.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toMatchObject([{ status: "issue_created" }]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+    const updatedTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T03:00:00.000Z"));
   });
 
   it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
@@ -2636,10 +2719,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(projects.id, projectId));
     await db
       .update(routineTriggers)
-      .set({ nextRunAt: pastDue })
+      .set({ nextRunAt: new Date("2026-07-16T02:00:00.000Z") })
       .where(eq(routineTriggers.id, trigger.id));
 
-    const resumedResult = await svc.tickScheduledTriggers(new Date());
+    const resumedResult = await svc.tickScheduledTriggers(new Date("2026-07-16T02:30:00.000Z"));
     expect(resumedResult.triggered).toBe(1);
 
     const issuesAfterResume = await db

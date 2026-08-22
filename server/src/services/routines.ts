@@ -295,6 +295,7 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
   if (status === "skipped_paused") return "Skipped because the project is paused";
+  if (status === "skipped_missed") return "Skipped missed scheduled occurrences";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
@@ -1452,7 +1453,9 @@ export function routineService(
           ? "skipped_paused"
           : input.reason === "no_external_activity"
             ? "skipped_no_activity"
-            : "skipped_worktree_execution_cutoff",
+            : input.reason === "missed_schedule"
+              ? "skipped_missed"
+              : "skipped_worktree_execution_cutoff",
         nextRunAt: input.nextRunAt,
       }, txDb);
       return createdRun;
@@ -3087,6 +3090,14 @@ export function routineService(
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        const nextOccurrenceAfterDue = row.routine.catchUpPolicy === "skip_missed"
+          ? nextCronTickInTimeZone(
+            row.trigger.cronExpression,
+            row.trigger.timezone,
+            row.trigger.nextRunAt,
+          )
+          : null;
+        const staleSkipMissed = nextOccurrenceAfterDue !== null && nextOccurrenceAfterDue <= now;
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
@@ -3126,6 +3137,24 @@ export function routineService(
             source: "schedule",
             reason: worktreeSuppressed ? "worktree_execution_cutoff" : "paused",
             nextRunAt: claimedNextRunAt,
+          });
+          continue;
+        }
+
+        if (staleSkipMissed) {
+          await recordSuppressedAutomaticRun({
+            routine: row.routine,
+            trigger: row.trigger,
+            source: "schedule",
+            reason: "missed_schedule",
+            nextRunAt: claimedNextRunAt,
+            details: {
+              catchUpPolicy: "skip_missed",
+              scheduledFor: row.trigger.nextRunAt.toISOString(),
+              nextMissedOccurrenceAt: nextOccurrenceAfterDue.toISOString(),
+              suppressedAt: now.toISOString(),
+              nextRunAt: claimedNextRunAt?.toISOString() ?? null,
+            },
           });
           continue;
         }
