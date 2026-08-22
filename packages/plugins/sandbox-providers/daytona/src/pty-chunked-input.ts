@@ -14,16 +14,18 @@
 export const PTY_MESSAGE_CAP_BYTES = 65536;
 
 /**
- * The maximum byte length of one host-to-sandbox chunk. It holds a large headroom
- * under {@link PTY_MESSAGE_CAP_BYTES}, so a chunk never sits on the cap boundary
- * and a provider framing overhead never pushes one message over the cap.
+ * The maximum byte length of one host-to-sandbox chunk. It holds about 5 KiB of
+ * headroom under {@link PTY_MESSAGE_CAP_BYTES}, so a chunk never sits on the cap
+ * boundary. A later change in how the provider counts message overhead does not
+ * push one chunk over the cap and back into the close-code-1009 failure. The
+ * headroom costs about nine percent more messages for a large payload.
  *
  * The chunker slices bytes, not string characters, so a chunk boundary can split
  * a multi-byte UTF-8 sequence. The read-side streaming `TextDecoder` rejoins a
  * split sequence, so a byte slice is safe. A string-index slice could split a
  * surrogate pair, so the chunker never slices by character.
  */
-export const PTY_INPUT_CHUNK_BYTES = 32768;
+export const PTY_INPUT_CHUNK_BYTES = 60 * 1024;
 
 /** The single UTF-8 encoder the chunker reuses for every string payload. */
 const PTY_INPUT_TEXT_ENCODER = new TextEncoder();

@@ -64,20 +64,22 @@ describe("sendPtyInputInChunks", () => {
 
   it("slices a multi-byte character across a boundary by bytes and rejoins it", () => {
     const recorder = createByteRecorder();
-    // A fixed 90000-byte payload of the 3-byte character "€". It stays fixed, so a
-    // raised chunk size above this size makes the payload one send and fails this
-    // test. The chunk size is not a multiple of 3, so a chunk boundary always
-    // splits one "€" sequence.
-    const text = "€".repeat(30_000);
+    // A fixed payload: one 1-byte "x", then the 3-byte character "€" repeated. It
+    // stays fixed, so a raised chunk size above this size makes the payload one
+    // send and fails this test. The chunk size is a multiple of 3, so a pure "€"
+    // run would put every boundary on a character edge. The 1-byte prefix shifts
+    // the "€" run by one byte, so the first chunk boundary lands inside one "€"
+    // sequence.
+    const text = `x${"€".repeat(30_000)}`;
     const inputBytes = new TextEncoder().encode(text);
-    expect(inputBytes.length).toBe(90_000);
+    expect(inputBytes.length).toBe(90_001);
 
     sendPtyInputInChunks(recorder.sendInput, text);
 
     expect(recorder.chunks.length).toBeGreaterThan(1);
-    // The first chunk holds exactly the byte cap. The cap is not a multiple of 3,
-    // so a character-index slice could never produce this byte count. The slice is
-    // by bytes.
+    // The first chunk holds exactly the byte cap and ends inside a "€" sequence,
+    // because the 1-byte prefix shifts the 3-byte run off the cap boundary. A
+    // character-index slice could never end mid-sequence, so the slice is by bytes.
     expect(recorder.chunks[0]?.length).toBe(PTY_INPUT_CHUNK_BYTES);
     // The rejoined bytes equal the input bytes, so a split multi-byte sequence is
     // whole again. A streaming decoder on the read side then decodes it.
