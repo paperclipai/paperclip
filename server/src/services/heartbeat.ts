@@ -15429,6 +15429,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : {}),
     };
+    context.paperclipAdapterExecution = {
+      adapterType: agent.adapterType,
+      quiet: agent.adapterType === "hermes_local" && runtimeConfig.quiet === true,
+    };
     await db
       .update(heartbeatRuns)
       .set({
