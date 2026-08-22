@@ -66,6 +66,8 @@ The optional `comment` field adds a comment in the same call. For execution-poli
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
+Unsupported fields, including `dueDate`, are rejected with `400`; issue deadlines must use a routine trigger.
+
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
 ### Update Response

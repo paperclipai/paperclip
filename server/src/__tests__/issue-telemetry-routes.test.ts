@@ -189,6 +189,14 @@ describe("issue telemetry routes", () => {
     }));
   });
 
+  it('rejects unsupported dueDate before issue lookup or update', async () => {
+    const app = await createApp({ type: 'board', userId: 'local-board', companyIds: ['company-1'], source: 'local_implicit', isInstanceAdmin: false });
+    const res = await request(app).patch('/api/issues/11111111-1111-4111-8111-111111111111').send({ dueDate: '2026-11-30' });
+    expect(res.status).toBe(400);
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
