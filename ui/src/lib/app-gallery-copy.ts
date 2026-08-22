@@ -98,6 +98,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Look up up-to-date docs for your libraries.",
     short: "Look up up-to-date docs for your libraries.",
   },
+  speko: {
+    tagline: "Answer and place calls, and read what was said.",
+    short: "Answer and place calls, and read what was said.",
+  },
 };
 
 const GENERIC: AppCopy = {

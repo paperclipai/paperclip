@@ -3,7 +3,7 @@ import { APP_DEFINITIONS } from "./app-definitions.generated.js";
 import { appDefinitionsSchema } from "./validators/app-definition.js";
 describe("AppDefinition catalog",()=>{
  it("validates all Wave 1 definitions",()=>expect(()=>appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
- it("contains twelve reviewed providers",()=>expect(APP_DEFINITIONS.map((app)=>app.slug)).toEqual(["zapier","github","slack","notion","linear","google-sheets","context7","oauth-generic","api-key-generic","sentry","vercel","anthropic"]));
+ it("contains thirteen reviewed providers",()=>expect(APP_DEFINITIONS.map((app)=>app.slug)).toEqual(["zapier","github","slack","notion","linear","google-sheets","context7","oauth-generic","api-key-generic","sentry","vercel","anthropic","speko"]));
  it("uses discovery-first Notion MCP OAuth metadata",()=>{
   const notion=APP_DEFINITIONS.find((app)=>app.slug==="notion");
   expect(notion?.redirectConstraints).toBe("https-or-loopback-http");

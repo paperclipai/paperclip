@@ -10,5 +10,6 @@ import a8 from "./app-definitions/api-key-generic.json" with { type: "json" };
 import a9 from "./app-definitions/sentry.json" with { type: "json" };
 import a10 from "./app-definitions/vercel.json" with { type: "json" };
 import a11 from "./app-definitions/anthropic.json" with { type: "json" };
+import a12 from "./app-definitions/speko.json" with { type: "json" };
 import type { AppDefinition } from "./types/app-definition.js";
-export const APP_DEFINITIONS=[a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11] as AppDefinition[];
+export const APP_DEFINITIONS=[a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12] as AppDefinition[];
