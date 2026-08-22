@@ -257,6 +257,32 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("creates one company for one keystroke, modifier or not", async () => {
+      // The name field handles Enter itself and does not check for a modifier,
+      // so Cmd+Enter in that field reaches the field's handler *and* the
+      // wizard's step-level one. Both would start creating. The step-level
+      // `loading` guard cannot stop it — `setLoading(true)` has not landed
+      // while the same event is still bubbling — so the second caller reads a
+      // value the first has not written. Two companies, one keystroke.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+
+      const nameInput = document.body.querySelector(
+        'input[placeholder="Acme Corp"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        nameInput.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+        );
+      });
+      await flushReact();
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await act(async () => root.unmount());
+    });
+
     it("sends Back to the screen the run actually came from", async () => {
       // A create run reached the agent step from step 1, so Back owes it step 1 —
       // not the mission screen it never saw.
