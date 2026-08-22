@@ -92,6 +92,109 @@ export function trackSkillImported(
   });
 }
 
+export function trackSkillCreated(
+  client: TelemetryClient,
+  dims: {
+    skill_id: string;
+    creation_source: RawDimension<"blank" | "fork" | "project_scan">;
+    sharing_scope: RawDimension<"private" | "company" | "public_link">;
+    category_count: number;
+    file_count: number;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure successful Skill Studio skill creation funnel
+    "skill.created",
+    {
+      skill_id: dims.skill_id,
+      creation_source: asEventDimension(dims.creation_source),
+      sharing_scope: asEventDimension(dims.sharing_scope),
+      category_count: dims.category_count,
+      file_count: dims.file_count,
+    },
+  );
+}
+
+export function trackSkillVersionSaved(
+  client: TelemetryClient,
+  dims: {
+    skill_id: string;
+    revision_number: number;
+    file_type: RawDimension<"skill" | "markdown" | "reference" | "script" | "asset" | "other">;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure Skill Studio editor save and version creation usage
+    "skill.version_saved",
+    {
+      skill_id: dims.skill_id,
+      revision_number: dims.revision_number,
+      file_type: asEventDimension(dims.file_type),
+    },
+  );
+}
+
+export function trackSkillTestRun(
+  client: TelemetryClient,
+  dims: {
+    skill_id: string;
+    status: RawDimension<"queued" | "running" | "succeeded" | "failed" | "cancelled">;
+    run_source: RawDimension<"run" | "rerun">;
+    ad_hoc: boolean;
+    template_used: boolean;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure Skill Studio validation loop usage
+    "skill.test_run",
+    {
+      skill_id: dims.skill_id,
+      status: asEventDimension(dims.status),
+      run_source: asEventDimension(dims.run_source),
+      ad_hoc: dims.ad_hoc,
+      template_used: dims.template_used,
+    },
+  );
+}
+
+export function trackSkillForked(
+  client: TelemetryClient,
+  dims: {
+    skill_id: string;
+    fork_from_skill_id: string;
+    source_type: RawDimension<"local_path" | "github" | "url" | "catalog" | "skills_sh">;
+    sharing_scope: RawDimension<"private" | "company" | "public_link">;
+    reassign_agent_count: number;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure Skill Studio fork completion and reassignment demand
+    "skill.forked",
+    {
+      skill_id: dims.skill_id,
+      fork_from_skill_id: dims.fork_from_skill_id,
+      source_type: asEventDimension(dims.source_type),
+      sharing_scope: asEventDimension(dims.sharing_scope),
+      reassign_agent_count: dims.reassign_agent_count,
+    },
+  );
+}
+
+export function trackSkillShareLinkCopied(
+  client: TelemetryClient,
+  dims: {
+    sharing_scope: RawDimension<"private" | "company" | "public_link">;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): exercise triage of low-signal share-link copy proposal
+    "skill.share_link",
+    {
+      sharing_scope: asEventDimension(dims.sharing_scope),
+    },
+  );
+}
+
 export function trackAgentFirstHeartbeat(
   client: TelemetryClient,
   dims: {
