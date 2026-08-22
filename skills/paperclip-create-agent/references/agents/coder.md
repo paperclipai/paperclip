@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Coder Agent Template
 
 Use this template when hiring software engineers who implement code, debug issues, write tests, and coordinate with QA or engineering leadership.
