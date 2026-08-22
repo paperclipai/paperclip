@@ -567,4 +567,62 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+
+  it(
+    "leaves no partial temp artifacts after a successful backup",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-atomic-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-atomic-test",
+          backupEngine: "javascript",
+        });
+
+        expect(result.backupFile.endsWith(".sql.gz")).toBe(true);
+        const entries = fs.readdirSync(backupDir);
+        expect(entries).toEqual([path.basename(result.backupFile)]);
+        expect(entries.some((name) => name.includes(".part"))).toBe(false);
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "removes the partial temp artifact when pg_dump fails",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-atomic-failure-");
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+
+      try {
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-atomic-failure-test",
+            backupEngine: "pg_dump",
+          }),
+        ).rejects.toThrow();
+
+        expect(fs.readdirSync(backupDir)).toEqual([]);
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+      }
+    },
+    60_000,
+  );
 });

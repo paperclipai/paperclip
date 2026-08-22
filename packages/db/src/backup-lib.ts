@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -542,6 +542,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
+  // Write to a per-run temporary artifact and atomically rename it into place
+  // only once the dump has completed. A partial backup is never visible under
+  // its final name — not to pruning, the backup-health check, external sync
+  // jobs, or a concurrent run started after the server's stale-guard reset.
+  const tempBackupFile = `${backupFile}.${process.pid}.part`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
@@ -551,10 +556,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          backupFile: tempBackupFile,
           connectTimeout,
         });
         await writer.abort();
+        renameSync(tempBackupFile, backupFile);
         const sizeBytes = statSync(backupFile).size;
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
@@ -563,6 +569,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           prunedCount,
         };
       } catch (error) {
+        if (existsSync(tempBackupFile)) {
+          try { unlinkSync(tempBackupFile); } catch { /* ignore */ }
+        }
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
@@ -963,9 +972,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
+    const gzWriteStream = createWriteStream(tempBackupFile);
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(sqlFile);
+    renameSync(tempBackupFile, backupFile);
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
@@ -977,6 +987,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     };
   } catch (error) {
     await writer.abort();
+    if (existsSync(tempBackupFile)) {
+      try { unlinkSync(tempBackupFile); } catch { /* ignore */ }
+    }
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
     }
