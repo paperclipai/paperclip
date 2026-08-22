@@ -1643,6 +1643,22 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
+  const scratchContext = parseObject(context.paperclipScratch);
+  const runScratchDir = asString(scratchContext.dir, "");
+  const runScratchTempKeys = new Set(
+    Array.isArray(scratchContext.tempKeysApplied)
+      ? scratchContext.tempKeysApplied.filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0,
+        )
+      : [],
+  );
+  const runScratchEnvKeys = new Set([
+    "PAPERCLIP_RUN_SCRATCH_DIR",
+    "PAPERCLIP_TASK_SCRATCH_DIR",
+    "PAPERCLIP_SCRATCH_DIR",
+    "PAPERCLIP_TMPDIR",
+    ...runScratchTempKeys,
+  ]);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
@@ -1688,11 +1704,12 @@ async function buildRuntime(input: {
   // Resolved adapter env (plain + server-resolved secret_ref values) that we
   // forward to the spawned agent process. Captured so a stable hash of it can be
   // folded into the session fingerprint below — a change here must invalidate a
-  // warm/resumable session so the next launch picks up the latest env. Only
-  // user/adapter-configured env flows through this loop; per-wake PAPERCLIP_*
-  // runtime vars (PAPERCLIP_RUN_ID, wake/approval ids, ...) were assigned to
-  // `env` above and are never present in shapedEnvConfig, so they inherently
-  // stay out of the hash and don't reset the session every heartbeat.
+  // warm/resumable session so the next launch picks up the latest env. The server
+  // also merges its per-run scratch directory into config.env. Those entries must
+  // still reach the child process, but must not enter this stable-config hash:
+  // every heartbeat gets a newly-created path. `paperclipScratch` identifies the
+  // exact server-owned value and the optional TEMP/TMP/TMPDIR keys it supplied,
+  // so user-configured temp directories remain fingerprinted normally.
   const resolvedAdapterEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value !== "string") continue;
@@ -1704,7 +1721,9 @@ async function buildRuntime(input: {
     if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
-    resolvedAdapterEnv[key] = value;
+    const isRunScratchEnv =
+      runScratchDir.length > 0 && value === runScratchDir && runScratchEnvKeys.has(key);
+    if (!isRunScratchEnv) resolvedAdapterEnv[key] = value;
   }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
