@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import type { ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAgentMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import { TaskChatComposer } from "./TaskChatComposer";
+import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 
 /**
  * MDXEditor-in-jsdom weight (mirrors MarkdownEditor.test.tsx): the real editor
@@ -42,10 +43,12 @@ vi.mock("@mdxeditor/editor", async () => {
       markdown,
       onChange,
       readOnly,
+      contentEditableClassName,
     }: {
       markdown: string;
       onChange?: (value: string) => void;
       readOnly?: boolean;
+      contentEditableClassName?: string;
     },
     forwardedRef: React.ForwardedRef<MockHandle | null>,
   ) {
@@ -83,6 +86,7 @@ vi.mock("@mdxeditor/editor", async () => {
       <div
         ref={editableRef}
         data-testid="mdx-editor"
+        data-content-class-name={contentEditableClassName}
         contentEditable={!readOnly}
         suppressContentEditableWarning
         onInput={(e) => {
@@ -149,6 +153,7 @@ let root: Root | null = null;
 let originalRangeRect: typeof Range.prototype.getBoundingClientRect;
 
 beforeEach(() => {
+  localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -242,6 +247,29 @@ function autocompleteOption(matchText: string) {
 }
 
 describe("TaskChatComposer", () => {
+  it("adds 10px to the composer's original 8px interior padding", () => {
+    render(<TaskChatComposer onAdd={async () => {}} workMode="standard" />);
+
+    const composer = container
+      .querySelector('[data-testid="task-chat-composer-input"]')
+      ?.parentElement;
+
+    expect(composer?.className).toContain("p-(--sz-18px)");
+    expect(composer?.className).not.toContain("p-2");
+  });
+
+  it("scopes the wrapping placeholder override to the task-chat composer", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
+
+    expect(container.firstElementChild?.classList).toContain("paperclip-task-chat-composer");
+  });
+
+  it("reserves enough mobile editor height for a wrapped two-line placeholder", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
+
+    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-72px)");
+  });
+
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
@@ -251,6 +279,7 @@ describe("TaskChatComposer", () => {
     expect(sendButton().disabled).toBe(false);
 
     pressKey("Enter", { metaKey: true });
+    await flushAsync();
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("hello there", undefined, undefined);
@@ -290,7 +319,7 @@ describe("TaskChatComposer", () => {
 
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-mode"]')!;
     expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip.textContent).toContain("Agent");
+    expect(chip.textContent).toContain("Auto");
 
     pressKey("Tab", { shiftKey: true });
     expect(chip.getAttribute("data-pending-work-mode")).toBe("planning");
@@ -584,5 +613,158 @@ describe("TaskChatComposer", () => {
     );
     const trigger = container.querySelector('[data-testid="task-chat-composer-assignee"]');
     expect(trigger?.textContent).toContain("Sam");
+  });
+
+  describe("draft persistence", () => {
+    const draftKey = "task-chat-draft:issue-1";
+
+    it("restores a saved draft on mount", () => {
+      localStorage.setItem(draftKey, "unsent draft");
+
+      render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />);
+
+      expect(editable().textContent).toBe("unsent draft");
+      expect(sendButton().disabled).toBe(false);
+    });
+
+    it("preserves a restored draft through the StrictMode effect probe", () => {
+      localStorage.setItem(draftKey, "still here");
+
+      render(
+        <StrictMode>
+          <TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />
+        </StrictMode>,
+      );
+
+      expect(editable().textContent).toBe("still here");
+      expect(localStorage.getItem(draftKey)).toBe("still here");
+    });
+
+    it("saves after the debounce and flushes a pending value on unmount", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />);
+        typeText("work in progress");
+        expect(localStorage.getItem(draftKey)).toBeNull();
+
+        vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+        expect(localStorage.getItem(draftKey)).toBe("work in progress");
+
+        typeText("save before leaving");
+        flushSync(() => root?.unmount());
+        root = null;
+        expect(localStorage.getItem(draftKey)).toBe("save before leaving");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("flushes a pending value before page unload", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />);
+        typeText("save before reload");
+
+        window.dispatchEvent(new Event("beforeunload"));
+
+        expect(localStorage.getItem(draftKey)).toBe("save before reload");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears the composer and saved draft while the send is pending", async () => {
+      localStorage.setItem(draftKey, "queued message");
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("queued message", undefined, undefined);
+      expect(editable().textContent).toBe("");
+      expect(localStorage.getItem(draftKey)).toBeNull();
+    });
+
+    it("keeps text entered while an earlier send is pending", async () => {
+      let resolveSend!: () => void;
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }));
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
+      typeText("first message");
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      typeText("next message");
+      resolveSend();
+      await flushAsync();
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("first message", undefined, undefined);
+      expect(editable().textContent).toBe("next message");
+      expect(localStorage.getItem(draftKey)).toBe("next message");
+    });
+
+    it("keeps an attachment added while an earlier send is pending", async () => {
+      let resolveSend!: () => void;
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }));
+      const onAttachImage = vi.fn().mockResolvedValue({
+        contentPath: "/attachments/next.txt",
+        originalFilename: "next.txt",
+      });
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          draftKey={draftKey}
+          onAttachImage={onAttachImage}
+        />,
+      );
+      typeText("first message");
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      pasteFiles([new File(["next"], "next.txt", { type: "text/plain" })]);
+      await flushAsync();
+      resolveSend();
+      await flushAsync();
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("first message", undefined, undefined);
+      expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent)
+        .toContain("next.txt");
+    });
+
+    it("restores a failed send before text entered while it was pending", async () => {
+      vi.useFakeTimers();
+      try {
+        let rejectSend!: (error: Error) => void;
+        const onAdd = vi.fn().mockReturnValue(new Promise<void>((_resolve, reject) => {
+          rejectSend = reject;
+        }));
+        render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
+        typeText("do not lose this");
+        vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+        vi.useRealTimers();
+
+        pressKey("Enter", { metaKey: true });
+        await flushAsync();
+        expect(editable().textContent).toBe("");
+        expect(localStorage.getItem(draftKey)).toBeNull();
+
+        typeText("next draft");
+        rejectSend(new Error("network down"));
+        await flushAsync();
+        await flushAsync();
+
+        expect(editable().textContent).toBe("do not lose this\n\nnext draft");
+        expect(localStorage.getItem(draftKey)).toBe("do not lose this\n\nnext draft");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -1,8 +1,5 @@
-import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import {
@@ -10,23 +7,17 @@ import {
   readSubscriptionAccountId,
   writeCodexAuthCacheEntry,
 } from "./codex-auth-cache.js";
-
-const execFile = promisify(execFileCallback);
+import { USE_SOURCE_EXIT, decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
 
 // The outbound copy-back reuses the exact same direction-agnostic decision
-// predicate the inbound restore runs (`codex-auth-merge-decision.cjs`). The
-// predicate answers one question — "should the caller replace `destination`
-// with `source`?" — purely by argument order (first = source, second =
-// destination). For the copy-back the sandbox credential is the `source` and
-// the shared host credential is the `destination`, so exit 10 (use source)
-// means "install the sandbox copy onto the host" and exit 20 (keep destination)
-// means "leave the host copy untouched". The predicate only ever reads the two
-// files and exits with a code; it never prints token bytes.
-const DECISION_SCRIPT_PATH = fileURLToPath(
-  new URL("./codex-auth-merge-decision.cjs", import.meta.url),
-);
-const USE_SOURCE_EXIT = 10;
-const KEEP_DESTINATION_EXIT = 20;
+// predicate the inbound restore runs, through the shared `decideCodexAuthMerge`
+// entry point. The predicate answers one question — "should the caller replace
+// `destination` with `source`?" — purely by argument order (first = source,
+// second = destination). For the copy-back the sandbox credential is the
+// `source` and the shared host credential is the `destination`, so exit 10 (use
+// source) means "install the sandbox copy onto the host" and exit 20 (keep
+// destination) means "leave the host copy untouched". The predicate only ever
+// reads the two files and exits with a code; it never prints token bytes.
 
 /** Outcome of a copy-back attempt. No token material is ever surfaced. */
 export type CopyBackCodexAuthOutcome = "copied" | "kept-host";
@@ -59,35 +50,6 @@ export interface CopyBackCodexAuthInput {
   resolveCacheEntryPath?: (accountId: string) => Promise<string>;
   /** Environment for the cache off-switch read. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-}
-
-async function decideExitCode(sourcePath: string, destinationPath: string): Promise<number> {
-  try {
-    await execFile("node", [DECISION_SCRIPT_PATH, sourcePath, destinationPath]);
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (code === USE_SOURCE_EXIT || code === KEEP_DESTINATION_EXIT) {
-      return code;
-    }
-    // A non-numeric `code` (e.g. "ENOENT" when node is not on PATH) or any exit
-    // code other than 10/20 is a hard failure — fail loud so a broken predicate
-    // is never mistaken for a "keep host" decision.
-    const detail =
-      typeof code === "string"
-        ? `node could not be executed (${code})`
-        : typeof code === "number"
-        ? `unexpected predicate exit code ${code}`
-        : error instanceof Error
-        ? error.message
-        : String(error);
-    throw new Error(`codex auth copy-back decision predicate failed: ${detail}`);
-  }
-
-  // Reached only when `execFile` resolved — i.e. the predicate exited 0. The
-  // predicate always exits 10 or 20, so a clean exit 0 is unexpected; throw
-  // directly here, outside the try/catch, so this already self-explanatory
-  // message is not re-wrapped by the catch's "...failed:" prefix.
-  throw new Error("codex auth copy-back decision predicate exited 0 (expected 10 or 20)");
 }
 
 /**
@@ -146,7 +108,9 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       await handle.writeFile(sandboxAuthBytes);
       await handle.close();
 
-      const decision = await decideExitCode(stagedTempPath, hostAuthPath);
+      const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
+        errorLabel: "codex auth copy-back",
+      });
       if (decision === USE_SOURCE_EXIT) {
         // Atomic same-directory swap; rename preserves the temp's 0600 mode.
         await rename(stagedTempPath, hostAuthPath);

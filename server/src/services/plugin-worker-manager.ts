@@ -37,6 +37,10 @@ import {
   isJsonRpcSuccessResponse,
   JsonRpcParseError,
   JsonRpcCallError,
+  SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
+  SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
 } from "@paperclipai/plugin-sdk";
 import type {
   JsonRpcId,
@@ -53,6 +57,7 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
 import { logger } from "../middleware/logger.js";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
@@ -106,6 +111,128 @@ const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 
 /** Maximum number of stderr characters retained for worker failure context. */
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
+
+/** Maximum characters accepted for one `execute.log` chunk. A larger chunk is
+ * dropped, so a faulty or hostile worker cannot flood the host with one
+ * unbounded notification. */
+const MAX_EXECUTE_LOG_CHUNK_CHARS = 1_000_000;
+
+/**
+ * Maximum characters accepted for one incoming worker stdout line before the
+ * host parses it as JSON. The host drops a longer line without a parse, so a
+ * faulty or hostile worker cannot force the host to parse an unbounded document
+ * and exhaust memory. The bound sits far above the largest legitimate framed
+ * message, so a real large command result still passes. A worker can override
+ * it through `WorkerStartOptions.executeLogLimits`.
+ */
+const MAX_WORKER_MESSAGE_CHARS = 128 * 1024 * 1024;
+
+/**
+ * Default ceiling for the total characters one execute call may stream through
+ * `execute.log`. The host counts the delivered characters for each active
+ * execute route and drops further chunks past this bound, so one runaway or
+ * hostile execution cannot flood the host and the run-log sink without limit.
+ * The final command result still delivers the complete output through its own
+ * capture path. A worker can override it through
+ * `WorkerStartOptions.executeLogLimits`.
+ */
+const MAX_EXECUTE_LOG_TOTAL_CHARS = 128 * 1024 * 1024;
+
+/** Maximum characters for one live login pseudo-terminal output notification. */
+const MAX_SETUP_TOKEN_PTY_CHUNK_CHARS = 1_000_000;
+/** Maximum cumulative output characters for one login pseudo-terminal route. */
+const MAX_SETUP_TOKEN_PTY_TOTAL_CHARS = 8 * 1024 * 1024;
+/** The default open timeout for one login pseudo-terminal route, in milliseconds. */
+const SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS = 30_000;
+/** The default close timeout for one login pseudo-terminal route, in milliseconds. */
+const SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS = 10_000;
+/**
+ * The fixed non-secret error a disallowed login command returns. The manager
+ * forwards only the compile-time `CLAUDE_SETUP_TOKEN_COMMAND` to the worker
+ * pseudo-terminal. It rejects any other command before the worker call, so a
+ * future caller cannot spawn an arbitrary process in the sandbox.
+ */
+const SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED = "SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED";
+/** The fixed non-secret error a rejected second credential open returns. */
+const SETUP_TOKEN_PTY_ROUTE_BUSY = "SETUP_TOKEN_PTY_ROUTE_BUSY";
+/** The fixed non-secret error a failed open returns. */
+const SETUP_TOKEN_PTY_OPEN_FAILED = "SETUP_TOKEN_PTY_OPEN_FAILED";
+
+// Bounds and timeouts for the generic duplex channel route. The route mirrors the
+// login pseudo-terminal route, but it carries no command allowlist and adds seven
+// explicit bounds the pseudo-terminal route lacks. Each bound ends the route when
+// it passes the limit, so a faulty or hostile worker cannot flood the host.
+/** The default maximum characters for one duplex channel data notification. */
+const MAX_DUPLEX_CHANNEL_CHUNK_CHARS = 1_000_000;
+/**
+ * The default maximum cumulative characters the host buffers for one duplex
+ * channel route before a data listener attaches. A worker that streams data
+ * before the consumer binds cannot grow the host buffer without limit.
+ */
+const MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS = 8 * 1024 * 1024;
+/**
+ * The default maximum number of data frames the host buffers for one duplex
+ * channel route before a data listener attaches.
+ */
+const MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES = 10_000;
+/**
+ * The margin the pre-open hold ceiling keeps above the pre-bind buffered-frame
+ * bound (`maxDuplexChannelPreBindFrames`, see below). A worker can batch frames
+ * with the open reply, so the host reads them before it knows the bound worker
+ * session id and before it can apply the per-frame bounds. The host holds these
+ * frames and replays them after the bind. The hold ceiling bounds that hold, so
+ * a worker that floods frames before it replies to the open cannot make the
+ * host hold an unbounded number of frames.
+ *
+ * The hold ceiling is derived from the buffered bound, not a fixed constant: a
+ * fixed ceiling equal to or below a caller-configured (or even the default)
+ * buffered bound would let the hold drop the frame that should instead trip the
+ * buffered bound during replay, so the route would never end. One frame of
+ * margin is enough — it lets the frame that exceeds the buffered bound reach
+ * the hold, so the replay's buffered-bound check, not the hold, ends the route.
+ */
+const DUPLEX_CHANNEL_PRE_OPEN_HOLD_MARGIN_FRAMES = 1;
+/**
+ * The default maximum number of in-flight host→worker requests for one duplex
+ * channel route. A worker that never replies cannot make the host hold an
+ * unbounded number of pending requests.
+ */
+const MAX_DUPLEX_CHANNEL_PENDING_REQUESTS = 256;
+/** The default maximum characters for one host→worker duplex channel write. */
+const MAX_DUPLEX_CHANNEL_WRITE_CHARS = 1_000_000;
+/**
+ * The default maximum number of protocol errors for one duplex channel route.
+ * A protocol error is one malformed or mismatched data frame. The route ends
+ * when the count passes this budget, so a flood of bad frames bounds the route.
+ */
+const MAX_DUPLEX_CHANNEL_PROTOCOL_ERRORS = 100;
+/**
+ * The default maximum cumulative bytes the host forwards for one duplex channel
+ * route over its whole life. The host counts the bytes of every inbound chunk,
+ * before and after a data listener attaches. The route ends when the count
+ * passes this cap, so an active route with a bound listener cannot stream an
+ * unbounded number of bytes.
+ */
+const MAX_DUPLEX_CHANNEL_TOTAL_DATA_BYTES = 256 * 1024 * 1024;
+/**
+ * The default maximum lifetime for one duplex channel route, in milliseconds.
+ * The host starts a timer when the route opens and ends the route when the
+ * timer expires, so a route cannot live without limit.
+ */
+const MAX_DUPLEX_CHANNEL_DURATION_MS = 60 * 60 * 1000;
+/** The default open timeout for one duplex channel route, in milliseconds. */
+const DUPLEX_CHANNEL_OPEN_TIMEOUT_MS = 30_000;
+/** The default close timeout for one duplex channel route, in milliseconds. */
+const DUPLEX_CHANNEL_CLOSE_TIMEOUT_MS = 10_000;
+/** The fixed non-secret error a rejected second duplex channel open returns. */
+const DUPLEX_CHANNEL_ROUTE_BUSY = "DUPLEX_CHANNEL_ROUTE_BUSY";
+/** The fixed non-secret error a failed duplex channel open returns. */
+const DUPLEX_CHANNEL_OPEN_FAILED = "DUPLEX_CHANNEL_OPEN_FAILED";
+
+/** Minimum time between two dropped-`execute.log` debug records. The router
+ * rate-limits the record so a flood of dropped chunks writes at most one line
+ * per window with a running count. */
+const EXECUTE_LOG_DROP_LOG_INTERVAL_MS = 1_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -239,6 +366,65 @@ export interface WorkerStartOptions {
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
   onStreamNotification?: (method: string, params: Record<string, unknown>) => void;
+  /**
+   * Framing and flood limits for the `execute.log` route. The defaults bound
+   * one incoming line before the JSON parse and the total streamed output for
+   * one execute call. A test overrides them to exercise the drop paths without
+   * huge inputs.
+   */
+  executeLogLimits?: {
+    /** Max characters for one incoming worker line before the JSON parse. */
+    maxIncomingMessageChars?: number;
+    /** Max total characters one execute call may stream through `execute.log`. */
+    maxTotalCharsPerExecute?: number;
+  };
+
+  /**
+   * Bounds and timeouts for the login pseudo-terminal route. The
+   * defaults bound one output notification, the cumulative output per route, and
+   * the open and the close timeouts. A test overrides them to exercise the
+   * terminalize paths without huge inputs or long waits.
+   */
+  setupTokenPtyLimits?: {
+    /** Max characters for one login pseudo-terminal output notification. */
+    maxChunkChars?: number;
+    /** Max cumulative output characters for one login pseudo-terminal route. */
+    maxTotalChars?: number;
+    /** The open timeout for one login pseudo-terminal route, in milliseconds. */
+    openTimeoutMs?: number;
+    /** The close timeout for one login pseudo-terminal route, in milliseconds. */
+    closeTimeoutMs?: number;
+  };
+
+  /**
+   * Bounds and timeouts for the generic duplex channel route. The defaults bound
+   * one data notification, the pre-bind buffer, the in-flight request count, one
+   * host→worker write, the protocol-error budget, and the open and close
+   * timeouts. A test overrides them to exercise each bound without huge inputs or
+   * long waits.
+   */
+  duplexChannelLimits?: {
+    /** Max characters for one duplex channel data notification. */
+    maxChunkChars?: number;
+    /** Max cumulative characters the host buffers before a data listener attaches. */
+    maxPreBindBufferedChars?: number;
+    /** Max number of data frames the host buffers before a data listener attaches. */
+    maxPreBindBufferedFrames?: number;
+    /** Max number of in-flight host→worker requests for one route. */
+    maxPendingRequests?: number;
+    /** Max characters for one host→worker duplex channel write. */
+    maxWriteChars?: number;
+    /** Max number of protocol errors for one route before the route ends. */
+    maxProtocolErrors?: number;
+    /** Max cumulative bytes the host forwards for one route over its whole life. */
+    maxTotalDataBytes?: number;
+    /** The maximum lifetime for one route, in milliseconds. */
+    maxDurationMs?: number;
+    /** The open timeout for one duplex channel route, in milliseconds. */
+    openTimeoutMs?: number;
+    /** The close timeout for one duplex channel route, in milliseconds. */
+    closeTimeoutMs?: number;
+  };
 }
 
 /**
@@ -266,6 +452,110 @@ interface ActiveInvocation {
   // when no startup span is active. The span host handler reads it to mint the
   // parentage, so a worker never supplies the parent itself.
   traceparent?: string;
+}
+
+/**
+ * Sink for one incremental output chunk of an active `environmentExecute` call.
+ * The host runner passes it to `call` for the execute method, and the manager
+ * delivers each `execute.log` chunk to it. The sink may return a promise; the
+ * caller owns the ordering.
+ */
+export type ExecuteLogSink = (
+  stream: "stdout" | "stderr",
+  chunk: string,
+) => void | Promise<void>;
+
+/**
+ * The input the manager needs to open one live login pseudo-terminal route
+ * The manager mints the host route identifier; the caller supplies
+ * only the sandbox scope, the provider lease id, and the fixed command.
+ */
+export interface SetupTokenPtyOpenInput {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  providerLeaseId: string;
+  command: string;
+}
+
+/**
+ * One live login pseudo-terminal session the manager hands to the login
+ * transport. The shape matches the sandbox provider setup-token
+ * pseudo-terminal session, so the transport consumes it with no adapter.
+ */
+export interface SetupTokenPtyHostSession {
+  /** Registers the one output listener. The session streams each raw chunk in order. */
+  onData(listener: (chunk: string) => void): void;
+  /** Writes raw input bytes to the pseudo-terminal. */
+  write(data: string): void;
+  /** Resolves with the child exit code when the command ends or the route terminalizes. */
+  wait(): Promise<{ exitCode: number | null }>;
+  /** Stops the child process. Safe to call more than one time. */
+  kill(): void;
+  /** Closes the route and releases the terminal. Safe to call more than one time. */
+  close(): Promise<void>;
+}
+
+/**
+ * The input the manager needs to open one generic duplex channel. The manager
+ * mints the host route identifier. The caller supplies the sandbox scope, the
+ * provider lease id, and the command. The duplex channel carries no command
+ * allowlist, so the caller owns the command.
+ */
+export interface DuplexChannelOpenInput {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  providerLeaseId: string;
+  /**
+   * The command argument vector the worker runs on the channel. Element 0 is the
+   * program. The worker runs the vector with no shell, so a shell metacharacter
+   * in an element cannot inject a command.
+   */
+  command: readonly string[];
+}
+
+/**
+ * One live duplex channel the manager hands to a caller. The shape matches the
+ * login pseudo-terminal session, so a caller consumes one live bidirectional
+ * stream with the same methods.
+ */
+export interface DuplexChannelHostSession {
+  /** Registers the one data listener. The session streams each raw chunk in order. */
+  onData(listener: (chunk: string) => void): void;
+  /** Writes raw input bytes to the channel. */
+  write(data: string): void;
+  /** Resolves with the child exit code when the command ends or the route ends. */
+  wait(): Promise<{ exitCode: number | null }>;
+  /** Stops the child process. Safe to call more than one time. */
+  kill(): void;
+  /** Closes the route and releases the channel. Safe to call more than one time. */
+  close(): Promise<void>;
+}
+
+/**
+ * Host-owned route for one active execute call. The host mints the invocation
+ * id and stores the exact company id and log sink here. A worker never selects
+ * this record; the host looks it up by the host-issued invocation id on the
+ * message envelope. The company id is the single authority for the delivery
+ * target, so an `execute.log` notification never carries a company id.
+ */
+interface ExecuteLogRoute {
+  companyId: string;
+  onLog: ExecuteLogSink;
+  /**
+   * The count of characters delivered through this route. The router bounds the
+   * per-execute total and drops chunks past the configured ceiling.
+   */
+  deliveredChars: number;
+  /**
+   * Latched when the router cannot bind the shared worker pipe to a single
+   * company, because a second company's execute overlapped this one. After the
+   * latch the router drops every further chunk for this route and lets the final
+   * command result deliver the complete output. The latch keeps the delivered
+   * prefix contiguous, so the run log never shows a gap.
+   */
+  crossCompanyBlocked: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,12 +606,34 @@ export interface PluginWorkerHandle {
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
    * Send a fire-and-forget notification to the worker (no response expected).
    */
   notify(method: string, params: unknown): void;
+
+  /**
+   * Open one live login pseudo-terminal route on this worker. The
+   * manager mints the host route identifier, reserves the route, drives the open,
+   * binds the worker session identifier one time, and returns a session the login
+   * transport drives. It permits one active credential pseudo-terminal per worker.
+   */
+  openSetupTokenPtySession(
+    input: SetupTokenPtyOpenInput,
+  ): Promise<SetupTokenPtyHostSession>;
+
+  /**
+   * Open one generic duplex channel on this worker. The manager mints the host
+   * route identifier, reserves the route, drives the open, binds the worker
+   * session identifier one time, and returns a session a caller drives. It
+   * permits one active duplex channel per worker. It enforces five explicit
+   * bounds and ends the route when a bound passes its limit.
+   */
+  openDuplexChannel(
+    input: DuplexChannelOpenInput,
+  ): Promise<DuplexChannelHostSession>;
 
   /**
    * Authorize the set of companies this worker may act on from proactive
@@ -424,7 +736,19 @@ export interface PluginWorkerManager {
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]>;
+
+  /**
+   * Open one live login pseudo-terminal route on a specific plugin worker
+   * See {@link PluginWorkerHandle.openSetupTokenPtySession}.
+   *
+   * @throws if the worker is not registered.
+   */
+  openSetupTokenPtySession(
+    pluginId: string,
+    input: SetupTokenPtyOpenInput,
+  ): Promise<SetupTokenPtyHostSession>;
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +784,72 @@ export function createPluginWorkerHandle(
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+  // Host-owned execute routes, keyed by the host-issued invocation id. Only an
+  // `environmentExecute` call with a log sink registers a route here. The
+  // `execute.log` router delivers only through this map — never through the
+  // generic `activeInvocations` record — so a non-execute call can never become
+  // a log target.
+  const activeExecuteRoutes = new Map<string, ExecuteLogRoute>();
+  // Rate-limit state for dropped `execute.log` notifications. The debug record
+  // never carries chunk bytes.
+  let executeLogDropCount = 0;
+  let executeLogDropLoggedAtMs = 0;
+  // Rate-limit state for dropped oversized worker lines. The warn record carries
+  // only the length, never the line bytes.
+  let oversizedLineDropCount = 0;
+  let oversizedLineLoggedAtMs = 0;
+
+  // Framing and flood limits for the `execute.log` route. The defaults bound one
+  // incoming line before the JSON parse and the total streamed output for one
+  // execute call. A caller (a test) can lower them.
+  const maxIncomingMessageChars =
+    options.executeLogLimits?.maxIncomingMessageChars ?? MAX_WORKER_MESSAGE_CHARS;
+  const maxExecuteLogTotalChars =
+    options.executeLogLimits?.maxTotalCharsPerExecute ?? MAX_EXECUTE_LOG_TOTAL_CHARS;
+
+  // Bounds and timeouts for the login pseudo-terminal route. A caller
+  // (a test) can lower them to exercise the terminalize paths.
+  const maxSetupTokenPtyChunkChars =
+    options.setupTokenPtyLimits?.maxChunkChars ?? MAX_SETUP_TOKEN_PTY_CHUNK_CHARS;
+  const maxSetupTokenPtyTotalChars =
+    options.setupTokenPtyLimits?.maxTotalChars ?? MAX_SETUP_TOKEN_PTY_TOTAL_CHARS;
+  const setupTokenPtyOpenTimeoutMs =
+    options.setupTokenPtyLimits?.openTimeoutMs ?? SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS;
+  const setupTokenPtyCloseTimeoutMs =
+    options.setupTokenPtyLimits?.closeTimeoutMs ?? SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS;
+
+  // Bounds and timeouts for the generic duplex channel route. A caller (a test)
+  // can lower them to exercise each bound and the terminalize paths.
+  const maxDuplexChannelChunkChars =
+    options.duplexChannelLimits?.maxChunkChars ?? MAX_DUPLEX_CHANNEL_CHUNK_CHARS;
+  const maxDuplexChannelPreBindChars =
+    options.duplexChannelLimits?.maxPreBindBufferedChars ??
+    MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS;
+  const maxDuplexChannelPreBindFrames =
+    options.duplexChannelLimits?.maxPreBindBufferedFrames ??
+    MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES;
+  // Always strictly above maxDuplexChannelPreBindFrames, including when a
+  // caller configures that bound at or above the module default. See
+  // DUPLEX_CHANNEL_PRE_OPEN_HOLD_MARGIN_FRAMES for why the margin must hold.
+  const maxDuplexChannelPreOpenHoldFrames =
+    maxDuplexChannelPreBindFrames + DUPLEX_CHANNEL_PRE_OPEN_HOLD_MARGIN_FRAMES;
+  const maxDuplexChannelPendingRequests =
+    options.duplexChannelLimits?.maxPendingRequests ??
+    MAX_DUPLEX_CHANNEL_PENDING_REQUESTS;
+  const maxDuplexChannelWriteChars =
+    options.duplexChannelLimits?.maxWriteChars ?? MAX_DUPLEX_CHANNEL_WRITE_CHARS;
+  const maxDuplexChannelProtocolErrors =
+    options.duplexChannelLimits?.maxProtocolErrors ??
+    MAX_DUPLEX_CHANNEL_PROTOCOL_ERRORS;
+  const maxDuplexChannelTotalDataBytes =
+    options.duplexChannelLimits?.maxTotalDataBytes ??
+    MAX_DUPLEX_CHANNEL_TOTAL_DATA_BYTES;
+  const maxDuplexChannelDurationMs =
+    options.duplexChannelLimits?.maxDurationMs ?? MAX_DUPLEX_CHANNEL_DURATION_MS;
+  const duplexChannelOpenTimeoutMs =
+    options.duplexChannelLimits?.openTimeoutMs ?? DUPLEX_CHANNEL_OPEN_TIMEOUT_MS;
+  const duplexChannelCloseTimeoutMs =
+    options.duplexChannelLimits?.closeTimeoutMs ?? DUPLEX_CHANNEL_CLOSE_TIMEOUT_MS;
 
   // ------------------------------------------------------------------
   // Proactive company scopes (LOOA-629)
@@ -546,6 +936,14 @@ export function createPluginWorkerHandle(
 
   function handleLine(line: string): void {
     if (!line.trim()) return;
+
+    // Enforce the framing bound BEFORE the JSON parse. A line longer than the
+    // limit is dropped without a parse, so a faulty or hostile worker cannot
+    // force the host to parse an unbounded document and exhaust memory.
+    if (line.length > maxIncomingMessageChars) {
+      dropOversizedLine(line.length);
+      return;
+    }
 
     let message: unknown;
     try {
@@ -656,6 +1054,875 @@ export function createPluginWorkerHandle(
     const entry = activeInvocations.get(invocation.id);
     if (entry?.timer) clearTimeout(entry.timer);
     activeInvocations.delete(invocation.id);
+  }
+
+  // Store the host-owned execute route for one active execute call. The host
+  // holds the exact company id and log sink; the worker never supplies them.
+  function registerExecuteRoute(
+    invocationId: string,
+    companyId: string,
+    onLog: ExecuteLogSink,
+  ): void {
+    activeExecuteRoutes.set(invocationId, {
+      companyId,
+      onLog,
+      deliveredChars: 0,
+      crossCompanyBlocked: false,
+    });
+  }
+
+  function clearExecuteRoute(invocationId: string | undefined): void {
+    if (invocationId) activeExecuteRoutes.delete(invocationId);
+  }
+
+  // Drop an oversized incoming worker line before the JSON parse. Write a
+  // rate-limited warn record with the length and a running drop count. The
+  // record never carries the line bytes.
+  function dropOversizedLine(lineLength: number): void {
+    oversizedLineDropCount += 1;
+    const nowMs = Date.now();
+    if (nowMs - oversizedLineLoggedAtMs >= EXECUTE_LOG_DROP_LOG_INTERVAL_MS) {
+      log.warn(
+        { lineLength, maxIncomingMessageChars, droppedSinceLastLog: oversizedLineDropCount },
+        "dropping oversized worker line before JSON parse",
+      );
+      oversizedLineLoggedAtMs = nowMs;
+      oversizedLineDropCount = 0;
+    }
+  }
+
+  // Drop an `execute.log` notification. Write a rate-limited debug record with
+  // the reason and a running drop count. The record never carries the chunk
+  // bytes, the company id, or command data.
+  function dropExecuteLogNotification(reason: string): void {
+    executeLogDropCount += 1;
+    const nowMs = Date.now();
+    if (nowMs - executeLogDropLoggedAtMs >= EXECUTE_LOG_DROP_LOG_INTERVAL_MS) {
+      log.debug(
+        { reason, droppedSinceLastLog: executeLogDropCount },
+        "dropping execute.log notification",
+      );
+      executeLogDropLoggedAtMs = nowMs;
+      executeLogDropCount = 0;
+    }
+  }
+
+  // Route one `execute.log` notification to its host-owned execute route. The
+  // route is the single authority for the delivery target and the company
+  // binding. This never reads a company id from the notification and never
+  // routes through the generic active-invocation record.
+  //
+  // Complete mediation: the host and the worker share one stdio pipe, and the
+  // worker process sees every active invocation id. So the host cannot prove
+  // which concurrent invocation produced a notification, and it must NOT treat
+  // the worker-supplied `paperclipInvocationId` alone as proof of origin. The
+  // host validates the exact company scope instead: it delivers only while every
+  // active execute route on this worker belongs to ONE company. When a second
+  // company's execute overlaps, the host fails closed — it latches the active
+  // routes and drops the chunk — so a worker that runs company A can never forge
+  // company B's active id and inject output into B's route. The final command
+  // result still delivers the complete output, so no byte is lost; only the live
+  // stream pauses while two companies overlap.
+  function routeExecuteLogNotification(notification: JsonRpcNotification): void {
+    const invocationId = readNonEmptyString(
+      (notification as { paperclipInvocationId?: unknown }).paperclipInvocationId,
+    );
+    const params = isRecord(notification.params) ? notification.params : {};
+    const stream = params.stream;
+    const chunk = params.chunk;
+    // Runtime-validate the payload. Drop invalid input without a throw.
+    if (stream !== "stdout" && stream !== "stderr") {
+      dropExecuteLogNotification("invalid-stream");
+      return;
+    }
+    if (
+      typeof chunk !== "string" ||
+      chunk.length === 0 ||
+      chunk.length > MAX_EXECUTE_LOG_CHUNK_CHARS
+    ) {
+      dropExecuteLogNotification("invalid-chunk");
+      return;
+    }
+    if (!invocationId) {
+      dropExecuteLogNotification("missing-invocation");
+      return;
+    }
+    const route = activeExecuteRoutes.get(invocationId);
+    if (!route) {
+      // No active execute route for this id: a late chunk after settlement or
+      // timeout, a non-execute invocation, or an unknown id. Drop it.
+      dropExecuteLogNotification("no-active-route");
+      return;
+    }
+    // The route already lost single-company attribution earlier in its life, so
+    // it stays closed for the rest of the call.
+    if (route.crossCompanyBlocked) {
+      dropExecuteLogNotification("cross-company-scope");
+      return;
+    }
+    // Validate the exact company scope. Deliver only while every active execute
+    // route on this worker belongs to one company. A second company's active
+    // route makes the shared pipe ambiguous, so the host fails closed: it
+    // latches every active route and drops the chunk.
+    let onlyCompanyId: string | null = null;
+    let crossCompany = false;
+    for (const active of activeExecuteRoutes.values()) {
+      if (onlyCompanyId === null) {
+        onlyCompanyId = active.companyId;
+      } else if (onlyCompanyId !== active.companyId) {
+        crossCompany = true;
+        break;
+      }
+    }
+    if (crossCompany) {
+      for (const active of activeExecuteRoutes.values()) {
+        active.crossCompanyBlocked = true;
+      }
+      dropExecuteLogNotification("cross-company-scope");
+      return;
+    }
+    // Bound the total characters one execute call may stream. Past the ceiling
+    // the host drops further chunks, so one runaway or hostile execution cannot
+    // flood the host and the run-log sink without limit.
+    if (route.deliveredChars + chunk.length > maxExecuteLogTotalChars) {
+      dropExecuteLogNotification("execute-output-cap");
+      return;
+    }
+    route.deliveredChars += chunk.length;
+    try {
+      const delivery = route.onLog(stream, chunk);
+      if (delivery && typeof (delivery as Promise<void>).then === "function") {
+        void (delivery as Promise<void>).catch((err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            "execute.log delivery failed",
+          );
+        });
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "execute.log delivery threw",
+      );
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Host-owned setup-token login pseudo-terminal route gate
+  // -----------------------------------------------------------------------
+  // The manager owns one live login pseudo-terminal route per worker. It mints a
+  // host-owned opaque route identifier, carries it in the open call, and keys the
+  // close on it, so it closes a worker-created terminal even when the open reply
+  // was lost and no worker session identifier arrived. It binds the worker
+  // session identifier one time while the route is `opening`, for output only. It
+  // never trusts a worker-supplied identifier as proof of origin: it delivers
+  // output only while the route is `open` and the notification carries the exact
+  // bound identifier and valid bounded bytes, and it never logs the raw bytes. It
+  // terminalizes the route exactly once on every open failure path, closes the
+  // terminal by the host route identifier, and admits a new open only after it
+  // verifies a close acknowledgement bound to that identifier; it retires the
+  // worker on an unconfirmed close.
+
+  // A single-consumer route state. The login pseudo-terminal route and the
+  // generic duplex channel route share it.
+  type RouteState = "reserved" | "opening" | "open" | "closed";
+
+  // Shared route-binding helpers. The login pseudo-terminal route and the duplex
+  // channel route both use them, so the two routes bind and settle one way.
+
+  // Settle the route wait exactly once. Replace the settler with a no-op, so a
+  // later exit or terminalize never settles the wait a second time.
+  function settleRouteWait(
+    route: { settleWait: (value: { exitCode: number | null }) => void },
+    value: { exitCode: number | null },
+  ): void {
+    const settle = route.settleWait;
+    route.settleWait = () => {};
+    settle(value);
+  }
+
+  // Read the worker session identifier from an open reply, but only when the
+  // route can still bind. Return null for a malformed reply, or for a route that
+  // already left `opening` or terminalized. A late or a duplicate reply never
+  // binds, revives, or reopens a route.
+  function readBindableWorkerSessionId(
+    route: { state: RouteState; terminalized: boolean },
+    openResult: unknown,
+  ): string | null {
+    const workerSessionId = readNonEmptyString(
+      isRecord(openResult) ? openResult.workerSessionId : null,
+    );
+    if (!workerSessionId || route.state !== "opening" || route.terminalized) {
+      return null;
+    }
+    return workerSessionId;
+  }
+
+  type SetupTokenPtyRouteState = RouteState;
+  interface SetupTokenPtyRoute {
+    hostRouteId: string;
+    state: SetupTokenPtyRouteState;
+    workerSessionId: string | null;
+    listener: ((chunk: string) => void) | null;
+    buffered: string[];
+    deliveredChars: number;
+    terminalized: boolean;
+    settleWait: (value: { exitCode: number | null }) => void;
+  }
+  // At most one active credential pseudo-terminal per worker. A non-null route
+  // blocks a second open until the manager confirms the first route's close.
+  let setupTokenPtyRoute: SetupTokenPtyRoute | null = null;
+
+  // Close the worker terminal by the host route identifier and verify the bound
+  // acknowledgement. Return true only when the worker returns an acknowledgement
+  // that carries the exact host route identifier. An absent, malformed,
+  // mismatched, or timed-out acknowledgement returns false, so the caller fails
+  // closed.
+  async function closeSetupTokenPtyTerminal(hostRouteId: string): Promise<boolean> {
+    try {
+      const ack = await callInternal(
+        "setupTokenPtyClose",
+        { hostRouteId },
+        setupTokenPtyCloseTimeoutMs,
+      );
+      return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
+    } catch {
+      return false;
+    }
+  }
+
+  // Terminalize the route exactly once. Resolve the login wait, close the worker
+  // terminal by the host route identifier, and free the per-worker slot only
+  // after the close resolves. Retire the worker when the close is unconfirmed.
+  async function terminalizeSetupTokenPtyRoute(route: SetupTokenPtyRoute): Promise<void> {
+    if (route.terminalized) return;
+    route.terminalized = true;
+    route.state = "closed";
+    route.listener = null;
+    route.buffered = [];
+    // A terminalized route reports a null exit code, which the runner treats as a
+    // failure.
+    settleRouteWait(route, { exitCode: null });
+    const confirmed = await closeSetupTokenPtyTerminal(route.hostRouteId);
+    if (setupTokenPtyRoute === route) setupTokenPtyRoute = null;
+    if (!confirmed) {
+      // The worker did not acknowledge the close, so the host cannot prove the
+      // terminal is gone. Fail closed: retire the worker before any reuse.
+      log.error(
+        { pluginId },
+        "setup-token login pseudo-terminal close not acknowledged; retiring worker",
+      );
+      void killProcess();
+    }
+  }
+
+  // Route one login pseudo-terminal output notification to the per-session
+  // listener. Deliver only while the route is `open` and the notification carries
+  // the exact bound worker session identifier and valid bounded bytes. Drop an
+  // unknown, late, malformed, or mismatched notification. Never log the raw bytes.
+  function routeSetupTokenPtyOutput(notification: JsonRpcNotification): void {
+    const route = setupTokenPtyRoute;
+    if (!route || route.state !== "open") return;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
+    const chunk = params.chunk;
+    if (
+      typeof chunk !== "string" ||
+      chunk.length === 0 ||
+      chunk.length > maxSetupTokenPtyChunkChars
+    ) {
+      return;
+    }
+    if (route.deliveredChars + chunk.length > maxSetupTokenPtyTotalChars) {
+      // The cumulative output passed the per-route bound. Terminalize the route.
+      void terminalizeSetupTokenPtyRoute(route);
+      return;
+    }
+    route.deliveredChars += chunk.length;
+    if (route.listener) route.listener(chunk);
+    else route.buffered.push(chunk);
+  }
+
+  // Route one login pseudo-terminal exit notification to the login wait. Resolve
+  // only while the route is `open` and the notification carries the exact bound
+  // worker session identifier.
+  function routeSetupTokenPtyExit(notification: JsonRpcNotification): void {
+    const route = setupTokenPtyRoute;
+    if (!route || route.state !== "open") return;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
+    const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
+    settleRouteWait(route, { exitCode });
+  }
+
+  // Close the one route on a worker exit. The worker is gone, so the manager
+  // resolves the login wait with the fixed non-secret exit and clears the route
+  // one time. The pending pseudo-terminal calls reject through `rejectAllPending`.
+  function closeSetupTokenPtyRouteOnWorkerExit(): void {
+    const route = setupTokenPtyRoute;
+    if (!route) return;
+    setupTokenPtyRoute = null;
+    route.terminalized = true;
+    route.state = "closed";
+    route.listener = null;
+    route.buffered = [];
+    settleRouteWait(route, { exitCode: null });
+  }
+
+  // Open one live login pseudo-terminal route. Reserve the route
+  // before the open call, bind the worker session identifier one time on the
+  // first successful open reply, and return a session the login transport drives.
+  // Terminalize the route on every open failure path.
+  async function openSetupTokenPtySession(
+    input: SetupTokenPtyOpenInput,
+  ): Promise<SetupTokenPtyHostSession> {
+    if (input.command !== CLAUDE_SETUP_TOKEN_COMMAND) {
+      // Allowlist the login command. Only the fixed `CLAUDE_SETUP_TOKEN_COMMAND`
+      // may run in the sandbox pseudo-terminal. Reject any other command with one
+      // fixed non-secret error before the worker call, so a caller cannot spawn
+      // an arbitrary process in the sandbox pseudo-terminal.
+      throw new Error(SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED);
+    }
+    if (setupTokenPtyRoute) {
+      // A route for this worker is not yet closed and confirmed. Reject the
+      // second open with one fixed non-secret error before it reaches the worker.
+      throw new Error(SETUP_TOKEN_PTY_ROUTE_BUSY);
+    }
+    const hostRouteId = randomUUID();
+    let settleWait: (value: { exitCode: number | null }) => void = () => {};
+    const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
+      settleWait = resolve;
+    });
+    const route: SetupTokenPtyRoute = {
+      hostRouteId,
+      state: "reserved",
+      workerSessionId: null,
+      listener: null,
+      buffered: [],
+      deliveredChars: 0,
+      terminalized: false,
+      settleWait,
+    };
+    setupTokenPtyRoute = route;
+
+    route.state = "opening";
+    let openResult: HostToWorkerMethods["setupTokenPtyOpen"][1];
+    try {
+      openResult = await callInternal(
+        "setupTokenPtyOpen",
+        {
+          hostRouteId,
+          driverKey: input.driverKey,
+          companyId: input.companyId,
+          environmentId: input.environmentId,
+          providerLeaseId: input.providerLeaseId,
+          command: input.command,
+        },
+        setupTokenPtyOpenTimeoutMs,
+      );
+    } catch (err) {
+      // A send failure, an RPC rejection, or an open timeout. Terminalize the
+      // route exactly once and fail closed.
+      await terminalizeSetupTokenPtyRoute(route);
+      throw err instanceof Error ? err : new Error(SETUP_TOKEN_PTY_OPEN_FAILED);
+    }
+
+    const workerSessionId = readBindableWorkerSessionId(route, openResult);
+    if (!workerSessionId) {
+      // A malformed reply, or a route that already left `opening`. A late or a
+      // duplicate reply never binds, revives, or reopens a route.
+      await terminalizeSetupTokenPtyRoute(route);
+      throw new Error(SETUP_TOKEN_PTY_OPEN_FAILED);
+    }
+    // Bind the worker session identifier one time and move the route to `open`.
+    route.workerSessionId = workerSessionId;
+    route.state = "open";
+
+    return {
+      onData(listener: (chunk: string) => void): void {
+        route.listener = listener;
+        if (route.buffered.length > 0) {
+          const pending = route.buffered;
+          route.buffered = [];
+          for (const chunk of pending) listener(chunk);
+        }
+      },
+      write(data: string): void {
+        const sid = route.workerSessionId;
+        if (route.state !== "open" || !sid) return;
+        void callInternal(
+          "setupTokenPtyInput",
+          { workerSessionId: sid, data },
+          setupTokenPtyOpenTimeoutMs,
+        ).catch(() => {});
+      },
+      wait(): Promise<{ exitCode: number | null }> {
+        return waitPromise;
+      },
+      kill(): void {
+        const sid = route.workerSessionId;
+        if (!sid) return;
+        void callInternal(
+          "setupTokenPtyStop",
+          { workerSessionId: sid },
+          setupTokenPtyOpenTimeoutMs,
+        ).catch(() => {});
+      },
+      async close(): Promise<void> {
+        await terminalizeSetupTokenPtyRoute(route);
+      },
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Host-owned generic duplex channel route
+  // -----------------------------------------------------------------------
+  // The duplex channel route mirrors the login pseudo-terminal route model. The
+  // host owns the route identifier, binds the worker session identifier one time
+  // on a valid open reply, and keys the close on the host route identifier. It
+  // rejects a late or a duplicate open reply, and it retires the worker on an
+  // unconfirmed close. The duplex channel carries no command allowlist, so the
+  // caller owns the command.
+  //
+  // The route adds seven explicit bounds the pseudo-terminal route lacks. Each
+  // bound ends the route when it passes its limit:
+  //   1. pre-bind buffered bytes — the cumulative characters the host buffers
+  //      before a data listener attaches;
+  //   2. pre-bind buffered frame count — the number of data frames the host
+  //      buffers before a data listener attaches;
+  //   3. pending request count — the number of in-flight host→worker requests;
+  //   4. host→worker write size — the characters for one write;
+  //   5. protocol error rate — the count of malformed or mismatched data frames;
+  //   6. total data bytes — the cumulative inbound bytes over the whole life,
+  //      counted before and after a data listener attaches;
+  //   7. route lifetime — the milliseconds from the open to the terminal end.
+  interface DuplexChannelRoute {
+    hostRouteId: string;
+    state: RouteState;
+    workerSessionId: string | null;
+    listener: ((chunk: string) => void) | null;
+    buffered: string[];
+    bufferedChars: number;
+    // Raw data notifications that arrive before the route binds. The host reads
+    // the worker stdout line by line. The open reply and a data notification can
+    // arrive in one read batch, so the host dispatches the notification before
+    // the deferred open-reply continuation flips the state to `open`. The host
+    // holds these frames here and replays them in order right after it binds the
+    // route, so a batched frame is never lost. Bounded by the pre-open hold
+    // ceiling — see `bufferPreOpenDuplexChannelNotification`.
+    preOpen: JsonRpcNotification[];
+    // The most recent exit notification that arrived before the route binds, or
+    // null. A single slot, not an array: only the last exit a worker sends before
+    // the bind is ever meaningful, so the host overwrites this on every pre-open
+    // exit instead of holding each one. That keeps a worker that batches many
+    // exit notifications before it replies to the open from growing this past one
+    // entry — the pre-open hold ceiling bounds only `preOpen`, so an exit that
+    // shared that array with data frames could otherwise consume a data frame's
+    // hold slot and let a data frame that should trip the buffered-frame bound
+    // get dropped by the hold instead. Replayed after `preOpen` drains, so data
+    // still delivers before the exit resolves the wait, matching a real worker's
+    // order.
+    preOpenExit: JsonRpcNotification | null;
+    pendingRequests: number;
+    protocolErrors: number;
+    totalDataBytes: number;
+    lifetimeTimer: ReturnType<typeof setTimeout> | null;
+    terminalized: boolean;
+    settleWait: (value: { exitCode: number | null }) => void;
+  }
+  // At most one active duplex channel per worker. A non-null route blocks a
+  // second open until the manager confirms the first route's close.
+  let duplexChannelRoute: DuplexChannelRoute | null = null;
+
+  // Close the worker channel by the host route identifier and verify the bound
+  // acknowledgement. Return true only when the worker returns an acknowledgement
+  // that carries the exact host route identifier. An absent, malformed,
+  // mismatched, or timed-out acknowledgement returns false, so the caller fails
+  // closed.
+  async function closeDuplexChannelTerminal(hostRouteId: string): Promise<boolean> {
+    try {
+      const ack = await callInternal(
+        "duplexChannelClose",
+        { hostRouteId },
+        duplexChannelCloseTimeoutMs,
+      );
+      return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
+    } catch {
+      return false;
+    }
+  }
+
+  // Terminalize the route exactly once. Resolve the wait, close the worker
+  // channel by the host route identifier, and free the per-worker slot only
+  // after the close resolves. Retire the worker when the close is unconfirmed.
+  // Clear the route lifetime timer one time. Every terminal path and the
+  // worker-exit path calls this, so a timer never fires after the route ends.
+  function clearDuplexChannelLifetimeTimer(route: DuplexChannelRoute): void {
+    if (route.lifetimeTimer) {
+      clearTimeout(route.lifetimeTimer);
+      route.lifetimeTimer = null;
+    }
+  }
+
+  async function terminalizeDuplexChannelRoute(route: DuplexChannelRoute): Promise<void> {
+    if (route.terminalized) return;
+    route.terminalized = true;
+    route.state = "closed";
+    route.listener = null;
+    // Keep the buffered chunks that the host accepted before the route ended, so
+    // a listener that attaches after the end still drains them. A frame can end
+    // the route during the pre-open replay, before a listener attaches, and the
+    // buffered chunks the host accepted before that frame are valid data the
+    // listener must still receive. The buffered bytes stay bounded by the
+    // pre-bind buffered bound, and `onData` clears them once it drains them.
+    route.preOpen = [];
+    route.preOpenExit = null;
+    clearDuplexChannelLifetimeTimer(route);
+    // A terminalized route reports a null exit code, which the caller treats as a
+    // failure.
+    settleRouteWait(route, { exitCode: null });
+    const confirmed = await closeDuplexChannelTerminal(route.hostRouteId);
+    if (duplexChannelRoute === route) duplexChannelRoute = null;
+    if (!confirmed) {
+      // The worker did not acknowledge the close, so the host cannot prove the
+      // channel is gone. Fail closed: retire the worker before any reuse.
+      log.error(
+        { pluginId },
+        "duplex channel close not acknowledged; retiring worker",
+      );
+      void killProcess();
+    }
+  }
+
+  // Count one protocol error for the route. End the route when the count passes
+  // the per-route budget, so a flood of malformed or mismatched frames bounds the
+  // route.
+  function recordDuplexChannelProtocolError(route: DuplexChannelRoute): void {
+    route.protocolErrors += 1;
+    if (route.protocolErrors > maxDuplexChannelProtocolErrors) {
+      void terminalizeDuplexChannelRoute(route);
+    }
+  }
+
+  // Hold one data or exit notification that arrives before the route binds. The
+  // host replays the held notifications after it binds the route: `preOpen`
+  // drains first, in order, then the held exit (if any) resolves the wait last —
+  // see `drainPreOpenDuplexChannelNotifications`.
+  //
+  // A data notification goes on `preOpen`, bounded by a pre-open ceiling derived
+  // from the pre-bind buffered-frame bound, so a worker that floods data frames
+  // before it replies to the open cannot make the host hold an unbounded number
+  // of them. Count one protocol error for each data frame past the ceiling. This
+  // ceiling is separate from the pre-bind buffered-frame bound, but it tracks it:
+  // the replay after the bind applies the buffered bound to each held frame, so
+  // the buffered bound ends the route when a caller lowers (or raises) it. The
+  // hold ceiling stays above the buffered bound by construction
+  // (maxDuplexChannelPreOpenHoldFrames = maxDuplexChannelPreBindFrames + margin),
+  // or it would drop a frame before the buffered bound can end the route.
+  //
+  // An exit notification never touches `preOpen`. It overwrites the single
+  // `preOpenExit` slot instead, so a worker that batches an exit among enough
+  // data frames to fill the hold cannot consume a data frame's hold slot: the
+  // ceiling above bounds `preOpen` alone, so it stays exactly the margin above
+  // the buffered bound regardless of how many exit notifications arrive pre-open.
+  function bufferPreOpenDuplexChannelNotification(
+    route: DuplexChannelRoute,
+    notification: JsonRpcNotification,
+  ): void {
+    if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
+      route.preOpenExit = notification;
+      return;
+    }
+    if (route.preOpen.length >= maxDuplexChannelPreOpenHoldFrames) {
+      recordDuplexChannelProtocolError(route);
+      return;
+    }
+    route.preOpen.push(notification);
+  }
+
+  // Replay the held pre-open notifications right after the route binds. The
+  // route is `open` now, so each notification passes through the normal
+  // per-frame bounds and the session-identifier match. Drain the held data
+  // frames first, in order, then replay the held exit (if any) last, so data
+  // still delivers before the exit resolves the wait, matching a real worker's
+  // order. A frame that ends the route terminalizes it, and every later
+  // notification in the replay is a no-op, because the routing functions drop a
+  // notification when the route is not `open`.
+  function drainPreOpenDuplexChannelNotifications(route: DuplexChannelRoute): void {
+    if (route.preOpen.length > 0) {
+      const pending = route.preOpen;
+      route.preOpen = [];
+      for (const notification of pending) {
+        routeDuplexChannelData(notification);
+      }
+    }
+    if (route.preOpenExit) {
+      const exitNotification = route.preOpenExit;
+      route.preOpenExit = null;
+      routeDuplexChannelExit(exitNotification);
+    }
+  }
+
+  // Deliver one duplex channel chunk to the bound listener in isolation. A
+  // listener that throws must not escape the worker stdout notification handler
+  // or the buffered replay, so a throw here breaks neither the notification
+  // dispatch loop nor the pre-bind drain. The manager catches the error and logs
+  // it without the raw bytes. This mirrors the `execute.log` delivery isolation.
+  function deliverDuplexChannelChunk(
+    listener: (chunk: string) => void,
+    chunk: string,
+  ): void {
+    try {
+      listener(chunk);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "duplex channel data delivery threw",
+      );
+    }
+  }
+
+  // Route one duplex channel data notification to the per-session listener.
+  // Deliver only while the route is `open` and the notification carries the exact
+  // bound worker session identifier and a valid chunk. Count a mismatched or
+  // malformed frame as a protocol error. End the route at once when one chunk is
+  // larger than the per-chunk limit or when the cumulative bytes pass the total
+  // cap. Buffer a valid frame under the pre-bind bounds when no listener has
+  // attached yet. Never log the raw bytes.
+  function routeDuplexChannelData(notification: JsonRpcNotification): void {
+    const route = duplexChannelRoute;
+    if (!route || route.terminalized) return;
+    if (route.state === "reserved" || route.state === "opening") {
+      // The route did not bind yet. Hold the frame and replay it after the bind.
+      bufferPreOpenDuplexChannelNotification(route, notification);
+      return;
+    }
+    if (route.state !== "open") return;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    const chunk = params.chunk;
+    if (
+      !workerSessionId ||
+      workerSessionId !== route.workerSessionId ||
+      typeof chunk !== "string" ||
+      chunk.length === 0
+    ) {
+      // A late, unknown, malformed, or mismatched frame. Drop it and count one
+      // protocol error.
+      recordDuplexChannelProtocolError(route);
+      return;
+    }
+    if (chunk.length > maxDuplexChannelChunkChars) {
+      // One inbound chunk is larger than the per-chunk limit. End the route at
+      // once. Do not count the chunk as a protocol error.
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
+    // Count the bytes of the chunk. Enforce the cumulative total-byte cap before
+    // and after a listener attaches. End the route when the cap is exceeded, so a
+    // bound listener cannot receive data past the cap.
+    const chunkBytes = Buffer.byteLength(chunk);
+    if (route.totalDataBytes + chunkBytes > maxDuplexChannelTotalDataBytes) {
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
+    route.totalDataBytes += chunkBytes;
+    if (route.listener) {
+      deliverDuplexChannelChunk(route.listener, chunk);
+      return;
+    }
+    // No listener attached yet. Buffer the frame under the pre-bind bounds. End
+    // the route when the cumulative bytes or the frame count passes the bound.
+    if (
+      route.buffered.length + 1 > maxDuplexChannelPreBindFrames ||
+      route.bufferedChars + chunk.length > maxDuplexChannelPreBindChars
+    ) {
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
+    route.buffered.push(chunk);
+    route.bufferedChars += chunk.length;
+  }
+
+  // Route one duplex channel exit notification to the wait. Resolve only while
+  // the route is `open` and the notification carries the exact bound worker
+  // session identifier.
+  function routeDuplexChannelExit(notification: JsonRpcNotification): void {
+    const route = duplexChannelRoute;
+    if (!route || route.terminalized) return;
+    if (route.state === "reserved" || route.state === "opening") {
+      // The route did not bind yet. Hold the frame and replay it after the bind.
+      bufferPreOpenDuplexChannelNotification(route, notification);
+      return;
+    }
+    if (route.state !== "open") return;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
+    const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
+    settleRouteWait(route, { exitCode });
+  }
+
+  // Close the one route on a worker exit. The worker is gone, so the manager
+  // resolves the wait with the fixed non-secret exit and clears the route one
+  // time. The pending channel calls reject through `rejectAllPending`.
+  function closeDuplexChannelRouteOnWorkerExit(): void {
+    const route = duplexChannelRoute;
+    if (!route) return;
+    duplexChannelRoute = null;
+    route.terminalized = true;
+    route.state = "closed";
+    route.listener = null;
+    route.buffered = [];
+    route.bufferedChars = 0;
+    route.preOpen = [];
+    route.preOpenExit = null;
+    clearDuplexChannelLifetimeTimer(route);
+    settleRouteWait(route, { exitCode: null });
+  }
+
+  // Open one live generic duplex channel route. Reserve the route before the open
+  // call, bind the worker session identifier one time on the first successful
+  // open reply, and return a session a caller drives. Terminalize the route on
+  // every open failure path.
+  async function openDuplexChannel(
+    input: DuplexChannelOpenInput,
+  ): Promise<DuplexChannelHostSession> {
+    if (duplexChannelRoute) {
+      // A route for this worker is not yet closed and confirmed. Reject the
+      // second open with one fixed non-secret error before it reaches the worker.
+      throw new Error(DUPLEX_CHANNEL_ROUTE_BUSY);
+    }
+    const hostRouteId = randomUUID();
+    let settleWait: (value: { exitCode: number | null }) => void = () => {};
+    const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
+      settleWait = resolve;
+    });
+    const route: DuplexChannelRoute = {
+      hostRouteId,
+      state: "reserved",
+      workerSessionId: null,
+      listener: null,
+      buffered: [],
+      bufferedChars: 0,
+      preOpen: [],
+      preOpenExit: null,
+      pendingRequests: 0,
+      protocolErrors: 0,
+      totalDataBytes: 0,
+      lifetimeTimer: null,
+      terminalized: false,
+      settleWait,
+    };
+    duplexChannelRoute = route;
+
+    route.state = "opening";
+    let openResult: HostToWorkerMethods["duplexChannelOpen"][1];
+    try {
+      openResult = await callInternal(
+        "duplexChannelOpen",
+        {
+          hostRouteId,
+          driverKey: input.driverKey,
+          companyId: input.companyId,
+          environmentId: input.environmentId,
+          providerLeaseId: input.providerLeaseId,
+          command: input.command,
+        },
+        duplexChannelOpenTimeoutMs,
+      );
+    } catch (err) {
+      // A send failure, an RPC rejection, or an open timeout. Terminalize the
+      // route exactly once and fail closed.
+      await terminalizeDuplexChannelRoute(route);
+      throw err instanceof Error ? err : new Error(DUPLEX_CHANNEL_OPEN_FAILED);
+    }
+
+    const workerSessionId = readBindableWorkerSessionId(route, openResult);
+    if (!workerSessionId) {
+      // A malformed reply, or a route that already left `opening`. A late or a
+      // duplicate reply never binds, revives, or reopens a route.
+      await terminalizeDuplexChannelRoute(route);
+      throw new Error(DUPLEX_CHANNEL_OPEN_FAILED);
+    }
+    // Bind the worker session identifier one time and move the route to `open`.
+    route.workerSessionId = workerSessionId;
+    route.state = "open";
+
+    // Replay any data or exit frame that arrived in the open-reply read batch,
+    // before the route bound. The route is `open` now, so each replayed frame
+    // passes through the normal per-frame bounds and the session match.
+    drainPreOpenDuplexChannelNotifications(route);
+
+    // Start the route lifetime timer now the route is open. The route ends when
+    // the timer expires. Every terminal path and the worker-exit path clears the
+    // timer. Unreference the timer so it never blocks the host process shutdown.
+    // A replayed frame can end the route during the drain above, so start the
+    // timer only while the route is still open.
+    if (route.state === "open") {
+      route.lifetimeTimer = setTimeout(() => {
+        void terminalizeDuplexChannelRoute(route);
+      }, maxDuplexChannelDurationMs);
+      route.lifetimeTimer.unref?.();
+    }
+
+    // Send one host→worker request under the pending-request bound. End the route
+    // when too many requests are in-flight, so a worker that never replies cannot
+    // make the host hold an unbounded number of pending requests.
+    const sendBoundedRequest = <
+      M extends "duplexChannelWrite" | "duplexChannelStop",
+    >(
+      method: M,
+      params: HostToWorkerMethods[M][0],
+    ): void => {
+      if (route.state !== "open") return;
+      if (route.pendingRequests >= maxDuplexChannelPendingRequests) {
+        void terminalizeDuplexChannelRoute(route);
+        return;
+      }
+      route.pendingRequests += 1;
+      void callInternal(method, params, duplexChannelOpenTimeoutMs)
+        .catch(() => {})
+        .finally(() => {
+          route.pendingRequests -= 1;
+        });
+    };
+
+    return {
+      onData(listener: (chunk: string) => void): void {
+        route.listener = listener;
+        if (route.buffered.length > 0) {
+          const pending = route.buffered;
+          route.buffered = [];
+          route.bufferedChars = 0;
+          for (const chunk of pending) deliverDuplexChannelChunk(listener, chunk);
+        }
+      },
+      write(data: string): void {
+        const sid = route.workerSessionId;
+        if (route.state !== "open" || !sid) return;
+        if (data.length > maxDuplexChannelWriteChars) {
+          // The write is larger than the size bound. End the route before the
+          // write reaches the worker.
+          void terminalizeDuplexChannelRoute(route);
+          return;
+        }
+        sendBoundedRequest("duplexChannelWrite", { workerSessionId: sid, data });
+      },
+      wait(): Promise<{ exitCode: number | null }> {
+        return waitPromise;
+      },
+      kill(): void {
+        const sid = route.workerSessionId;
+        if (!sid) return;
+        sendBoundedRequest("duplexChannelStop", { workerSessionId: sid });
+      },
+      async close(): Promise<void> {
+        await terminalizeDuplexChannelRoute(route);
+      },
+    };
   }
 
   /**
@@ -811,6 +2078,37 @@ export function createPluginWorkerHandle(
       return;
     }
 
+    // Execute-log notifications: deliver one incremental output chunk to the
+    // host-owned execute route for the active execute call.
+    if (notification.method === "execute.log") {
+      routeExecuteLogNotification(notification);
+      return;
+    }
+
+    // Setup-token login pseudo-terminal notifications: deliver output
+    // and the exit to the one host-owned login route, bound by the worker session
+    // identifier while the route is open.
+    if (notification.method === SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION) {
+      routeSetupTokenPtyOutput(notification);
+      return;
+    }
+    if (notification.method === SETUP_TOKEN_PTY_EXIT_NOTIFICATION) {
+      routeSetupTokenPtyExit(notification);
+      return;
+    }
+
+    // Duplex channel notifications: deliver data and the exit to the one
+    // host-owned duplex route, bound by the worker session identifier while the
+    // route is open.
+    if (notification.method === DUPLEX_CHANNEL_DATA_NOTIFICATION) {
+      routeDuplexChannelData(notification);
+      return;
+    }
+    if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
+      routeDuplexChannelExit(notification);
+      return;
+    }
+
     // Stream notifications: forward to the stream bus via callback
     if (
       notification.method === "streams.open" ||
@@ -955,6 +2253,15 @@ export function createPluginWorkerHandle(
         stderrExcerpt,
       )),
     );
+
+    // Close the one login pseudo-terminal route with a fixed non-secret exit and
+    // clear the route one time. The pending pseudo-terminal calls
+    // already rejected through `rejectAllPending`.
+    closeSetupTokenPtyRouteOnWorkerExit();
+
+    // Close the one duplex channel route the same way. The pending channel calls
+    // already rejected through `rejectAllPending`.
+    closeDuplexChannelRouteOnWorkerExit();
 
     // Emit synthetic close for any orphaned stream channels so SSE clients
     // are notified instead of hanging indefinitely.
@@ -1273,6 +2580,7 @@ export function createPluginWorkerHandle(
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
@@ -1288,6 +2596,13 @@ export function createPluginWorkerHandle(
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      // Register the host-owned execute route only for an execute call that
+      // carries a log sink. The company id comes from the host-derived
+      // invocation scope, never from the worker. This binds the sink to the
+      // exact company for the life of the call.
+      if (invocation && invocationScope && executeLogSink && method === "environmentExecute") {
+        registerExecuteRoute(invocation.id, invocationScope.companyId, executeLogSink);
+      }
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1301,6 +2616,7 @@ export function createPluginWorkerHandle(
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
+        clearExecuteRoute(invocation?.id);
         fn(value);
       };
 
@@ -1343,6 +2659,7 @@ export function createPluginWorkerHandle(
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
+        clearExecuteRoute(invocation?.id);
         reject(
           new Error(
             `Failed to send "${method}" to worker: ${
@@ -1396,6 +2713,7 @@ export function createPluginWorkerHandle(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
+      executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
@@ -1404,7 +2722,29 @@ export function createPluginWorkerHandle(
           ),
         );
       }
-      return callInternal(method, params, timeoutMs);
+      return callInternal(method, params, timeoutMs, executeLogSink);
+    },
+
+    openSetupTokenPtySession(input: SetupTokenPtyOpenInput) {
+      if (status !== "running" && status !== "starting") {
+        return Promise.reject(
+          new Error(
+            `Cannot open a login pseudo-terminal — worker for "${pluginId}" is ${status}`,
+          ),
+        );
+      }
+      return openSetupTokenPtySession(input);
+    },
+
+    openDuplexChannel(input: DuplexChannelOpenInput) {
+      if (status !== "running" && status !== "starting") {
+        return Promise.reject(
+          new Error(
+            `Cannot open a duplex channel — worker for "${pluginId}" is ${status}`,
+          ),
+        );
+      }
+      return openDuplexChannel(input);
     },
 
     notify(method: string, params: unknown) {
@@ -1635,6 +2975,7 @@ export function createPluginWorkerManager(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
+      executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
       if (!handle) {
@@ -1642,7 +2983,17 @@ export function createPluginWorkerManager(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
-      return handle.call(method, params, timeoutMs);
+      return handle.call(method, params, timeoutMs, executeLogSink);
+    },
+
+    openSetupTokenPtySession(pluginId: string, input: SetupTokenPtyOpenInput) {
+      const handle = workers.get(pluginId);
+      if (!handle) {
+        return Promise.reject(
+          new Error(`No worker registered for plugin "${pluginId}"`),
+        );
+      }
+      return handle.openSetupTokenPtySession(input);
     },
   };
 }

@@ -8,7 +8,7 @@ export interface PageTabItem {
 }
 
 interface PageTabBarProps {
-  items: PageTabItem[];
+  items: readonly PageTabItem[];
   value?: string;
   onValueChange?: (value: string) => void;
   align?: "center" | "start";

@@ -28,7 +28,7 @@ import { EntityRow } from "@/components/EntityRow";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { LiveRunWidget } from "@/components/LiveRunWidget";
-import { CloudOnboardingFlow } from "@/components/onboarding/CloudOnboardingFlow";
+import { OnboardingWizard } from "@/components/OnboardingWizard";
 import {
   buildFileTree,
   collectAllPaths,
@@ -43,6 +43,7 @@ import { SwipeToArchive } from "@/components/SwipeToArchive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useDialog } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   createIssue,
@@ -323,9 +324,19 @@ function LiveRunWidgetStory({ empty = false, loading = false }: { empty?: boolea
   );
 }
 
-function OnboardingStepStory({ step }: { step: "company" | "agent" }) {
-  // previewMock keeps the flow backend-free for the story canvas.
-  return <CloudOnboardingFlow initialStep={step} previewMock />;
+function OpenOnboardingOnMount({ initialStep }: { initialStep: 1 | 2 }) {
+  const { openOnboarding } = useDialog();
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    queryClient.setQueryData(queryKeys.agents.adapterModels(companyId, "claude_local"), [
+      { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+      { id: "claude-opus-4-1", label: "Claude Opus 4.1" },
+    ]);
+    openOnboarding(initialStep === 1 ? { initialStep } : { initialStep, companyId });
+  }, [initialStep, openOnboarding, queryClient]);
+
+  return <OnboardingWizard />;
 }
 
 function PackageFileTreeDemo({ empty = false }: { empty?: boolean }) {
@@ -694,14 +705,14 @@ export const LiveRunWidgetEmpty: Story = {
   render: () => <LiveRunWidgetStory empty />,
 };
 
-export const OnboardingFlowCompanyStep: Story = {
-  name: "Onboarding Flow / Company Step",
-  render: () => <OnboardingStepStory step="company" />,
+export const OnboardingWizardCompanyStep: Story = {
+  name: "OnboardingWizard / Company Step",
+  render: () => <OpenOnboardingOnMount initialStep={1} />,
 };
 
-export const OnboardingFlowAgentStep: Story = {
-  name: "Onboarding Flow / Agent Step",
-  render: () => <OnboardingStepStory step="agent" />,
+export const OnboardingWizardAgentStep: Story = {
+  name: "OnboardingWizard / Agent Step",
+  render: () => <OpenOnboardingOnMount initialStep={2} />,
 };
 
 export const PackageFileTreePopulated: Story = {

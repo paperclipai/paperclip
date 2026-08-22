@@ -294,7 +294,7 @@ describe("AppDetail", () => {
 
   it.each([
     ["setup", "Agents can use this app"],
-    ["review", "1 new action to review"],
+    ["review", "Review 1 new action"],
     ["permissions", "Action permissions"],
     ["activity", "No activity yet."],
     ["advanced", "Technical details"],
@@ -326,20 +326,72 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("zapier-secret");
   });
 
-  it("shows new quarantined actions on the review tab instead of an empty state", async () => {
+  it("reviews quarantined actions as one toggle list and saves allowed and blocked choices together", async () => {
     mockParams.tab = "review";
+    listCatalogMock.mockResolvedValue({
+      catalog: [
+        catalogEntry(),
+        catalogEntry({
+          id: "catalog-write",
+          toolName: "write_issue",
+          title: "Write issue",
+          isReadOnly: false,
+        }),
+        catalogEntry({
+          id: "catalog-quarantined-allow",
+          toolName: "delete_repo",
+          title: "Delete repo",
+          status: "quarantined",
+          isReadOnly: false,
+        }),
+        catalogEntry({
+          id: "catalog-quarantined-block",
+          toolName: "archive_repo",
+          title: "Archive repo",
+          status: "quarantined",
+          isReadOnly: false,
+        }),
+      ],
+    });
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("1 new action to review");
+    expect(container.textContent).toContain("Review 2 new actions");
+    expect(container.textContent).toContain("Delete repo");
+    expect(container.textContent).toContain("Archive repo");
+    expect(container.textContent).not.toContain("Nothing is waiting for your OK right now.");
+
+    const allowToggle = container.querySelector<HTMLButtonElement>(
+      'button[role="switch"][aria-label="Delete repo allowed"]',
+    );
+    expect(allowToggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      allowToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent?.trim() === "Review")
+        .find((button) => button.textContent?.trim() === "Save choices")
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    expect(container.textContent).toContain("Delete repo");
-    expect(container.textContent).not.toContain("Nothing is waiting for your OK right now.");
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: expect.arrayContaining([
+        "catalog-read",
+        "catalog-write",
+        "catalog-quarantined-allow",
+      ]),
+      askFirstCatalogEntryIds: ["catalog-write"],
+      reviewedCatalogEntryIds: expect.arrayContaining([
+        "catalog-quarantined-allow",
+        "catalog-quarantined-block",
+      ]),
+      access: "all_agents",
+    });
+    const finishInput = finishAppMock.mock.calls.at(-1)?.[2] as { enabledCatalogEntryIds: string[] };
+    expect(finishInput.enabledCatalogEntryIds).not.toContain("catalog-quarantined-block");
   });
 
   it("keeps setup focused on description and lifecycle", async () => {
@@ -476,7 +528,7 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Can make changes");
     expect(container.textContent).toContain("Read repo");
     expect(container.textContent).toContain("Write issue");
-    expect(container.textContent).toContain("1 new action to review");
+    expect(container.textContent).toContain("Review 1 new action");
     const readSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Read repo permission"]');
     const writeSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Write issue permission"]');
     expect(readSelect?.value).toBe("allowed");

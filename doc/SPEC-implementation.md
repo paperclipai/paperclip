@@ -37,7 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree and resolve only eligible task-level plan confirmations; it is not board authority, active-run output monitoring, or general liveness recovery. |
+| Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
@@ -258,6 +258,10 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
+- accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
+- while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
+- the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`
@@ -506,9 +510,15 @@ V1 non-terminal liveness rule:
 - external waits are durable only when persisted as a bounded monitor/scheduled wake, a first-class blocker with a named owner and action, or healthy delegated child work connected by a blocker edge when the source must wait; parent/child structure alone is not a wait path
 - unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
 - heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher
-- invalid external-wait recovery queues at most one normal-model continuation per source-state fingerprint, then requires a real blocker or explicit recovery action instead of repeating equivalent recovery wakes; new durable source activity may establish a new fingerprint
+- a continuation cancelled as `issue_continuation_waiting_on_review` first converts a current typed wait target into a first-class wait; without a current target it is classified as `deliberate_wait_without_target` and gives the invokable original owner five normal-model disposition-repair attempts (immediate, then after 60, 120, 240, and 480 seconds, with up to 10 percent jitter)
+- disposition repair revalidates blockers, children, interactions, approvals, monitors, execution stages, queued wakes, active runs, work products, owner invokability, budgets, and governance before every attempt; the attempt bound is keyed by durable source state, so comments or equivalent parked prose do not reset it while durable source-state changes may establish a new fingerprint
+- backwards-compatible upgrades count consecutive historical `issue_continuation_waiting_on_review` cancellations for the unchanged accepted-interaction source state against the same five-attempt disposition-repair ceiling; missing pre-upgrade recovery-action rows do not reset the budget
+- the source fingerprint, source-attempt count, next due time, source owner, and return owner persist in the recovery action; startup and periodic reconciliation resume that exact lineage without duplicate wakes, fold it when a current typed wait appears, and reschedule or escalate an expired action that has no live scheduled run
+- source-attempt exhaustion opens one source-scoped manager recovery action without changing the source assignee; manager runs get five separate persisted attempts on the same immediate, 60, 120, 240, and 480 second bounded-delay schedule, then escalate visibly to the board when exhausted
+- an active recovery action counts as a live source or blocker-chain path only while its owner has a live run, queued wake, scheduled retry, typed wait, or explicit board escalation; source and blocker projections consume the same nested recovery-path result
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
+- recovery-action ownership is separate from source-task ownership: automatic repair and manager escalation preserve the source `assigneeAgentId`; reassignment requires an explicit decision or a policy-defined serious failure
 - source-scoped recovery routing is cause-keyed: lost processes, missing successful-run dispositions, and output-inactivity terminations retry the original agent when invokable; provider-quota failures create/reuse a scheduled wait-recovery monitor without a takeover wake; workspace validation and unknown causes route to the manager ladder
 - recovery-scoped wakes replace the normal deliverable execution contract with a cause-specific recovery contract, and successful repair returns the issue to the recorded original owner by default while recording `handed_back` versus `owner_completed`
 
@@ -556,7 +566,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
-| Manage another user's inbox state | yes | scoped `inbox:manage` grant |
+| Manage another user's inbox state | yes | saved target-user opt-in or scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
 
 ### 9.3.1 Shared default-open issue writes
@@ -580,10 +590,11 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
 run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments or issue
-updates across the shared counter. The server records each attempt with its
-source issue, target issue, run, count, and rollout mode, and fails closed with
-the cap in the error once enforcement is active. Assignee self-comments do not
+run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
+updates, or issue-thread interaction resolutions across one shared counter. The
+server records each attempt with its source issue, target issue, run, count, and
+rollout mode, and fails closed with the cap in the error once enforcement is
+active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
 Agent-authored issue comments persist the responsible user derived from the
@@ -624,7 +635,7 @@ The approved term set is:
 | Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
 | Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
-| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; cross-user access requires `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
+| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; explicit cross-user access requires saved target-user opt-in or `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
 | Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
 
 ## 9.7 Recommended first-slice implementation order
@@ -656,6 +667,66 @@ approval is created. The legacy fields `protectedAgent.requiresApproval` and
 aliases for the same hard block, but API denial copy must describe the block and
 administrator remediation rather than promising a nonexistent approval step.
 
+### 9.8.1 Issue-thread interaction resolver contract
+
+Issue-thread interactions are coordination records, not grants of authority. Every
+interaction kind defaults to resolver policy `anyone` when the create request omits
+`resolverPolicy`. Restrictions are opt-in.
+
+Canonical resolver policies are:
+
+- `anyone`: any authenticated actor in the interaction's company who can read the
+  issue and use the normal resolution route. For agents this includes the creator
+  agent and the creating/source run.
+- `not_creator`: the explicit independent-review policy. It excludes the creator
+  agent and creating/source run while otherwise using the ordinary agent resolver
+  path.
+- `human_only`: only an authorized human/board actor may resolve the interaction.
+
+`board_or_agents` and `board_only` are deprecated migration and API-input aliases.
+For new writes they normalize to `anyone` and `human_only`, respectively. API reads
+return canonical requested/effective policies, compatibility aliases, and immutable
+provenance. The persisted provenance is `explicit`, `inherited`, or
+`legacy_inherited_restriction`; the effective-policy source is `requested`,
+`company_cap`, or `governed_action`.
+
+Historical rows predate explicit-vs-inherited provenance. Migration must never
+silently widen an ambiguous pending card: legacy `board_or_agents` rows retain the
+old creator-excluding behavior as canonical `not_creator`, legacy `board_only` rows
+become `human_only`, and both are marked `legacy_inherited_restriction`. Resolved
+outcomes and resolver attribution are immutable.
+
+An explicit named addressee and a company-configured cap may narrow the effective
+audience. A cap never widens the requested audience. Tool-action confirmations and
+other hard-governed action cards remain `human_only` (or move to the formal approval
+system) regardless of a requested open audience.
+
+Surfaces that offer a resolution must state the effective audience before the
+operator acts, from server metadata rather than a client-side policy inference.
+Issue-thread cards read it from the interaction snapshot; attention rows read it
+from the feed item's `resolverAudience` (canonical requested/effective policy,
+effective-policy source, provenance, and the addressee/creator identities the
+evaluator compares against), because a collapsed row carries decision verbs
+before the interaction itself is fetched. A failed resolution keeps the server's
+denial reason in visible, assertively announced feedback and names who may
+respond; an audience denial is permanent, so it must not degrade to a retry
+prompt. Neither surface may enable or disable a control on its own authority.
+
+Every resolution remains company-scoped, run-attributed for agent actors,
+low-trust/task-bridge contained, target-current, and exact-once. Target staleness,
+supersession, continuation idempotency, and activity attribution remain mandatory.
+An open audience is not an uncapped one: when an agent run resolves an interaction
+on an issue other than its own source issue, the resolution is a cross-issue
+mutation and consumes the per-run cross-issue influence budget in §9.3, charged
+after audience authorization and before the interaction mutation, child tasks,
+continuation, tool action, or wake. Same-issue resolutions and board/user
+resolutions are outside that counter.
+Accepting or answering an interaction records a response only: suggested-task
+creation, provider/tool calls, deployment, spend, hiring, secrets, execution-policy
+decisions, and every other downstream effect must re-run its own authorization and
+approval checks. Mislabeling a governed action as an open interaction grants no
+downstream capability.
+
 ## 9.9 Task Watchdog Authority Contract
 
 A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.
@@ -675,7 +746,8 @@ Within the watched subtree, a watchdog run may perform only mutations that resto
 - reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
 - add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
 - set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
-- accept or reject eligible task-level plan confirmations as defined below
+- resolve issue-thread interactions through the ordinary resolver-audience path
+  when the watchdog agent otherwise has issue access and the effective policy allows it
 - update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
 
 Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
@@ -713,19 +785,18 @@ When the safe next action needs one of these disallowed mutations, the watchdog 
 
 ### Interaction resolution
 
-The initial V1 watchdog resolver may resolve exactly one interaction family: `request_confirmation` interactions that are eligible task-level plan confirmations. The watchdog may accept a coherent eligible plan or reject/request changes with a reason. It may not resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
+A task-watchdog run has no special resolver audience, plan-purpose marker, or
+interaction-kind allowlist. The task-watchdog context neither widens nor
+categorically removes the selected agent's ordinary interaction authority. The
+same evaluator used for every agent applies `anyone`, `not_creator`, `human_only`,
+named-addressee, company-cap, company-boundary, run-attribution, low-trust,
+task-bridge, target-staleness, and exact-once checks.
 
-A plan confirmation is eligible only when all of these are true:
-
-- the interaction is pending and belongs to an issue inside the watched subtree, excluding the reusable watchdog issue and its descendants
-- the interaction target is an `issue_document` with key `plan` on that same issue, and the target revision is still current
-- the interaction has an explicit plan-approval purpose marker; title text, body prose, or idempotency key shape alone is not enough
-- accepting the plan authorizes decomposition or task-level continuation inside the watched subtree only
-- the plan does not request hiring, budget/spend approval, secret access, production deployment, security-sensitive policy changes, legal/compliance decisions, destructive data changes, cross-company work, or any other board-only governed action
-- no newer board/user comment, document revision, superseding interaction, custom instruction, or issue policy reserves the decision for a human, CTO, Security, or the board
-- the plan names concrete child/follow-up work, owners or assignee selection criteria, dependencies/blockers, and acceptance criteria clearly enough that decomposition can proceed without further judgment
-
-If any condition fails, the watchdog must not accept the interaction. It should reject with a reason when the plan is clearly invalid, or leave/escalate the decision when the right owner is a board user, CTO, Security, or another typed approver.
+Resolving an interaction does not authorize its downstream effect. In particular,
+an accepted plan still passes normal decomposition/idempotency checks, and a
+governed action still requires its own typed reviewer, permission, or formal
+approval. A watchdog may not use an open coordination response to bypass any item
+in the disallowed-mutations list above.
 
 ### Downstream acceptance criteria
 
@@ -734,8 +805,8 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - server tests deny cross-company watched issues, watchdog agents, watchdog issues, blockers, interactions, and assignment targets
 - server tests deny paused, terminated, pending-approval, budget-blocked, or otherwise uninvokable watchdog agents
 - watchdog-scoped mutations can touch only the watched subtree and the reusable watchdog issue, with activity records for each mutation
-- interaction tests prove only eligible `request_confirmation` plan confirmations are accepted or rejected, and all other interaction kinds remain unavailable to watchdogs
-- plan-confirmation tests cover stale document revisions, missing purpose markers, outside-subtree targets, governed actions, newer user comments, and explicit human/CTO/Security reservations
+- interaction tests prove watchdog runs use the same resolver policy as ordinary agents, without a watchdog-only kind or purpose-marker exception
+- interaction tests cover `anyone`, `not_creator`, `human_only`, named addressees, company caps, stale targets, governed actions, newer user comments, low-trust/task-bridge containment, and cross-company denial
 - scheduler tests prove live runs, queued wakes, and scheduled retries suppress watchdog wakeups, while terminal, cancelled, blocked, and review leaves are still verified when the subtree has no live path
 - tests prove `task_watchdog` origin issues and descendants are excluded from scans so watchdogs do not trigger themselves
 - recovery-batch tests prove batches are capped at 3 allowed mutations, applied all-or-nothing, and aborted with recorded evidence when the observed stop fingerprint went stale mid-batch
@@ -745,7 +816,7 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - prompt/context tests prove custom instructions are appended after non-overridable safety constraints and cannot expand authority
 - QA validates a full create/edit/remove/run/reuse flow with screenshots for UI changes
 
-No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving interaction kinds beyond eligible plan confirmations, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
+No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion of those capabilities requires a new product/security review.
 
 ## 9.10 Company Skill Policy Contract
 
@@ -870,7 +941,7 @@ Core authorization follows these rules:
 - Board users may archive or unarchive inbox entries for users in the company.
 - An agent may manage the responsible user's inbox without an explicit grant when the authenticated run resolves that user and the user's inbox-agent policy permits the agent. This is the default-open path.
 - A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
-- An agent targeting any user other than its resolved responsible user requires an explicit `inbox:manage` grant. Grants may be unscoped or constrained by `scope.userIds`.
+- An agent targeting any user other than its resolved responsible user requires either a materialized target-user policy that permits that agent (`open` or matching `allowlist`) or an explicit `inbox:manage` grant. The implicit default-open policy for a missing row remains responsible-user-only, so it never becomes a blanket cross-user grant. Grants may be unscoped or constrained by `scope.userIds` and act as administrative overrides, including over a disabled target-user policy.
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
@@ -1032,7 +1103,8 @@ Dashboard payload must include:
 
 The current app also exposes V1-supporting surfaces for:
 
-- issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
+- company-scoped summary slots for projects, the workspaces overview, project workspaces, and individual execution workspaces; execution-workspace slots are keyed by execution workspace id so a new workspace never inherits another workspace's summary
+- issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) with the open-default resolver contract in §9.8.1
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
@@ -1241,7 +1313,7 @@ Required UX behaviors:
 
 ## 15.1 Environment
 
-- Node 20+
+- Node 24.11+
 - `DATABASE_URL` optional
 - if unset, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
 

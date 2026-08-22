@@ -164,7 +164,7 @@ async function navigateForEvidence(page: Page, seed: Seed, connectionId: string,
     return;
   }
   if (scenario.uiEntryPath === "attention") {
-    await page.goto(`/${seed.prefix}/apps`);
+    await page.goto(`/${seed.prefix}/apps/connections`);
     await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 20_000 });
     return;
   }
@@ -391,7 +391,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             await request.post(`/api/tool-connections/${connection.id}/catalog/refresh`),
           );
           expect(refresh.quarantinedCount).toBeGreaterThan(0);
-          await page.goto(`/${seed.prefix}/apps`);
+          await page.goto(`/${seed.prefix}/apps/connections`);
           return `Catalog refresh quarantined ${refresh.quarantinedCount} changed entries.`;
         });
 

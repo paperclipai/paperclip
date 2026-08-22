@@ -5177,8 +5177,31 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot be finished");
     const enabledIds = [...new Set([...input.enabledCatalogEntryIds, ...input.askFirstCatalogEntryIds])];
+    const requestedReviewedIds = input.reviewedCatalogEntryIds ?? [];
+    const reviewedIds = [...new Set(requestedReviewedIds)];
+    if (reviewedIds.length !== requestedReviewedIds.length) {
+      throw badRequest("Action review decisions must not contain duplicate catalogEntryId values");
+    }
     const enabledRows = await assertCatalogEntriesForConnection(companyId, connection.id, enabledIds);
     const askFirstRows = await assertCatalogEntriesForConnection(companyId, connection.id, input.askFirstCatalogEntryIds);
+    if (reviewedIds.length > 0) {
+      await assertCatalogEntriesForConnection(companyId, connection.id, reviewedIds);
+      const quarantinedRows = await db
+        .select({ id: toolCatalogEntries.id })
+        .from(toolCatalogEntries)
+        .where(and(
+          eq(toolCatalogEntries.companyId, companyId),
+          eq(toolCatalogEntries.connectionId, connection.id),
+          eq(toolCatalogEntries.status, "quarantined"),
+        ));
+      const reviewedIdSet = new Set(reviewedIds);
+      if (
+        quarantinedRows.length !== reviewedIdSet.size
+        || quarantinedRows.some((entry) => !reviewedIdSet.has(entry.id))
+      ) {
+        throw badRequest("Action review decisions must cover every currently quarantined action exactly once");
+      }
+    }
     if (input.access !== "all_agents") await assertAgentsInCompany(companyId, input.access.agentIds);
 
     const entries: CreateToolProfileEntryForProfile[] = enabledRows.map((entry) => ({
@@ -5281,6 +5304,25 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
 
       const reviewedAt = new Date();
+      if (reviewedIds.length > 0) {
+        await tx
+          .update(toolCatalogEntries)
+          .set({
+            status: "active",
+            reviewedAt,
+            reviewedByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+            reviewedByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+            quarantinedAt: null,
+            quarantineReason: null,
+            updatedAt: reviewedAt,
+          })
+          .where(and(
+            eq(toolCatalogEntries.companyId, companyId),
+            eq(toolCatalogEntries.connectionId, connection.id),
+            inArray(toolCatalogEntries.id, reviewedIds),
+            eq(toolCatalogEntries.status, "quarantined"),
+          ));
+      }
       if (enabledIds.length > 0) {
         await tx
           .update(toolCatalogEntries)
@@ -5293,7 +5335,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             quarantineReason: null,
             updatedAt: reviewedAt,
           })
-          .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, enabledIds)));
+          .where(and(
+            eq(toolCatalogEntries.companyId, companyId),
+            inArray(toolCatalogEntries.id, enabledIds),
+            ne(toolCatalogEntries.status, "quarantined"),
+          ));
       }
 
       const policies = await upsertAskFirstPolicies({
@@ -5720,7 +5766,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .update(toolConnections)
       .set({
         status: "active",
-        enabled: isSmokeLabOAuthFixture(connection) ? true : false,
+        enabled: true,
         config: nextConfig,
         transportConfig: nextConfig,
         credentialSecretRefs: nextCredentialSecretRefs,
@@ -6703,21 +6749,37 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const invocationById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
       let visibleRequests = requests;
       if (status === "pending") {
-        const invalidRequestIds = requests
-          .filter((request) => {
-            const invocation = invocationById.get(request.invocationId);
-            if (!invocation) return true;
-            try {
-              return !readSignedToolArgumentsPayload({
-                signedArguments: request.signedArguments,
-                invocationId: invocation.id,
-                toolName: invocation.toolName,
-              });
-            } catch {
-              return true;
-            }
-          })
-          .map((request) => request.id);
+        // A pending request that the creator has not signed yet is still being
+        // set up. The gateway creates the row (signedArguments = null) and signs
+        // it in a second step, so a review-queue read can observe the row inside
+        // that window. Hide such a request from the queue, but do not cancel it —
+        // cancelling here races the two-step create and makes the later approve
+        // fail with action_not_pending. Only cancel a request that carries a
+        // signature we cannot verify (secret rotation or tampering).
+        const unsignedRequestIds = new Set<string>();
+        const invalidRequestIds: string[] = [];
+        for (const request of requests) {
+          const invocation = invocationById.get(request.invocationId);
+          if (!invocation) {
+            invalidRequestIds.push(request.id);
+            continue;
+          }
+          if (request.signedArguments === null) {
+            unsignedRequestIds.add(request.id);
+            continue;
+          }
+          let readable = false;
+          try {
+            readable = Boolean(readSignedToolArgumentsPayload({
+              signedArguments: request.signedArguments,
+              invocationId: invocation.id,
+              toolName: invocation.toolName,
+            }));
+          } catch {
+            readable = false;
+          }
+          if (!readable) invalidRequestIds.push(request.id);
+        }
         if (invalidRequestIds.length > 0) {
           await db
             .update(toolActionRequests)
@@ -6727,8 +6789,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
               eq(toolActionRequests.status, "pending"),
               inArray(toolActionRequests.id, invalidRequestIds),
             ));
-          const invalidIds = new Set(invalidRequestIds);
-          visibleRequests = requests.filter((request) => !invalidIds.has(request.id));
+        }
+        const hiddenIds = new Set([...invalidRequestIds, ...unsignedRequestIds]);
+        if (hiddenIds.size > 0) {
+          visibleRequests = requests.filter((request) => !hiddenIds.has(request.id));
         }
       }
       if (visibleRequests.length === 0) return [];

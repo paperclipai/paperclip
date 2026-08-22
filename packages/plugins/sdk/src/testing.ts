@@ -2473,6 +2473,27 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       };
     })(),
+    execution: {
+      log(_stream: "stdout" | "stderr", _chunk: string) {
+        // No-op in test harness — the host runner log sink is not wired here.
+      },
+    },
+    setupTokenPty: {
+      output(_workerSessionId: string, _chunk: string) {
+        // No-op in test harness — the host login route is not wired here.
+      },
+      exit(_workerSessionId: string, _exitCode: number | null) {
+        // No-op in test harness — the host login route is not wired here.
+      },
+    },
+    duplexChannel: {
+      data(_workerSessionId: string, _chunk: string) {
+        // No-op in test harness — the host duplex route is not wired here.
+      },
+      exit(_workerSessionId: string, _exitCode: number | null) {
+        // No-op in test harness — the host duplex route is not wired here.
+      },
+    },
     tools: {
       register(name, _decl, fn) {
         requireCapability(manifest, capabilitySet, "agent.tools.register");

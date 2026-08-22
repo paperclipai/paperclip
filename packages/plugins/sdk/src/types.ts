@@ -1984,6 +1984,89 @@ export interface PluginStreamsClient {
   close(channel: string): void;
 }
 
+/**
+ * `ctx.execution` — deliver incremental command output from an environment
+ * driver's active `execute` call to the host runner log sink.
+ *
+ * A sandbox provider that streams a long-lived command's output calls
+ * `ctx.execution.log(stream, chunk)` for each new chunk while the execute call
+ * runs. The host correlates the chunk to the active execute invocation by the
+ * host-issued invocation id on the message envelope, and delivers it to that
+ * call's log callback before the final result. The default is a no-op that
+ * never throws, so a provider that does not stream keeps its current behavior.
+ *
+ * The `chunk` is a text string, not raw bytes. The host drops a chunk with an
+ * unknown stream name or a chunk that is empty or too large.
+ */
+export interface PluginExecutionClient {
+  /**
+   * Deliver one incremental output chunk of the active execute call.
+   *
+   * @param stream - Either `"stdout"` or `"stderr"`.
+   * @param chunk - The new output text for that stream.
+   */
+  log(stream: "stdout" | "stderr", chunk: string): void;
+}
+
+/**
+ * `ctx.setupTokenPty` — stream one live login pseudo-terminal's output and exit
+ * from a sandbox provider worker to the host.
+ *
+ * The worker opener registers the output listener on the session and forwards
+ * each raw chunk through `output(workerSessionId, chunk)`. It forwards the child
+ * exit through `exit(workerSessionId, exitCode)`. Each call carries the worker
+ * session identifier the open reply returned, so the host binds the output to
+ * the open route by that identifier while the route is open. The host drops a
+ * chunk or an exit that carries an unknown or a mismatched identifier, and it
+ * never logs the raw bytes. The default is a no-op that never throws.
+ */
+export interface PluginSetupTokenPtyClient {
+  /**
+   * Deliver one raw output chunk of a live login pseudo-terminal.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw terminal output text.
+   */
+  output(workerSessionId: string, chunk: string): void;
+  /**
+   * Deliver the child exit of a live login pseudo-terminal.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   */
+  exit(workerSessionId: string, exitCode: number | null): void;
+}
+
+/**
+ * `ctx.duplexChannel` — stream one persistent duplex channel's data and exit from
+ * a sandbox provider worker to the host.
+ *
+ * The worker registers the data listener on the channel and forwards each raw
+ * chunk through `data(workerSessionId, chunk)`. It forwards the child exit through
+ * `exit(workerSessionId, exitCode)`. Each call carries the worker session
+ * identifier the open reply returned, so the host binds the data to the open route
+ * by that identifier while the route is open. The host drops a chunk or an exit
+ * that carries an unknown or a mismatched identifier, and it never logs the raw
+ * bytes. The default is a no-op that never throws. This client models the
+ * `setupTokenPty` client, but it carries no login command allowlist.
+ */
+export interface PluginDuplexChannelClient {
+  /**
+   * Deliver one raw data chunk of a persistent duplex channel.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw channel output text.
+   */
+  data(workerSessionId: string, chunk: string): void;
+  /**
+   * Deliver the child exit of a persistent duplex channel.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   */
+  exit(workerSessionId: string, exitCode: number | null): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -2093,6 +2176,20 @@ export interface PluginContext {
 
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
+
+  /** Deliver incremental command output from the active execute call to the
+   * host runner log sink. The default is a no-op for a provider that does not
+   * stream. */
+  execution: PluginExecutionClient;
+
+  /** Stream one live login pseudo-terminal's output and exit to the host.
+   * The default is a no-op for a provider that opens no login
+   * pseudo-terminal. */
+  setupTokenPty: PluginSetupTokenPtyClient;
+
+  /** Stream one persistent duplex channel's data and exit to the host. The
+   * default is a no-op for a provider that opens no duplex channel. */
+  duplexChannel: PluginDuplexChannelClient;
 
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;

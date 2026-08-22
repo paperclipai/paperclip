@@ -9,6 +9,7 @@ import { toolsApi } from "@/api/tools";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
 import {
+  appApplicationSourceSlug,
   appDefinitionDescription,
   appDefinitionLogoUrl,
   appDefinitionName,
@@ -48,8 +49,7 @@ export function Browse() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: "Browse" },
+      { label: "Apps" },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs, selectedCompany?.name]);
@@ -57,6 +57,16 @@ export function Browse() {
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const applicationsQuery = useQuery({
+    queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listApplications(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const connectionsQuery = useQuery({
+    queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -78,19 +88,57 @@ export function Browse() {
         appDefinitionDescription(entry).toLowerCase().includes(trimmed),
     );
   }, [gallery, trimmed]);
+  const connectionSummaryBySlug = useMemo(() => {
+    const connections = connectionsQuery.data?.connections ?? [];
+    const connectedCountByApplicationId = new Map<string, number>();
+    for (const connection of connections) {
+      if (connection.status === "archived" || connection.status === "draft") continue;
+      connectedCountByApplicationId.set(
+        connection.applicationId,
+        (connectedCountByApplicationId.get(connection.applicationId) ?? 0) + 1,
+      );
+    }
+
+    const summaries = new Map<string, { applicationId: string; count: number }>();
+    for (const application of applicationsQuery.data?.applications ?? []) {
+      if (application.status === "archived") continue;
+      const slug = appApplicationSourceSlug(application);
+      if (!slug) continue;
+      const count = connectedCountByApplicationId.get(application.id) ?? 0;
+      const current = summaries.get(slug);
+      summaries.set(slug, {
+        applicationId: current?.applicationId ?? application.id,
+        count: (current?.count ?? 0) + count,
+      });
+    }
+    return summaries;
+  }, [applicationsQuery.data, connectionsQuery.data]);
 
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to browse apps.</div>;
   }
 
-  const loading = galleryQuery.isLoading;
+  const loading = galleryQuery.isLoading || applicationsQuery.isLoading || connectionsQuery.isLoading;
+
+  const tileProps = (entry: AppGalleryDisplayEntry) => {
+    const summary = connectionSummaryBySlug.get(appDefinitionSlug(entry));
+    const connectHref = connectHrefFor(entry);
+    return {
+      connectedCount: summary?.count ?? 0,
+      onOpen: summary && summary.count > 0
+        ? () => navigate(`/apps/app/${summary.applicationId}/setup`)
+        : connectHref
+          ? () => navigate(connectHref)
+          : undefined,
+    };
+  };
 
   return (
     <div className="max-w-5xl space-y-8 pb-12">
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect Notion, Zapier, or your own MCP server. More integrations are coming soon.
+          Choose an app or connect your own MCP server.
         </p>
       </header>
 
@@ -124,7 +172,7 @@ export function Browse() {
                   <AppTile
                     key={appDefinitionSlug(entry)}
                     entry={entry}
-                    onConnect={connectHrefFor(entry) ? () => navigate(connectHrefFor(entry)!) : undefined}
+                    {...tileProps(entry)}
                     compact
                   />
                 ))}
@@ -147,7 +195,7 @@ export function Browse() {
                   <AppTile
                     key={appDefinitionSlug(entry)}
                     entry={entry}
-                    onConnect={connectHrefFor(entry) ? () => navigate(connectHrefFor(entry)!) : undefined}
+                    {...tileProps(entry)}
                   />
                 ))}
               </div>
@@ -156,10 +204,7 @@ export function Browse() {
 
           <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">
-              Notion connects with secure sign-in. Zapier connects with its MCP URL. Other integrations are previews.
-            </p>
+          <div className="flex justify-end">
             <AdvancedToolsLink />
           </div>
         </>
@@ -170,20 +215,27 @@ export function Browse() {
 
 function AppTile({
   entry,
-  onConnect,
+  onOpen,
+  connectedCount,
   compact = false,
 }: {
   entry: AppGalleryDisplayEntry;
-  onConnect?: () => void;
+  onOpen?: () => void;
+  connectedCount: number;
   compact?: boolean;
 }) {
-  const disabled = !onConnect;
+  const disabled = !onOpen;
+  const actionLabel = connectedCount > 0
+    ? `${connectedCount} connected already`
+    : disabled
+      ? "Coming soon"
+      : "Connect →";
   if (compact) {
     return (
       <button
         type="button"
         disabled={disabled}
-        onClick={onConnect}
+        onClick={onOpen}
         className={disabled
           ? "flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
           : "flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"}
@@ -191,7 +243,7 @@ function AppTile({
         <AppLogo name={appDefinitionName(entry)} logoUrl={appDefinitionLogoUrl(entry)} size={36} />
         <span className="text-xs font-medium text-foreground">{appDefinitionName(entry)}</span>
         <span className={disabled ? "text-xs text-muted-foreground" : "text-xs font-semibold text-primary"}>
-          {disabled ? "Coming soon" : "Connect →"}
+          {actionLabel}
         </span>
       </button>
     );
@@ -200,7 +252,7 @@ function AppTile({
     <button
       type="button"
       disabled={disabled}
-      onClick={onConnect}
+      onClick={onOpen}
       className={disabled
         ? "flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
         : "flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"}
@@ -211,7 +263,7 @@ function AppTile({
         <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{appDefinitionDescription(entry)}</div>
       </div>
       <span className={disabled ? "shrink-0 text-xs font-semibold text-muted-foreground" : "shrink-0 text-xs font-semibold text-primary"}>
-        {disabled ? "Coming soon" : "Connect →"}
+        {actionLabel}
       </span>
     </button>
   );

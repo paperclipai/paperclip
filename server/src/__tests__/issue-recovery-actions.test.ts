@@ -27,6 +27,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -328,6 +329,180 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
     });
+  });
+
+  // Model the production payload: `requestedRef` keeps the operator spelling,
+  // and the fingerprint carries the canonical remote ref. Two equivalent
+  // spellings of one remote branch share `identityRef`, so they share one
+  // fingerprint. A different branch gets a different `identityRef`.
+  const makeUnresolvedBaseRefRun = (agentId: string, issueId: string) =>
+    (requestedRef: string, identityRef: string) =>
+      ({
+        id: randomUUID(),
+        agentId,
+        status: "failed",
+        error: `Configured workspace base ref "${requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
+        errorCode: "configuration_incomplete",
+        contextSnapshot: { issueId },
+        livenessState: "needs_followup",
+        resultJson: {
+          configurationIncomplete: {
+            reason: "workspace_base_ref_unresolved",
+            requestedRef,
+            attemptedRefs: [identityRef],
+            fingerprint: `workspace_base_ref:${identityRef}`,
+          },
+        },
+      }) as const;
+
+  it("bounds configuration-incomplete recovery by the unresolved base ref fingerprint", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const makeRun = makeUnresolvedBaseRefRun(coderId, sourceIssue.id);
+
+    // Two reconciliations with the same unresolved ref reuse one active action.
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun("fix/foo", "origin/fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun("fix/foo", "origin/fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      cause: "configuration_incomplete",
+      status: "active",
+      attemptCount: 2,
+    });
+    // The fingerprint carries the canonical remote ref, so the same branch stays
+    // one action and a different branch would make a distinct fingerprint.
+    expect(actions[0]?.fingerprint).toBe(
+      `source_scoped_recovery:${sourceIssue.companyId}:${sourceIssue.id}:configuration_incomplete:workspace_base_ref:origin/fix/foo`,
+    );
+  });
+
+  it("keeps equivalent spellings of one unresolved base ref under one recovery identity", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const makeRun = makeUnresolvedBaseRefRun(coderId, sourceIssue.id);
+
+    // The operator retries the same remote branch under two spellings. Both map
+    // to the canonical `origin/fix/foo` identity, so recovery must not reset the
+    // attempt count or post a second notice.
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun("fix/foo", "origin/fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun("origin/fix/foo", "origin/fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    // One identity, one active action, the attempt count advances.
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      cause: "configuration_incomplete",
+      status: "active",
+      attemptCount: 2,
+    });
+    expect(actions[0]?.fingerprint).toBe(
+      `source_scoped_recovery:${sourceIssue.companyId}:${sourceIssue.id}:configuration_incomplete:workspace_base_ref:origin/fix/foo`,
+    );
+
+    // The operator gets one notice, bound to the one action.
+    const notices = await db
+      .select({ metadata: issueComments.metadata })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, sourceIssue.id),
+          eq(issueComments.authorType, "system"),
+        ),
+      );
+    expect(
+      notices.filter((row) =>
+        noticeMetadataReferencesRecoveryAction(row.metadata, actions[0]!.id),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("gives a distinct recovery identity and a new operator notice when the unresolved base ref changes", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const makeRun = makeUnresolvedBaseRefRun(coderId, sourceIssue.id);
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun("fix/foo", "origin/fix/foo"),
+      recoveryCause: "configuration_incomplete",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: makeRun("fix/bar", "origin/fix/bar"),
+      recoveryCause: "configuration_incomplete",
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    // The prior ref keeps its own record and the new ref gets a fresh identity.
+    expect(actions).toHaveLength(2);
+    const priorAction = actions.find((row) =>
+      row.fingerprint.endsWith("workspace_base_ref:origin/fix/foo"),
+    );
+    const newAction = actions.find((row) =>
+      row.fingerprint.endsWith("workspace_base_ref:origin/fix/bar"),
+    );
+    expect(priorAction?.status).toBe("cancelled");
+    expect(priorAction?.outcome).toBe("cancelled");
+    expect(newAction?.status).toBe("active");
+    expect(newAction?.attemptCount).toBe(1);
+    expect(newAction?.id).not.toBe(priorAction?.id);
+
+    // The operator gets one notice per distinct ref, each bound to its action.
+    const systemComments = await db
+      .select({ metadata: issueComments.metadata })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, sourceIssue.id),
+          eq(issueComments.authorType, "system"),
+        ),
+      );
+    expect(
+      systemComments.some((row) =>
+        noticeMetadataReferencesRecoveryAction(row.metadata, priorAction!.id),
+      ),
+    ).toBe(true);
+    expect(
+      systemComments.some((row) =>
+        noticeMetadataReferencesRecoveryAction(row.metadata, newAction!.id),
+      ),
+    ).toBe(true);
   });
 
   it.each([
@@ -881,7 +1056,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "blocked",
-      assigneeAgentId: managerId,
+      assigneeAgentId: coderId,
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
@@ -1143,21 +1318,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.presentation).toMatchObject({
+    const escalationComments = comments.filter((comment) =>
+      noticeMetadataReferencesRecoveryAction(comment.metadata, actionRows[0]!.id),
+    );
+    expect(escalationComments).toHaveLength(1);
+    expect(escalationComments[0]?.presentation).toMatchObject({
       kind: "system_notice",
-      tone: "warning",
-      title: "Recovery: workspace validation failed — moved to blocked (owner: CTO)",
-      density: "compact",
-    });
-    expect(comments[0]?.metadata).toMatchObject({
-      version: 1,
-      sections: [expect.objectContaining({
-        rows: expect.arrayContaining([
-          expect.objectContaining({ type: "key_value", label: "Recovery action", value: actionRows[0]?.id }),
-          expect.objectContaining({ type: "key_value", label: "Cause", value: "workspace_validation_failed" }),
-        ]),
-      })],
+      tone: "danger",
+      title: "Workspace validation failed",
     });
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
     expect(enqueueWakeup).toHaveBeenCalledWith(
@@ -1231,7 +1399,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Recovery action:");
+    // Dedupe for structured notices is metadata-based: the short body no longer
+    // carries the `Recovery action: \`id\`` marker line.
+    expect(comments[0]?.body).not.toContain("Recovery action:");
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, actionRows[0]!.id)).toBe(true);
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
@@ -1414,7 +1586,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
-      .set({ status: "blocked", assigneeAgentId: managerId })
+      .set({ status: "blocked", assigneeAgentId: coderId })
       .where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -1834,7 +2006,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
-  it("allows the named recovery owner to resolve a board-owned source recovery action", async () => {
+  it("keeps the named recovery owner from completing a board-owned source issue", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
@@ -1876,18 +2048,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         sourceIssueStatus: "done",
         resolutionNote: "Recovery owner verified the work was intentionally completed.",
       })
-      .expect(200);
+      .expect(403);
 
-    expect(resolved.body.issue).toMatchObject({
-      id: sourceIssueId,
-      status: "done",
-      activeRecoveryAction: null,
-    });
-    expect(resolved.body.recoveryAction).toMatchObject({
-      id: action.id,
-      status: "resolved",
-      outcome: "owner_completed",
-    });
+    expect(resolved.body.details?.code).toBe("recovery_source_authority_required");
+    const [sourceAfter, actionAfter] = await Promise.all([
+      db.select().from(issues).where(eq(issues.id, sourceIssueId)).then((rows) => rows[0]),
+      db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)).then((rows) => rows[0]),
+    ]);
+    expect(sourceAfter).toMatchObject({ status: "blocked", assigneeUserId: "board-user" });
+    expect(actionAfter).toMatchObject({ status: "active", outcome: null });
   });
 
   it("rejects blocked recovery resolution when the source issue has no first-class blockers", async () => {

@@ -2,14 +2,22 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext, AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterEnvironmentCheck,
+  AdapterRuntimeMcpServer,
+} from "@paperclipai/adapter-utils";
 import {
+  adapterExecutionTargetUsesManagedHome,
+  maybeRunSandboxInstallCommand,
+  prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
   type AdapterExecutionTargetShellOptions,
 } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
@@ -241,4 +249,127 @@ export async function materializeRemoteClaudeConfig(input: {
     }),
     input.options,
   );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Prepare the sandbox runtime that a Claude hello probe needs. The step
+ * installs the Claude CLI in the sandbox when the CLI is absent, and it
+ * materializes the Paperclip-managed Claude config directory. Both the CLI
+ * Test lane and the ACP Test lane call this helper, so the two lanes probe
+ * the same login state. The Claude CLI and the Claude ACP engine share the
+ * same stored Claude login.
+ *
+ * The function mutates `env`: it sets `CLAUDE_CONFIG_DIR` to the managed
+ * remote config directory when it materializes one. It returns the checks to
+ * add to the Test result. An operator-provided `CLAUDE_CONFIG_DIR` wins, so
+ * the function keeps it and skips the managed materialization.
+ */
+export async function prepareSandboxClaudeProbeRuntime(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null;
+  cwd: string;
+  companyId?: string;
+  env: Record<string, string>;
+  installCommand: string;
+  detectCommand: string;
+  targetIsRemote: boolean;
+  targetIsSandbox: boolean;
+  helloProbeTimeoutSec: number;
+}): Promise<AdapterEnvironmentCheck[]> {
+  const checks: AdapterEnvironmentCheck[] = [];
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId: input.runId,
+    target: input.target,
+    adapterKey: "claude",
+    installCommand: input.installCommand,
+    detectCommand: input.detectCommand,
+    env: input.env,
+  });
+  if (installCheck) checks.push(installCheck);
+
+  const hasExplicitClaudeConfigDir = isNonEmptyString(input.env.CLAUDE_CONFIG_DIR);
+  if (
+    input.targetIsRemote &&
+    adapterExecutionTargetUsesManagedHome(input.target) &&
+    !hasExplicitClaudeConfigDir
+  ) {
+    let tempWorkspaceDir: string | null = null;
+    let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
+    try {
+      const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
+      const managedRemoteCwd =
+        input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
+      tempWorkspaceDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"),
+      );
+      preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+        runId: input.runId,
+        target: input.target,
+        adapterKey: "claude",
+        workspaceLocalDir: tempWorkspaceDir,
+        workspaceRemoteDir: managedRemoteCwd,
+        timeoutSec: Math.max(1, input.helloProbeTimeoutSec),
+        assets: [
+          {
+            key: "config-seed",
+            localDir: seedDir,
+            followSymlinks: true,
+          },
+        ],
+      });
+      const runtimeRootDir =
+        preparedRuntime.runtimeRootDir ??
+        path.posix.join(managedRemoteCwd, ".paperclip-runtime", "claude");
+      const remoteClaudeConfigSeedDir =
+        preparedRuntime.assetDirs["config-seed"] ??
+        path.posix.join(runtimeRootDir, "config-seed");
+      const remoteClaudeConfigDir = path.posix.join(runtimeRootDir, "config");
+      input.env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+      await materializeRemoteClaudeConfig({
+        runId: input.runId,
+        target: input.target,
+        remoteClaudeConfigDir,
+        remoteClaudeConfigSeedDir,
+        options: {
+          cwd: input.cwd,
+          env: input.env,
+          timeoutSec: Math.max(15, input.helloProbeTimeoutSec),
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      });
+      checks.push({
+        code: "claude_managed_config_dir",
+        level: "info",
+        message: "The environment probe is using Paperclip-managed Claude config materialization.",
+        detail: remoteClaudeConfigDir,
+      });
+    } catch (err) {
+      // Keep the raw error out of the Test-result check and the server log. Log
+      // only the fixed context, the allowlisted classification, and a safe
+      // error class name.
+      logSandboxProbeDiagnostic(
+        "Could not materialize Paperclip-managed Claude config for the environment probe",
+        "spawn_error",
+        { errorClass: classifyThrownErrorClass(err) },
+      );
+      checks.push({
+        code: "claude_managed_config_dir_failed",
+        level: "error",
+        message: "Could not materialize Paperclip-managed Claude config for the environment probe.",
+        hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
+      });
+    } finally {
+      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
+      if (tempWorkspaceDir) {
+        await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  return checks;
 }

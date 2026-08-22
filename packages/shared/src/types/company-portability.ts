@@ -200,6 +200,14 @@ export interface CompanyPortabilityIssueManifestEntry {
   workProducts?: CompanyPortabilityIssueWorkProductManifestEntry[];
   monitor?: CompanyPortabilityIssueMonitorManifestEntry | null;
   attachments?: CompanyPortabilityIssueAttachmentManifestEntry[];
+  /** Slug of the parent task when it is part of the same bundle (schemaVersion >= 7). */
+  parentSlug?: string | null;
+  /** Preserved source timestamps as ISO strings (schemaVersion >= 7); absent in older bundles. */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
   metadata: Record<string, unknown> | null;
 }
 

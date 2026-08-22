@@ -72,7 +72,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       contextSnapshot: { issueId: sourceIssueId },
     });
     await db.insert(activityLog).values(
-      Array.from({ length: 19 }, () => ({
+      Array.from({ length: 18 }, () => ({
         companyId,
         actorType: "agent" as const,
         actorId: agentId,
@@ -93,13 +93,18 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       kind: "comment" as const,
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
     };
+    // A comment, a PATCH, and an issue-thread interaction resolution race for the
+    // last slot of the shared budget: the row lock must let exactly one of 19/20
+    // through per attempt and fail the twenty-first closed.
     const decisions = await Promise.all([
       observeCrossIssueInfluence(db, input),
       observeCrossIssueInfluence(db, { ...input, kind: "update" }),
+      observeCrossIssueInfluence(db, { ...input, kind: "interaction_resolution" }),
     ]);
 
-    expect(decisions.map((decision) => decision?.allowed).sort()).toEqual([false, true]);
-    expect(decisions.map((decision) => decision?.count).sort((a, b) => Number(a) - Number(b))).toEqual([20, 21]);
+    expect(decisions.map((decision) => decision?.allowed).sort()).toEqual([false, true, true]);
+    expect(decisions.map((decision) => decision?.count).sort((a, b) => Number(a) - Number(b)))
+      .toEqual([19, 20, 21]);
 
     const recorded = await db
       .select({ action: activityLog.action })

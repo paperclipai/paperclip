@@ -2,13 +2,12 @@ import { motion } from "motion/react";
 import { PREVIEW_REVEAL_DURATION, STEP_EASE } from "./onboarding-motion";
 
 /**
- * Name/role preview under the capsule (agent + task steps). Collapsed (zero
- * height) until an identity exists, so the step opens compact; on selection the
- * block grows to full height — the viewport-centered card re-centers each
- * frame, so the capsule slides smoothly up into place — while the labels fade
- * in without moving. Slide and fade share one duration; the fade starts after
- * 25% of it. Both lines keep fixed heights once visible so typing a name
- * afterwards never shifts the layout again.
+ * Name/role preview under the capsule. Collapsed to zero height until an
+ * identity exists, so the step opens compact; on selection the block grows to
+ * full height — the centered card re-centers each frame, so the capsule slides
+ * up into place — while the labels fade in without moving. Slide and fade share
+ * one duration; the fade starts after 25% of it. Both lines keep fixed heights
+ * once visible, so typing a name afterwards never shifts the layout again.
  */
 export function AgentPreview({
   agentName,
@@ -36,10 +35,10 @@ export function AgentPreview({
         }}
       >
         <span className="flex h-6 items-center text-base font-semibold tracking-tight text-foreground">
-          {agentName || " "}
+          {agentName || " "}
         </span>
         <span className="flex h-4 items-center text-xs text-muted-foreground">
-          {agentRole || " "}
+          {agentRole || " "}
         </span>
       </motion.div>
     </motion.div>

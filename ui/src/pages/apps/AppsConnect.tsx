@@ -109,18 +109,27 @@ function reusableOAuthConnection(
   sourceSlug: string | null,
   applications: ToolApplication[],
   connections: ToolConnection[],
+  options: { applicationId?: string; draftOnly?: boolean } = {},
 ): ToolConnection | null {
   if (!sourceSlug) return null;
   const matchingApplicationIds = new Set(
     applications
-      .filter((application) => application.status !== "archived" && appSourceSlug(application) === sourceSlug)
+      .filter((application) =>
+        application.status !== "archived" &&
+        appSourceSlug(application) === sourceSlug &&
+        (!options.applicationId || application.id === options.applicationId)
+      )
       .map((application) => application.id),
   );
-  return connections.find((connection) =>
-    connection.status !== "archived" &&
-    connection.authKind === "oauth" &&
-    (matchingApplicationIds.has(connection.applicationId) || connectionSourceSlug(connection) === sourceSlug)
-  ) ?? null;
+  return connections.find((connection) => {
+    const matchesApplication = options.applicationId
+      ? connection.applicationId === options.applicationId
+      : matchingApplicationIds.has(connection.applicationId) || connectionSourceSlug(connection) === sourceSlug;
+    return connection.status !== "archived" &&
+      (!options.draftOnly || connection.status === "draft") &&
+      connection.authKind === "oauth" &&
+      matchesApplication;
+  }) ?? null;
 }
 
 export function AppsConnect() {
@@ -132,6 +141,7 @@ export function AppsConnect() {
   const [searchParams] = useSearchParams();
   const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
   const sourceSlug = searchParams.get("source")?.trim() || null;
+  const createNewConnection = searchParams.get("new") === "1";
   const directOAuthSource = isMcpDirectOAuthConnectSlug(sourceSlug) ? sourceSlug : null;
   const requestedAppKey = appKey ?? directOAuthSource ?? undefined;
   const zapierSource = sourceSlug === "zapier";
@@ -216,8 +226,11 @@ export function AppsConnect() {
       directOAuthSource,
       applicationsQuery.data?.applications ?? [],
       connectionsQuery.data?.connections ?? [],
+      createNewConnection
+        ? { applicationId: prefill.applicationId, draftOnly: true }
+        : {},
     ),
-    [applicationsQuery.data, connectionsQuery.data, directOAuthSource],
+    [applicationsQuery.data, connectionsQuery.data, createNewConnection, directOAuthSource, prefill.applicationId],
   );
 
   const directOAuthEntry = entry &&
@@ -467,6 +480,9 @@ export function AppsConnect() {
               directOAuthSource,
               applicationsResult.data?.applications ?? [],
               connectionsResult.data?.connections ?? [],
+              createNewConnection
+                ? { applicationId: prefill.applicationId, draftOnly: true }
+                : {},
             );
             if (refreshedConnection) {
               startOAuth(refreshedConnection.id);
@@ -517,7 +533,7 @@ export function AppsConnect() {
               ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
               : undefined
           }
-          onCancel={() => navigate(zapierSource ? "/apps/browse" : "/apps")}
+          onCancel={() => navigate("/apps")}
         />
       )}
 
@@ -625,7 +641,7 @@ export function AppsConnect() {
           link={linkUrl}
           onLinkChange={setLinkUrl}
           submitting={connectMutation.isPending}
-          onBack={() => navigate("/apps/browse")}
+          onBack={() => navigate("/apps")}
           onConnect={() => connectMutation.mutate(undefined)}
         />
       )}
@@ -685,7 +701,7 @@ export function AppsConnect() {
           access={access}
           installMode={installMode}
           installCount={installAgentIds.size}
-          onDone={() => navigate("/apps")}
+          onDone={() => navigate("/apps/connections")}
         />
       )}
     </div>

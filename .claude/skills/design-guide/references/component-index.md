@@ -188,24 +188,6 @@ Use in property rows, comment headers, assignee displays, and anywhere a user/ag
 **File:** `CompanySwitcher.tsx`
 **Usage:** Company selector dropdown in sidebar header.
 
-### AgentCapsule
-
-**File:** `AgentCapsule.tsx`
-**Props:** `state: "slot" | "configured" | "online"`, `gradient?: 1–10`, `size?: "sm" | "md" | "lg" | {width,height}`, `glow?: "green" | "blue"`
-**Usage:** The brand "capsule is the agent" pill; evolves in place across onboarding steps. Fill uses `--agent-Na/Nb` gradient tokens; honors `prefers-reduced-motion`.
-
-### Onboarding primitives (OnboardingCard, OnboardingHeading, Stepper, Chip, ChoiceCard, ConnectorRow)
-
-**File:** `onboarding/OnboardingPrimitives.tsx`
-**Usage:** Presentational pieces for the full-screen onboarding flow (`onboarding/OnboardingFlow.tsx`): the 560px card frame (`--sz-560px`), display heading + lede (text-4xl), 3-segment stepper, selectable mission chips, selectable choice cards, and connector rows. Bespoke dimensions route through verbatim `--sz-*` tokens; fields inside the flow use the shared Input/Textarea/Select/Label primitives.
-
-```tsx
-<OnboardingCard>
-  <Stepper step={2} />
-  <OnboardingHeading title="Create your first agent" lede="..." />
-</OnboardingCard>
-```
-
 ---
 
 ## Layout Components

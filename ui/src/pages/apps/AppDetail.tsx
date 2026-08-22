@@ -159,10 +159,16 @@ export function AppDetail() {
 
   const [pending, setPending] = useState(false);
   const persist = useMutation({
-    mutationFn: (next: { enabled: Set<string>; askFirst: Set<string>; access: AccessDraft }) =>
+    mutationFn: (next: {
+      enabled: Set<string>;
+      askFirst: Set<string>;
+      access: AccessDraft;
+      reviewed?: Set<string>;
+    }) =>
       toolsApi.finishApp(selectedCompanyId!, connectionId, {
         enabledCatalogEntryIds: [...next.enabled],
         askFirstCatalogEntryIds: [...next.askFirst].filter((id) => next.enabled.has(id)),
+        ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
         access: next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
       }),
     onMutate: () => setPending(true),
@@ -261,7 +267,7 @@ export function AppDetail() {
         body: `${appName} no longer has access. You can connect it again any time.`,
         tone: "success",
       });
-      navigate("/apps");
+      navigate("/apps/connections");
     },
     onError: (error) =>
       pushToast({
@@ -317,15 +323,28 @@ export function AppDetail() {
       }),
   });
 
-  const apply = (mutate: { enabled?: Set<string>; askFirst?: Set<string>; access?: AccessDraft }) =>
+  const apply = (mutate: {
+    enabled?: Set<string>;
+    askFirst?: Set<string>;
+    access?: AccessDraft;
+    reviewed?: Set<string>;
+  }) =>
     persist.mutate({
       enabled: mutate.enabled ?? new Set(enabledIds),
       askFirst: mutate.askFirst ?? new Set(askFirstIds),
       access: mutate.access ?? access,
+      reviewed: mutate.reviewed,
     });
 
+  const reviewQuarantined = (allowedIds: string[]) => {
+    const quarantinedIds = new Set(quarantined.map((entry) => entry.id));
+    const nextEnabled = new Set([...enabledIds].filter((id) => !quarantinedIds.has(id)));
+    for (const id of allowedIds) nextEnabled.add(id);
+    apply({ enabled: nextEnabled, reviewed: quarantinedIds });
+  };
+
   if (!connectionId || !activeTab) {
-    return <Navigate replace to={connectionId ? appTabHref(connectionId, "setup") : "/apps"} />;
+    return <Navigate replace to={connectionId ? appTabHref(connectionId, "setup") : "/apps/connections"} />;
   }
 
   if (!selectedCompanyId) {
@@ -344,7 +363,7 @@ export function AppDetail() {
     return (
       <div className="max-w-3xl p-6">
         <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
+        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/connections")}>
           Back to apps
         </Button>
       </div>
@@ -411,7 +430,7 @@ export function AppDetail() {
           connectionId={connectionId}
           quarantined={quarantined}
           pending={pending}
-          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
+          onReviewQuarantined={reviewQuarantined}
         />
       )}
       {activeTab === "permissions" && (
@@ -432,7 +451,7 @@ export function AppDetail() {
           onSaveInstall={(next) => persistInstall.mutate(next)}
           onRefreshActions={() => refreshTools.mutate()}
           onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
-          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
+          onReviewQuarantined={reviewQuarantined}
         />
       )}
       {activeTab === "test" && (
@@ -622,12 +641,6 @@ function galleryEntryFor(
   return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
     apps.find((app) => appDefinitionSlug(app) === name) ??
     null;
-}
-
-function addAll(set: Set<string>, ids: string[]): Set<string> {
-  const next = new Set(set);
-  for (const id of ids) next.add(id);
-  return next;
 }
 
 function actionPermissionMutation(

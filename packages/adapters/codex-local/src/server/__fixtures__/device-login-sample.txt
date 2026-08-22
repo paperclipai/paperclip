@@ -1,0 +1,5 @@
+1. Open this link in your browser and sign in to your account
+https://auth.openai.com/codex/device
+2. Enter this one-time code (expires in 15 minutes)
+????-?????
+Device codes are a common phishing target. Never share this code.

@@ -7,11 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listApplicationsMock = vi.hoisted(() => vi.fn());
+const listConnectionsMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listApplications: (companyId: string) => listApplicationsMock(companyId),
+    listConnections: (companyId: string) => listConnectionsMock(companyId),
   },
 }));
 
@@ -80,6 +84,8 @@ describe("Browse store door (PAP-13254 door 1)", () => {
         galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
       ],
     });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listConnectionsMock.mockResolvedValue({ connections: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -108,7 +114,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connect Notion, Zapier, or your own MCP server.");
+    expect(text).toContain("Choose an app or connect your own MCP server.");
+    expect(text).not.toContain("More integrations are coming soon.");
+    expect(text).not.toContain("Other integrations are previews.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
     expect(text).toContain("GitHub");
@@ -184,6 +192,34 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).not.toContain("Acme CRM");
     // Popular grid is hidden while searching.
     expect(text).not.toContain("Popular");
+  });
+
+  it("shows existing connection counts and opens the provider landing page", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [
+        { id: "app-notion", status: "active", applicationKey: "app-gallery:notion:one", metadata: {} },
+      ],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        { id: "conn-one", applicationId: "app-notion", status: "active" },
+        { id: "conn-two", applicationId: "app-notion", status: "disabled" },
+        { id: "conn-draft", applicationId: "app-notion", status: "draft" },
+      ],
+    });
+
+    await renderBrowse();
+
+    const notionTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Notion"),
+    );
+    expect(notionTiles).toHaveLength(2);
+    expect(notionTiles.every((button) => button.textContent?.includes("2 connected already"))).toBe(true);
+
+    await act(async () => {
+      notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/app/app-notion/setup");
   });
 
   it("keeps the custom URL option available when gallery search has no matches", async () => {

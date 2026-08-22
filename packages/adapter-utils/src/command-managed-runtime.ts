@@ -16,8 +16,48 @@ import {
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+
+/**
+ * Input for a duplex channel open. The caller supplies only the command argument
+ * vector the sandbox runs as the channel child process. Element 0 is the program
+ * and the rest are its arguments. The runner adds the lease scope from its own
+ * closure. This type is separate from the worker manager's
+ * `DuplexChannelOpenInput`, which also carries the lease scope fields.
+ */
+export interface DuplexChannelOpenInput {
+  command: readonly string[];
+}
+
+/**
+ * A persistent bidirectional channel to one long-lived command in the sandbox.
+ * The caller writes raw input bytes, reads streamed output, and stops or closes
+ * the channel. This is the cross-layer channel type: the runner returns it, and
+ * the sandbox driver adapts the worker manager's host session to it.
+ */
+export interface CommandManagedDuplexChannel {
+  /** Writes raw input bytes to the channel. */
+  write(data: string): void;
+  /** Registers the one data listener. The channel streams each raw chunk in order. */
+  onData(listener: (chunk: string) => void): void;
+  /** Registers the one exit listener. The channel calls it one time with the exit. */
+  onExit(listener: (exit: { exitCode: number | null }) => void): void;
+  /** Stops the child process. Safe to call more than one time. */
+  stop(): void;
+  /** Closes the channel and releases the route. Safe to call more than one time. */
+  close(): Promise<void>;
+}
 
 export interface CommandManagedRuntimeRunner {
+  /**
+   * True when the provider verified the concurrent-sync opt-in. A native runner
+   * carries the value from the effective capability snapshot
+   * (`concurrentSyncOperations`). The client copies it onto the prepared sync
+   * client only on the native path; the base64 fallback ignores it and always
+   * permits concurrency. The default is false, so an undeclared native provider
+   * never permits concurrent sync operations.
+   */
+  allowConcurrentSyncOperations?: boolean;
   /**
    * True only when `execute({ stdin })` can surface useful in-flight progress
    * for a single stdin-backed command. Provider-backed sandbox runners usually
@@ -34,6 +74,27 @@ export interface CommandManagedRuntimeRunner {
     timeoutMs?: number;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    /**
+     * Run this command through the lease's persistent session even when no run
+     * step is active. A sandbox provider opens the session on the first
+     * non-bypassed command; the ACP process session bridge sets this so the
+     * long-lived agent command streams its output through the session log
+     * stream. The default keeps the context-based session selection.
+     */
+    useSession?: boolean;
+    /**
+     * Run this command outside the lease's persistent session even when a run
+     * step is active. The persistent session is a single serialized shell. In
+     * streamed mode the agent runs as one long-lived foreground command that
+     * holds the session for the whole run. The bridge control-plane execs
+     * (input delivery, output read, callback relay, and the queue/setup
+     * bookkeeping) must run concurrently with the agent, so they run as
+     * independent one-shot commands. On the session they queue behind the agent
+     * command that never returns — a permanent deadlock. An explicit bypass
+     * always wins over the context-based session selection and over
+     * `useSession`. The default keeps the context-based session selection.
+     */
+    bypassSession?: boolean;
   }): Promise<RunProcessResult>;
   /**
    * Optional native inbound file transfer. Present only when the sandbox
@@ -45,6 +106,14 @@ export interface CommandManagedRuntimeRunner {
   syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
   /** Optional native outbound file transfer. See {@link syncIn}. */
   syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /**
+   * Optional persistent duplex channel. Present only when the sandbox provider's
+   * effective capability grants `duplexCommandStream`. The runner opens one
+   * bidirectional channel to a long-lived command in the sandbox. The SSH runner
+   * and every provider without the capability omit the member, so a caller gates
+   * on its presence in the same style as {@link syncIn}/{@link syncOut}.
+   */
+  openDuplexChannel?(input: DuplexChannelOpenInput): Promise<CommandManagedDuplexChannel>;
 }
 
 export interface CommandManagedRuntimeSpec {
@@ -424,6 +493,13 @@ export function createCommandManagedRuntimeClient(input: {
   const nativeSyncIn = input.runner.syncIn;
   const nativeSyncOut = input.runner.syncOut;
   const hasNativeBoth = Boolean(nativeSyncIn && nativeSyncOut);
+  // The base64 fallback always permits concurrent sync operations. A native
+  // runner permits them only when the provider verified the opt-in; an
+  // undeclared native provider keeps concurrency off. One flag serves both sync
+  // directions.
+  client.allowConcurrentSyncOperations = hasNativeBoth
+    ? input.runner.allowConcurrentSyncOperations === true
+    : true;
   client.syncIn = async (operations) => {
     assertPostUploadCommandsConfined(operations);
     if (hasNativeBoth) {
@@ -457,6 +533,10 @@ export async function prepareCommandManagedRuntime(input: {
   // task wires it into the byte-counting writeFile/readFile transport.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  // Optional host span runner for the workspace tarball build. Forwarded to
+  // prepareSandboxManagedRuntime so the host pack time rides one `pack` span
+  // under the `stage.sync` step. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -508,6 +588,7 @@ export async function prepareCommandManagedRuntime(input: {
           additionalSources: input.additionalSources,
           onProgress: input.onProgress,
           onRuntimeProgress: input.onRuntimeProgress,
+          runtimeSpan: input.runtimeSpan,
         });
       }
     }
@@ -546,5 +627,6 @@ export async function prepareCommandManagedRuntime(input: {
     additionalSources: input.additionalSources,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
 }

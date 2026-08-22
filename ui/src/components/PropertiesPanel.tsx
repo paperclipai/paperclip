@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
-import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
+import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function PropertiesPanel() {
   const { panelContent, panelVisible, setPanelVisible } = usePanel();
-  const { enabled: redesignEnabled } = useTaskChatRedesignEnabled();
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
 
   if (!panelContent) return null;
 
-  if (!redesignEnabled) {
+  if (classicTaskInterfaceEnabled) {
     return (
       <aside
         className="hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-(--tp-width-opacity) duration-200 ease-in-out h-full"
@@ -43,8 +43,8 @@ export function PropertiesPanel() {
 }
 
 /* ------------------------------------------------------------------------- *
- * Task Chat Redesign (flag: enableTaskChatRedesign) — resizable/maximizable
- * variant. Everything below renders only when the flag is ON.
+ * Chat-style (default) resizable/maximizable variant. Everything below
+ * renders only when the Classic Task Interface flag is OFF.
  * ------------------------------------------------------------------------- */
 
 /**
