@@ -181,9 +181,9 @@ Use it for:
 - explicit waiting relationships
 - automatic wakeups when all blockers resolve
 
-Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
+Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until every blocker is terminal (`done` or `cancelled`) and the `issue_blockers_resolved` wake can start real work.
 
-`cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
+Both terminal states satisfy the dependency. A `done` blocker remains gated until any required workspace finalization completes so delivered work is synchronized before downstream execution. A `cancelled` blocker resolves immediately because its work was abandoned and has no delivered workspace state to finalize.
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
@@ -191,7 +191,7 @@ If a parent is truly waiting on a child, model that with blockers. Do not rely o
 
 Run-scoped write authorization is subtree-scoped: a run may mutate its checked-out issue and that issue's descendants. Delegated child work still has to report upward, so the platform provides exactly three canonical report channels. Nothing else crosses the boundary.
 
-1. **Completion signal (always on).** When a child that blocks its parent reaches `done`, the `issue_blockers_resolved` wake engages the parent's assignee, who can read the child thread. Completion needs no report comment: the child's own thread is the deliverable record, and relaying `done` as prose would duplicate the first-class wake.
+1. **Terminal dependency signal (always on).** When a child that blocks its parent reaches `done` or `cancelled` and every blocker is terminal, the `issue_blockers_resolved` wake engages the parent's assignee, who can read the child thread. The child's own thread is the disposition record; relaying `done` as prose would duplicate the first-class wake, while the existing stop-only relay may still summarize a low-trust child's cancellation.
 2. **Direct-parent report comment (trust-gated).** The write boundary widens exactly one hop upward: a run checked out on a child issue may POST comments on the child's **direct parent** — comments only (no status, field, assignment, or document writes), the direct parent only (never grandparents or siblings, never lateral). This is gated per trust preset: **on** for `standard`, **off by default** for `low_trust_review` and other review-contained presets, whose input is untrusted content (diffs, external tickets) and whose report comment would be a prompt-injection carrier into higher-trust context.
 3. **Stop-only relay (fallback where the report comment is off).** For presets with direct-parent commenting disabled, the platform delivers a system-attributed relay comment to the direct parent when the child transitions into `blocked` or `cancelled` — never on `done` or `in_review`. Stopping is the event the parent must hear about; completion already has the first-class signal above. A relay is a comment, not a disposition transition, so it can never trigger another relay (depth-1 by construction), and relays dedupe per (child, target status) so status flapping cannot spam the parent.
 

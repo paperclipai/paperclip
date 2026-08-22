@@ -58,6 +58,7 @@ vi.mock("../services/index.js", () => ({
   }),
   heartbeatService: () => ({
     wakeup: mockWakeup,
+    getActiveRunForAgent: vi.fn(async () => null),
     reportRunActivity: vi.fn(async () => undefined),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
@@ -224,7 +225,7 @@ describe("issue dependency wakeups in issue routes", () => {
     ]);
 
     const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     await vi.waitFor(() => {
       expect(mockWakeup).toHaveBeenCalledWith(
         "agent-2",
@@ -233,6 +234,71 @@ describe("issue dependency wakeups in issue routes", () => {
           payload: expect.objectContaining({
             issueId: "issue-2",
             resolvedBlockerIssueId: "issue-1",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("wakes each eligible dependent once when the final blocker is cancelled", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Abandon blocker",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Abandon blocker",
+      description: null,
+      status: "cancelled",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        assigneeAgentId: "agent-2",
+        blockerIssueIds: ["issue-1", "issue-3"],
+      },
+    ]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "cancelled" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: "issue-2",
+            resolvedBlockerIssueId: "issue-1",
+            resolvedBlockerStatus: "cancelled",
+            mutation: "blocker_cancelled",
+          }),
+          contextSnapshot: expect.objectContaining({
+            resolvedBlockerStatus: "cancelled",
           }),
         }),
       );

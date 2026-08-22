@@ -254,4 +254,55 @@ describe("plugin SDK orchestration contract", () => {
       harness.ctx.issues.requestWakeup(blockedIssueId, companyId),
     ).rejects.toThrow("Issue is blocked by unresolved blockers");
   });
+
+  it("allows plugin wakeups when every blocker is terminal", async () => {
+    const companyId = randomUUID();
+    const doneBlockerIssueId = randomUUID();
+    const cancelledBlockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const harness = createTestHarness({
+      manifest: manifest(["issues.wakeup", "issues.read"]),
+    });
+    harness.seed({
+      issues: [
+        issue({ id: doneBlockerIssueId, companyId, title: "Done blocker", status: "done" }),
+        issue({ id: cancelledBlockerIssueId, companyId, title: "Cancelled blocker", status: "cancelled" }),
+        issue({
+          id: blockedIssueId,
+          companyId,
+          title: "Ready work",
+          status: "todo",
+          assigneeAgentId,
+          blockedBy: [
+            {
+              id: doneBlockerIssueId,
+              identifier: null,
+              title: "Done blocker",
+              status: "done",
+              priority: "medium",
+              assigneeAgentId: null,
+              assigneeUserId: null,
+            },
+            {
+              id: cancelledBlockerIssueId,
+              identifier: null,
+              title: "Cancelled blocker",
+              status: "cancelled",
+              priority: "medium",
+              assigneeAgentId: null,
+              assigneeUserId: null,
+            },
+          ],
+        }),
+      ],
+    });
+
+    await expect(harness.ctx.issues.requestWakeup(blockedIssueId, companyId)).resolves.toMatchObject({
+      queued: true,
+    });
+    await expect(harness.ctx.issues.requestWakeups([blockedIssueId], companyId)).resolves.toEqual([
+      expect.objectContaining({ issueId: blockedIssueId, queued: true }),
+    ]);
+  });
 });

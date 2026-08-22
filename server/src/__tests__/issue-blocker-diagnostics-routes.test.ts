@@ -248,6 +248,50 @@ describeEmbeddedPostgres("issue blocker diagnostics route", () => {
     });
   });
 
+  it("reports a cancelled blocker as dependency-ready", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const root = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Ship root",
+      status: "blocked",
+      assigneeAgentId: agent.id,
+    });
+    const blocker = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Cancelled blocker",
+      status: "cancelled",
+    });
+    await blockIssue(db, company.id, blocker.id, root.id);
+
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/blockers`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      diagnosis: expect.stringContaining("stale blocker hold"),
+      readiness: {
+        allBlockersDone: true,
+        isDependencyReady: true,
+        unresolvedBlockerCount: 0,
+        pendingFinalizeBlockerCount: 0,
+      },
+    });
+    expect(res.body.blockers).toEqual([
+      expect.objectContaining({
+        id: blocker.id,
+        status: "cancelled",
+        isUnresolved: false,
+        isDependencyReady: true,
+        isPendingFinalize: false,
+        flags: [],
+      }),
+    ]);
+  });
+
   it("returns null diagnosis for an unblocked issue with no blocker relations", async () => {
     const company = await seedCompany(db);
     const project = await seedProject(db, company.id, "Core");

@@ -1,7 +1,7 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests } from "@paperclipai/db";
+import { agentWakeupRequests, issues } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
@@ -74,9 +74,10 @@ export function buildIssueBlockersResolvedWakeStateKey(input: {
  * Find a wake that already covers the current dependency-ready state of the
  * dependent issue. The check is level-triggered:
  *
- * - The state key matches a wake in any idempotent status (including
- *   `completed`). This suppresses a duplicate wake for the SAME ready state and
- *   bounds reconciliation.
+ * - The state key matches an in-flight wake, or a `completed` wake requested
+ *   after the latest blocker terminal transition. This suppresses a duplicate
+ *   wake for the SAME ready state and lets a later reopen/close cycle create a
+ *   new wake without treating unrelated blocker edits as a new cycle.
  * - Each legacy per-edge key matches only a wake that is still in flight
  *   (`queued`, `deferred_issue_execution`, `claimed`). This prevents a duplicate
  *   wake while an old-format wake is still pending after a deploy, but it never
@@ -96,6 +97,33 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     dependentIssueId: input.dependentIssueId,
     blockerIssueIds: input.blockerIssueIds,
   });
+  const blockerTerminalStateRows =
+    input.blockerIssueIds.length > 0
+      ? await db
+          .select({
+            status: issues.status,
+            completedAt: issues.completedAt,
+            cancelledAt: issues.cancelledAt,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, input.companyId),
+              inArray(issues.id, [...new Set(input.blockerIssueIds)]),
+            ),
+          )
+      : [];
+  const latestBlockerTerminalTransitionAt = blockerTerminalStateRows.reduce<Date | null>(
+    (latest, row) => {
+      const transitionedAt = row.status === "done"
+        ? row.completedAt
+        : row.status === "cancelled"
+          ? row.cancelledAt
+          : null;
+      return transitionedAt && (!latest || transitionedAt > latest) ? transitionedAt : latest;
+    },
+    null,
+  );
   const legacyKeys = [
     ...new Set(
       input.blockerIssueIds
@@ -121,11 +149,12 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
         )
       : null;
 
-  return db
+  const matchingWakes = await db
     .select({
       id: agentWakeupRequests.id,
       status: agentWakeupRequests.status,
       idempotencyKey: agentWakeupRequests.idempotencyKey,
+      requestedAt: agentWakeupRequests.requestedAt,
     })
     .from(agentWakeupRequests)
     .where(
@@ -134,6 +163,15 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
         legacyMatch ? or(stateMatch, legacyMatch) : stateMatch,
       ),
     )
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
+    .limit(20);
+
+  return (
+    matchingWakes.find(
+      (wake) =>
+        wake.idempotencyKey !== stateKey ||
+        wake.status !== "completed" ||
+        !latestBlockerTerminalTransitionAt ||
+        wake.requestedAt >= latestBlockerTerminalTransitionAt,
+    ) ?? null
+  );
 }

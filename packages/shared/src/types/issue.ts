@@ -246,6 +246,7 @@ export interface IssueBlockerDiagnosticNode extends IssueBlockerDiagnosticIssueS
 }
 
 export interface IssueBlockerDiagnosticsReadiness {
+  /** Backward-compatible field name; cancelled is done-equivalent, while pending finalization keeps this false. */
   allBlockersDone: boolean;
   isDependencyReady: boolean;
   unresolvedBlockerCount: number;

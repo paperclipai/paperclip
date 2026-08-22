@@ -501,6 +501,8 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- explicit blockers are dependency-ready when every blocker is terminal (`done` or `cancelled`); `done` blockers additionally wait for required workspace finalization, while `cancelled` blockers resolve immediately
+- the final blocker transition to either terminal state emits one idempotent `issue_blockers_resolved` wake for each eligible assigned dependent
 
 V1 non-terminal liveness rule:
 
