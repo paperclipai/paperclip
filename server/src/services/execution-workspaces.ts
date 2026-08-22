@@ -90,6 +90,26 @@ const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
 
+/**
+ * True when a terminal-workspace sweep inspected candidates and changed none of
+ * them — an inert reaper, which is worth a periodic log line.
+ *
+ * Deliberately derived from `checked` rather than from a sum of the individual
+ * skip counters. The caller used to enumerate five of them and omitted
+ * `skippedReopened` and `clearedStaleReopenPending`, so a reaper that skipped
+ * every candidate for either reason produced no log at all — the one instrument
+ * built to detect an inert reaper was blind to two of its own seven outcomes.
+ * A predicate written against `checked` cannot acquire that blind spot when a
+ * new outcome is added.
+ */
+export function terminalWorkspaceSweepWasInert(result: {
+  checked: number;
+  archived: number;
+  cleanupFailed: number;
+}): boolean {
+  return result.checked > 0 && result.archived === 0 && result.cleanupFailed === 0;
+}
+
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
 // output.

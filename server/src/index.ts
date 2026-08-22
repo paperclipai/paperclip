@@ -53,6 +53,7 @@ import {
   decisionRetentionService,
   externalObjectService,
   executionWorkspaceService,
+  terminalWorkspaceSweepWasInert,
   heartbeatService,
   issueThreadInteractionService,
   issueService,
@@ -1118,14 +1119,11 @@ export async function startServer(): Promise<StartedServer> {
             logger.info(result, "terminal issue workspace reaper changed workspace state");
             return;
           }
-          const skipped =
-            result.skippedActiveRun
-            + result.skippedNonTerminalTree
-            + result.skippedUndelivered
-            + result.skippedRace
-            + result.skippedCooldown;
           const nowMs = Date.now();
-          if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
+          if (
+            terminalWorkspaceSweepWasInert(result)
+            && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs
+          ) {
             lastTerminalWorkspaceSkipLogAt = nowMs;
             logger.info(result, "terminal issue workspace reaper skipped all candidates");
           }
