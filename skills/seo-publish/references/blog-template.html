@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZHCKX8GM25"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-ZHCKX8GM25');
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{TITLE}} | Iron Noodle</title>
+  <meta name="description" content="{{META_DESCRIPTION_150_160_CHARS}}">
+  <link rel="canonical" href="https://ironnoodle.com/blog/{{SLUG}}">
+  <meta name="author" content="Iron Noodle Team">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="{{TITLE}}">
+  <meta property="og:description" content="{{META_DESCRIPTION_150_160_CHARS}}">
+  <meta property="og:url" content="https://ironnoodle.com/blog/{{SLUG}}">
+  <meta property="og:site_name" content="Iron Noodle Technologies">
+  <meta property="article:published_time" content="{{ISO_DATE}}T00:00:00-07:00">
+  <meta property="article:author" content="Iron Noodle Team">
+  <meta property="article:section" content="{{SECTION}}">
+  <meta property="article:tag" content="{{TAG_1}}">
+  <meta property="article:tag" content="{{TAG_2}}">
+  <meta property="article:tag" content="{{TAG_3}}">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{TITLE}}">
+  <meta name="twitter:description" content="{{META_DESCRIPTION_150_160_CHARS}}">
+
+  <!-- Structured Data: Article -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "{{TITLE}}",
+    "description": "{{META_DESCRIPTION_150_160_CHARS}}",
+    "author": {
+      "@type": "Organization",
+      "name": "Iron Noodle Technologies",
+      "url": "https://ironnoodle.com"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Iron Noodle Technologies LLC",
+      "url": "https://ironnoodle.com"
+    },
+    "datePublished": "{{YYYY-MM-DD}}",
+    "dateModified": "{{YYYY-MM-DD}}",
+    "url": "https://ironnoodle.com/blog/{{SLUG}}",
+    "mainEntityOfPage": "https://ironnoodle.com/blog/{{SLUG}}",
+    "keywords": ["{{KEYWORD_1}}", "{{KEYWORD_2}}", "{{KEYWORD_3}}"],
+    "articleSection": "{{SECTION}}",
+    "wordCount": {{WORD_COUNT}},
+    "inLanguage": "en-US"
+  }
+  </script>
+
+  <!-- Structured Data: FAQPage -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "{{FAQ_Q1}}",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "{{FAQ_A1}}"
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "{{FAQ_Q2}}",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "{{FAQ_A2}}"
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "{{FAQ_Q3}}",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "{{FAQ_A3}}"
+        }
+      }
+    ]
+  }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=5">
+  <script src="https://tl.cogentcrm.com/js/external-tracking.js" data-tracking-id="tk_aebc37e3f03246be8657fd68115978cc"></script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+
+  <style>
+    .blog-hero {
+      background: #0A1EF5;
+      color: #fff;
+      padding: 120px 0 60px;
+      text-align: center;
+    }
+    .blog-hero h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      line-height: 1.1;
+      margin-bottom: 20px;
+      color: #fff;
+      max-width: 800px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .blog-hero-meta {
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      opacity: 0.7;
+    }
+    .blog-hero-meta span {
+      margin: 0 10px;
+    }
+    .blog-body {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 64px 20px 80px;
+    }
+    .blog-body p {
+      font-family: 'Inter', sans-serif;
+      font-size: 17px;
+      line-height: 1.8;
+      color: #191718;
+      margin-bottom: 20px;
+    }
+    .blog-body h2 {
+      font-family: 'Oswald', sans-serif;
+      font-size: 28px;
+      font-weight: 600;
+      color: #0A1EF5;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      margin-top: 48px;
+      margin-bottom: 16px;
+    }
+    .blog-body h3 {
+      font-family: 'Oswald', sans-serif;
+      font-size: 20px;
+      font-weight: 600;
+      color: #191718;
+      margin-top: 32px;
+      margin-bottom: 12px;
+    }
+    .blog-body a {
+      color: #1B6D69;
+      text-decoration: none;
+    }
+    .blog-body a:hover {
+      text-decoration: underline;
+    }
+    .blog-body blockquote {
+      border-left: 3px solid #1B6D69;
+      padding-left: 24px;
+      margin: 28px 0;
+      font-style: italic;
+      color: #444;
+    }
+    .blog-body ul, .blog-body ol {
+      font-family: 'Inter', sans-serif;
+      font-size: 17px;
+      line-height: 1.8;
+      padding-left: 24px;
+      margin-bottom: 20px;
+    }
+    .blog-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 28px 0;
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+    }
+    .blog-body table th {
+      background: #0A1EF5;
+      color: #fff;
+      padding: 12px 16px;
+      text-align: left;
+      font-weight: 600;
+    }
+    .blog-body table td {
+      padding: 12px 16px;
+      border-bottom: 1px solid #eee;
+    }
+    .blog-body table tr:nth-child(even) {
+      background: #f9f8f6;
+    }
+    .blog-cta {
+      background: #E8E2DA;
+      border-radius: 12px;
+      padding: 40px;
+      text-align: center;
+      margin-top: 60px;
+    }
+    .blog-cta h2 {
+      color: #191718;
+      margin-top: 0;
+    }
+    .blog-cta .btn {
+      display: inline-block;
+      background: #0A1EF5;
+      color: #fff;
+      padding: 14px 32px;
+      border-radius: 6px;
+      font-family: 'Oswald', sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      text-transform: uppercase;
+      text-decoration: none;
+      margin-top: 16px;
+    }
+    .faq-section {
+      margin-top: 60px;
+      border-top: 2px solid #eee;
+      padding-top: 40px;
+    }
+    .faq-item {
+      margin-bottom: 28px;
+    }
+    .faq-item h3 {
+      color: #0A1EF5;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="site-nav">
+  <div class="nav-container">
+    <a href="/" class="logo-link">
+      <img src="/iron-noodle-logo.svg" alt="Iron Noodle" class="nav-logo">
+    </a>
+    <button id="navToggle" class="nav-toggle" aria-label="Toggle navigation">&#9776;</button>
+    <div id="navLinks" class="nav-links">
+      <a href="/nb-os">NB OS</a>
+      <a href="/ai-voice">AI Voice</a>
+      <a href="/getdocs">GetDocs</a>
+      <a href="/ai-concierge">AI Concierge</a>
+      <a href="/cogent-crm">CRM</a>
+      <a href="/profit-blueprint">Blueprint</a>
+      <a href="/resources">Resources</a>
+      <a href="/contact" class="nav-cta">Get Started</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="blog-hero">
+  <div class="container">
+    <h1>{{TITLE}}</h1>
+    <div class="blog-hero-meta">
+      <span>{{READABLE_DATE}}</span>
+      <span>&bull;</span>
+      <span>{{READ_TIME}} min read</span>
+    </div>
+  </div>
+</section>
+
+<!-- ARTICLE BODY -->
+<article class="blog-body">
+
+  {{ARTICLE_CONTENT}}
+
+  <!-- FAQ SECTION -->
+  <div class="faq-section">
+    <h2>Frequently Asked Questions</h2>
+
+    <div class="faq-item">
+      <h3>{{FAQ_Q1}}</h3>
+      <p>{{FAQ_A1}}</p>
+    </div>
+
+    <div class="faq-item">
+      <h3>{{FAQ_Q2}}</h3>
+      <p>{{FAQ_A2}}</p>
+    </div>
+
+    <div class="faq-item">
+      <h3>{{FAQ_Q3}}</h3>
+      <p>{{FAQ_A3}}</p>
+    </div>
+  </div>
+
+  <!-- CTA -->
+  <div class="blog-cta">
+    <h2>{{CTA_HEADLINE}}</h2>
+    <p>{{CTA_BODY}}</p>
+    <a href="/contact" class="btn">Book a Demo</a>
+  </div>
+</article>
+
+<!-- FOOTER -->
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <h4>Products</h4>
+        <ul>
+          <li><a href="/nb-os">NB OS</a></li>
+          <li><a href="/ai-voice">AI Voice Agents</a></li>
+          <li><a href="/profit-blueprint">Profit Blueprint</a>
+          <a href="/assessment">Firm Assessment</a></li>
+          <li><a href="/getdocs">GetDocs.ai</a></li>
+          <li><a href="/ai-concierge">AI Concierge</a></li>
+          <li><a href="/cogent-crm">Cogent CRM</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Company</h4>
+        <ul>
+          <li><a href="/">Home</a></li>
+          <li><a href="/about">About</a></li>
+          <li><a href="/contact">Contact</a></li>
+          <li><a href="/resources">Resources</a></li>
+          <li><a href="/privacy">Privacy Policy</a></li>
+          <li><a href="/terms">Terms of Service</a></li>
+          <li><a href="/ai-transparency">AI Transparency</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="/whitepaper-cost-scissors">The Cost Scissors</a></li>
+        </ul>
+        <h4 style="margin-top: 24px;">Get in Touch</h4>
+        <ul>
+          <li><a href="tel:+18884464490">(888) 446-4490</a></li>
+          <li><a href="mailto:noodles@ironnoodle.com">noodles@ironnoodle.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2026 Iron Noodle Technologies LLC</span>
+      <div class="social-links">
+        <a href="https://www.instagram.com/ironnoodle" target="_blank" rel="noopener">Instagram</a>
+        <a href="https://www.facebook.com/profile.php?id=61580592826968" target="_blank" rel="noopener">Facebook</a>
+        <a href="https://www.linkedin.com/company/iron-noodle" target="_blank" rel="noopener">LinkedIn</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<script>
+  document.getElementById('navToggle').addEventListener('click', function () {
+    document.getElementById('navLinks').classList.toggle('open');
+  });
+</script>
+<script src="/lead-capture.js"></script>
+</body>
+</html>
