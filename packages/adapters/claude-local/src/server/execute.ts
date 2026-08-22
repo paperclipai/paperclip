@@ -850,7 +850,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--model", model);
     }
     if (effectiveEffort) args.push("--effort", effectiveEffort);
-    if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+    // Always pass --max-turns to avoid relying on the CLI default (which can be as low as 8).
+    // When the agent config omits maxTurnsPerRun (value 0), use 200 as a safe fleet-wide floor.
+    args.push("--max-turns", String(maxTurns > 0 ? maxTurns : 200));
     // On resumed sessions the instructions are already in the session cache;
     // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
     // per heartbeat and the Claude CLI may reject the combination outright.
