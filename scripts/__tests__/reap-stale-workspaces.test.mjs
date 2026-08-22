@@ -10,7 +10,13 @@ import {
   discoverDefaultRoots,
   findGitWorkTrees,
   formatBytes,
+  getLocalOnlyTags,
+  getUpstreamRef,
   hasCommittedLockfile,
+  hasTrackedFilesUnderNodeModules,
+  hasUnpushedOtherLocalBranch,
+  hasUnsafeExtraGitState,
+  isBranchReachableFromAnyRemote,
   isContainedInAllowedRoots,
   isGitStatusClean,
   isLockfileDirty,
@@ -139,6 +145,48 @@ test("formatBytes: renders human units", () => {
   assert.equal(formatBytes(512), "512B");
   assert.equal(formatBytes(2048), "2.0KiB");
   assert.equal(formatBytes(5 * 1024 * 1024), "5.0MiB");
+});
+
+test("hasTrackedFilesUnderNodeModules: flags a force-added file, ignores unrelated tracked paths", () => {
+  assert.equal(hasTrackedFilesUnderNodeModules("README.md\nsrc/index.ts\n"), false);
+  assert.equal(hasTrackedFilesUnderNodeModules(""), false);
+  assert.equal(hasTrackedFilesUnderNodeModules("README.md\nnode_modules/some-pkg/patched.js\n"), true);
+  // exact "node_modules" as its own tracked entry (e.g. a submodule) also counts
+  assert.equal(hasTrackedFilesUnderNodeModules("node_modules\n"), true);
+  // a sibling directory that merely starts with the same prefix must not match
+  assert.equal(hasTrackedFilesUnderNodeModules("node_modules-cache/file.js\n"), false);
+});
+
+test("hasUnsafeExtraGitState: blocks on an unpushed other branch, a stash, a local-only tag, or unknown facts; clears when all are safe", () => {
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: [] }),
+    false,
+  );
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: true, stashCount: 0, localOnlyTags: [] }),
+    true,
+  );
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 1, localOnlyTags: [] }),
+    true,
+  );
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: ["v1-wip"] }),
+    true,
+  );
+  // fail closed when any underlying signal could not be determined at all
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: null, stashCount: 0, localOnlyTags: [] }),
+    true,
+  );
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: null, localOnlyTags: [] }),
+    true,
+  );
+  assert.equal(
+    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: null }),
+    true,
+  );
 });
 
 test("decideAction: active session always preserves, regardless of everything else", () => {
@@ -372,6 +420,54 @@ test("findGitWorkTrees: locates nested git dirs and does not descend into node_m
 });
 
 // ---------------------------------------------------------------------------
+// Real-git-fixture tests for the extra-git-state safety facts
+// ---------------------------------------------------------------------------
+
+test("hasUnpushedOtherLocalBranch: a clone's leftover default branch is NOT unsafe (regression guard: false positive found via Greptile review on PR #11936)", () => {
+  // Every plain `git clone` leaves the default branch (here "main") checked
+  // out locally *before* a feature branch is created — that leftover branch
+  // is byte-for-byte identical to origin/main and holds zero unique commits.
+  // An earlier version of this check flagged ANY other local branch as
+  // unsafe, which would have made --remove-merged-worktrees never fire for
+  // the overwhelmingly common "plain clone" case.
+  const { workDir, branchName } = makeRepoFixture();
+  assert.equal(hasUnpushedOtherLocalBranch(workDir, branchName), false);
+});
+
+test("hasUnpushedOtherLocalBranch: a genuinely unpushed commit on another local branch IS unsafe", () => {
+  const { workDir, branchName } = makeRepoFixture();
+  git(workDir, ["checkout", "-b", "wip/untouched"]);
+  fs.writeFileSync(path.join(workDir, "wip.txt"), "not pushed anywhere\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "wip, never pushed"]);
+  git(workDir, ["checkout", branchName]);
+  assert.equal(hasUnpushedOtherLocalBranch(workDir, branchName), true);
+});
+
+test("isBranchReachableFromAnyRemote: true for a branch fully contained in a remote ref, false for one with unique commits", () => {
+  const { workDir } = makeRepoFixture();
+  assert.equal(isBranchReachableFromAnyRemote(workDir, "main"), true);
+  git(workDir, ["checkout", "-b", "wip/unique"]);
+  fs.writeFileSync(path.join(workDir, "wip.txt"), "unique\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "unique, unpushed"]);
+  assert.equal(isBranchReachableFromAnyRemote(workDir, "wip/unique"), false);
+});
+
+test("getLocalOnlyTags: a tag on the pushed commit is safe, a tag on an unpushed commit is local-only (no network call)", () => {
+  const { workDir, branchName } = makeRepoFixture();
+  git(workDir, ["tag", "pushed-tag"]); // tags the already-pushed HEAD
+  fs.writeFileSync(path.join(workDir, "more.txt"), "more\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "unpushed follow-up"]);
+  git(workDir, ["tag", "local-only-tag"]); // tags a commit never pushed
+  const upstream = getUpstreamRef(workDir, branchName);
+  assert.equal(upstream, `origin/${branchName}`);
+  const localOnly = getLocalOnlyTags(workDir, upstream);
+  assert.deepEqual(localOnly, ["local-only-tag"]);
+});
+
+// ---------------------------------------------------------------------------
 // End-to-end CLI tests against real git fixtures
 // ---------------------------------------------------------------------------
 
@@ -394,6 +490,12 @@ test("CLI dry-run: reports node_modules reclaim for an inactive worktree with an
   const entry = parsed.results.find((r) => r.dir === finalWorkDir);
   assert.ok(entry, "expected an evaluation entry for the fixture worktree");
   assert.equal(entry.action, "reap-node-modules");
+  // Regression guard: dry-run used to always report reclaimedBytes as 0
+  // (the accumulator was only ever incremented inside the --apply branch),
+  // even though each candidate line correctly showed its own reclaimable
+  // size. The summary total must reflect the real plan.
+  assert.ok(entry.bytes > 0, "the candidate's own reported size must be nonzero");
+  assert.equal(parsed.reclaimedBytes, entry.bytes);
 });
 
 test("CLI --apply: removes node_modules but preserves the git worktree and its commit", () => {

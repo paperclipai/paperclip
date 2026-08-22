@@ -148,6 +148,25 @@ export function hasCommittedLockfile(lsFilesOutput) {
 }
 
 /**
+ * Given `git ls-files` output, true when at least one tracked path lives
+ * inside `node_modules/`. `node_modules` is conventionally .gitignore'd and
+ * therefore untracked, but a project can `git add -f` a patched dependency
+ * file into it. If that ever happens, "reinstallable from the committed
+ * lockfile" is no longer true: a plain package-manager install overwrites
+ * that file back to the vanilla upstream version, silently discarding a
+ * committed patch that `git checkout` could otherwise have restored. This
+ * must block the node_modules-only tier even when the lockfile itself is
+ * clean and committed.
+ */
+export function hasTrackedFilesUnderNodeModules(lsFilesOutput) {
+  return lsFilesOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .some((file) => file === "node_modules" || file.startsWith("node_modules/"));
+}
+
+/**
  * Parses `owner/repo` out of a git remote URL (https or ssh form).
  * Returns null when the URL doesn't look like a GitHub remote.
  */
@@ -177,8 +196,10 @@ export function parseGitHubOwnerRepo(remoteUrl) {
  * @param {boolean} facts.hasNodeModules
  * @param {boolean} facts.hasCommittedLockfile
  * @param {boolean} facts.lockfileDirty - the committed lockfile itself has uncommitted edits
+ * @param {boolean} facts.nodeModulesTracked - `git ls-files` shows a tracked path under node_modules/
  * @param {boolean} facts.recentlyCommitted - HEAD landed within the recent-commit threshold
  * @param {boolean} facts.isSharedWorktreeParent - `git worktree list` shows >1 entry
+ * @param {boolean} facts.hasUnsafeExtraGitState - an unpushed other local branch, a stash, or a local-only tag exists
  * @param {boolean} facts.allowWorktreeRemoval - `--remove-merged-worktrees` was passed
  * @returns {{ action: "reap-worktree" | "reap-node-modules" | "preserve", reason: string }}
  */
@@ -191,8 +212,10 @@ export function decideAction(facts) {
     hasNodeModules,
     hasCommittedLockfile: hasLockfile,
     lockfileDirty,
+    nodeModulesTracked,
     recentlyCommitted,
     isSharedWorktreeParent,
+    hasUnsafeExtraGitState: unsafeExtraGitState,
     allowWorktreeRemoval,
   } = facts;
 
@@ -214,11 +237,12 @@ export function decideAction(facts) {
     gitClean &&
     !aheadOfRemote &&
     prSaysMergedOrClosed &&
-    !isSharedWorktreeParent
+    !isSharedWorktreeParent &&
+    !unsafeExtraGitState
   ) {
     return {
       action: "reap-worktree",
-      reason: `clean, fully pushed, PR ${prState} — safe to remove entire worktree`,
+      reason: `clean, fully pushed, PR ${prState}, no extra local branches/stash/tags — safe to remove entire worktree`,
     };
   }
 
@@ -234,6 +258,13 @@ export function decideAction(facts) {
     return {
       action: "preserve",
       reason: "the committed lockfile itself has uncommitted edits — node_modules may not match any committed state",
+    };
+  }
+
+  if (nodeModulesTracked) {
+    return {
+      action: "preserve",
+      reason: "a git-tracked file exists under node_modules/ — a plain reinstall would not reproduce it",
     };
   }
 
@@ -368,15 +399,24 @@ export function getLastCommitEpochSeconds(cwd) {
   }
 }
 
-export function isAheadOfRemote(cwd, branch) {
-  if (!branch) return true; // detached HEAD or unknown — fail closed, assume ahead
+export function getUpstreamRef(cwd, branch) {
+  if (!branch) return null;
   try {
-    const upstream = runGit(cwd, ["rev-parse", "--abbrev-ref", `${branch}@{upstream}`]).trim();
+    return runGit(cwd, ["rev-parse", "--abbrev-ref", `${branch}@{upstream}`]).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function isAheadOfRemote(cwd, branch) {
+  const upstream = getUpstreamRef(cwd, branch);
+  if (!upstream) return true; // detached HEAD, no upstream, or unknown — fail closed, assume ahead
+  try {
     const counts = runGit(cwd, ["rev-list", "--left-right", "--count", `${upstream}...HEAD`]).trim();
     const [, aheadStr] = counts.split(/\s+/);
     return Number(aheadStr) > 0;
   } catch {
-    return true; // no upstream configured, or command failed — fail closed
+    return true; // command failed — fail closed
   }
 }
 
@@ -396,6 +436,129 @@ export function isSharedWorktreeParent(cwd) {
   } catch {
     return true; // can't confirm isolation — fail closed
   }
+}
+
+/** Local branch names in this repo (`git for-each-ref refs/heads`), or null on error. */
+export function getLocalBranches(cwd) {
+  try {
+    const out = runGit(cwd, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return null; // unknown — caller must fail closed
+  }
+}
+
+/**
+ * True when `branchRef`'s commit is reachable from at least one
+ * remote-tracking ref (`refs/remotes/**`) in this repo — i.e. its history is
+ * already mirrored on some remote, even if the branch itself has no matching
+ * upstream. Used to tell apart a harmless leftover branch (e.g. the `main`
+ * every plain `git clone` keeps locally alongside a checked-out feature
+ * branch, fully contained in `origin/main`) from a branch that holds commits
+ * that only exist on this disk.
+ */
+export function isBranchReachableFromAnyRemote(cwd, branchRef) {
+  let remoteRefs;
+  try {
+    remoteRefs = runGit(cwd, ["for-each-ref", "--format=%(refname)", "refs/remotes/"])
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return false; // unknown — fail closed (treat as NOT safely mirrored)
+  }
+  for (const remoteRef of remoteRefs) {
+    try {
+      execFileSync("git", ["-C", cwd, "merge-base", "--is-ancestor", branchRef, remoteRef], { stdio: "ignore" });
+      return true; // fully contained in this remote ref
+    } catch {
+      // not an ancestor of this remote ref — try the next one
+    }
+  }
+  return false;
+}
+
+/**
+ * True when at least one local branch OTHER than `currentBranch` holds
+ * commits not reachable from any remote-tracking ref — i.e. genuinely
+ * unpushed, disk-only history a full worktree removal would destroy. Null
+ * (fail closed) when the local branch list itself can't be determined.
+ * Merely having another local branch (e.g. a clone's default branch left
+ * over after checking out a feature branch) is NOT by itself unsafe — only
+ * when that branch's commits exist nowhere else.
+ */
+export function hasUnpushedOtherLocalBranch(cwd, currentBranch) {
+  const branches = getLocalBranches(cwd);
+  if (branches === null) return null;
+  const others = branches.filter((b) => b !== currentBranch);
+  for (const other of others) {
+    if (!isBranchReachableFromAnyRemote(cwd, other)) return true;
+  }
+  return false;
+}
+
+/** Number of `git stash` entries in this repo, or null on error. */
+export function getStashCount(cwd) {
+  try {
+    const out = runGit(cwd, ["stash", "list"]);
+    return out.split("\n").filter((l) => l.trim().length > 0).length;
+  } catch {
+    return null; // unknown — caller must fail closed
+  }
+}
+
+/**
+ * Local tags whose commit is NOT reachable from `upstreamRef` (the branch's
+ * pushed tracking ref), or null when this can't be determined. A tag like
+ * this can point at a commit that would otherwise be unreachable from any
+ * pushed branch — exactly the kind of "remote-unavailable" history a full
+ * worktree removal must not silently destroy. Deliberately checked via local
+ * ancestry (`git merge-base --is-ancestor`) against the already-resolved
+ * upstream ref rather than a network `git ls-remote` call: it needs no extra
+ * network round trip, and it answers the more precise question ("is this
+ * tag's commit preserved by the push we already validated?") rather than
+ * merely "does a same-named tag exist on the remote?".
+ */
+export function getLocalOnlyTags(cwd, upstreamRef) {
+  try {
+    const localTags = runGit(cwd, ["tag", "--list"])
+      .split("\n")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (localTags.length === 0) return [];
+    if (!upstreamRef) return localTags; // no safe ref to compare against — treat all as unverifiable/local-only
+    return localTags.filter((tag) => {
+      try {
+        execFileSync("git", ["-C", cwd, "merge-base", "--is-ancestor", tag, upstreamRef], { stdio: "ignore" });
+        return false; // tag's commit is an ancestor of the pushed upstream — already safely preserved remotely
+      } catch {
+        return true; // not an ancestor (or command failed) — treat as local-only, fail closed
+      }
+    });
+  } catch {
+    return null; // unknown — caller must fail closed
+  }
+}
+
+/**
+ * True when this repo carries git state beyond "the current branch, fully
+ * pushed" that a full worktree removal (`rmSync` of the whole directory)
+ * would permanently destroy: an unpushed OTHER local branch (one whose
+ * commits are not mirrored on any remote — NOT merely "another branch
+ * exists", since e.g. a plain `git clone` always keeps the default branch
+ * locally alongside a checked-out feature branch, with zero unique commits),
+ * any stash entry, or any local-only tag. Also true (fail closed) when any
+ * of the three underlying signals could not be determined at all.
+ */
+export function hasUnsafeExtraGitState({ hasUnpushedOtherBranch, stashCount, localOnlyTags }) {
+  if (hasUnpushedOtherBranch === null || stashCount === null || localOnlyTags === null) return true;
+  if (hasUnpushedOtherBranch) return true;
+  if (stashCount > 0) return true;
+  if (localOnlyTags.length > 0) return true;
+  return false;
 }
 
 /** Resolves PR state for a branch. Injectable via REAP_PR_LOOKUP_CMD for tests. */
@@ -468,12 +631,30 @@ export function evaluateWorktree(
   const prState = ownerRepo ? resolvePrState(ownerRepo.owner, ownerRepo.repo, branch, env) : "unknown";
   const nodeModulesPath = path.join(dir, "node_modules");
   const hasNodeModules = existsSync(nodeModulesPath);
-  const lockfileCommitted = hasCommittedLockfile(getLsFiles(dir));
+  const lsFilesOutput = getLsFiles(dir);
+  const lockfileCommitted = hasCommittedLockfile(lsFilesOutput);
   const lockfileDirty = isLockfileDirty(statusPorcelain);
+  const nodeModulesTracked = hasTrackedFilesUnderNodeModules(lsFilesOutput);
   const sharedParent = isSharedWorktreeParent(dir);
   const activeSession = hasActiveSession(dir, env);
   const lastCommitEpochSeconds = getLastCommitEpochSeconds(dir);
   const recentlyCommitted = isRecentlyCommitted(lastCommitEpochSeconds, Math.floor(now / 1000), recentCommitMinutes);
+
+  // The stash/other-branch/local-tag checks below cost 2-3 extra `git`
+  // subprocess calls, all local (no network). Only pay that cost when every
+  // OTHER worktree-removal gate already holds — i.e. exactly when
+  // `decideAction` would otherwise choose "reap-worktree" — so the default
+  // (or a node_modules-only) run never pays for it.
+  const prSaysMergedOrClosed = prState === "merged" || prState === "closed";
+  const wouldOtherwiseReapWorktree =
+    Boolean(allowWorktreeRemoval) && gitClean && !aheadOfRemote && prSaysMergedOrClosed && !sharedParent;
+  const unsafeExtraGitState = wouldOtherwiseReapWorktree
+    ? hasUnsafeExtraGitState({
+        hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
+        stashCount: getStashCount(dir),
+        localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
+      })
+    : false;
 
   const decision = decideAction({
     activeSession,
@@ -483,8 +664,10 @@ export function evaluateWorktree(
     hasNodeModules,
     hasCommittedLockfile: lockfileCommitted,
     lockfileDirty,
+    nodeModulesTracked,
     recentlyCommitted,
     isSharedWorktreeParent: sharedParent,
+    hasUnsafeExtraGitState: unsafeExtraGitState,
     allowWorktreeRemoval: Boolean(allowWorktreeRemoval),
   });
 
@@ -498,12 +681,73 @@ export function evaluateWorktree(
     hasNodeModules,
     lockfileCommitted,
     lockfileDirty,
+    nodeModulesTracked,
     lastCommitEpochSeconds,
     recentlyCommitted,
     sharedParent,
+    unsafeExtraGitState,
     activeSession,
     ...decision,
   };
+}
+
+/**
+ * Re-checks the cheap, fast-changing safety signals immediately before an
+ * actual delete, using fresh I/O rather than the (possibly minutes-stale)
+ * `evaluateWorktree` result. A single run can evaluate many worktrees before
+ * it reaches any given one's `rmSync`; an agent can resume a session, make a
+ * new commit, stash work, or dirty the tree at any point during that window.
+ * This does not fully eliminate the race (there is still a gap between this
+ * check and the `rmSync` call a few lines later), but it collapses the
+ * window from "the whole run's duration" down to milliseconds.
+ */
+export function revalidateBeforeDelete(
+  dir,
+  action,
+  { env = process.env, recentCommitMinutes = DEFAULT_RECENT_COMMIT_MINUTES, now = Date.now() } = {},
+) {
+  if (hasActiveSession(dir, env)) {
+    return { safe: false, reason: "revalidation-before-delete: a session became active since evaluation" };
+  }
+  const lastCommitEpochSeconds = getLastCommitEpochSeconds(dir);
+  if (isRecentlyCommitted(lastCommitEpochSeconds, Math.floor(now / 1000), recentCommitMinutes)) {
+    return { safe: false, reason: "revalidation-before-delete: a new commit landed since evaluation" };
+  }
+  const statusPorcelain = getGitStatusPorcelain(dir);
+  if (isLockfileDirty(statusPorcelain)) {
+    return { safe: false, reason: "revalidation-before-delete: the lockfile became dirty since evaluation" };
+  }
+
+  if (action === "reap-node-modules") {
+    if (hasTrackedFilesUnderNodeModules(getLsFiles(dir))) {
+      return { safe: false, reason: "revalidation-before-delete: node_modules now contains a tracked path" };
+    }
+    return { safe: true };
+  }
+
+  if (action === "reap-worktree") {
+    if (!isGitStatusClean(statusPorcelain)) {
+      return { safe: false, reason: "revalidation-before-delete: the tree became dirty since evaluation" };
+    }
+    const branch = getBranch(dir);
+    if (isAheadOfRemote(dir, branch)) {
+      return { safe: false, reason: "revalidation-before-delete: HEAD is now ahead of the remote branch" };
+    }
+    const unsafeExtraGitState = hasUnsafeExtraGitState({
+      hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
+      stashCount: getStashCount(dir),
+      localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
+    });
+    if (unsafeExtraGitState) {
+      return {
+        safe: false,
+        reason: "revalidation-before-delete: an unpushed local branch/stash/tag appeared since evaluation",
+      };
+    }
+    return { safe: true };
+  }
+
+  return { safe: true };
 }
 
 function parseArgs(argv, env = process.env) {
@@ -557,7 +801,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     .filter(Boolean);
 
   const results = [];
-  let reclaimedBytes = 0;
 
   for (const root of allowedRoots) {
     if (!existsSync(root)) continue;
@@ -605,9 +848,21 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         const sizeBefore = evaluation.hasNodeModules ? du(nodeModulesPath) : 0;
         const targetSize = evaluation.action === "reap-worktree" ? du(realWt) : sizeBefore;
 
-        results.push({ ...evaluation, bytes: targetSize });
+        const resultEntry = { ...evaluation, bytes: targetSize };
+        results.push(resultEntry);
 
         if (!opts.apply || evaluation.action === "preserve") continue;
+
+        const revalidation = revalidateBeforeDelete(realWt, evaluation.action, {
+          env,
+          recentCommitMinutes: opts.recentCommitMinutes,
+        });
+        if (!revalidation.safe) {
+          resultEntry.action = "preserve";
+          resultEntry.reason = revalidation.reason;
+          resultEntry.bytes = 0;
+          continue;
+        }
 
         const { rmSync } = await import("node:fs");
         if (evaluation.action === "reap-node-modules") {
@@ -615,10 +870,20 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         } else if (evaluation.action === "reap-worktree") {
           rmSync(realWt, { recursive: true, force: true });
         }
-        reclaimedBytes += targetSize;
       }
     }
   }
+
+  // Derived from the final `results` array (not accumulated inline) so the
+  // reported total is correct in BOTH modes: in dry-run every candidate's
+  // action/bytes reflect the plan; in --apply a candidate downgraded to
+  // "preserve" by revalidateBeforeDelete already has its bytes zeroed out,
+  // so it is naturally excluded here too. A prior version only accumulated
+  // this inside the --apply branch, so dry-run always reported "0B" even
+  // when individual lines showed real reclaimable sizes.
+  const reclaimedBytes = results
+    .filter((r) => r.action !== "preserve")
+    .reduce((sum, r) => sum + (r.bytes || 0), 0);
 
   if (opts.json) {
     console.log(JSON.stringify({ apply: opts.apply, results, reclaimedBytes }, null, 2));

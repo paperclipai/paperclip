@@ -60,6 +60,12 @@ preserved, not reclaimed.
      committed lockfile would not reproduce this `node_modules`. Found on a
      live host, not merely theoretical: an in-progress dependency bump left
      `pnpm-lock.yaml` modified but uncommitted in an otherwise-idle worktree.
+   - `git ls-files` reports **no tracked path under `node_modules/`**.
+     `node_modules` is conventionally `.gitignore`'d, but nothing stops
+     `git add -f` from committing a patched dependency file into it — if
+     that ever happens, "reinstallable from the committed lockfile" is no
+     longer true, since a plain reinstall silently overwrites that patch back
+     to the vanilla upstream file. Caught by review before it could ship.
 
    This tier does **not** require the branch to be merged or the PR to be
    closed, because it never touches PR/branch/commit state at all.
@@ -71,7 +77,20 @@ preserved, not reclaimed.
    - the branch has no commits ahead of its upstream (nothing unpushed),
    - the branch's GitHub PR is `MERGED` or `CLOSED` — **never** while `OPEN`,
    - the directory is not a shared `git worktree` parent/child of another
-     checkout still in use (`git worktree list` reports more than one entry).
+     checkout still in use (`git worktree list` reports more than one entry),
+   - no other local git state exists that only the *current* branch's
+     PR/merge check does not see: an unpushed commit on a **different**
+     local branch (a leftover branch that is itself fully mirrored on a
+     remote — e.g. the default branch every plain `git clone` leaves
+     checked out before a feature branch — is fine and does not block
+     removal; only a branch with commits that exist nowhere else does), any
+     `git stash` entry, or a tag pointing at a commit not reachable from the
+     pushed upstream. Checked entirely locally (`git merge-base
+     --is-ancestor`, no network call), and only computed once every other
+     gate above already passed, so it costs nothing on the common
+     node_modules-only path. Found by code review before it could ship:
+     the original PR/merge check only validated the checked-out branch,
+     not other branches/stashes/tags a worktree can also be carrying.
 
    Any one of these failing to hold — for any reason, including a lookup
    error — keeps the worktree and falls back to tier 1.
@@ -84,6 +103,23 @@ preserved, not reclaimed.
    committed within the last `--recent-commit-minutes` (default: 60; env
    `REAP_RECENT_COMMIT_MINUTES`) is preserved regardless of every other
    signal. Pass `--recent-commit-minutes 0` to disable it explicitly.
+
+4. **Revalidation immediately before delete (applies to both tiers).** Every
+   safety fact above is evaluated once, up front, before the run decides
+   which candidates to reclaim — but `--apply` can process many worktrees in
+   one run, and a worktree evaluated as safe early in the run could have a
+   session attach, a new commit land, or its lockfile go dirty by the time
+   its turn to actually delete comes up. Immediately before each deletion,
+   every underlying signal (active session, recent commit, lockfile
+   dirtiness, and — for a full worktree removal — clean tree, not-ahead-of-
+   remote, and the same extra-git-state check from tier 2) is re-checked
+   fresh; if anything has changed since the original evaluation, the
+   deletion is skipped and the candidate is downgraded to preserved instead.
+   This does not close the race window entirely (there is still a gap
+   between this re-check and the delete call itself), but it shrinks it from
+   "the full duration of the run across every worktree" down to
+   milliseconds — the right cost/benefit tradeoff versus a full lock/mutex
+   mechanism for a maintenance script that already fails closed by default.
 
 Every path the script touches is `realpath`-resolved and checked against an
 allow-list of discovered worktree roots (or explicit `--root` overrides);
