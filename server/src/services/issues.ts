@@ -8342,8 +8342,6 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
-      await clearExecutionRunIfTerminal(id);
-      await clearCheckoutRunIfTerminal(id);
       const loadCurrent = () =>
         db
           .select({
@@ -8356,8 +8354,26 @@ export function issueService(db: Db) {
           .from(issues)
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
-      const current = await loadCurrent();
+      let current = await loadCurrent();
 
+      if (!current) throw notFound("Issue not found");
+
+      // A successful checkout is the authoritative ownership grant for this
+      // request path. Check the exact lock before stale-run cleanup: bridged
+      // runtimes can report their heartbeat run terminal before the agent's
+      // final PATCH arrives, and cleanup would otherwise erase the lock that
+      // the immediately preceding checkout just granted.
+      if (
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        sameRunLock(current.checkoutRunId, actorRunId)
+      ) {
+        return { ...current, adoptedFromRunId: null as string | null };
+      }
+
+      await clearExecutionRunIfTerminal(id);
+      await clearCheckoutRunIfTerminal(id);
+      current = await loadCurrent();
       if (!current) throw notFound("Issue not found");
 
       const resolveSameRunOwnership = (candidate: {
