@@ -4,6 +4,111 @@ Thanks for wanting to contribute!
 
 We really appreciate both small fixes and thoughtful larger changes.
 
+## Local Setup
+
+### Prerequisites
+
+Paperclip pins its toolchain. Mismatched versions are the most common cause of a
+broken first install.
+
+| Tool | Required | Check with |
+| --- | --- | --- |
+| Node.js | `>=24.11.0` (from `engines`) | `node --version` |
+| pnpm | `9.15.4` (from `packageManager`) | `pnpm --version` |
+
+If pnpm is missing or the version does not match:
+
+```bash
+npm install -g pnpm@9.15.4
+```
+
+If your Node distribution still ships Corepack, `corepack prepare pnpm@9.15.4
+--activate` works too. Recent Node versions no longer bundle it, so the npm
+install above is the reliable path.
+
+### Fork and clone
+
+Clone upstream as `origin`, then add your fork as a second remote. This keeps
+`git pull origin master` pointing at upstream and matches the remote layout used
+elsewhere in this project:
+
+```bash
+git clone https://github.com/paperclipai/paperclip.git
+```
+
+```bash
+cd paperclip
+```
+
+```bash
+gh repo fork --remote --remote-name fork
+```
+
+Confirm the result before you go further:
+
+```bash
+git remote -v
+```
+
+You want `origin` → `paperclipai/paperclip` and `fork` → your account. Note that
+`gh repo fork` **without** `--remote-name` does the opposite: it makes your fork
+`origin` and renames upstream to `upstream`. Either layout works, but the rest of
+this guide assumes the one above — check `git remote -v` rather than assuming.
+
+Push branches to `fork`; open PRs against `origin/master`.
+
+### Set your commit identity
+
+Do this before your first commit. Git falls back to a global default or a
+placeholder, and a commit authored by `Your Name <you@example.com>` cannot be
+attributed to you — it has to be rewritten to fix.
+
+```bash
+git config user.name "Your Real Name"
+```
+
+```bash
+git config user.email "your-github-email@example.com"
+```
+
+Confirm it took, and that it is not a placeholder:
+
+```bash
+git config user.name && git config user.email
+```
+
+### Install and verify
+
+```bash
+pnpm install
+```
+
+Then confirm the tree is healthy before changing anything:
+
+```bash
+pnpm typecheck
+```
+
+If `pnpm install` fails on workspace links, run `pnpm run preflight:workspace-links`
+and read its output — `build`, `typecheck`, and `test:run` all run it first, so a
+link problem surfaces everywhere until it is fixed.
+
+For the full command reference — dev servers, builds, database migrations, e2e
+suites — see the Development section of [README.md](README.md) and
+[doc/DEVELOPING.md](doc/DEVELOPING.md). Do not duplicate those lists here.
+
+### Environment
+
+Copy the example file and fill it in:
+
+```bash
+cp .env.example .env
+```
+
+It declares `DATABASE_URL`, `PORT`, `SERVE_UI`, `BETTER_AUTH_SECRET`, and
+`PAPERCLIP_TOOL_ACTION_SIGNING_SECRET`. Generate real secrets for the two signing
+values — never reuse the example placeholders, and never commit `.env`.
+
 ## Before You Start: Search First
 
 Before you start work, **search GitHub** for existing PRs and issues that touch the same area:
@@ -119,6 +224,79 @@ We use [Greptile](https://greptile.com) for automated code review. Your PR must 
 - **No open follow-ups**
 
 We hold the bar high here on purpose — we want code quality to be as high as possible. If Greptile leaves comments, fix them (or, if a comment is wrong, reply explaining why) and request a re-review.
+
+## Before You Open a PR
+
+Run these locally. CI runs the same gates, and a red gate blocks the merge.
+
+```bash
+pnpm typecheck
+```
+
+```bash
+pnpm test
+```
+
+```bash
+pnpm build
+```
+
+`pnpm test` is the cheap Vitest run and does **not** include Playwright. If you
+touched browser flows, run `pnpm test:e2e` as well and say so in your Verification
+section.
+
+Then check the diff itself:
+
+```bash
+git diff --check
+```
+
+This must print nothing. It flags trailing whitespace and leftover conflict
+markers — both of which reviewers will otherwise catch for you.
+
+Quote the actual output of what you ran in the PR's **Verification** section. "Tests
+pass" without output is not verification.
+
+### Name the branch for the change
+
+Rename before you push if your tooling generated the branch name — see
+[Branch Naming](#branch-naming). Descriptive and kebab-case, optionally prefixed:
+`docs/setup-prerequisites`, `fix/sandbox-secret-resolution`,
+`feat/adapter-retry-backoff`.
+
+## Security Review Checklist
+
+Complete this for any change that touches secrets, agent permissions, tool access,
+sandboxes, auth, or user data. Anything unchecked blocks the merge.
+
+### Secrets and credentials
+
+- [ ] No hardcoded secrets, keys, tokens, or credentials.
+- [ ] New secrets go through the Secrets Manager, not inline env or config.
+- [ ] Logs, traces, and error messages exclude secret values and personal data.
+- [ ] `.env`, state files, and fixtures containing real data stay uncommitted.
+
+### Agent and tool boundaries
+
+- [ ] Per-agent access is enforced on the object, not just the route.
+- [ ] Tool access changes respect MCP Tool Gateway governance.
+- [ ] Sandbox isolation is preserved; nothing new escapes to the host.
+- [ ] Approval and review gates cannot be bypassed by the new path.
+
+### Input and output
+
+- [ ] External and agent-supplied input is validated before use.
+- [ ] Database access is parameterized, never string-concatenated.
+- [ ] Output is encoded for its destination.
+- [ ] File paths, redirects, and outbound requests are checked for traversal and SSRF.
+
+### Change safety
+
+- [ ] Failure paths land in a safe, predictable state.
+- [ ] The change is backward compatible, or the break is called out in Risks.
+- [ ] Rollback is possible.
+- [ ] Telemetry changes update the Telemetry Data Contract in the same PR.
+- [ ] New dependencies are necessary, maintained, and free of known critical advisories.
 
 ## Helping Other Contributors
 
