@@ -240,7 +240,22 @@ interface ParsedOutput {
 
 /** Strip noise lines from a Hermes response (tool output, system messages, etc.) */
 function cleanResponse(raw: string): string {
-  return raw
+  // Strip "Query: <prompt>" echo block — Hermes prints "Query: <full prompt>" to stdout in
+  // non-quiet mode as a session-start progress indicator.  This appears ONLY at the very
+  // beginning of the stdout stream (before any real output), so we strip it as a leading
+  // block rather than filtering every line, avoiding false-positives on agent responses that
+  // legitimately contain "Query:" mid-text.
+  // "Warning: Unknown toolsets: <name>" is similarly a session-start diagnostic line emitted
+  // before the agent produces any response.
+  // (See: SSC-1832 raw_prompt_echo sightings, 2026-08-01 → 2026-08-05)
+  // The regex matches leading diagnostic lines (each ending with \n OR at end-of-string
+  // if stdout was captured without a final newline).
+  const withoutLeadingEcho = raw.replace(
+    /^(?:(?:Warning: Unknown toolsets:|Query:)[^\n]*(?:\n|$))*/,
+    ""
+  );
+
+  return withoutLeadingEcho
     .split("\n")
     .filter((line) => {
       const t = line.trim();
