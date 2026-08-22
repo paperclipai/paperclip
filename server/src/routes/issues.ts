@@ -199,6 +199,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+  parseForeignKeyError,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -9988,6 +9989,8 @@ export function issueRoutes(
         issue = await updateIssue();
       }
     } catch (err) {
+      const fkError = parseForeignKeyError(err);
+      if (fkError) throw unprocessable(fkError.message);
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
           {
