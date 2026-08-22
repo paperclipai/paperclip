@@ -83,6 +83,7 @@ import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { checkDenylistTripwire } from "@paperclipai/adapter-utils/denylist-tripwire";
 import {
   createClaudeAcpExecutor,
   formatClaudeAcpFallbackMessage,
@@ -917,6 +918,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    await checkDenylistTripwire({ command, args, issueId: typeof context.issueId === "string" ? context.issueId : null, agentId: agent.id, adapterType: "claude_local" });
+    await checkDenylistTripwire({ command, args, issueId: typeof context.issueId === "string" ? context.issueId : null, agentId: agent.id, adapterType: "claude_local" });
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
