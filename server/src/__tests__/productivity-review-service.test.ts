@@ -201,13 +201,69 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews).toHaveLength(1);
     expect(reviews[0]?.parentId).toBe(seeded.issueId);
     expect(reviews[0]?.assigneeAgentId).toBe(seeded.managerId);
-    expect(reviews[0]?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
+    expect(reviews[0]?.assigneeAdapterOverrides).toBeNull();
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("leaves productivity review assignee overrides null when the owner cheap profile is disabled", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await db
+      .update(agents)
+      .set({
+        name: "CEO",
+        role: "ceo",
+        runtimeConfig: { modelProfiles: { cheap: { enabled: false } } },
+      })
+      .where(eq(agents.id, seeded.managerId));
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    expect(review?.assigneeAdapterOverrides).toBeNull();
+  });
+
+  it("uses the cheap assignee override when the productivity review owner cheap profile is enabled", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await db
+      .update(agents)
+      .set({ runtimeConfig: { modelProfiles: { cheap: { enabled: true } } } })
+      .where(eq(agents.id, seeded.managerId));
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    expect(review?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
