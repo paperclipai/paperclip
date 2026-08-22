@@ -412,12 +412,13 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         stopFingerprint: "task_watchdog_stop:unavailable",
         stoppedLeaves: [],
         stopSnapshot: {
-          version: 2,
+          version: 3,
           fingerprint: "task_watchdog_stop:unavailable",
           materialLeaves: [],
           waitsByIssueId: {},
         },
         pendingInteractionsByIssueId: {},
+        pendingApprovalsByIssueId: {},
       },
     }),
   };
