@@ -25,7 +25,12 @@ export function buildGeminiLocalConfig(v: CreateConfigValues): Record<string, un
   ac.graceSec = 15;
   const env = buildAdapterEnvConfig(v.envBindings, v.envVars);
   if (Object.keys(env).length > 0) ac.env = env;
-  ac.sandbox = !v.dangerouslyBypassSandbox;
+  // adapterConfig.sandbox asks the Gemini CLI to relaunch itself inside a
+  // Docker or Podman container. That is a different thing from the create
+  // form's "bypass sandbox" toggle, which is Codex's approval-and-sandbox
+  // switch, so deriving one from the other turned it on for every Gemini agent
+  // and broke every run that landed somewhere without a container runtime.
+  // Leave it unset; it stays available as a direct adapterConfig option.
 
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);

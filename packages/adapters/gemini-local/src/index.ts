@@ -53,7 +53,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
 - engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Gemini CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
-- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
+- sandbox (boolean, optional): ask the Gemini CLI to relaunch itself inside a Docker or Podman container (default: false, passes --sandbox=none). Ignored on managed sandbox targets, which are isolated already and have no container runtime.
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
