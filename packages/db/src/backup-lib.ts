@@ -28,6 +28,16 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Aborts the backup. Without this a stalled compression leaves the returned
+   * promise unsettled forever, which strands any caller-side in-flight guard
+   * and silently disables all future scheduled backups until a restart.
+   *
+   * Aborting destroys the gzip pipeline (releasing its file descriptors) and
+   * SIGTERMs the pg_dump child when that engine is in use. Partial output is
+   * cleaned up by the existing error path.
+   */
+  signal?: AbortSignal;
 };
 
 export type RunDatabaseBackupResult = {
@@ -321,6 +331,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  signal?: AbortSignal;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -346,10 +357,29 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  // Aborting the pipeline tears down our end of the stream, but pg_dump itself
+  // would keep running and holding the connection, so signal the child too.
+  const killChild = () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+    }
+  };
+  if (opts.signal?.aborted) {
+    killChild();
+  } else {
+    opts.signal?.addEventListener("abort", killChild, { once: true });
+  }
+
+  try {
+    await Promise.all([
+      pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile), {
+        signal: opts.signal,
+      }),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+  } finally {
+    opts.signal?.removeEventListener("abort", killChild);
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -525,6 +555,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
+  opts.signal?.throwIfAborted();
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
@@ -553,6 +584,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          signal: opts.signal,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
@@ -566,6 +598,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
+        // An abort is not an engine failure. Without this check, auto mode
+        // treats a cancelled pg_dump as a reason to fall back, opens a new
+        // connection, and runs a full JavaScript dump before the abort is
+        // observed again at the compression step.
+        // An abort is not an engine failure. Without this check, auto mode
+        // treats a cancelled pg_dump as a reason to fall back, opens a new
+        // connection, and runs a full JavaScript dump before the abort is
+        // observed again at the compression step.
+        // An abort is not an engine failure. Without this check, auto mode
+        // treats a cancelled pg_dump as a reason to fall back, opens a new
+        // connection, and runs a full JavaScript dump before the abort is
+        // observed again at the compression step.
+        opts.signal?.throwIfAborted();
         if (backupEngine === "pg_dump") {
           throw error;
         }
@@ -961,10 +1006,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await writer.close();
 
-    // Compress the SQL file with gzip
+    // Compress the SQL file with gzip. This is the step that stalled in the
+    // wild (2026-07-25): without a signal the pipeline can hang indefinitely,
+    // leaving this promise unsettled and the caller's in-flight guard pinned.
     const sqlReadStream = createReadStream(sqlFile);
     const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
+    await pipeline(sqlReadStream, createGzip(), gzWriteStream, { signal: opts.signal });
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;

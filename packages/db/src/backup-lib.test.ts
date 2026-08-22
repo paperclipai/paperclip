@@ -568,3 +568,140 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     20_000,
   );
 });
+
+describe("runDatabaseBackup abort handling", () => {
+  it("rejects immediately when handed an already-aborted signal", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-preaborted-");
+
+    await expect(
+      runDatabaseBackup({
+        // Never dialled: throwIfAborted() runs before the client is created.
+        connectionString: "postgres://unused:unused@127.0.0.1:1/unused",
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        signal: AbortSignal.abort(),
+      }),
+    ).rejects.toThrow();
+
+    expect(fs.readdirSync(backupDir)).toEqual([]);
+  });
+});
+
+describeEmbeddedPostgres("runDatabaseBackup with a signal", () => {
+  async function seedTable(connectionString: string, table: string, rows: number): Promise<void> {
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await sql.unsafe(`
+        CREATE TABLE "public"."${table}" ("id" serial PRIMARY KEY, "payload" text NOT NULL);
+      `);
+      await sql.unsafe(`
+        INSERT INTO "public"."${table}" ("payload")
+        SELECT repeat('x', 512) FROM generate_series(1, ${rows});
+      `);
+    } finally {
+      await sql.end();
+    }
+  }
+
+  /** A pg_dump stand-in that never writes output, so the pipeline stays open. */
+  function createStallingPgDump(): string {
+    const dir = createTempDir("paperclip-fake-pgdump-");
+    const bin = path.join(dir, "pg_dump");
+    fs.writeFileSync(bin, "#!/bin/sh\nsleep 120\n");
+    fs.chmodSync(bin, 0o755);
+    return bin;
+  }
+
+  it(
+    "still completes normally when the signal is never aborted",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-signal-ok-");
+      await seedTable(connectionString, "signal_ok", 10);
+
+      const controller = new AbortController();
+      const result = await runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        backupEngine: "javascript",
+        signal: controller.signal,
+      });
+
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8")).toContain("signal_ok");
+      expect(fs.readdirSync(backupDir).filter((f) => f.endsWith(".sql"))).toEqual([]);
+    },
+    30_000,
+  );
+
+  it(
+    "rejects the javascript engine when the signal aborts after the backup starts",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-abort-js-");
+      await seedTable(connectionString, "abort_js", 500);
+
+      // Abort on the next tick. throwIfAborted() has already passed, so this
+      // proves the compression step observes the signal rather than the
+      // entry guard. The dump work is small, so the outcome is deterministic.
+      const controller = new AbortController();
+      const pending = runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        backupEngine: "javascript",
+        signal: controller.signal,
+      });
+      queueMicrotask(() => controller.abort());
+
+      await expect(pending).rejects.toThrow();
+      expect(fs.readdirSync(backupDir).filter((f) => f.endsWith(".sql"))).toEqual([]);
+      expect(fs.readdirSync(backupDir).filter((f) => f.endsWith(".sql.gz"))).toEqual([]);
+    },
+    30_000,
+  );
+
+  it(
+    "does not fall back to the javascript engine when pg_dump is aborted in auto mode",
+    async () => {
+      // Regression test: auto mode used to treat an abort as an engine
+      // failure. It then opened a new connection and ran a full JavaScript
+      // dump before noticing the abort again at the compression step.
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-abort-auto-");
+      await seedTable(connectionString, "abort_auto", 500);
+
+      const previousPgDump = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = createStallingPgDump();
+
+      try {
+        // Abort with a distinct reason. This makes the assertion exact rather
+        // than timing-based: when the abort stops the backup, throwIfAborted()
+        // rethrows this reason unchanged. If the abort instead fell through to
+        // the JavaScript engine, the failure would surface from the gzip
+        // pipeline as an AbortError with the message "The operation was
+        // aborted", and this expectation would fail.
+        const controller = new AbortController();
+        const pending = runDatabaseBackup({
+          connectionString,
+          backupDir,
+          retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+          backupEngine: "auto",
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort(new Error("CANCELLED_BY_TEST")), 250).unref?.();
+
+        await expect(pending).rejects.toThrow("CANCELLED_BY_TEST");
+        expect(fs.readdirSync(backupDir).filter((f) => f.endsWith(".sql.gz"))).toEqual([]);
+      } finally {
+        if (previousPgDump === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDump;
+        }
+      }
+    },
+    40_000,
+  );
+});
