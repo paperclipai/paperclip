@@ -142,7 +142,6 @@ import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGal
 import { FileViewerProvider, useRequiredFileViewer } from "../context/FileViewerContext";
 import { FileViewerSheet } from "../components/FileViewerSheet";
 import { ArtifactFileChip } from "../components/ArtifactFileChip";
-import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
@@ -5609,7 +5608,6 @@ export function IssueDetail() {
           onPromptOpenChange={setFileViewerPromptOpen}
         />
       ) : null}
-      <ScrollToBottom />
     </div>
     </FileViewerProvider>
   );

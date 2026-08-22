@@ -391,10 +391,6 @@ vi.mock("../components/ImageGalleryModal", () => ({
   },
 }));
 
-vi.mock("../components/ScrollToBottom", () => ({
-  ScrollToBottom: () => null,
-}));
-
 vi.mock("../components/StatusIcon", () => ({
   StatusIcon: ({
     status,
