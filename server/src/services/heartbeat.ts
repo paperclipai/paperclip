@@ -13985,7 +13985,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
 
-    return withAgentStartLock(agentId, async () => {
+    // withAgentStartLock resolves undefined when this attempt was skipped
+    // because another attempt is already waiting behind the current holder.
+    const claimed = await withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
       const invokability = await getAgentInvokability(agent);
@@ -14072,6 +14074,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       return claimedRuns;
     });
+    return claimed ?? [];
   }
 
   // Await every background heartbeat execution that is currently in flight. A
