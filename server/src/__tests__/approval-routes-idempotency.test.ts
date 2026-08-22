@@ -643,6 +643,34 @@ describe("approval routes idempotent retries", () => {
       expect(mockApprovalService.cancel).not.toHaveBeenCalled();
     });
 
+    it("board member can cancel a card they did not request → 200", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        id: "approval-25",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: "other-agent",
+      });
+      mockApprovalService.cancel.mockResolvedValue({
+        id: "approval-25",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "cancelled",
+        payload: {},
+        requestedByAgentId: "other-agent",
+        decisionNote: null,
+      });
+
+      const res = await request(await createApp())
+        .post("/api/approvals/approval-25/cancel")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("cancelled");
+      expect(mockApprovalService.cancel).toHaveBeenCalledWith("approval-25", null);
+    });
+
     it("reason field flows through to decisionNote in the response", async () => {
       mockApprovalService.getById.mockResolvedValue({
         id: "approval-23",
