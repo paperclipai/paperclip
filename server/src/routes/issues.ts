@@ -4065,6 +4065,11 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
+    const hasCheckoutManagementOverride =
+      issue.assigneeAgentId !== null &&
+      issue.assigneeAgentId !== actorAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId);
+    if (hasCheckoutManagementOverride) return true;
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
@@ -4073,9 +4078,6 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
-        return true;
-      }
       if (issue.status === "in_progress") {
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
@@ -5044,7 +5046,15 @@ export function issueRoutes(
     issue: Parameters<typeof decideIssueAccess>[1],
     options: { resumeIntent?: boolean } = {},
   ) {
-    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
+    const hasCheckoutManagementOverride =
+      actorAgentId !== null &&
+      issue.assigneeAgentId !== null &&
+      issue.assigneeAgentId !== actorAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId);
+    if (!hasCheckoutManagementOverride && await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) {
+      return false;
+    }
 
     // Structured resume intent is the sole comment surface that may revive a
     // cancelled issue. Bare status transitions and `reopen` keep using the
@@ -5098,7 +5108,6 @@ export function issueRoutes(
 
     if (req.actor.type !== "agent") return true;
 
-    const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
@@ -5111,9 +5120,7 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
-    if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
-      return true;
-    }
+    if (hasCheckoutManagementOverride) return true;
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (isDefaultOpenIssueWriteDecision(boundaryDecision)) return true;
 
