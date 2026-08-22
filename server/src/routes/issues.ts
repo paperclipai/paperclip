@@ -3222,6 +3222,13 @@ export function issueRoutes(
     if (input.blockedToTodoRecovery === true) {
       return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
     }
+    // Parking an owned issue in backlog is a deliberate disposition, not a stranded issue: the owner
+    // pulls it back into the dispatch queue when capacity allows. Classify it next to the other
+    // durable dispositions (before the read-projection gate) so already-parked issues fold on a plain
+    // read instead of staying active until some unrelated mutation happens to touch them.
+    if (issue.status === "backlog" && issue.assigneeAgentId) {
+      return "Recovery action became stale because the source issue is backlog with an agent owner.";
+    }
 
     if (input.trigger === "read_projection") return null;
     if (
