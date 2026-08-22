@@ -164,8 +164,8 @@ importers:
   packages/adapters/codex-local:
     dependencies:
       '@agentclientprotocol/codex-acp':
-        specifier: ^1.2.0
-        version: 1.2.0
+        specifier: ^1.4.0
+        version: 1.4.0
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -1096,8 +1096,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@agentclientprotocol/codex-acp@1.2.0':
-    resolution: {integrity: sha512-nj23pM4OfaCOB5Du5rsSq0kcyki5H8D5ql96+AwIv7lnu0YEKj9R2YDsxbOKzwLlt+5QD6s0mn4Grkm7SSAUUA==}
+  '@agentclientprotocol/codex-acp@1.4.0':
+    resolution: {integrity: sha512-Fo12tKFerUZltUgM8PxBiUBVxrYrIMK24zlOmQabnJtysPHrAwNq+CXMA0AMepPPEP3RlfDXOQPtjBGhv+Rd4w==}
     hasBin: true
 
   '@agentclientprotocol/sdk@1.2.1':
@@ -1107,6 +1107,11 @@ packages:
 
   '@agentclientprotocol/sdk@1.3.0':
     resolution: {integrity: sha512-i3h/efaeuMUFAO1HSfo97QZQnnvMd7wWBYtBsdL6UMZg3a78sk3Ffya5Xu7C7tYsXomXoDXJBAzQF2PcFKAhIQ==}
+    peerDependencies:
+      zod: ^3.25.0 || ^4.0.0
+
+  '@agentclientprotocol/sdk@1.4.0':
+    resolution: {integrity: sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
@@ -5449,6 +5454,9 @@ packages:
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
+  '@types/node@24.13.3':
+    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
   '@types/node@25.2.3':
     resolution: {integrity: sha512-m0jEgYlYz+mDJZ2+F4v8D1AyQb+QzsNqRuI7xg1VQX/KlKS0qT9r1Mo16yo5F/MtifXFgaofIFsdFMox2SxIbQ==}
 
@@ -9128,9 +9136,9 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/codex-acp@1.2.0':
+  '@agentclientprotocol/codex-acp@1.4.0':
     dependencies:
-      '@agentclientprotocol/sdk': 1.3.0(zod@4.4.3)
+      '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@openai/codex': 0.147.0
       diff: 9.0.0
       open: 11.0.1
@@ -9145,7 +9153,7 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  '@agentclientprotocol/sdk@1.3.0(zod@4.4.3)':
+  '@agentclientprotocol/sdk@1.4.0(zod@4.4.3)':
     dependencies:
       zod: 4.4.3
 
@@ -13368,6 +13376,10 @@ snapshots:
   '@types/multer@2.2.0':
     dependencies:
       '@types/express': 5.0.6
+
+  '@types/node@24.13.3':
+    dependencies:
+      undici-types: 7.18.2
 
   '@types/node@24.13.3':
     dependencies:
