@@ -37,6 +37,25 @@ describe("service definition generation", () => {
     expect(unit).not.toContain("API_KEY");
   });
 
+  it("passes the installer's own PATH through to the systemd unit so `env node` can resolve it", () => {
+    const withExplicitPath = renderSystemdUnit({
+      instanceId: "team-a",
+      shimPath: "/home/alice/.local/bin/paperclipai",
+      homeDir: "/home/alice/.paperclip",
+      path: "/home/alice/.nvm/versions/node/v22/bin:/usr/bin:/bin",
+    });
+    expect(withExplicitPath).toContain('Environment="PATH=/home/alice/.nvm/versions/node/v22/bin:/usr/bin:/bin"');
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = "/home/alice/.fnm/bin:/usr/bin:/bin";
+    try {
+      const withDefaultPath = renderSystemdUnit({ instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip" });
+      expect(withDefaultPath).toContain('Environment="PATH=/home/alice/.fnm/bin:/usr/bin:/bin"');
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
   it("escapes systemd variable and specifier expansion in configured values", () => {
     const unit = renderSystemdUnit({
       instanceId: "team-$USER-%i",
@@ -62,6 +81,18 @@ describe("service definition generation", () => {
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("service.err.log");
+  });
+
+  it("passes the installer's own PATH through to the launchd plist so `env node` can resolve it", () => {
+    const plist = renderLaunchdPlist({
+      instanceId: "team-a",
+      shimPath: "/Users/alice/.local/bin/paperclipai",
+      homeDir: "/Users/alice/.paperclip",
+      stdoutPath: "/Users/alice/.paperclip/instances/team-a/logs/service.log",
+      stderrPath: "/Users/alice/.paperclip/instances/team-a/logs/service.err.log",
+      path: "/Users/alice/.nvm/versions/node/v22/bin:/usr/bin:/bin",
+    });
+    expect(plist).toContain("<key>PATH</key><string>/Users/alice/.nvm/versions/node/v22/bin:/usr/bin:/bin</string>");
   });
 });
 
