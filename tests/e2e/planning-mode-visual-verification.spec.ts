@@ -59,11 +59,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Define your mission" })).toBeVisible({ timeout: 30_000 });
-  await page
-    .getByPlaceholder("What is your team trying to achieve?")
-    .fill("Capture planning mode visual evidence for the graduated task UI.");
-  await page.getByRole("button", { name: /Confirm mission/ }).click();
+  // Naming the company creates it and goes straight to the agent step.
 
   // The lead is no longer pre-named. Choosing a role fills the name from the
   // role's label, which is also what gates "Next".
