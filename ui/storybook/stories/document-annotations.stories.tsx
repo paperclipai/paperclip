@@ -258,6 +258,7 @@ function makeIntegratedIssue(): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    deletedAt: null,
     documentSummaries: [
       {
         id: integratedDoc.id,

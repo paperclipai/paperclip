@@ -64,6 +64,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    deletedAt: null,
     createdAt: new Date("2026-05-05T00:00:00.000Z"),
     updatedAt: new Date("2026-05-05T00:00:00.000Z"),
     labels: [],

@@ -83,6 +83,7 @@ function makeIssue(
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    deletedAt: null,
     blockedInboxAttention: attention,
     createdAt: new Date("2026-05-09T00:00:00.000Z"),
     updatedAt: new Date("2026-05-09T00:00:00.000Z"),

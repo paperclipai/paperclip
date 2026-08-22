@@ -2899,6 +2899,88 @@ export function issueRoutes(
       });
   }
 
+  // Deleting an issue that is the last unresolved blocker for an assigned
+  // dependent must fire the same issue_blockers_resolved wake the update route
+  // fires when a blocker transitions to "done" — otherwise the now-unblocked
+  // dependent's assignee stays asleep until some unrelated event re-evaluates
+  // readiness. See AGE-770.
+  async function emitBlockerResolvedWakeupsOnDelete(
+    resolvedBlockerIssue: { id: string; companyId: string },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    try {
+      const dependents = await svc.listWakeableBlockedDependents(resolvedBlockerIssue.id);
+      for (const dependent of dependents) {
+        const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: dependent.id,
+          blockerIssueIds: dependent.blockerIssueIds,
+        });
+        const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
+          companyId: resolvedBlockerIssue.companyId,
+          dependentIssueId: dependent.id,
+          blockerIssueIds: dependent.blockerIssueIds,
+        }).catch((err) => {
+          logger.warn(
+            { err, issueId: dependent.id, idempotencyKey },
+            "failed to check existing dependency wake before issue delete wake",
+          );
+          return null;
+        });
+        if (existingWake) continue;
+
+        const wakeRun = await heartbeat.wakeup(dependent.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: {
+            issueId: dependent.id,
+            resolvedBlockerIssueId: resolvedBlockerIssue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            mutation: "blocker_deleted",
+          },
+          idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: dependent.id,
+            taskId: dependent.id,
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+            source: "issue.blocker_deleted",
+            resolvedBlockerIssueId: resolvedBlockerIssue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: dependent.id }, "failed to enqueue dependency-resolved wake after issue delete");
+          return null;
+        });
+
+        await logActivity(db, {
+          companyId: resolvedBlockerIssue.companyId,
+          actorType: "system",
+          actorId: "issue_delete",
+          agentId: dependent.assigneeAgentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.blockers_resolved_wake_emitted",
+          entityType: "issue",
+          entityId: dependent.id,
+          details: {
+            source: "issue.blocker_deleted",
+            wakeupRunId: wakeRun?.id ?? null,
+            resolvedBlockerIssueId: resolvedBlockerIssue.id,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: dependent.id }, "failed to log blockers_resolved wake emission after delete");
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        { err, issueId: resolvedBlockerIssue.id },
+        "failed to evaluate dependents for blocker-resolved wake after issue delete",
+      );
+    }
+  }
+
   async function sourceTrustForActorWrite(
     issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
     actor: ReturnType<typeof getActorInfo>,
@@ -10930,20 +11012,16 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
-    const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
+    // Soft delete: the row (and its issue_number/identifier) must survive so
+    // that MAX(issue_number)-based identifier minting in issue creation never
+    // reuses a slug a PR/commit may already cite. See AGE-770 / AGE-743.
+    // Attachments/documents are intentionally left in place so a tombstoned
+    // issue still renders correctly if resolved for provenance.
+    const issue = await svc.softDelete(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
-    }
-
-    for (const attachment of attachments) {
-      try {
-        await storage.deleteObject(attachment.companyId, attachment.objectKey);
-      } catch (err) {
-        logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
-      }
     }
 
     const actor = getActorInfo(req);
@@ -10960,6 +11038,10 @@ export function issueRoutes(
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
+    // Awaited (not fire-and-forget): the DELETE response must not report
+    // success before the dependency-resolved wake is durably scheduled, or a
+    // newly-unblocked dependent's assignee can be silently missed. See AGE-770.
+    await emitBlockerResolvedWakeupsOnDelete(issue, actor);
     res.json(issue);
   });
 

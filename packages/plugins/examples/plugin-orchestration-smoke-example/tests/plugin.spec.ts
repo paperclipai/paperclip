@@ -42,6 +42,7 @@ function issue(input: Partial<Issue> & Pick<Issue, "id" | "companyId" | "title">
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    deletedAt: null,
     createdAt: now,
     updatedAt: now,
     ...rest,

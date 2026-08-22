@@ -530,6 +530,100 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("rejects checkout of a soft-deleted issue (AGE-770)", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "CheckoutAfterDeleteCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Deleted before checkout",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    const softDeleted = await svc.softDelete(issue.id);
+    expect(softDeleted?.deletedAt).toBeTruthy();
+
+    await expect(svc.checkout(issue.id, agentId, ["todo"], randomUUID()))
+      .rejects.toMatchObject({ status: 404 });
+
+    const persisted = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      assigneeAgentId: null,
+      status: "todo",
+    });
+  });
+
+  it("treats a soft-deleted blocker as resolved instead of permanently blocking dependents (AGE-770)", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const blocker = await svc.create(companyId, {
+      title: "Blocker that gets deleted",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+    const dependent = await svc.create(companyId, {
+      title: "Dependent on the deleted blocker",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      blockedByIssueIds: [blocker.id],
+    });
+
+    const beforeDelete = await svc.listDependencyReadiness(companyId, [dependent.id]);
+    expect(beforeDelete.get(dependent.id)?.isDependencyReady).toBe(false);
+
+    const softDeleted = await svc.softDelete(blocker.id);
+    expect(softDeleted?.deletedAt).toBeTruthy();
+
+    const afterDelete = await svc.listDependencyReadiness(companyId, [dependent.id]);
+    const readiness = afterDelete.get(dependent.id);
+    expect(readiness?.unresolvedBlockerIssueIds ?? []).not.toContain(blocker.id);
+    expect(readiness?.isDependencyReady).toBe(true);
+  });
+
+  it("allows an explicit in_progress transition with a soft-deleted blockedByIssueIds entry (AGE-770)", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "ExplicitBlockerCoder",
+    }));
+    const blocker = await svc.create(companyId, {
+      title: "Blocker referenced explicitly and deleted",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+    const dependent = await svc.create(companyId, {
+      title: "Dependent explicit blockedByIssueIds",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const softDeleted = await svc.softDelete(blocker.id);
+    expect(softDeleted?.deletedAt).toBeTruthy();
+
+    const updated = await svc.update(dependent.id, {
+      status: "in_progress",
+      blockedByIssueIds: [blocker.id],
+    });
+    expect(updated?.status).toBe("in_progress");
+  });
+
   it("expires pending thread interactions on any service-level terminal transition", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issue = await svc.create(companyId, {
