@@ -9,11 +9,13 @@ import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   APP_TABS,
+  BROKER_ONLY_APP_TABS,
   CONNECTED_ONLY_APP_TABS,
   appApplicationTabHref,
   appTabHref,
   type AppTabKey,
 } from "@/pages/apps/app-tabs";
+import { isComposioBrokerConnection } from "@/pages/apps/composio-services";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import {
   appDefinitionLogoUrl,
@@ -59,6 +61,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
   });
 
   const connection = connectionQuery.data;
+  const isBroker = isComposioBrokerConnection(connection);
   const application = props.kind === "application"
     ? (applicationsQuery.data?.applications ?? []).find((app) => app.id === props.applicationId)
     : null;
@@ -101,9 +104,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
 
       <nav className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          {APP_TABS.filter(
-            (tab) => props.kind === "connection" || !CONNECTED_ONLY_APP_TABS.has(tab.key),
-          ).map((tab) => (
+          {APP_TABS.filter((tab) => visibleTab(tab.key, props.kind, isBroker)).map((tab) => (
             <SidebarNavItem
               key={tab.key}
               to={tabHref(props, tab.key)}
@@ -119,6 +120,15 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
       </nav>
     </aside>
   );
+}
+
+function visibleTab(
+  tab: AppTabKey,
+  kind: AppDetailSidebarProps["kind"],
+  isBroker: boolean,
+): boolean {
+  if (kind !== "connection" && CONNECTED_ONLY_APP_TABS.has(tab)) return false;
+  return !BROKER_ONLY_APP_TABS.has(tab) || isBroker;
 }
 
 function tabHref(props: AppDetailSidebarProps, tab: AppTabKey): string {

@@ -133,6 +133,7 @@ function agent(overrides: Record<string, unknown> = {}) {
     role: "engineer",
     title: "Engineer",
     status: "active",
+    orgDepth: 1,
     effectiveAccess: {
       connectionId: "conn-1",
       toolCount: 3,
@@ -218,6 +219,16 @@ afterEach(() => {
 });
 
 describe("TestPanel", () => {
+  it("pairs the loading skeleton with explicit MCP wait copy and animation", async () => {
+    listTestAgentsMock.mockImplementation(() => new Promise(() => undefined));
+
+    await act(async () => renderPanel());
+
+    expect(container.textContent).toContain("Loading MCP actions, this may take a minute.");
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).not.toHaveLength(0);
+  });
+
   it("renders the Test-as header and grouped actions with access badges", async () => {
     await act(async () => renderPanel());
     await flushReact();
@@ -231,6 +242,23 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Allowed");
     expect(container.textContent).toContain("Ask first");
     expect(container.textContent).toContain("Off");
+    expect(container.querySelector(".bg-card")).toBeNull();
+  });
+
+  it("defaults to the highest-ranked accessible agent", async () => {
+    listTestAgentsMock.mockResolvedValue({
+      agents: [
+        agent({ id: "agent-report", name: "A report", orgDepth: 2 }),
+        agent({ id: "agent-root", name: "Root agent", orgDepth: 0 }),
+        agent({ id: "agent-manager", name: "Manager", orgDepth: 1 }),
+      ],
+    });
+
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(container.textContent).toContain("Root agent");
+    expect(container.textContent).not.toContain("A report");
   });
 
   it("shows the empty state when there are no actions", async () => {

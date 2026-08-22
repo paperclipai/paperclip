@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "slug": "composio",
+  "name": "Composio",
+  "description": "Connect Composio so Paperclip can discover and manage the toolkits in your project.",
+  "categories": ["productivity"],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=composio.dev&sz=128"
+  },
+  "urlPatterns": ["https://backend.composio.dev/*"],
+  "methods": [
+    {
+      "key": "api-key",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": ["customer"],
+      "whenToUse": "Use a project API key from the Composio project that owns the toolkits and connected accounts.",
+      "defaults": {
+        "serviceHost": "backend.composio.dev"
+      },
+      "guidanceMd": "Create a scoped project API key in Composio. It needs read access to toolkits and auth configs; later service-connection phases also need connected-account and session access.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Composio project API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the Composio API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "x-api-key"
+      },
+      "consoleLinks": {
+        "keys": "https://app.composio.dev/",
+        "settings": "https://app.composio.dev/",
+        "docs": "https://docs.composio.dev/reference/authenticating-to-composio/project-api-key-permissions"
+      }
+    }
+  ]
+}

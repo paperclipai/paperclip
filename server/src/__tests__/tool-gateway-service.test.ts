@@ -6,6 +6,7 @@ import {
   agents,
   approvals,
   companies,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   issueApprovals,
@@ -41,6 +42,7 @@ function createTestToolGatewayService(db: ReturnType<typeof createDb>, options: 
   return createToolGatewayService(db, {
     ...options,
     toolActionSigningSecret: options.toolActionSigningSecret ?? testToolActionSigningSecret,
+    remoteHttpRequest: options.remoteHttpRequest ?? (async (url, init) => fetch(url, init)),
   });
 }
 
@@ -91,8 +93,17 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
     status: "active",
     enabled: true,
     healthStatus: "ok",
+    credentialPolicy: "shared",
     config: { url: "https://example.invalid/mcp" },
   }).returning().then((rows) => rows[0]!);
+  await db.insert(connectionGrants).values({
+    companyId,
+    connectionId: connection.id,
+    kind: "organization",
+    credentialSecretRefs: [],
+    status: "active",
+    isDefault: true,
+  });
   const catalogEntry = await db.insert(toolCatalogEntries).values({
     companyId,
     applicationId: application.id,

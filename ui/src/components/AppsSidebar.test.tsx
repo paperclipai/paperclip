@@ -8,7 +8,6 @@ import { AppsSidebar } from "./AppsSidebar";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockToolsApi = vi.hoisted(() => ({
-  listRuntimeSlots: vi.fn(),
   listActionRequests: vi.fn(),
 }));
 
@@ -89,12 +88,6 @@ describe("AppsSidebar", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockToolsApi.listRuntimeSlots.mockResolvedValue({
-      runtimeSlots: [
-        { id: "slot-1", status: "running" },
-        { id: "slot-2", status: "stopped" },
-      ],
-    });
     mockToolsApi.listActionRequests.mockResolvedValue({ actionRequests: [] });
   });
 
@@ -123,6 +116,8 @@ describe("AppsSidebar", () => {
     expect(container.textContent).toContain("Developer");
     // The Developer boundary caption frames who the door is for (PAP-13241 §5).
     expect(container.textContent).toContain("Advanced setup for developers");
+    expect(container.textContent).not.toContain("Most teams");
+    expect(container.textContent).not.toMatch(/you (?:won'?t|will not) need this/i);
     // "Run your own" / "Paste a config" moved to the Connect-an-app page (PAP-10922);
     // assert their absence at the item level below.
 
@@ -154,9 +149,8 @@ describe("AppsSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/profiles", label: "Profiles", end: true }),
     );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/runtime", label: "Health", end: true, liveCount: 1 }),
-    );
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Rules" }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Health" }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/audit", label: "Activity", end: true }),
     );

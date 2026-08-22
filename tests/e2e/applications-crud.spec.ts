@@ -46,7 +46,7 @@ async function createConnection(
   const res = await request.post(`/api/companies/${companyId}/tools/connections`, {
     data: {
       transport: "mcp_remote",
-      config: { url: "https://fixture.example/mcp" },
+      config: { url: "http://localhost:65535/mcp" },
       enabled: true,
       status: "active",
       ...data,
@@ -75,7 +75,7 @@ test.describe.serial("applications lifecycle", () => {
 
   test("Connections list surfaces connected and not-connected apps", async ({ page, request }) => {
     const connectedName = `${APP_PREFIX}-connected`;
-    const notConnectedName = `${APP_PREFIX}-not-connected`;
+    const notConnectedName = `${APP_PREFIX}-offline`;
     const connected = await createConnection(request, seed.companyId, {
       applicationName: connectedName,
       name: connectedName,
@@ -84,7 +84,7 @@ test.describe.serial("applications lifecycle", () => {
 
     await gotoApps(page, seed.prefix);
 
-    // The connected app starts with a "Healthy" pill and an "Open" action. A
+    // The connected app starts with a "Healthy" pill and an "Edit" action. A
     // background health sweep then probes the connection endpoint. The test
     // endpoint is an unreachable fixture URL, so the probe fails and the pill
     // becomes "Needs attention" and the action becomes "Reconnect". Both are
@@ -96,7 +96,7 @@ test.describe.serial("applications lifecycle", () => {
     const connectedRow = page.locator("tbody tr", { hasText: connectedName });
     await expect(connectedRow).toBeVisible();
     await expect(connectedRow.getByText(/^(Healthy|Needs attention)$/)).toBeVisible({ timeout: 30_000 });
-    await expect(connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ })).toBeVisible();
+    await expect(connectedRow.getByRole("button", { name: /^(Edit|Reconnect)$/ })).toBeVisible();
 
     // The not-connected app has no connection, so the health sweep never touches
     // it and its "Not connected" pill and "Connect" action stay deterministic.
@@ -106,9 +106,9 @@ test.describe.serial("applications lifecycle", () => {
     await expect(notConnectedRow.getByRole("button", { name: "Connect" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
-    await connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ }).click();
+    await connectedRow.getByRole("button", { name: /^(Edit|Reconnect)$/ }).click();
     await expect(page).toHaveURL(
-      new RegExp(`/${seed.prefix}/apps/app/${connected.applicationId}/setup$`),
+      new RegExp(`/${seed.prefix}/apps/${connected.id}/setup$`),
       { timeout: 20_000 },
     );
 

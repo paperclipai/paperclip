@@ -814,6 +814,62 @@ export const pendingSecretProposalInteraction = createSecretProposalConfirmation
   id: "interaction-secret-proposal-pending",
 });
 
+// ---------------------------------------------------------------------------
+// Connection-authorization fixtures (PAP-17835). Same interaction kind and the
+// same server-addressed audience as any other confirmation; only the
+// presentation payload is added, so the card never has to parse a title string
+// to know what it is looking at.
+// ---------------------------------------------------------------------------
+
+function createConnectionAuthorizationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> = {},
+): RequestConfirmationInteraction {
+  const { payload, ...rest } = overrides;
+  return createRequestConfirmationInteraction({
+    id: "interaction-connection-authorization-default",
+    title: "Connect your Gmail to continue",
+    summary: "Outreach Agent needs your Gmail identity for work running as you.",
+    createdByAgentId: "agent-codex",
+    addresseeUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolverPolicy: "human_only",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    payload: {
+      version: 1,
+      prompt: "Connect your Gmail to continue",
+      acceptLabel: "Connect Gmail",
+      rejectLabel: "Not now",
+      ...payload,
+      connectionAuthorization: {
+        version: 1,
+        providerName: "Gmail",
+        connectionName: null,
+        requestingAgentName: "Outreach Agent",
+      },
+      target: {
+        type: "custom",
+        key: "connection:gmail-abc:user:user-dotta",
+        label: "Connect Gmail",
+        href: "https://accounts.google.com/o/oauth2/v2/auth?client_id=paperclip",
+      },
+    },
+    ...rest,
+  });
+}
+
+export const pendingConnectionAuthorizationInteraction = createConnectionAuthorizationInteraction({
+  id: "interaction-connection-authorization-pending",
+});
+
+export const resolvedConnectionAuthorizationInteraction = createConnectionAuthorizationInteraction({
+  id: "interaction-connection-authorization-resolved",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:03.000Z"),
+  result: { version: 1, outcome: "accepted" },
+});
+
 export const executedSecretProposalInteraction = createSecretProposalConfirmationInteraction({
   id: "interaction-secret-proposal-executed",
   status: "accepted",

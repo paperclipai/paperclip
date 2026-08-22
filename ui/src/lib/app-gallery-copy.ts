@@ -66,6 +66,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Read and update pages in your workspace.",
     short: "Read and update pages in your workspace.",
   },
+  posthog: {
+    tagline: "Explore product usage, errors, flags, and experiments.",
+    short: "Choose one project and the analytics tools your agents can use.",
+  },
   linear: {
     tagline: "Create, update and read tickets.",
     short: "Create, update and read tickets.",
@@ -75,8 +79,8 @@ const APP_COPY: Record<string, AppCopy> = {
     short: "Share each sheet with the robot email, then paste the links.",
   },
   gmail: {
-    tagline: "Read mail and send drafts for your review.",
-    short: "Read mail and send drafts for your review.",
+    tagline: "Read mail and create drafts for your review.",
+    short: "Read mail and create drafts for your review.",
   },
   hubspot: {
     tagline: "Look up contacts and update deal stages.",

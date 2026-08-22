@@ -422,7 +422,6 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     return <ToolsErrorState error={effective.error} onRetry={() => effective.refetch()} />;
   }
 
-  const policiesHref = "/apps/advanced/policies";
   const profilesHref = "/apps/advanced/profiles";
 
   return (
@@ -574,13 +573,12 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                 governingPolicies.map(({ policy, order }) => (
                   <div key={policy.id} className="rounded-md border border-border/70 px-2.5 py-2">
                     <div className="flex items-center justify-between gap-2">
-                      <Link
-                        to={policiesHref}
-                        className="truncate text-xs font-medium text-primary hover:underline"
+                      <span
+                        className="truncate text-xs font-medium text-foreground"
                         title={`Policy #${order}: ${policy.name}`}
                       >
                         #{order} {policy.name}
-                      </Link>
+                      </span>
                       <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
                         {POLICY_EFFECT_LABEL[policy.policyType] ?? policy.policyType}
                       </span>

@@ -1,0 +1,2 @@
+ALTER TABLE "issue_thread_interactions" ADD COLUMN "addressee_user_id" text;--> statement-breakpoint
+CREATE INDEX "issue_thread_interactions_addressee_user_idx" ON "issue_thread_interactions" USING btree ("addressee_user_id");

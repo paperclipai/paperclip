@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,8 +14,7 @@ export function SetupPanel({
   appToggleDisabled,
   onUpdateConfig,
   configUpdateDisabled,
-  onStartOAuth,
-  oauthStartDisabled,
+  identities,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
@@ -24,18 +23,20 @@ export function SetupPanel({
   appToggleDisabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
   configUpdateDisabled: boolean;
-  onStartOAuth: () => void;
-  oauthStartDisabled: boolean;
+  /**
+   * The Identities section (PAP-17835). It replaces the old generic OAuth
+   * "workspace authorization" block, because that block could only ever describe
+   * one shared identity and this connection may act as each person instead.
+   */
+  identities?: ReactNode;
 }) {
   const description = galleryEntry?.description ?? null;
-  const oauth = connection.config?.oauth;
-  const hasOAuthSignIn = Boolean(oauth && typeof oauth === "object" && !Array.isArray(oauth));
-  const isSmokeLabFixture = connection.config?.smokeLabFixture === "oauth-http";
   return (
     <div className="space-y-6">
       {description && (
         <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       )}
+      {identities}
       {appDefinitionSlug(galleryEntry) === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
@@ -43,47 +44,66 @@ export function SetupPanel({
           onUpdateConfig={onUpdateConfig}
         />
       )}
-      {hasOAuthSignIn && (
-        <OAuthConnectionSection
-          connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          providerName={appDefinitionSlug(galleryEntry) === "notion" ? "Notion" : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
-          disabled={oauthStartDisabled}
-          onStart={onStartOAuth}
-        />
+      {appDefinitionSlug(galleryEntry) === "posthog" && (
+        <PostHogConfigurationSection connection={connection} />
       )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
   );
 }
 
-function OAuthConnectionSection({
-  connected,
-  providerName,
-  disabled,
-  onStart,
-}: {
-  connected: boolean;
-  providerName: string;
-  disabled: boolean;
-  onStart: () => void;
-}) {
+/**
+ * Provider label used in identity and revoke copy. Falls back to the app's own
+ * display name so a pasted server never reads as a generic "OAuth".
+ */
+export function connectionProviderName(
+  galleryEntry: Parameters<typeof appDefinitionSlug>[0],
+  fallback: string,
+): string {
+  switch (appDefinitionSlug(galleryEntry)) {
+    case "notion":
+      return "Notion";
+    case "posthog":
+      return "PostHog";
+    case "gmail":
+      return "Gmail";
+    case "google-sheets":
+      return "Google Sheets";
+    default:
+      return fallback;
+  }
+}
+
+function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
+  const raw = connection.config?.methodConfig;
+  const config = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? "PostHog sign-in" : "Personal API key";
+  const features = typeof config.features === "string" ? config.features : "None";
+  const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
+  const rows = [
+    ["Connection method", method],
+    ["Project ID", typeof config.projectId === "string" ? config.projectId : "Not set"],
+    ["Read-only mode", config.readOnly === true ? "On" : "Off"],
+    ["Feature groups", features],
+    ["Individual tools", tools],
+    ["Response mode", typeof config.mode === "string" ? config.mode : "tools"],
+  ];
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">
-            {connected ? `${providerName} connected` : `Connect with ${providerName}`}
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {connected
-              ? "Your workspace authorization is active. Reconnect any time to replace it."
-              : "Open the provider's consent page to finish connecting this app."}
-          </p>
-        </div>
-        <Button type="button" disabled={disabled} onClick={onStart}>
-          {connected ? "Reconnect" : `Connect with ${providerName}`}
-        </Button>
-      </div>
+    <section>
+      <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">
+        This connection is pinned to the project and analytics surface below.
+      </p>
+      <dl className="mt-4 divide-y divide-border">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid gap-1 py-2 sm:grid-cols-3 sm:gap-4">
+            <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+            <dd className="break-words text-sm text-foreground sm:col-span-2">{value}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
@@ -113,7 +133,7 @@ function GoogleSheetsAllowlistSection({
     onUpdateConfig(googleSheetsConfigWithAllowlist(connection.config, nextIds));
 
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <div>
         <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
@@ -206,7 +226,7 @@ export function AppLifecycleSection({
 }) {
   const enabled = connection.enabled !== false && connection.status !== "disabled";
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold text-foreground">
@@ -243,8 +263,8 @@ export function QuarantinedActionsReview({
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
   return (
-    <section className="overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/[0.08]">
-      <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
             Review {count} new {count === 1 ? "action" : "actions"}
@@ -272,12 +292,12 @@ export function QuarantinedActionsReview({
           </button>
         </div>
       </div>
-      <div className="divide-y divide-amber-500/25 border-y border-amber-500/25 bg-background">
+      <div className="divide-y divide-border">
         {entries.map((entry) => {
           const enabled = enabledIds.has(entry.id);
           const label = entry.title ?? entry.toolName;
           return (
-            <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
+            <div key={entry.id} className="flex items-center gap-3 py-3">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-foreground">{label}</div>
                 {entry.description && (
@@ -301,7 +321,7 @@ export function QuarantinedActionsReview({
           );
         })}
       </div>
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
           {selectedIds.length} of {count} will be on
         </span>
