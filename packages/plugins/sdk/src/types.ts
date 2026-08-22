@@ -2098,9 +2098,17 @@ export interface PluginDuplexChannelClient {
  *
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
+export interface PluginRuntimeClient {
+  /** Run long-lived callbacks outside the current host invocation scope. */
+  runProactively<T>(callback: () => T): T;
+}
+
 export interface PluginContext {
   /** The plugin's manifest as validated at install time. */
   manifest: PaperclipPluginManifestV1;
+
+  /** Helpers for work that outlives the current host invocation. */
+  runtime: PluginRuntimeClient;
 
   /** Read resolved operator configuration. */
   config: PluginConfigClient;

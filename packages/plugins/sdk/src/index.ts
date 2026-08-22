@@ -224,6 +224,7 @@ export type {
 // Plugin context and all client interfaces
 export type {
   PluginContext,
+  PluginRuntimeClient,
   PluginConfigClient,
   PluginLocalFolderProblem,
   PluginLocalFolderStatus,
