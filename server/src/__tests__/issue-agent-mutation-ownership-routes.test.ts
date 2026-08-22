@@ -1215,6 +1215,97 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueApprovalService.unlink).not.toHaveBeenCalled();
   });
 
+  const statusOnlyRecoveryContext = (extra: Record<string, unknown> = {}) => ({
+    modelProfile: "cheap",
+    recoveryIntent: "status_only",
+    allowDeliverableWork: false,
+    allowDocumentUpdates: false,
+    resumeRequiresNormalModel: true,
+    ...extra,
+  });
+
+  it.each([
+    ["its own recovered issue (contextSnapshot.issueId)", { issueId }],
+    ["the stranded source issue of an evaluation wake (contextSnapshot.sourceIssueId)", {
+      issueId: "99999999-9999-4999-8999-999999999999",
+      sourceIssueId: issueId,
+    }],
+  ])(
+    "allows a cheap status-only recovery run to rewrite the continuation summary of %s",
+    async (_name, ownership) => {
+      const app = await createApp(
+        ownerActor(),
+        createRunContextDb(statusOnlyRecoveryContext(ownership)),
+      );
+
+      const res = await request(app)
+        .put(`/api/issues/${issueId}/documents/continuation-summary`)
+        .send({ format: "markdown", body: "# Continuation Summary\n\n## Next Action\n\n- Resume implementation." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalledTimes(1);
+      expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issueId,
+          key: "continuation-summary",
+          createdByAgentId: ownerAgentId,
+          createdByRunId: ownerRunId,
+        }),
+      );
+    },
+  );
+
+  it.each([
+    [
+      "a different document key on its own issue",
+      "plan",
+      { issueId },
+    ],
+    [
+      "the continuation summary of an issue it does not own",
+      "continuation-summary",
+      { issueId: "99999999-9999-4999-8999-999999999999" },
+    ],
+    [
+      "the continuation summary when the run context carries no issue at all",
+      "continuation-summary",
+      {},
+    ],
+  ])(
+    "still blocks a cheap status-only recovery run from writing %s",
+    async (_name, documentKey, ownership) => {
+      const app = await createApp(
+        ownerActor(),
+        createRunContextDb(statusOnlyRecoveryContext(ownership)),
+      );
+
+      const res = await request(app)
+        .put(`/api/issues/${issueId}/documents/${documentKey}`)
+        .send({ format: "markdown", body: "# blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe(
+        "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
+      );
+      expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a malformed document key before any run-context guard runs", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb(statusOnlyRecoveryContext({ issueId })),
+    );
+
+    const res = await request(app)
+      .put(`/api/issues/${issueId}/documents/${encodeURIComponent("not a valid key!")}`)
+      .send({ format: "markdown", body: "# nope" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Invalid document key");
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       "issue create",

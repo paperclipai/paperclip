@@ -4832,6 +4832,20 @@ export function issueRoutes(
       context.resumeRequiresNormalModel === true;
   }
 
+  /**
+   * A status-only cheap recovery run is woken to reconcile one specific issue.
+   * Every `status_only` recovery wake records that issue on the run's context
+   * snapshot as `issueId`; the stale-active-run evaluation path additionally
+   * records the stranded source issue as `sourceIssueId` while `issueId` points
+   * at the evaluation issue it created. Either of those is "the issue this run
+   * owns".
+   */
+  function statusOnlyRecoveryRunOwnsIssue(contextSnapshot: unknown, issueId: string) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
+    const context = contextSnapshot as Record<string, unknown>;
+    return context.issueId === issueId || context.sourceIssueId === issueId;
+  }
+
   function requestsCheapIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }) {
     const overrides = input.assigneeAdapterOverrides;
     return !!overrides &&
@@ -4932,10 +4946,24 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string },
+    options?: { documentKey?: string },
   ) {
     const run = await loadActorRunContext(req, issue.companyId);
     if (!run) return true;
     if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    // Narrow allowlist: a recovery-owner run may rewrite the continuation
+    // summary of the issue it was woken to recover, and nothing else. That
+    // document is the one whose stale content strands the issue, so denying it
+    // forces the run to fake a full normal-model assignment wake just to clear
+    // it. Every other key, every other issue, and every non-document
+    // deliverable stays denied on this same path.
+    if (
+      options?.documentKey === ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY &&
+      statusOnlyRecoveryRunOwnsIssue(run.contextSnapshot, issue.id)
+    ) {
+      return true;
+    }
 
     res.status(403).json({
       error: "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
@@ -7418,13 +7446,16 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+    // Parsed before the mutation guards so the deliverable guard can scope its
+    // recovery-run allowlist to a single document key. Pure parse, no side
+    // effects; a malformed key now 400s before it can 403.
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
     }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue, { documentKey: keyParsed.data }))) return;
 
     const actor = getActorInfo(req);
     const sourceTrust = await sourceTrustForActorWrite(issue, actor);
