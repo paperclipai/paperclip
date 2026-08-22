@@ -19397,6 +19397,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    // Session-fingerprint input is captured BEFORE the per-run issue-scoped cap
+    // mutation below. The cap clamps maxTokensPerRun to the issue's shrinking
+    // residual on every run, so hashing the mutated config made consecutive runs
+    // on the same card look "reconfigured" (changedCategories adapterConfig) and
+    // reset the task session each time — 719 codex session resets on 2026-08-22,
+    // each re-uploading the full guard context uncached (the ChatGPT weekly burn).
+    // Runtime skill entries are fingerprinted in a key-sorted copy: list order is
+    // not part of the configuration, and an order flip alone must not reset a session.
+    const sessionFingerprintRuntimeSkills = [...runtimeSkillEntries].sort((a, b) =>
+      String(a.key).localeCompare(String(b.key)),
+    );
+    const sessionFingerprintAdapterConfig: Record<string, unknown> = {
+      ...runtimeConfig,
+      paperclipRuntimeSkills: sessionFingerprintRuntimeSkills,
+    };
     if (issueGenerationAdmission?.decision === "allow") {
       // TSMC-20820: a granted resource-ceiling continuation round runs with
       // its FRESH configured per-run budget. Clamping continuations to the
@@ -19448,7 +19463,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
-      effectiveAdapterConfig: runtimeConfig,
+      effectiveAdapterConfig: sessionFingerprintAdapterConfig,
       agentRuntimeConfig: agent.runtimeConfig,
       modelProfile: modelProfileMetadata,
       issueOverrides: issueAssigneeOverrides,
@@ -19497,7 +19512,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: projectContext?.env ?? null,
       routineEnv: routineEnvContext.env,
       secretManifest,
-      runtimeSkills: runtimeSkillEntries,
+      runtimeSkills: sessionFingerprintRuntimeSkills,
       agentConfigRevision: latestAgentConfigRevision
         ? {
             id: latestAgentConfigRevision.id,
