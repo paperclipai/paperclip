@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -110,7 +110,35 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // Timer-triggered runs have no issueId/taskId in their contextSnapshot.
+      // They are still allowed to write to issues they have checked out in
+      // this run — that is not cross-issue influence; it is in-scope work.
+      // Check whether this run holds an executionRunId checkout on the target.
+      //
+      // Read without `for update` on purpose. The lock above is on
+      // `heartbeat_runs`, and the checkout-clearing paths in the issues service
+      // take `issues` first and `heartbeat_runs` second, so locking the issue
+      // row here would order the two sides against each other and deadlock.
+      // The read is also not the last word: the decision is re-derived from the
+      // row on every request, so a released checkout refuses the next write.
+      // What it does not do is span the route mutation that follows — the same
+      // property every gate on that route has, since they all decide from the
+      // issue snapshot the handler loaded once. Containment does not rest on
+      // this window: `issue:mutate` is authorized separately and earlier, and
+      // this branch can only ever return the issue the run itself checked out.
+      const ownCheckout = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, input.targetIssueId),
+          eq(issues.executionRunId, input.runId),
+        ))
+        .then((rows) => rows.length > 0);
+      if (ownCheckout) return null;
+      throw crossIssueInfluenceRunContextError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

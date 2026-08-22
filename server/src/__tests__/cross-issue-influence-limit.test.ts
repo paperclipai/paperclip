@@ -7,21 +7,72 @@ import {
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.ts";
 
+/** One row of the fake `issues` table, holding only the checkout columns the guard reads. */
+type IssueCheckoutRow = { companyId: string; id: string; executionRunId: string };
+
+/**
+ * Collects the bound parameter values out of a drizzle condition.
+ *
+ * `and(eq(a, x), eq(b, y))` flattens to a chunk list holding literal SQL
+ * fragments (whose value is a `string[]`) alongside bound parameters (whose
+ * value is the scalar). Dropping the arrays leaves the values the guard
+ * actually filtered on.
+ */
+function boundParams(condition: unknown): unknown[] {
+  const out: unknown[] = [];
+  const walk = (node: unknown) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    const record = node as Record<string, unknown>;
+    if (Array.isArray(record.queryChunks)) {
+      for (const chunk of record.queryChunks) walk(chunk);
+      return;
+    }
+    if ("value" in record && !Array.isArray(record.value)) out.push(record.value);
+  };
+  walk(condition);
+  return out;
+}
+
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  /**
+   * Rows the fake `issues` table holds. The checkout lookup matches these on
+   * company id, issue id, and execution run id, so a grant is only reachable
+   * when the guard constrains its query to the target issue and to this run.
+   * A lookup that dropped either predicate finds no row here.
+   */
+  issueRows: IssueCheckoutRow[] = [],
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
   const tx = {
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
-        where: () => {
+        where: (condition: unknown) => {
           if (Object.keys(selection).includes("count")) {
+            // Activity-log count query.
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          if (Object.keys(selection).length === 1 && "id" in selection) {
+            // Issues checkout query (select {id} from issues where ...).
+            const params = boundParams(condition);
+            const matched = issueRows.filter((row) => {
+              const values = new Set<unknown>([row.companyId, row.id, row.executionRunId]);
+              // Model the equality filter itself: a row survives when every
+              // bound value matches one of its columns. A predicate the guard
+              // never sent is therefore never applied, so dropping one widens
+              // the result set here exactly as it would in PostgreSQL.
+              return params.length > 0 && params.every((param) => values.has(param));
+            });
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve(matched.map((row) => ({ id: row.id }))),
+            };
+          }
+          // Heartbeat-runs row query (uses .for("update")).
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
@@ -198,8 +249,9 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
-    const fake = counterDb(0, { contextSnapshot: {} });
+  it("fails closed when the persisted run has no source issue and no checkout on the target", async () => {
+    // Timer run: empty contextSnapshot, no checkout on any issue.
+    const fake = counterDb(0, { contextSnapshot: {} }, []);
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
@@ -207,6 +259,71 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("allows writes for a timer run that has checked out the target issue", async () => {
+    // Timer run: empty contextSnapshot (no issueId), but holds the checkout on the target.
+    const fake = counterDb(0, { contextSnapshot: {} }, [{
+      companyId: "22222222-2222-4222-8222-222222222222",
+      id: "55555555-5555-4555-8555-555555555555",
+      executionRunId: "11111111-1111-4111-8111-111111111111",
+    }]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+    })).resolves.toBeNull();
+    // No cross-issue-influence activity should be recorded.
+    expect(fake.inserted).toEqual([]);
+  });
+
+  // A checkout is a claim on one issue, not a company-wide write pass. Without
+  // this case the grant above would still pass if the lookup forgot to filter
+  // on the target issue, which is exactly the containment boundary the guard exists for.
+  it("fails closed when the timer run's only checkout is on a different issue", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, [{
+      companyId: "22222222-2222-4222-8222-222222222222",
+      id: "66666666-6666-4666-8666-666666666666",
+      executionRunId: "11111111-1111-4111-8111-111111111111",
+    }]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  // A board force-release or a tree cancel hands the execution lock to someone
+  // else. The grant follows the lock, so the next request from the old holder
+  // is refused again — the guard reads the row, it does not cache the checkout.
+  it("fails closed once the target issue's checkout has moved to another run", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, [{
+      companyId: "22222222-2222-4222-8222-222222222222",
+      id: "55555555-5555-4555-8555-555555555555",
+      executionRunId: "77777777-7777-4777-8777-777777777777",
+    }]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
       details: { code: "cross_issue_influence_run_context_required" },
