@@ -327,13 +327,70 @@ export function issueExecutionWorkspaceModeForPersistedWorkspace(
   return "shared_workspace";
 }
 
+/**
+ * The mode to record on an issue after a run realizes a workspace for it.
+ *
+ * Recording the realized mode unconditionally is what pinned inherited issues to a shared
+ * tree: an issue that never chose a mode got an explicit `shared_workspace` written into its
+ * settings on its first run, and an explicit issue mode outranks the project default from
+ * then on — so changing the project default could never reach it again. Only issues that
+ * actually chose a mode keep an explicit one; inheriting issues stay on `inherit` so the
+ * project default keeps applying. Workspace continuity is carried by the issue's
+ * `executionWorkspaceId` + `reuse_existing` preference, not by this field.
+ */
+export function issueExecutionWorkspaceModeForPersistence(input: {
+  priorIssueMode: IssueExecutionWorkspaceSettings["mode"] | null | undefined;
+  persistedWorkspaceMode: string | null | undefined;
+}): IssueExecutionWorkspaceSettings["mode"] {
+  const priorIssueMode = input.priorIssueMode;
+  const issueChoseItsOwnMode =
+    Boolean(priorIssueMode) && priorIssueMode !== "inherit" && priorIssueMode !== "reuse_existing";
+  return issueChoseItsOwnMode
+    ? issueExecutionWorkspaceModeForPersistedWorkspace(input.persistedWorkspaceMode)
+    : "inherit";
+}
+
+/**
+ * True when the freshly resolved mode promises the issue a tree of its own and the workspace
+ * it is bound to was not realized as that same mode. Reusing such a binding would run the
+ * issue in a tree realized under a different mode while every downstream record claims the
+ * resolved one, so the reuse path refuses and the create path realizes what was resolved.
+ *
+ * The comparison is exact rather than "is it private enough", because `mode` is a member of
+ * `WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES` in heartbeat.ts: the config-freshness machinery
+ * already classifies *any* mode change as replacement-class. Accepting reuse across two
+ * private modes would contradict that — the freshness decision says `replace` while
+ * provisioning restores, and `shouldPersistLatestWorkspaceConfigMetadata` then withholds the
+ * fresh fingerprint, so the workspace re-drifts on every subsequent run forever. Refusing
+ * here keeps the two decisions saying the same thing, and the create path persists metadata
+ * that matches the mode it actually realized.
+ *
+ * Modes that do not promise a private tree keep the historical reuse behaviour.
+ */
+export function isExecutionWorkspaceModeDrift(input: {
+  resolvedMode: ParsedExecutionWorkspaceMode;
+  existingWorkspaceMode: string | null | undefined;
+}): boolean {
+  if (input.resolvedMode !== "isolated_workspace" && input.resolvedMode !== "operator_branch") {
+    return false;
+  }
+  return input.existingWorkspaceMode !== input.resolvedMode;
+}
+
 export function resolveExecutionWorkspaceMode(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   legacyUseProjectWorkspace: boolean | null;
 }): ParsedExecutionWorkspaceMode {
   const issueMode = input.issueSettings?.mode;
-  if (issueMode && issueMode !== "inherit" && issueMode !== "reuse_existing") {
+  // `allowIssueOverride: false` is the project declaring its default mode mandatory. It was
+  // parsed, persisted, and round-tripped by the settings UI while no resolver read it, so a
+  // per-issue mode outranked the project default even when the project had forbidden exactly
+  // that. Absent (or `true`) keeps the historical issue-wins precedence.
+  const issueOverrideAllowed = input.projectPolicy?.enabled
+    ? input.projectPolicy.allowIssueOverride !== false
+    : true;
+  if (issueOverrideAllowed && issueMode && issueMode !== "inherit" && issueMode !== "reuse_existing") {
     return issueMode;
   }
   if (input.projectPolicy?.enabled) {

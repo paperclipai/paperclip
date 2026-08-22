@@ -198,6 +198,8 @@ import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
+  issueExecutionWorkspaceModeForPersistence,
+  isExecutionWorkspaceModeDrift,
   isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
@@ -209,6 +211,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import {
   instanceSettingsService,
@@ -4465,6 +4468,8 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   existingExecutionWorkspaceStatus?: string | null;
   requestedExistingBranch?: string | null;
   existingExecutionWorkspaceBranchName?: string | null;
+  resolvedExecutionWorkspaceMode?: ParsedExecutionWorkspaceMode | null;
+  existingExecutionWorkspaceMode?: string | null;
 }): ExecutionWorkspaceReuseRequestForIssue {
   const requestedExecutionWorkspaceId = readNonEmptyString(input.issueExecutionWorkspaceId);
   // An explicitly pinned existing branch outranks an inherited reuse_existing
@@ -4475,10 +4480,23 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   const existingWorkspaceMatchesRequestedBranch =
     requestedExistingBranch === null ||
     readNonEmptyString(input.existingExecutionWorkspaceBranchName) === requestedExistingBranch;
+  // A resolved mode that demands the issue's own tree outranks the reuse binding: only the
+  // create path ever records a mode, so restoring a workspace realized under a different one
+  // would keep the run in that tree and silently discard the resolved mode on every run.
+  // Refusing here lets the create path realize it, which self-heals the binding without a data
+  // migration, and keeps this decision agreeing with the config-freshness one, which already
+  // treats `mode` as replacement-class. Callers that resolve no mode keep historical behaviour.
+  const modeDrift =
+    input.resolvedExecutionWorkspaceMode != null &&
+    isExecutionWorkspaceModeDrift({
+      resolvedMode: input.resolvedExecutionWorkspaceMode,
+      existingWorkspaceMode: input.existingExecutionWorkspaceMode,
+    });
   const requestedShouldReuseExisting =
     input.issueExecutionWorkspacePreference === "reuse_existing" &&
     requestedExecutionWorkspaceId !== null &&
-    existingWorkspaceMatchesRequestedBranch;
+    existingWorkspaceMatchesRequestedBranch &&
+    !modeDrift;
 
   return {
     requestedExecutionWorkspaceId,
@@ -14511,6 +14529,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
       requestedExistingBranch: issueExecutionWorkspaceSettings?.workspaceStrategy?.existingBranch ?? null,
       existingExecutionWorkspaceBranchName: existingExecutionWorkspace?.branchName ?? null,
+      resolvedExecutionWorkspaceMode: requestedExecutionWorkspaceMode,
+      existingExecutionWorkspaceMode: existingExecutionWorkspace?.mode ?? null,
     });
     const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
     const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
@@ -15273,7 +15293,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
     if (issueId && persistedExecutionWorkspace) {
-      const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
+      const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistence({
+        priorIssueMode: issueExecutionWorkspaceSettings?.mode ?? null,
+        persistedWorkspaceMode: persistedExecutionWorkspace.mode,
+      });
       const shouldSwitchIssueToExistingWorkspace =
         issueRef?.executionWorkspacePreference === "reuse_existing" ||
         requestedExecutionWorkspaceMode === "isolated_workspace" ||
@@ -18400,20 +18423,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             legacyUseProjectWorkspace: null,
           });
           const resolvedStrategy = resolveEffectiveWorkspaceStrategyType(resolvedMode, workspaceManagedConfig);
-          const existingExecutionWorkspaceStatus = issue.executionWorkspaceId
+          const existingExecutionWorkspaceRow = issue.executionWorkspaceId
             ? await tx
-              .select({ status: executionWorkspaces.status })
+              .select({ status: executionWorkspaces.status, mode: executionWorkspaces.mode })
               .from(executionWorkspaces)
               .where(and(
                 eq(executionWorkspaces.id, issue.executionWorkspaceId),
                 eq(executionWorkspaces.companyId, issue.companyId),
               ))
-              .then((rows) => rows[0]?.status ?? null)
+              .then((rows) => rows[0] ?? null)
             : null;
           const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
             issueExecutionWorkspaceId: issue.executionWorkspaceId,
             issueExecutionWorkspacePreference: issue.executionWorkspacePreference,
-            existingExecutionWorkspaceStatus,
+            existingExecutionWorkspaceStatus: existingExecutionWorkspaceRow?.status ?? null,
+            resolvedExecutionWorkspaceMode: resolvedMode,
+            existingExecutionWorkspaceMode: existingExecutionWorkspaceRow?.mode ?? null,
           });
           const hasResolvablePriorSessionWorkspace = await resolveHasResolvablePriorSessionWorkspace();
 

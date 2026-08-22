@@ -1783,6 +1783,130 @@ describe("effective run execution workspace config freshness", () => {
     });
   });
 
+  it("refuses to reuse a shared workspace once the resolved mode is isolated_workspace", async () => {
+    // The regression this covers: `resolveExecutionWorkspaceMode` resolves
+    // `isolated_workspace` for an issue whose inherited binding points at a shared tree,
+    // the reuse branch restores that tree anyway (only the create path ever records a
+    // mode), and the resolved mode is discarded on every run. Refusing reuse routes the
+    // run through the create path, which realizes and persists the isolated workspace —
+    // self-healing the binding with no data migration.
+    const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-shared",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: "active",
+      resolvedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "shared_workspace",
+    });
+
+    expect(reuseRequest).toEqual({
+      requestedExecutionWorkspaceId: "workspace-shared",
+      requestedShouldReuseExisting: false,
+      existingExecutionWorkspaceAvailable: false,
+    });
+
+    const metadata = buildWorkspaceConfigMetadata();
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: reuseRequest.existingExecutionWorkspaceAvailable,
+      existingWorkspaceMetadata: null,
+      nextMetadata: metadata,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "isolated-workspace", warnings: [] }));
+    const restoreExistingWorkspace = vi.fn(async () => ({ id: "workspace-shared", warnings: [] }));
+
+    const result = await provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: reuseRequest.requestedShouldReuseExisting,
+      existingExecutionWorkspaceId: reuseRequest.requestedExecutionWorkspaceId,
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace,
+      realizeWorkspace,
+    });
+
+    expect(result.executionWorkspace).toEqual({ id: "isolated-workspace", warnings: [] });
+    expect(result.reusedExecutionWorkspace).toBeNull();
+    expect(restoreExistingWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("keeps reusing a workspace that already provides the resolved isolated tree", () => {
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-isolated",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: "active",
+      resolvedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "isolated_workspace",
+    })).toEqual({
+      requestedExecutionWorkspaceId: "workspace-isolated",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: true,
+    });
+  });
+
+  it("refuses reuse across an isolated_workspace -> operator_branch flip", () => {
+    // `mode` is replacement-class, so config freshness already classifies this flip as a
+    // `replace`. resolveExecutionWorkspaceReuseProvisioningPolicy takes
+    // shouldRestoreExistingWorkspace straight from the reuse request and never consults that
+    // action, so if reuse said "restore" the run would keep the tree realized under the old
+    // mode while replacementClassDrift withheld the fresh fingerprint — re-drifting forever.
+    // Refusing keeps the two decisions in agreement.
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-private",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: "active",
+      resolvedExecutionWorkspaceMode: "operator_branch",
+      existingExecutionWorkspaceMode: "isolated_workspace",
+    })).toEqual({
+      requestedExecutionWorkspaceId: "workspace-private",
+      requestedShouldReuseExisting: false,
+      existingExecutionWorkspaceAvailable: false,
+    });
+  });
+
+  it("keeps the reuse decision agreeing with a replacement-class freshness decision", () => {
+    // The invariant the flip above protects: whenever reuse is granted, provisioning restores
+    // unconditionally, so a granted reuse must never coexist with a `replace` freshness action
+    // on the mode category.
+    const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-private",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: "active",
+      resolvedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "operator_branch",
+    });
+    const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
+      requestedShouldReuseExisting: reuseRequest.requestedShouldReuseExisting,
+      workspaceConfigFreshness: {
+        action: "replace",
+        shouldReuseExisting: false,
+        shouldRefreshConfigSnapshot: false,
+        reasons: ["execution workspace configuration changed: mode"],
+        changedCategories: ["mode"],
+        storedFingerprint: "old",
+        inferredFingerprint: null,
+        nextFingerprint: "new",
+        storedFingerprintPresent: true,
+      },
+    });
+    expect(policy.shouldRestoreExistingWorkspace).toBe(false);
+    // With reuse refused there is no replacement-class drift to suppress persistence, so the
+    // create path records metadata that matches the mode it realized.
+    expect(policy.shouldPersistLatestWorkspaceConfigMetadata).toBe(true);
+  });
+
+  it("keeps reusing a shared workspace when the resolved mode is still shared", () => {
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-shared",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: "active",
+      resolvedExecutionWorkspaceMode: "shared_workspace",
+      existingExecutionWorkspaceMode: "shared_workspace",
+    })).toEqual({
+      requestedExecutionWorkspaceId: "workspace-shared",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: true,
+    });
+  });
+
   it("fails loudly when explicit reuse restore returns no workspace", async () => {
     const metadata = buildWorkspaceConfigMetadata();
     const decision = resolveExecutionWorkspaceConfigFreshness({
