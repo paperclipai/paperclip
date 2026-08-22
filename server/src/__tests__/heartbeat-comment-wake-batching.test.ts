@@ -14,6 +14,7 @@ import {
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -2181,4 +2182,96 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("late merge-acknowledgement checkout wake on a done issue leaves it terminal and unowned", async () => {
+    // Harness scoped wakes call checkout with expectedStatuses that include `done`.
+    // Without the terminal inert invariant that is a mutating reopen; with it, no-op.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const svc = issueService(db);
+    const completedAt = new Date("2026-08-20T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Delivery Ops",
+      role: "engineer",
+      status: "idle",
+      adapterType: "cursor",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Merge ack already done",
+      status: "done",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      completedAt,
+      checkoutRunId: null,
+      executionRunId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorUserId: null,
+      body: "Merge acknowledged; SHA recorded. Closing.",
+    });
+
+    const result = await svc.checkout(
+      issueId,
+      agentId,
+      ["todo", "backlog", "blocked", "in_review", "done"],
+      runId,
+      false,
+    );
+
+    expect(result).toMatchObject({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    expect(result.completedAt?.toISOString()).toBe(completedAt.toISOString());
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+      completedAt,
+    });
+  });
 });

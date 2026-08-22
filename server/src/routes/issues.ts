@@ -5535,7 +5535,12 @@ export function issueRoutes(
     issue: { id: string; companyId: string };
     workspace: Pick<ExecutionWorkspace, "id"> | null;
     generation: number | null;
-    finalIssueStatus: () => string | null | undefined;
+    /**
+     * Final issue status when the response settles. May be sync or async so
+     * callers can re-read the row at settle time (avoids a stale snapshot when
+     * another request terminalizes between reopen and response end).
+     */
+    finalIssueStatus: () => string | null | undefined | Promise<string | null | undefined>;
   }): void {
     const { req, res, issue, workspace, generation, finalIssueStatus } = input;
     if (!workspace || generation === null) return;
@@ -5577,15 +5582,31 @@ export function issueRoutes(
       if (settled) return;
       settled = true;
       clearInterval(keepAlive);
-      const status = finalIssueStatus();
-      if (typeof status === "string" && !isClosedIssueStatus(status)) return;
-      const actor = getActorInfo(req);
-      void clearReopenPendingConsumptionWithRetry({
-        workspaceId: workspace.id,
-        issue: { id: issue.id, companyId: issue.companyId },
-        actor: { agentId: actor.agentId, actorType: actor.actorType },
-        expectedGeneration: generation,
-      });
+      void Promise.resolve()
+        .then(() => finalIssueStatus())
+        .then((status) => {
+          if (typeof status === "string" && !isClosedIssueStatus(status)) return;
+          const actor = getActorInfo(req);
+          void clearReopenPendingConsumptionWithRetry({
+            workspaceId: workspace.id,
+            issue: { id: issue.id, companyId: issue.companyId },
+            actor: { agentId: actor.agentId, actorType: actor.actorType },
+            expectedGeneration: generation,
+          });
+        })
+        .catch((err) => {
+          logger.warn(
+            { err, issueId: issue.id, executionWorkspaceId: workspace.id },
+            "failed to resolve final issue status for reopen-pending fence clear",
+          );
+          const actor = getActorInfo(req);
+          void clearReopenPendingConsumptionWithRetry({
+            workspaceId: workspace.id,
+            issue: { id: issue.id, companyId: issue.companyId },
+            actor: { agentId: actor.agentId, actorType: actor.actorType },
+            expectedGeneration: generation,
+          });
+        });
     };
     res.once("finish", settle);
     res.once("close", settle);
@@ -10996,48 +11017,31 @@ export function issueRoutes(
       });
     }
 
-    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
-
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
 
-    // Reopen the closed isolated workspace only after the run-id gate passes. A
-    // rejected checkout must not rebuild and republish the workspace as active.
-    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
-    let reopenedGeneration: number | null = null;
-    if (closedExecutionWorkspace) {
-      const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
-        req,
-        res,
-        issue,
-        closedExecutionWorkspace,
-      );
-      if (reopenOutcome === null) {
-        return;
-      }
-      // Install the guard only when this request set the reopen-pending flag. A
-      // concurrent request that found the workspace already open must not clear
-      // the flag that the actual reopener still owns.
-      if (reopenOutcome.outcome === "reopened") {
-        reopenedWorkspace = closedExecutionWorkspace;
-        reopenedGeneration = reopenOutcome.generation;
-      }
+    const resumeRequested = req.body.resume === true;
+    if (
+      resumeRequested
+      && !(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true }))
+    ) {
+      return;
     }
+
+    // Checkout before any closed-workspace reopen. Reopening from an unlocked
+    // pre-checkout snapshot races with concurrent terminalization: the route would
+    // rebuild/publish a workspace, then svc.checkout returns a terminal no-op.
+    // Deciding reopen from the post-checkout row closes that gap (and keeps true
+    // inert terminal calls from ever touching the workspace).
     let updated: Awaited<ReturnType<typeof svc.checkout>> | undefined;
-    // Clear the reopen-pending flag if the checkout leaves the issue terminal, so
-    // the rebuilt worktree does not leak. The guard reads `updated` when the
-    // response ends, so it covers a null return and a thrown error. It clears only
-    // the fence this request installed, keyed by its generation.
-    guardReopenedWorkspaceConsumption({
-      req,
-      res,
-      issue,
-      workspace: reopenedWorkspace,
-      generation: reopenedGeneration,
-      finalIssueStatus: () => updated?.status,
-    });
     try {
-      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+      updated = await svc.checkout(
+        id,
+        req.body.agentId,
+        req.body.expectedStatuses,
+        checkoutRunId,
+        resumeRequested,
+      );
     } catch (error) {
       if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
         res.status(409).json({
@@ -11047,43 +11051,162 @@ export function issueRoutes(
       }
       throw error;
     }
+
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
+    // Live status for the reopen-pending fence — may diverge from the checkout
+    // snapshot when another request terminalizes the issue mid-flight.
+    let finalStatusForReopenGuard: string | null | undefined = updated?.status;
+    const shouldConsiderClosedWorkspaceReopen =
+      Boolean(updated) && !isClosedIssueStatus(updated.status);
+    if (shouldConsiderClosedWorkspaceReopen && updated) {
+      // Revalidate before reopen: concurrent done/cancelled after checkout must
+      // not rebuild an active workspace for terminal work.
+      const postCheckout = await svc.getById(id);
+      if (postCheckout && isClosedIssueStatus(postCheckout.status)) {
+        updated = postCheckout;
+        finalStatusForReopenGuard = postCheckout.status;
+      } else {
+        // Keep the checkout return for ownership/mutation tracking; only the
+        // status gate/fence reads the live row when it is still nonterminal.
+        if (postCheckout) finalStatusForReopenGuard = postCheckout.status;
+        const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(updated);
+        if (closedExecutionWorkspace) {
+          const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
+            req,
+            res,
+            updated,
+            closedExecutionWorkspace,
+          );
+          if (reopenOutcome === null) {
+            // Checkout already ran before reopen. A 409/503 reopen response must not
+            // leave the caller holding ownership that retries cannot reclaim with the
+            // usual expectedStatuses set. Restore the pre-checkout snapshot (not a
+            // generic release → todo) when this request mutated the row; a
+            // pre-existing lock holder keeps their checkout.
+            const checkoutMutatedOnReopenFailure =
+              updated.status !== issue.status
+              || updated.checkoutRunId !== issue.checkoutRunId
+              || updated.executionRunId !== issue.executionRunId
+              || updated.assigneeAgentId !== issue.assigneeAgentId;
+            if (checkoutMutatedOnReopenFailure) {
+              try {
+                await svc.restoreCheckoutSnapshot(
+                  id,
+                  {
+                    status: issue.status,
+                    assigneeAgentId: issue.assigneeAgentId,
+                    assigneeUserId: issue.assigneeUserId,
+                    checkoutRunId: issue.checkoutRunId,
+                    executionRunId: issue.executionRunId,
+                    executionAgentNameKey: issue.executionAgentNameKey ?? null,
+                    executionLockedAt: issue.executionLockedAt ?? null,
+                    startedAt: issue.startedAt ?? null,
+                  },
+                  req.body.agentId,
+                  checkoutRunId,
+                  {
+                    checkoutRunId: updated.checkoutRunId,
+                    executionRunId: updated.executionRunId,
+                    status: updated.status,
+                  },
+                );
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: id },
+                  "failed to restore checkout snapshot after closed-workspace reopen failure",
+                );
+              }
+            }
+            return;
+          }
+          // Install the guard only when this request set the reopen-pending flag. A
+          // concurrent request that found the workspace already open must not clear
+          // the flag that the actual reopener still owns.
+          if (reopenOutcome.outcome === "reopened") {
+            reopenedWorkspace = closedExecutionWorkspace;
+            reopenedGeneration = reopenOutcome.generation;
+            const afterReopen = await svc.getById(id);
+            if (afterReopen) {
+              finalStatusForReopenGuard = afterReopen.status;
+              if (isClosedIssueStatus(afterReopen.status)) {
+                updated = afterReopen;
+              }
+            }
+          }
+        }
+      }
+    }
+    // Clear the reopen-pending flag if the response ends with a terminal issue, so
+    // the rebuilt worktree does not leak. Re-read status at settle time — a
+    // captured post-reopen snapshot can still go stale before the response ends.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue,
+      workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
+      finalIssueStatus: async () => {
+        try {
+          const live = await svc.getById(id);
+          return live?.status ?? finalStatusForReopenGuard;
+        } catch {
+          return finalStatusForReopenGuard;
+        }
+      },
+    });
+
     const actor = getActorInfo(req);
     if (updated?.harnessKind === "skill_test") {
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
     }
 
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.checked_out",
-      entityType: "issue",
-      entityId: issue.id,
-      details: { agentId: req.body.agentId },
-    });
+    // A concurrent terminalization after checkout is not a successful checkout for
+    // activity / wake purposes — do not advertise ownership of finished work.
+    const checkoutMutated =
+      updated
+      && !isClosedIssueStatus(updated.status)
+      && (
+        updated.status !== issue.status
+        || updated.checkoutRunId !== issue.checkoutRunId
+        || updated.executionRunId !== issue.executionRunId
+        || updated.assigneeAgentId !== issue.assigneeAgentId
+      );
 
-    if (
-      shouldWakeAssigneeOnCheckout({
-        actorType: req.actor.type,
-        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
-        checkoutAgentId: req.body.agentId,
-        checkoutRunId,
-      })
-    ) {
-      void heartbeat
-        .wakeup(req.body.agentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_checked_out",
-          payload: { issueId: issue.id, mutation: "checkout" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+    if (checkoutMutated) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.checked_out",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { agentId: req.body.agentId, resume: resumeRequested || undefined },
+      });
+
+      if (
+        shouldWakeAssigneeOnCheckout({
+          actorType: req.actor.type,
+          actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+          checkoutAgentId: req.body.agentId,
+          checkoutRunId,
         })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+      ) {
+        void heartbeat
+          .wakeup(req.body.agentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_checked_out",
+            payload: { issueId: issue.id, mutation: "checkout" },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+          })
+          .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+      }
     }
 
     res.json(updated);
