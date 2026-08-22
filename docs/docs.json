@@ -87,6 +87,7 @@
               "deploy/database",
               "deploy/secrets",
               "deploy/storage",
+              "deploy/disk-retention",
               "deploy/environment-variables"
             ]
           }
