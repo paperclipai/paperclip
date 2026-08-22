@@ -920,10 +920,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (timeoutMs <= 0) return;
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
+  let removeCancellationListener: () => void = () => undefined;
+  const cancellationPromise = new Promise<"cancelled">((resolve) => {
+    if (!ctx.signal) return;
+    if (ctx.signal.aborted) {
+      resolve("cancelled");
+      return;
+    }
+    const onAbort = () => resolve("cancelled");
+    ctx.signal.addEventListener("abort", onAbort, { once: true });
+    removeCancellationListener = () => ctx.signal?.removeEventListener("abort", onAbort);
+  });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancellationPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  removeCancellationListener();
   controller.abort();
+
+  if (outcome === "cancelled") {
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_cancelled",
+      errorMessage: "Hermes gateway run was cancelled by the control plane.",
+      provider: "hermes_gateway",
+      resultJson: {
+        run_id: runId,
+        status: extractStatus(finalStatus) ?? "cancelled",
+        last_event: state.lastEventName,
+        final_status: redactForLog(finalStatus, [], 0, redactText),
+      },
+      sessionParams: {
+        hermesRunId: runId,
+        strategy,
+      },
+      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+    };
+  }
 
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });

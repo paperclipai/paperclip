@@ -174,6 +174,12 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  /**
+   * Aborted when the control plane cancels this execution. Remote adapters
+   * must translate this into their runtime's stop primitive rather than only
+   * returning from the local adapter promise.
+   */
+  signal?: AbortSignal;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
