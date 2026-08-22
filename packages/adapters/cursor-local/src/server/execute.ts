@@ -50,6 +50,11 @@ import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
+import {
+  mergeCursorMcpServers,
+  parseAdapterCursorMcpServers,
+  prepareCursorMcpHome,
+} from "./cursor-mcp.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -230,11 +235,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
-  if (!executionTargetIsRemote) {
-    await ensureCursorSkillsInjected(onLog, {
-      skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
-    });
-  }
+  const adapterMcpServers = parseAdapterCursorMcpServers(config.mcpServers);
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const cursorMcpServers = mergeCursorMcpServers({
+    adapterServers: adapterMcpServers,
+    runtimeServers: runtimeMcpServers,
+  });
+  const injectCursorMcp = Object.keys(cursorMcpServers).length > 0;
 
   const envConfig = parseObject(config.env);
   let env: Record<string, string> = { ...buildPaperclipEnv(agent) };
@@ -304,6 +311,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+
+  let cursorMcpHome: Awaited<ReturnType<typeof prepareCursorMcpHome>> = null;
+  if (!executionTargetIsRemote && injectCursorMcp) {
+    cursorMcpHome = await prepareCursorMcpHome({
+      companyId: agent.companyId,
+      agentId: agent.id,
+      mcpServers: cursorMcpServers,
+      hostHome: os.homedir(),
+    });
+    if (cursorMcpHome) {
+      env.HOME = cursorMcpHome.homeDir;
+      await onLog(
+        "stdout",
+        `[paperclip] Injected Cursor MCP servers (${cursorMcpHome.serverNames.join(", ")}) via agent-scoped HOME ${cursorMcpHome.homeDir} → ${cursorMcpHome.mcpConfigPath}\n`,
+      );
+    }
+  }
+
+  if (!executionTargetIsRemote) {
+    const skillsHome = cursorMcpHome
+      ? path.join(cursorMcpHome.homeDir, ".cursor", "skills")
+      : undefined;
+    await ensureCursorSkillsInjected(onLog, {
+      skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+      ...(skillsHome ? { skillsHome } : {}),
+    });
+  }
+
+  // Mirror bind into PAPERCLIP agent home for operator inspection (not used by Cursor discovery).
+  if (injectCursorMcp && agentHome) {
+    try {
+      const mirrorDir = path.join(agentHome, ".cursor");
+      await fs.mkdir(mirrorDir, { recursive: true });
+      await fs.writeFile(
+        path.join(mirrorDir, "mcp.json"),
+        `${JSON.stringify({ mcpServers: cursorMcpServers }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog("stderr", `[paperclip] Warning: could not mirror Cursor mcp.json into agent home: ${reason}\n`);
+    }
+  }
+
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),
@@ -518,6 +569,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (autoTrustEnabled) {
       notes.push("Auto-added --yolo to bypass interactive prompts.");
     }
+    if (injectCursorMcp) {
+      notes.push("Auto-added --approve-mcps for Paperclip-materialized adapter/runtime MCP servers.");
+      if (cursorMcpHome) {
+        notes.push(
+          `Materialized agent-scoped Cursor MCP config at ${cursorMcpHome.mcpConfigPath} (HOME=${cursorMcpHome.homeDir}).`,
+        );
+      }
+    }
     notes.push("Prompt is piped to Cursor via stdin.");
     const sandboxCommand = finalSandboxCommand ?? initialSandboxCommand;
     if (sandboxCommand?.addedPathEntry) {
@@ -587,6 +646,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model) args.push("--model", model);
     if (mode) args.push("--mode", mode);
     if (autoTrustEnabled) args.push("--yolo");
+    // Cursor prompts for MCP approval unless servers are already trusted; auto-approve
+    // when Paperclip materialized adapterConfig/runtime MCP for this run.
+    if (injectCursorMcp && !extraArgs.includes("--approve-mcps")) {
+      args.push("--approve-mcps");
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
