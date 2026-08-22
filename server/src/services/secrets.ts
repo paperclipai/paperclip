@@ -1746,38 +1746,97 @@ export function secretService(db: Db) {
         inArray(companySecrets.id, [...new Set(bindings.map((binding) => binding.secretId))]),
       ));
     const secretsById = new Map(secrets.map((secret) => [secret.id, secret]));
-    const bindingsBySecret = new Map<string, typeof bindings>();
+
+    // Each binding projects its own metadata key: API-only bindings project the
+    // `access.<ALIAS>` alias, env bindings keep projecting the managed secret key.
+    // Grouping by (secretId, projected key) keeps distinct aliases on one secret
+    // separate while still collapsing an env/API pair that projects the same key
+    // into a single `delivery: "both"` entry.
+    type ProjectedBinding = { key: string; isApi: boolean; binding: (typeof bindings)[number] };
+    const projected: ProjectedBinding[] = [];
     for (const binding of bindings) {
-      const current = bindingsBySecret.get(binding.secretId) ?? [];
-      current.push(binding);
-      bindingsBySecret.set(binding.secretId, current);
+      const secret = secretsById.get(binding.secretId);
+      if (!secret) continue;
+      const isApi = binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX);
+      if (!isApi) {
+        projected.push({ key: secret.key, isApi, binding });
+        continue;
+      }
+      const alias = binding.configPath.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
+      // Aliases are validated on write; skip legacy rows that could never be read back.
+      if (!ENV_KEY_RE.test(alias)) continue;
+      // Normalize the alias the same way managed secret keys are normalized so the
+      // projected key an agent addresses is spelled consistently, and so an alias
+      // that names its own secret merges with the env grant into `delivery: "both"`
+      // instead of splitting into two entries.
+      projected.push({ key: normalizeSecretKey(alias), isApi, binding });
     }
 
-    return [...bindingsBySecret.entries()].flatMap(([secretId, secretBindings]) => {
-      const secret = secretsById.get(secretId);
+    const groups = new Map<string, ProjectedBinding[]>();
+    for (const entry of projected) {
+      const groupKey = `${entry.binding.secretId}::${entry.key}`;
+      const current = groups.get(groupKey) ?? [];
+      current.push(entry);
+      groups.set(groupKey, current);
+    }
+
+    // Prefer the API binding so the value route resolves against the alias path,
+    // then fall back to the oldest binding for a stable selection.
+    const bindingRank = (entry: ProjectedBinding) => [
+      entry.isApi ? 0 : 1,
+      new Date(entry.binding.createdAt).getTime(),
+      entry.binding.id,
+    ] as const;
+    const compareBindings = (left: ProjectedBinding, right: ProjectedBinding) => {
+      const [leftKind, leftCreated, leftId] = bindingRank(left);
+      const [rightKind, rightCreated, rightId] = bindingRank(right);
+      if (leftKind !== rightKind) return leftKind - rightKind;
+      if (leftCreated !== rightCreated) return leftCreated - rightCreated;
+      return leftId.localeCompare(rightId);
+    };
+
+    const entries = [...groups.values()].flatMap((groupBindings) => {
+      const [selected] = [...groupBindings].sort(compareBindings);
+      const secret = secretsById.get(selected.binding.secretId);
       if (!secret) return [];
-      const accessBinding = secretBindings.find((binding) => binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX));
-      const selectedBinding = accessBinding ?? secretBindings[0];
-      const hasEnv = secretBindings.some((binding) => binding.configPath.startsWith("env."));
-      const hasApi = Boolean(accessBinding);
-      const versionSelector: SecretVersionSelector = selectedBinding.versionSelector === "latest"
+      const hasEnv = groupBindings.some((entry) => !entry.isApi);
+      const hasApi = groupBindings.some((entry) => entry.isApi);
+      const versionSelector: SecretVersionSelector = selected.binding.versionSelector === "latest"
         ? "latest"
-        : Number(selectedBinding.versionSelector);
+        : Number(selected.binding.versionSelector);
       const delivery: AgentSecretAccessEntry["delivery"] = hasEnv && hasApi ? "both" : hasEnv ? "env" : "api";
       return [{
-        secretId,
-        bindingId: selectedBinding.id,
-        configPath: selectedBinding.configPath,
-        key: secret.key,
-        name: secret.name,
-        description: secret.description ?? null,
-        delivery,
-        projectionClass: (selectedBinding.projectionClass ?? "unclassified") as SecretProjectionClass,
-        latestVersion: secret.latestVersion,
-        versionSelector,
-        resolvedVersion: versionSelector === "latest" ? secret.latestVersion : versionSelector,
+        entry: {
+          secretId: selected.binding.secretId,
+          bindingId: selected.binding.id,
+          configPath: selected.binding.configPath,
+          key: selected.key,
+          name: secret.name,
+          description: secret.description ?? null,
+          delivery,
+          projectionClass: (selected.binding.projectionClass ?? "unclassified") as SecretProjectionClass,
+          latestVersion: secret.latestVersion,
+          versionSelector,
+          resolvedVersion: versionSelector === "latest" ? secret.latestVersion : versionSelector,
+        } satisfies AgentSecretAccessEntry,
+        selected,
       }];
-    }).sort((left, right) => left.key.localeCompare(right.key));
+    });
+
+    // Two different secrets can still project the same metadata key (an alias that
+    // collides with another secret's key). Keep one entry per key so the value
+    // route resolves a single, deterministic binding.
+    const byKey = new Map<string, (typeof entries)[number]>();
+    for (const candidate of entries) {
+      const existing = byKey.get(candidate.entry.key);
+      if (!existing || compareBindings(candidate.selected, existing.selected) < 0) {
+        byKey.set(candidate.entry.key, candidate);
+      }
+    }
+
+    return [...byKey.values()]
+      .map(({ entry }) => entry)
+      .sort((left, right) => left.key.localeCompare(right.key));
   }
 
   async function resolveSecretVersion(

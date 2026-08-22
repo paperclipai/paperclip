@@ -707,6 +707,89 @@ describe("secret routes", () => {
     }));
   });
 
+  describe("agent secret access", () => {
+    const agentActor = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+      runId: "22222222-2222-4222-8222-222222222222",
+    };
+    const aliasEntries = [
+      {
+        secretId: "33333333-3333-4333-8333-333333333333",
+        bindingId: "44444444-4444-4444-8444-444444444444",
+        configPath: "access.evals_openai_api_key",
+        key: "evals_openai_api_key",
+        name: "Vendor OpenAI",
+        description: null,
+        delivery: "api",
+        projectionClass: "unclassified",
+        latestVersion: 2,
+        versionSelector: "latest",
+        resolvedVersion: 2,
+      },
+      {
+        secretId: "33333333-3333-4333-8333-333333333333",
+        bindingId: "55555555-5555-4555-8555-555555555555",
+        configPath: "access.legacy_alias",
+        key: "legacy_alias",
+        name: "Vendor OpenAI",
+        description: null,
+        delivery: "api",
+        projectionClass: "unclassified",
+        latestVersion: 2,
+        versionSelector: "latest",
+        resolvedVersion: 2,
+      },
+    ];
+
+    it("lists alias-projected metadata without binding internals or secret bytes", async () => {
+      mockSecretService.listAgentSecretAccess.mockResolvedValue(aliasEntries);
+
+      const res = await request(createApp(agentActor)).get("/api/agents/me/secrets");
+
+      expect(res.status).toBe(200);
+      expect(res.body.secrets.map((entry: { key: string }) => entry.key))
+        .toEqual(["evals_openai_api_key", "legacy_alias"]);
+      for (const entry of res.body.secrets) {
+        expect(entry).not.toHaveProperty("secretId");
+        expect(entry).not.toHaveProperty("bindingId");
+        expect(entry).not.toHaveProperty("configPath");
+        expect(entry).not.toHaveProperty("value");
+      }
+    });
+
+    it("resolves the exact projected binding when two aliases share one secret", async () => {
+      mockSecretService.listAgentSecretAccess.mockResolvedValue(aliasEntries);
+      mockSecretService.resolveSecretValueForAgentAccess.mockResolvedValue({ value: "fixture-value", version: 2 });
+
+      const res = await request(createApp(agentActor)).post("/api/agents/me/secrets/legacy_alias/value");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ key: "legacy_alias", value: "fixture-value", version: 2 });
+      expect(mockSecretService.resolveSecretValueForAgentAccess).toHaveBeenCalledWith(
+        "company-1",
+        "33333333-3333-4333-8333-333333333333",
+        "latest",
+        expect.objectContaining({
+          configPath: "access.legacy_alias",
+          bindingId: "55555555-5555-4555-8555-555555555555",
+        }),
+      );
+    });
+
+    it("rejects a value read for the underlying managed secret key when only an alias is granted", async () => {
+      mockSecretService.listAgentSecretAccess.mockResolvedValue(aliasEntries);
+
+      const res = await request(createApp(agentActor))
+        .post("/api/agents/me/secrets/openai_api_key_dotta_paperclliping/value");
+
+      expect(res.status).toBe(403);
+      expect(mockSecretService.resolveSecretValueForAgentAccess).not.toHaveBeenCalled();
+    });
+  });
+
   it("rejects remote import preview for non-board actors", async () => {
     const res = await request(createApp({
       type: "agent",

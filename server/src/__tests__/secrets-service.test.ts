@@ -386,6 +386,153 @@ describeEmbeddedPostgres("secretService", () => {
     })).rejects.toThrow(/invalid agent secret access alias/i);
   });
 
+  it("lists API-only access bindings under their alias, not the managed secret key", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    // The managed key and the granted alias intentionally differ: the agent must
+    // see the alias it was granted, not the shared underlying secret key.
+    const secret = await svc.create(companyId, {
+      name: `vendor-openai-shared-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.evals_openai_api_key",
+    });
+
+    const listed = await svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    });
+
+    expect(secret.key).not.toBe("evals_openai_api_key");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      key: "evals_openai_api_key",
+      configPath: "access.evals_openai_api_key",
+      delivery: "api",
+      secretId: secret.id,
+    });
+    // Metadata only: the listing must never carry secret bytes.
+    expect(JSON.stringify(listed)).not.toContain("runtime-secret");
+  });
+
+  it("keeps distinct access aliases that reference the same secret readable", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      name: `shared-alias-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    for (const alias of ["access.PRIMARY_ALIAS", "access.SECONDARY_ALIAS"]) {
+      await svc.createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "agent",
+        targetId: agentId,
+        configPath: alias,
+      });
+    }
+
+    const listed = await svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    });
+
+    // Aliases project through the same key normalization managed keys use.
+    expect(listed.map((entry) => entry.key)).toEqual(["primary_alias", "secondary_alias"]);
+    expect(listed.map((entry) => entry.configPath)).toEqual(["access.PRIMARY_ALIAS", "access.SECONDARY_ALIAS"]);
+    expect(new Set(listed.map((entry) => entry.bindingId)).size).toBe(2);
+    expect(listed.every((entry) => entry.delivery === "api")).toBe(true);
+    // Each projected entry must resolve through its own binding.
+    for (const entry of listed) {
+      await expect(svc.resolveSecretValueForAgentAccess(companyId, entry.secretId, entry.versionSelector, {
+        agentId,
+        configPath: entry.configPath,
+        bindingId: entry.bindingId,
+        actorSource: "agent_jwt",
+        heartbeatRunId,
+        registerForRedaction: () => {},
+      })).resolves.toEqual({ value: "runtime-secret", version: 1 });
+    }
+  });
+
+  it("collapses an env and access pair that project the same key into one both-delivery entry", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      // Underscores only: the alias below reuses this key and must stay a valid alias.
+      name: `dual_delivery_${randomUUID().replace(/-/g, "_")}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    // env.* keeps projecting the managed secret key, so an alias equal to that key
+    // is the same projected key delivered two ways.
+    for (const configPath of [`access.${secret.key}`, "env.SOME_ENV_NAME"]) {
+      await svc.createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "agent",
+        targetId: agentId,
+        configPath,
+      });
+    }
+
+    const listed = await svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      key: secret.key,
+      delivery: "both",
+      configPath: `access.${secret.key}`,
+    });
+  });
+
+  it("lists an env-only binding under the managed secret key", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      name: `env-only-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "env.SOME_ENV_NAME",
+    });
+
+    const listed = await svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      key: secret.key,
+      configPath: "env.SOME_ENV_NAME",
+      delivery: "env",
+    });
+  });
+
   it("resolves env and access bindings through the run-bound agent resolver with dual audit", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
