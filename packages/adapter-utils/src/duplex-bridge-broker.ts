@@ -590,7 +590,34 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     const responseTimer = setTimeout(() => {
       // Response-budget backstop. The forward rejection normally answers first,
       // well before this deadline. This backstop answers a request whose forward
-      // rejection handling itself stalls, so the request never strands.
+      // rejection handling itself stalls, so the request never strands. One stall
+      // path is a response whose headers arrive but whose body reader stays
+      // pending through the budget, so the forward promise never settles.
+      if (isSafeBridgeMethod(frame.method)) {
+        // A safe method never changes host state, so a stalled body reader
+        // cannot leave a mutation half-applied. Keep the request retryable:
+        // return a 504 with the completed outcome and no indeterminate marker,
+        // so the gateway passes it through as a retryable status and never maps
+        // it to a terminal 409.
+        respond(
+          frame.id,
+          {
+            status: 504,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: "Duplex broker response budget exceeded.",
+              retryable: true,
+            }),
+          },
+          "completed",
+          "error",
+        );
+        return;
+      }
+      // The method may mutate host state, and the broker cannot prove the host
+      // applied no mutation once the response budget passes. Return a
+      // non-retryable 504 and mark the outcome indeterminate, so the gateway
+      // maps it to a terminal 409 and no caller double-applies the mutation.
       respond(
         frame.id,
         {
