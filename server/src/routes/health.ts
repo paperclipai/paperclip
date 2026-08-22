@@ -6,6 +6,7 @@ import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
+import { getRuntimeApiInstanceToken, RUNTIME_API_INSTANCE_HEADER } from "../runtime-api.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import {
   getCloudStackContext,
@@ -115,6 +116,15 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+
+  // Startup's reachability probe uses this header to tell our own listener apart
+  // from an unrelated HTTP service that happens to answer on a candidate
+  // hostname. Set it ahead of every handler and every authorization decision, so
+  // the probe keeps working on redacted and rejected responses alike.
+  router.use((_req, res, next) => {
+    res.setHeader(RUNTIME_API_INSTANCE_HEADER, getRuntimeApiInstanceToken());
+    next();
+  });
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;

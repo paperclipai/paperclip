@@ -5,7 +5,6 @@ import path from "node:path";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
-const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
@@ -349,6 +348,7 @@ vi.mock("../auth/better-auth.js", () => ({
 }));
 
 import { startServer } from "../index.ts";
+import { printStartupBanner } from "../startup-banner.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -650,12 +650,6 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
     else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
 
-    if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
-      delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-    } else {
-      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-    }
-
     if (ORIGINAL_PAPERCLIP_LISTEN_HOST === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
     else process.env.PAPERCLIP_LISTEN_HOST = ORIGINAL_PAPERCLIP_LISTEN_HOST;
 
@@ -670,10 +664,6 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://custom-api:3100");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://custom-api:3100");
-    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
-      expect.arrayContaining(["http://custom-api:3100"]),
-    );
-    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
   });
 
   it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {
@@ -681,6 +671,37 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("no longer exports the write-only runtime API candidate list", async () => {
+    // The candidate list used to be exported for adapters to retry against, but
+    // nothing ever read it. Startup now probes the candidates itself and exports
+    // a single origin that answered, so the list has no consumer left.
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON).toBeUndefined();
+  });
+
+  it("does not export an allowed hostname that resolves away from the bind address", async () => {
+    // The reported shape, on a non-loopback bind: `allowedHostnames` is a
+    // Host-header accept list, so its first entry carries no guarantee that it
+    // resolves to the address the server bound. Startup must not hand agents
+    // that name just because it sorts first. 192.0.2.0/24 is TEST-NET-1 and
+    // `.invalid` never resolves, so this stays hermetic in CI.
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      bind: "custom",
+      customBindHost: "192.0.2.10",
+      host: "192.0.2.10",
+      allowedHostnames: ["unreachable-name.invalid", "192.0.2.10"],
+    }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://192.0.2.10:3210");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://192.0.2.10:3210");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://192.0.2.10:3210");
   });
 
   it("keeps loopback as the runtime API URL when allowed hostnames are present", async () => {
@@ -693,9 +714,80 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
-    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
-      expect.arrayContaining(["http://127.0.0.1:3210", "http://192.168.1.50:3210"]),
+  });
+
+  it("resumes queued runs only after the probed runtime API URL is settled", async () => {
+    // A resumed run spawns an agent, and the child snapshots PAPERCLIP_API_URL at
+    // spawn time. If recovery runs before the post-listen probe, the child
+    // inherits the unprobed origin and no later promotion can repair it.
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      bind: "custom",
+      customBindHost: "192.0.2.10",
+      host: "192.0.2.10",
+      allowedHostnames: ["unreachable-name.invalid", "192.0.2.10"],
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let apiUrlSeenByResume: string | undefined;
+    heartbeatServiceMock.resumeQueuedRuns.mockImplementationOnce(async () => {
+      apiUrlSeenByResume = process.env.PAPERCLIP_API_URL;
+      return undefined;
+    });
+
+    await startServer();
+
+    expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalled();
+    expect(apiUrlSeenByResume).toBe("http://192.0.2.10:3210");
+    // The probe can only run once the listener is open, so recovery must be
+    // sequenced after the listen callback, not before it.
+    const bannerMock = vi.mocked(printStartupBanner);
+    expect(bannerMock).toHaveBeenCalled();
+    expect(bannerMock.mock.invocationCallOrder[0]).toBeLessThan(
+      heartbeatServiceMock.resumeQueuedRuns.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("skips scheduler ticks that fire before the probed runtime API URL is settled", async () => {
+    // The scheduler interval is registered before `server.listen`. A tick that
+    // fires in that window can enqueue a run through tickTimers /
+    // tickScheduledTriggers, and the spawned child snapshots the still-unprobed
+    // PAPERCLIP_API_URL, which later promotion cannot repair.
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      bind: "custom",
+      customBindHost: "192.0.2.10",
+      host: "192.0.2.10",
+      allowedHostnames: ["unreachable-name.invalid", "192.0.2.10"],
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        // Fire the tick at registration time, i.e. during startup and before the
+        // listener is open.
+        callback();
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+
+      // Once the URL has settled the same tick does its normal work.
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(heartbeatServiceMock.tickTimers).toHaveBeenCalledTimes(1);
+      expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it("preserves explicit-port external auth public URLs when detect-port selects a new port", async () => {

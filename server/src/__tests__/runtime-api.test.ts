@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
+  createRuntimeApiProbe,
+  getRuntimeApiInstanceToken,
+  rankRuntimeApiCandidatesByBindAddress,
+  resolveRuntimeApiUrl,
+  RUNTIME_API_INSTANCE_HEADER,
 } from "../runtime-api.js";
 
 describe("runtime API discovery", () => {
@@ -154,5 +161,275 @@ describe("runtime API discovery", () => {
       "192.168.6.178",
       "fd7a:115c:a1e0::8a3a:a11d",
     ]);
+  });
+});
+
+describe("runtime API reachability resolution", () => {
+  // Mirrors a tailnet-bound host whose short machine name also exists in the
+  // cloud provider's internal DNS: both names are allow-listed, but only the
+  // tailnet name resolves to the address the server actually bound.
+  const BIND_HOST = "100.108.64.76";
+  const PORT = 3100;
+
+  const lookupHost = async (hostname: string): Promise<string[]> => {
+    if (hostname === "good-name") return ["100.108.64.76"];
+    if (hostname === "unreachable-name") return ["10.0.0.4"];
+    return [];
+  };
+
+  const probeOnlyGoodName = async (origin: string): Promise<boolean> =>
+    origin === "http://good-name:3100";
+
+  it("picks the allowed hostname that resolves to the bind address and answers a probe", async () => {
+    const resolved = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeOrigin: probeOnlyGoodName,
+    });
+
+    expect(resolved.url).toBe("http://good-name:3100");
+    expect(resolved.reason).toBe("probe");
+    // The known-wrong name must never be probed before the working one.
+    expect(resolved.probed.map((entry) => entry.url)).not.toContain("http://unreachable-name:3100");
+  });
+
+  it("is not order-dependent: swapping the allowed hostnames yields the same URL", async () => {
+    const forward = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeOrigin: probeOnlyGoodName,
+    });
+    const reversed = await resolveRuntimeApiUrl({
+      allowedHostnames: ["good-name", "unreachable-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeOrigin: probeOnlyGoodName,
+    });
+
+    expect(reversed.url).toBe(forward.url);
+    expect(reversed.url).toBe("http://good-name:3100");
+  });
+
+  it("puts the reachable origin first in the candidate list it returns", async () => {
+    const resolved = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeOrigin: probeOnlyGoodName,
+    });
+
+    expect(resolved.candidates[0]).toBe("http://good-name:3100");
+    expect(resolved.candidates).toContain("http://unreachable-name:3100");
+  });
+
+  it("keeps the resolve-ranked order when no candidate answers", async () => {
+    const resolved = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeOrigin: async () => false,
+    });
+
+    expect(resolved.reason).toBe("unreachable-fallback");
+    expect(resolved.url).toBe("http://good-name:3100");
+    expect(resolved.probed.every((entry) => entry.reachable === false)).toBe(true);
+  });
+
+  it("stops probing once the budget is spent instead of stalling startup", async () => {
+    let clock = 0;
+    const resolved = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name", "no-such-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeBudgetMs: 1_000,
+      now: () => clock,
+      probeOrigin: async () => {
+        clock += 1_500;
+        return false;
+      },
+    });
+
+    // The top-ranked candidate is always probed; the rest are dropped once the
+    // budget is gone, so a fully dead list costs one timeout instead of N.
+    expect(resolved.probed).toHaveLength(1);
+    expect(resolved.probed[0]?.url).toBe("http://good-name:3100");
+    expect(resolved.skipped).toEqual([
+      // The bind address itself is also a candidate, and ranks alongside the
+      // allowed hostname that resolves to it.
+      "http://100.108.64.76:3100",
+      "http://no-such-name:3100",
+      "http://unreachable-name:3100",
+    ]);
+    expect(resolved.reason).toBe("unreachable-fallback");
+    expect(resolved.url).toBe("http://good-name:3100");
+  });
+
+  it("honors an explicit public base URL without probing", async () => {
+    const probeOrigin = async (): Promise<boolean> => {
+      throw new Error("probe must not run when a public base URL is configured");
+    };
+
+    const resolved = await resolveRuntimeApiUrl({
+      authPublicBaseUrl: "https://paperclip.example.com/base/path",
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: BIND_HOST,
+      port: PORT,
+      networkInterfacesMap: {},
+      lookupHost,
+      probeOrigin,
+    });
+
+    expect(resolved.url).toBe("https://paperclip.example.com");
+    expect(resolved.reason).toBe("explicit-public-base-url");
+    expect(resolved.probed).toEqual([]);
+  });
+
+  it("leaves candidate order alone for a wildcard bind, where DNS carries no signal", async () => {
+    const ranked = await rankRuntimeApiCandidatesByBindAddress({
+      candidates: ["http://unreachable-name:3100", "http://good-name:3100"],
+      bindHost: "0.0.0.0",
+      lookupHost,
+    });
+
+    expect(ranked.map((entry) => entry.url)).toEqual([
+      "http://unreachable-name:3100",
+      "http://good-name:3100",
+    ]);
+  });
+
+  it("does not stall ranking when a resolver never answers", async () => {
+    // `dns.lookup` has no timeout of its own, and the probe budget only covers
+    // probing. A wedged resolver must degrade to "unknown", not hang startup.
+    const ranked = await rankRuntimeApiCandidatesByBindAddress({
+      candidates: ["http://wedged-resolver-name:3100", `http://${BIND_HOST}:3100`],
+      bindHost: BIND_HOST,
+      lookupHost: () => new Promise<string[]>(() => {}),
+      lookupTimeoutMs: 10,
+    });
+
+    expect(ranked.map((entry) => entry.url)).toEqual([
+      `http://${BIND_HOST}:3100`,
+      "http://wedged-resolver-name:3100",
+    ]);
+    expect(ranked[1]?.addresses).toEqual([]);
+  });
+
+  it("ranks a name that does not resolve above one that resolves off the bind address", async () => {
+    const ranked = await rankRuntimeApiCandidatesByBindAddress({
+      candidates: ["http://unreachable-name:3100", "http://no-such-name:3100"],
+      bindHost: BIND_HOST,
+      lookupHost,
+    });
+
+    expect(ranked.map((entry) => entry.url)).toEqual([
+      "http://no-such-name:3100",
+      "http://unreachable-name:3100",
+    ]);
+  });
+});
+
+describe("runtime API probe identity", () => {
+  // An allow-listed hostname can resolve to a machine running something else
+  // entirely. "A listener answered" is therefore not enough to promote an origin
+  // to PAPERCLIP_API_URL: agents send bearer tokens there, so the probe has to
+  // establish that the responder is this process.
+  const servers: http.Server[] = [];
+
+  const startListener = async (
+    handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+  ): Promise<string> => {
+    const server = http.createServer(handler);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return `http://127.0.0.1:${port}`;
+  };
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
+  });
+
+  it("accepts an origin that answers with this process's instance token", async () => {
+    const origin = await startListener((_req, res) => {
+      res.setHeader(RUNTIME_API_INSTANCE_HEADER, getRuntimeApiInstanceToken());
+      res.writeHead(200).end("{}");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(true);
+  });
+
+  it("accepts our own listener even when it rejects the probe unauthenticated", async () => {
+    // The header is set ahead of any authorization decision, so tightening auth
+    // on /api/health must not make this server look unreachable to itself.
+    const origin = await startListener((_req, res) => {
+      res.setHeader(RUNTIME_API_INSTANCE_HEADER, getRuntimeApiInstanceToken());
+      res.writeHead(401).end("unauthorized");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(true);
+  });
+
+  it("rejects an unrelated HTTP service that answers on a candidate origin", async () => {
+    const origin = await startListener((_req, res) => {
+      res.writeHead(200).end("hello from something else");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(false);
+  });
+
+  it("rejects another Paperclip process listening on a candidate origin", async () => {
+    const origin = await startListener((_req, res) => {
+      res.setHeader(RUNTIME_API_INSTANCE_HEADER, "a-different-paperclip-process");
+      res.writeHead(200).end("{}");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(false);
+  });
+
+  it("falls back to the ranked pick when only a foreign listener answers", async () => {
+    // End to end: a stranger on the wrong name must not be promoted just because
+    // it replies. Ranking still decides, and the reason records that nothing of
+    // ours answered.
+    const foreign = await startListener((_req, res) => {
+      res.writeHead(200).end("hello from something else");
+    });
+
+    const resolved = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: "100.108.64.76",
+      port: 3100,
+      networkInterfacesMap: {},
+      lookupHost: async (hostname) => {
+        if (hostname === "good-name") return ["100.108.64.76"];
+        if (hostname === "unreachable-name") return ["10.0.0.4"];
+        return [];
+      },
+      probeOrigin: createRuntimeApiProbe(600, getRuntimeApiInstanceToken()),
+      probeTimeoutMs: 600,
+    });
+
+    expect(foreign).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(resolved.reason).toBe("unreachable-fallback");
+    expect(resolved.url).toBe("http://good-name:3100");
   });
 });
