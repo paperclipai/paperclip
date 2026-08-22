@@ -184,6 +184,26 @@ export function visibleRunCostUsd(
   return readRunCostUsd(usage) || readRunCostUsd(result);
 }
 
+/**
+ * Returns a human-readable cost label for a run detail cell.
+ * Shows a meaningful label instead of a bare dash when the adapter does not
+ * report metered costs (local adapters, subscription-billed runs).
+ */
+export function formatRunCostDisplay(args: {
+  costUsd: number;
+  hasTokenUsage: boolean;
+  usage: Record<string, unknown> | null;
+  result?: Record<string, unknown> | null;
+}): string {
+  const { costUsd, hasTokenUsage, usage, result = null } = args;
+  if (costUsd > 0) return `$${costUsd.toFixed(4)}`;
+  const billingType =
+    coerceBillingType(usage?.billingType) ?? coerceBillingType(result?.billingType);
+  if (billingType === "subscription_included") return "Included";
+  if (hasTokenUsage) return "N/A (local)";
+  return "-";
+}
+
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
   const map: Record<FinanceEventKind, string> = {
     inference_charge: "Inference charge",
