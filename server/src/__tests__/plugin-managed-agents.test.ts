@@ -301,6 +301,21 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
       expect(content).toContain("You are the LLM Wiki Maintainer.");
       expect(content).toContain(`Wiki root: \`${wikiRoot}\``);
       expect(content).toContain(`Wiki schema: \`${path.join(wikiRoot, "AGENTS.md")}\``);
+
+      const instructionsRoot = path.dirname(instructionsFilePath as string);
+      await fs.writeFile(instructionsFilePath as string, "# Operator plugin edit\n", "utf8");
+      await fs.writeFile(path.join(instructionsRoot, "OPERATOR.md"), "Operator-added plugin file\n", "utf8");
+      await services.agents.managedReset({ companyId, agentKey: "wiki-maintainer" });
+
+      await expect(fs.readFile(path.join(`${instructionsRoot}.backup-1`, "AGENTS.md"), "utf8")).resolves.toBe(
+        "# Operator plugin edit\n",
+      );
+      await expect(fs.readFile(path.join(`${instructionsRoot}.backup-1`, "OPERATOR.md"), "utf8")).resolves.toBe(
+        "Operator-added plugin file\n",
+      );
+      await expect(fs.readFile(instructionsFilePath as string, "utf8")).resolves.toContain(
+        "You are the LLM Wiki Maintainer.",
+      );
     } finally {
       if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousHome;

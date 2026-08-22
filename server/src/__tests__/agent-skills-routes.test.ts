@@ -1086,7 +1086,7 @@ describe.sequential("agent skill routes", () => {
         "SOUL.md": expect.stringContaining("CEO Persona"),
         "TOOLS.md": expect.stringContaining("# Tools"),
       }),
-      { entryFile: "AGENTS.md", replaceExisting: false },
+      { entryFile: "AGENTS.md" },
     );
   });
 
@@ -1112,7 +1112,7 @@ describe.sequential("agent skill routes", () => {
         expect.objectContaining({
           "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
         }),
-        { entryFile: "AGENTS.md", replaceExisting: false },
+        { entryFile: "AGENTS.md" },
       );
       expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
         expect.any(Object),

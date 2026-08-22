@@ -326,26 +326,37 @@ export function pluginManagedAgentService(
     companyId: string,
     agent: Agent,
     declaration: PluginManagedAgentDeclaration,
-    materializeOptions: { replaceExisting: boolean },
+    materializeOptions: { forceReset?: boolean } = {},
   ): Promise<Agent> {
     const variables = await optionsForInstructionVariables(companyId);
     const declared = declaredInstructionFiles(declaration, variables);
     if (!declared) return agent;
 
-    const materialized = await instructions.materializeManagedBundle(
-      agent,
-      declared.files,
-      {
-        entryFile: declared.entryFile,
-        replaceExisting: materializeOptions.replaceExisting,
-        clearLegacyPromptTemplate: true,
-      },
-    );
+    const instructionOptions = {
+      entryFile: declared.entryFile,
+      clearLegacyPromptTemplate: true,
+    };
+    const materialized = materializeOptions.forceReset
+      ? await instructions.forceResetManagedBundle(agent, declared.files, instructionOptions)
+      : await instructions.materializeManagedBundle(agent, declared.files, instructionOptions);
     const updated = await agentSvc.update(agent.id, {
       adapterConfig: materialized.adapterConfig,
     }, {
       recordRevision: {
         source: `plugin:${optionsForRevisionSource()}:managed-agent-instructions`,
+      },
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: "plugin",
+      actorId: options.pluginId,
+      action: "plugin.managed_agent.instructions_materialized",
+      entityType: "agent",
+      entityId: agent.id,
+      details: {
+        sourcePluginKey: options.pluginKey,
+        managedResourceKey: declaration.agentKey,
+        ...materialized.materialization,
       },
     });
     return (updated as Agent | null) ?? { ...agent, adapterConfig: materialized.adapterConfig };
@@ -423,7 +434,7 @@ export function pluginManagedAgentService(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     }) as Agent;
-    created = await materializeDeclaredInstructions(companyId, created, declaration, { replaceExisting: true });
+    created = await materializeDeclaredInstructions(companyId, created, declaration);
 
     let approvalId: string | null = null;
     if (requiresApproval) {
@@ -537,7 +548,7 @@ export function pluginManagedAgentService(
         },
       });
       if (!updated) throw notFound("Managed agent not found");
-      const updatedAgent = await materializeDeclaredInstructions(companyId, updated as Agent, declaration, { replaceExisting: true });
+      const updatedAgent = await materializeDeclaredInstructions(companyId, updated as Agent, declaration, { forceReset: true });
       await upsertBinding(companyId, declaration, updatedAgent.id, {}, adapterType);
       await logActivity(db, {
         companyId,
