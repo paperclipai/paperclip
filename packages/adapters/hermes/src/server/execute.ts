@@ -561,7 +561,12 @@ export async function execute(
     model,
   };
 
-  if (parsed.errorMessage) {
+  // Hermes may log recoverable tool/checkpoint errors to stderr and still
+  // finish the requested run successfully. Treating any such line as an
+  // adapter failure turns an exit-code-0 run into a false red Paperclip run.
+  // Preserve fatal diagnostics only when the child itself failed or timed
+  // out; successful runs are authoritative.
+  if (parsed.errorMessage && (result.exitCode !== 0 || result.timedOut)) {
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
