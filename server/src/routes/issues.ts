@@ -118,6 +118,7 @@ import {
   companySkillService,
   companyService,
   companySearchService,
+  executionWorkspaceLifecycleService,
   executionWorkspaceService,
   goalService,
   heartbeatService,
@@ -10509,6 +10510,31 @@ export function issueRoutes(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };
+    }
+
+    const becameTerminal =
+      !isClosedIssueStatus(existing.status) && isClosedIssueStatus(issue.status);
+    if (becameTerminal && issue.executionWorkspaceId) {
+      const deferWorkspaceCleanup = Boolean(
+        actor.runId || existing.executionRunId || runToCancelForCancelledStatus,
+      );
+      await executionWorkspaceLifecycleService(db)
+        .reconcileTerminalIssueWorkspace({
+          issueId: issue.id,
+          defer: deferWorkspaceCleanup,
+          actor: {
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId ?? null,
+            runId: actor.runId ?? null,
+          },
+        })
+        .catch((err) => {
+          logger.warn(
+            { err, issueId: issue.id, executionWorkspaceId: issue.executionWorkspaceId },
+            "failed to reconcile terminal issue execution workspace",
+          );
+        });
     }
 
     const assigneeChanged =

@@ -158,6 +158,10 @@ export {
   type ParsedCustomImageSetupSshCommand,
 } from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
+export {
+  executionWorkspaceLifecycleService,
+  type TerminalWorkspaceCleanupResult,
+} from "./execution-workspace-lifecycle.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export {
   workspaceRuntimeLeaseService,
