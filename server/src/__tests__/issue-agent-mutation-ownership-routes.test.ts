@@ -280,7 +280,9 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     companyId,
+    name: `Agent ${id}`,
     role: "engineer",
+    status: "idle",
     reportsTo: null,
     permissions: { canCreateAgents: false },
     ...overrides,
@@ -309,6 +311,7 @@ function createRunContextDb(
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
     if (keys.includes("agentCompanyId")) return runRows;
+    if (keys.includes("status") && keys.includes("reportsTo")) return mockAgentService.list();
     if (keys.length === 0) {
       const issue = await mockIssueService.getById(issueId);
       return issue ? [issue] : [];
@@ -1900,7 +1903,8 @@ describe("agent issue mutation checkout ownership", () => {
       returnOwnerAgentId: ownerAgentId,
     });
 
-    const res = await request(await createApp(peerActor()))
+    const routeDb = createRunContextDb({}, peerAgentId, "66666666-6666-4666-8666-666666666666");
+    const res = await request(await createApp(peerActor(), routeDb))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({
         actionId: recoveryActionId,
@@ -1909,6 +1913,7 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(routeDb.select).toHaveBeenCalledWith(expect.objectContaining({ id: expect.anything() }));
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.not.objectContaining({ assigneeAgentId: expect.anything() }),

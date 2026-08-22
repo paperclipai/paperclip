@@ -142,6 +142,7 @@ import {
 } from "../services/index.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
+import { evaluateAgentInvokability } from "../services/agent-invokability.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -5234,6 +5235,7 @@ export function issueRoutes(
   }
 
   async function assertSafeRecoveryHandBackGates(input: {
+    dbClient: Db;
     req: Request;
     issue: {
       id: string;
@@ -5257,6 +5259,30 @@ export function issueRoutes(
           returnOwnerAgentId,
         },
       );
+    }
+    // Read the complete eligibility snapshot through the locking transaction.
+    // A shared lock keeps concurrent pause/terminate/org-chain writes behind the
+    // hand-back commit while still allowing independent hand-back readers.
+    const companyAgents = await input.dbClient
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, input.issue.companyId))
+      .for("share");
+    const returnOwner = companyAgents.find((agent) => agent.id === returnOwnerAgentId) ?? null;
+    const invokability = evaluateAgentInvokability(returnOwner, companyAgents);
+    if (!invokability.invokable) {
+      throw conflict("Safe recovery hand-back requires an invokable return owner", {
+        code: "recovery_safe_hand_back_owner_not_invokable",
+        issueId: input.issue.id,
+        returnOwnerAgentId,
+        reason: invokability.reason,
+      });
     }
     const actorRunId = input.req.actor.type === "agent"
       ? input.req.actor.runId?.trim() || null
@@ -6911,6 +6937,7 @@ export function issueRoutes(
           lockedIssue.assigneeAgentId === activeRecoveryAction.returnOwnerAgentId;
         if (safeHandBack) {
           await assertSafeRecoveryHandBackGates({
+            dbClient: tx as unknown as Db,
             req,
             issue: lockedIssue,
             recoveryAction: activeRecoveryAction,

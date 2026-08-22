@@ -557,6 +557,172 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("keeps a low-trust review recovery on its bounded reviewer after setup failure", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [lowTrustIssue] = await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: sourceIssue.companyId,
+              rootIssueId: sourceIssue.id,
+              issueIds: [sourceIssue.id],
+              allowedAgentIds: [coderId],
+            },
+          },
+        },
+      })
+      .where(eq(issues.id, sourceIssue.id))
+      .returning();
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter setup failed",
+      errorCode: "setup_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: lowTrustIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(action?.ownerAgentId).toBe(coderId);
+    expect(action?.returnOwnerAgentId).toBe(coderId);
+    expect(updatedIssue?.assigneeAgentId).toBe(coderId);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      reason: "source_scoped_recovery_action",
+    }));
+  });
+
+  it("escalates bounded low-trust recovery to the board without transferring assignment", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    const [lowTrustIssue] = await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: sourceIssue.companyId,
+              rootIssueId: sourceIssue.id,
+              issueIds: [sourceIssue.id],
+              allowedAgentIds: [coderId],
+            },
+          },
+        },
+      })
+      .where(eq(issues.id, sourceIssue.id))
+      .returning();
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter setup failed",
+      errorCode: "setup_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: lowTrustIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(action).toMatchObject({ ownerType: "board", ownerAgentId: null, returnOwnerAgentId: coderId });
+    expect(updatedIssue?.assigneeAgentId).toBe(coderId);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps provider-quota recovery monitor-only inside a low-trust boundary", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [lowTrustIssue] = await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: sourceIssue.companyId,
+              rootIssueId: sourceIssue.id,
+              issueIds: [sourceIssue.id],
+              allowedAgentIds: [coderId],
+            },
+          },
+        },
+      })
+      .where(eq(issues.id, sourceIssue.id))
+      .returning();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "provider quota exceeded",
+      errorCode: "provider_quota",
+      startedAt: new Date("2026-08-20T20:00:00.000Z"),
+      finishedAt: new Date("2026-08-20T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssue.id, retryReason: "provider_quota" },
+      livenessState: "needs_followup",
+    });
+    const latestRun = {
+      id: runId,
+      agentId: coderId,
+      status: "failed",
+      error: "provider quota exceeded",
+      errorCode: "provider_quota",
+      contextSnapshot: { retryReason: "provider_quota" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: lowTrustIssue!,
+      previousStatus: "in_progress",
+      recoveryCause: "provider_quota",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      ownerType: "system",
+      ownerAgentId: null,
+      returnOwnerAgentId: coderId,
+      wakePolicy: { type: "monitor_only", reason: "provider_quota" },
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({
@@ -1635,6 +1801,47 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         payload: expect.objectContaining({ issueId: sourceIssueId, recoveryActionId: action.id }),
       }),
     );
+  });
+
+  it("keeps board recovery active while the recorded return owner is not invokable", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "low-trust:paused-reviewer",
+      evidence: { routingFallbackReason: "bounded reviewer is not invokable" },
+      nextAction: "Restore the bounded reviewer before hand-back.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+
+    const response = await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup,
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Try the bounded reviewer again.",
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.details?.code).toBe("recovery_safe_hand_back_owner_not_invokable");
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+    expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
   });
 
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {
