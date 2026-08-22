@@ -911,21 +911,34 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
-          status: "terminated",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id));
+      await db.transaction(async (tx) => {
+        // A terminated agent is not invokable, so it can never act on its own
+        // issues again. Authorization grants `issue:mutate` only to the current
+        // assignee, so leaving the assignment in place makes those rows
+        // permanently immutable for every other actor. Detach them here, the
+        // same way `remove` does. Only the assignee link is cleared: unlike
+        // `remove`, the agent row survives, so authorship stays valid.
+        await tx
+          .update(issues)
+          .set({ assigneeAgentId: null, updatedAt: new Date() })
+          .where(eq(issues.assigneeAgentId, id));
 
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
+        await tx
+          .update(agents)
+          .set({
+            status: "terminated",
+            pauseReason: null,
+            pausedAt: null,
+            errorReason: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, id));
+
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(agentApiKeys.agentId, id));
+      });
 
       return getById(id);
     },
