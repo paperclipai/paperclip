@@ -20,6 +20,18 @@ import {
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+// Capture live events so the terminalization payload can be asserted.
+const publishedLiveEvents = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock("../services/live-events.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/live-events.ts")>();
+  return {
+    ...actual,
+    publishLiveEvent: (input: Record<string, unknown>) => {
+      publishedLiveEvents.push(input);
+    },
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -285,9 +297,13 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // catches it: the issue reached "done" while the run row stayed "running".
     const { companyId, agentId, runningRunId } = await seed();
     // process.pid is the live test process, so isPidAlive returns true.
+    // resultJson carries the run summary, which becomes finalText on the event.
     await db
       .update(heartbeatRuns)
-      .set({ processPid: process.pid })
+      .set({
+        processPid: process.pid,
+        resultJson: { summary: "Reused sandbox summary for the operator." },
+      })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -331,6 +347,22 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("issue reached a terminal status");
+
+    // This path writes heartbeat_runs directly instead of going through
+    // setRunStatus, so it must announce the transition itself. Without the
+    // event no live-run view learns the run ended.
+    const statusEvent = publishedLiveEvents.find(
+      (e) => e.type === "heartbeat.run.status"
+        && (e.payload as Record<string, unknown>)?.runId === runningRunId,
+    );
+    expect(statusEvent).toBeDefined();
+    const payload = statusEvent!.payload as Record<string, unknown>;
+    expect(payload.status).toBe("succeeded");
+    // finalText must be present on a terminal payload: the plugin session
+    // consumer uses it as the message of the "done" event it emits, so a
+    // missing field turns a successful run into a completion with no result.
+    expect(payload).toHaveProperty("finalText");
+    expect(payload.finalText).toBe("Reused sandbox summary for the operator.");
   });
 
   it("terminalizes a running run to cancelled when its issue is cancelled (reuse-lease path)", async () => {
