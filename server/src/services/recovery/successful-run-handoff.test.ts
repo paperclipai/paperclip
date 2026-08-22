@@ -88,14 +88,17 @@ describe("successful run handoff decision", () => {
       allowDeliverableWork: false,
       allowDocumentUpdates: false,
       resumeRequiresNormalModel: true,
-      modelProfile: "cheap",
     });
+    // 2026-08-22 session-churn fix: the handoff keeps its disposition-only guard
+    // context but runs on the SAME model so the task session survives — the
+    // cheap-profile tag caused 326 session resets/day (see model-profile-hint.ts).
+    expect(decision.payload).not.toHaveProperty("modelProfile");
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
     });
+    expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
     expect(decision.contextSnapshot).toMatchObject({
-      modelProfile: "cheap",
       recoveryIntent: "status_only",
       allowDeliverableWork: false,
       allowDocumentUpdates: false,

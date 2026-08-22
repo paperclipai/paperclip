@@ -706,7 +706,7 @@ export function decideSuccessfulRunHandoff(input: {
     resumeFromRunId: run.id,
     ...(input.taskKey ? { taskKey: input.taskKey } : {}),
     instruction,
-  }, "status_only");
+  }, "status_only_same_model");
 
   return {
     kind: "enqueue",
@@ -721,6 +721,6 @@ export function decideSuccessfulRunHandoff(input: {
       ...payload,
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       livenessState: input.livenessState,
-    }, "status_only"),
+    }, "status_only_same_model"),
   };
 }
