@@ -931,7 +931,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
       runLogTail: paperclipBridge?.runLogTail,
-      runDisposition: paperclipBridge?.readRunDisposition,
+      settleRunDisposition: paperclipBridge?.settleRunDisposition,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
@@ -1006,7 +1006,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
-      const errorCode = loginMeta.requiresLogin
+      const errorCode = proc.errorCode
+        // Forward the transport-level error code from the run-disposition seam
+        // first, even on the unparsed path. A lost duplex control channel
+        // surfaces the typed `duplex_channel_lost` code before any provider
+        // classification, so the CLI lane and the ACP lane report it alike.
+        ? proc.errorCode
+        : loginMeta.requiresLogin
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,

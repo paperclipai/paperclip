@@ -591,7 +591,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog: eventForwarder.log,
       runLogTail: paperclipBridge?.runLogTail,
-      runDisposition: paperclipBridge?.readRunDisposition,
+      settleRunDisposition: paperclipBridge?.settleRunDisposition,
     });
     await eventForwarder.flush();
     return {

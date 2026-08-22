@@ -1311,7 +1311,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, cleaned);
           },
           runLogTail: paperclipBridge?.runLogTail,
-          runDisposition: paperclipBridge?.readRunDisposition,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
           localProcessSandbox,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);

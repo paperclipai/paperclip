@@ -718,7 +718,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
         runLogTail: paperclipBridge?.runLogTail,
-        runDisposition: paperclipBridge?.readRunDisposition,
+        settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
 
       // Flush any remaining buffer content

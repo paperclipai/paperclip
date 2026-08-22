@@ -43,7 +43,7 @@ import {
   type StartupTraceContext,
   type StartupTracer,
 } from "./acpx-engine/startup-timing.js";
-import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
+import { createSandboxRunLogTailFactory, type SandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
@@ -5952,7 +5952,7 @@ describe("CLI-lane run-disposition seam", () => {
       timeoutSec: 5,
       graceSec: 1,
       onLog: async () => {},
-      runDisposition: () => broker.runDisposition,
+      settleRunDisposition: () => broker.settleRunDisposition(),
     });
 
     // The lost channel overrides the clean exit to a failure with the typed code.
@@ -5973,17 +5973,56 @@ describe("CLI-lane run-disposition seam", () => {
       timeoutSec: 5,
       graceSec: 1,
       onLog: async () => {},
-      runDisposition: () => broker.runDisposition,
+      settleRunDisposition: () => broker.settleRunDisposition(),
     });
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode ?? null).toBeNull();
-    // The gateway close frame marks the orderly completion at agent completion.
-    // A teardown loss ordered after it is a normal teardown, so the run stays a
-    // success.
-    broker.markOrderlyCompletion();
+    // The seam's atomic settle marked the orderly completion at agent
+    // completion. A teardown loss ordered after it is a normal teardown, so the
+    // run stays a success without any manual mark here.
     fake.emitExit({ exitCode: 0 });
     await flushMacrotasks();
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
+  it("keeps a clean CLI completion a success when the gateway exits during the run-log tail finish", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = startBroker(fake);
+
+    // A run-log tail whose finish emits a gateway exit. This reproduces the
+    // race where the duplex gateway dies after the clean process completion but
+    // before the host reads the disposition. The seam settles the disposition
+    // synchronously before this finish await, so the mark orders first and the
+    // teardown exit stays benign.
+    const runLogTail: SandboxRunLogTailFactory = {
+      create: () => ({
+        wrapCommand: (command, args) => ({ command, args }),
+        start: () => {},
+        finish: async () => {
+          fake.emitExit({ exitCode: 1 });
+          await flushMacrotasks();
+        },
+        abort: async () => {},
+      }),
+    };
+
+    const runner = mockRunner({ ...CLEAN_RESULT });
+    const result = await runAdapterExecutionTargetProcess("run-cli-race", sandboxTarget(runner), "agent-cli", [], {
+      cwd: "/local",
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+      runLogTail,
+      settleRunDisposition: () => broker.settleRunDisposition(),
+    });
+
+    // The atomic settle at the completion boundary marked the orderly
+    // completion before the finish await, so the gateway exit never latches a
+    // false loss and the run stays a clean success.
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode ?? null).toBeNull();
     expect(broker.runDisposition.failed).toBe(false);
   });
 
@@ -6003,21 +6042,21 @@ describe("CLI-lane run-disposition seam", () => {
       timeoutSec: 5,
       graceSec: 1,
       onLog: async () => {},
-      runDisposition: () => broker.runDisposition,
+      settleRunDisposition: () => broker.settleRunDisposition(),
     });
 
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe(DUPLEX_CHANNEL_LOST_ERROR_CODE);
   });
 
-  it("leaves an already-failed CLI result unchanged and never reads the disposition", async () => {
+  it("leaves an already-failed CLI result unchanged and never settles the disposition", async () => {
     const fake = createFakeDuplexChannel();
     const broker = startBroker(fake);
     // The control channel is lost, but the process itself also exited non-zero.
     fake.emitExit({ exitCode: 1 });
     await flushMacrotasks();
 
-    let reads = 0;
+    let settleCalls = 0;
     const runner = mockRunner({ ...CLEAN_RESULT, exitCode: 2, stderr: "boom\n" });
     const result = await runAdapterExecutionTargetProcess("run-cli-failed", sandboxTarget(runner), "agent-cli", [], {
       cwd: "/local",
@@ -6025,9 +6064,9 @@ describe("CLI-lane run-disposition seam", () => {
       timeoutSec: 5,
       graceSec: 1,
       onLog: async () => {},
-      runDisposition: () => {
-        reads += 1;
-        return broker.runDisposition;
+      settleRunDisposition: () => {
+        settleCalls += 1;
+        return broker.settleRunDisposition();
       },
     });
 
@@ -6036,6 +6075,6 @@ describe("CLI-lane run-disposition seam", () => {
     // the ACP lane applies.
     expect(result.exitCode).toBe(2);
     expect(result.errorCode ?? null).toBeNull();
-    expect(reads).toBe(0);
+    expect(settleCalls).toBe(0);
   });
 });

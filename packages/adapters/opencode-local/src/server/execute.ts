@@ -622,7 +622,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog,
         runLogTail: paperclipBridge?.runLogTail,
-        runDisposition: paperclipBridge?.readRunDisposition,
+        settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
       return {
         proc,
