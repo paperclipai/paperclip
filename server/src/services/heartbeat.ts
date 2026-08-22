@@ -5341,10 +5341,12 @@ export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
+  issueAssigneeUserId: string | null;
   issueExecutionState?: unknown;
   isDependencyReady: boolean;
   agentId: string;
 }) {
+  if (input.issueAssigneeUserId) return false;
   if (input.issueAssigneeAgentId !== input.agentId) return false;
   if (!input.isDependencyReady) return false;
   const executionState = parseIssueExecutionState(input.issueExecutionState);
@@ -7269,6 +7271,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionState: issues.executionState,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
         parentId: issues.parentId,
+        assigneeUserId: issues.assigneeUserId,
         createdByUserId: issues.createdByUserId,
         responsibleUserId: issues.responsibleUserId,
         originKind: issues.originKind,
@@ -8514,6 +8517,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const runtimeForRun = await getRuntimeState(agent.id);
     return runtimeForRun?.sessionId ?? null;
+  }
+
+  async function resolveSessionBeforeForProcessLossRetry(
+    agent: typeof agents.$inferSelect,
+    taskKey: string | null,
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    const sourceRunSession = truncateDisplayId(run.sessionIdAfter ?? run.sessionIdBefore);
+    if (!taskKey) return sourceRunSession;
+
+    return (await resolveSessionBeforeForWakeup(agent, taskKey)) ?? sourceRunSession;
   }
 
   async function hasResolvableSessionWorkspaceCwd(sessionParams: Record<string, unknown> | null | undefined) {
@@ -10275,7 +10289,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? "issue_continuation_needed"
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
-    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const sessionBefore = await resolveSessionBeforeForProcessLossRetry(agent, taskKey, run);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
@@ -14163,6 +14177,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
         issueStatus: issueContext.status,
         issueAssigneeAgentId: issueContext.assigneeAgentId,
+        issueAssigneeUserId: issueContext.assigneeUserId,
         issueExecutionState: issueContext.executionState,
         isDependencyReady: issueDependencyReadiness?.isDependencyReady ?? true,
         agentId: agent.id,
