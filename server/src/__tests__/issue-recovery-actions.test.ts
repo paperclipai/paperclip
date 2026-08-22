@@ -1046,6 +1046,76 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("preserves the source assignee when helper-owned recovery reblocks the issue", async () => {
+    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "workspace missing",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+        resultJson: { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:test" } },
+      },
+    });
+
+    const [blockedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(blockedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      companyId,
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "workspace_validation_failed",
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: blockedIssue!,
+      previousStatus: "blocked",
+      latestRun: {
+        id: randomUUID(),
+        agentId: managerId,
+        status: "failed",
+        error: "workspace still missing",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { retryReason: "source_scoped_recovery_action", recoveryActionId: action!.id },
+        livenessState: "needs_followup",
+        resultJson: { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:test" } },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    const [reblockedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(reblockedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
+    const [updatedAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(updatedAction).toMatchObject({
+      ownerAgentId: managerId,
+      returnOwnerAgentId: coderId,
+      attemptCount: 2,
+    });
+  });
+
   it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
