@@ -2644,12 +2644,15 @@ export function summarizeAcpxTurnUsage(input: {
   const cachedWriteTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedWriteTokens, 0)));
   const hasTokens = inputTokens > 0 || outputTokens > 0 || cachedReadTokens > 0 || cachedWriteTokens > 0;
   // Cache-write tokens are prompt tokens the provider billed to create cache
-  // entries; UsageSummary has no dedicated field, so count them as input.
+  // entries, at a write premium over plain input. They now ride on their own
+  // UsageSummary field so that premium survives to the ledger; folding them
+  // into inputTokens flattened the distinction and hid the premium.
   const usage: UsageSummary | null = hasTokens
     ? {
-        inputTokens: inputTokens + cachedWriteTokens,
+        inputTokens,
         outputTokens,
         cachedInputTokens: cachedReadTokens,
+        cacheWriteTokens: cachedWriteTokens,
       }
     : null;
   const usageDetail = breakdown

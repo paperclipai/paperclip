@@ -78,6 +78,13 @@ export {
   type CaseTypePipelineRef,
 } from "./pipeline-case-type.js";
 export {
+  deriveRateCardCents,
+  normalizeRateCardModelId,
+  resolveModelRate,
+  type ModelRate,
+  type RateCardTokens,
+} from "./model-rate-card.js";
+export {
   deriveResponsibleUser,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,
@@ -379,6 +386,8 @@ export {
   SECRET_SCOPES,
   STORAGE_PROVIDERS,
   BILLING_TYPES,
+  SUBSCRIPTION_BILLING_TYPES,
+  isSubscriptionBillingType,
   FINANCE_EVENT_KINDS,
   FINANCE_DIRECTIONS,
   FINANCE_UNITS,

@@ -11,6 +11,7 @@ import {
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  deriveRateCardCents,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -2618,6 +2619,8 @@ type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** Prompt tokens billed at a cache-write premium; not part of inputTokens. */
+  cacheWriteTokens: number;
 };
 
 type SessionCompactionDecision = {
@@ -3850,14 +3853,53 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+/**
+ * Classify how a ledger row's money figures were arrived at.
+ *
+ * The rule that matters: a run that burned real tokens but reported no credible
+ * cost must never be recorded as `reported`. Subscription CLIs emit a numeric
+ * `0` rather than `null`, so treating only `null` as missing made every
+ * subscription run indistinguishable from genuinely free work.
+ *
+ * `rateCardCents` is the already-computed list-price figure for this row:
+ * `null` means we have no published rate for the model (so the spend is real
+ * but unquantifiable), while `0` means we priced it and it rounds below a cent.
+ *
+ * The status describes `cost_cents` - the cash on the row - not whatever
+ * estimate the CLI printed. A subscription run is the case that matters: the
+ * Claude Code CLI happily reports a rate-card `costUsd` (e.g. $2.35), but
+ * `normalizeBilledCostCents` zeroes it because nothing is metered. Reading the
+ * CLI figure here would stamp `reported` on a row whose cash is 0 by policy,
+ * and would disagree with the historical backfill, which only ever saw
+ * `cost_cents`. So the credibility test is on the billed cents.
+ */
 export function resolveLedgerCostStatus(input: {
   costUsd: number | null | undefined;
+  billedCostCents?: number | null;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens?: number;
+  rateCardCents: number | null;
 }): CostStatus {
-  const hasTokenUsage = input.inputTokens > 0 || input.cachedInputTokens > 0 || input.outputTokens > 0;
-  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+  const hasTokenUsage =
+    input.inputTokens > 0 ||
+    input.cachedInputTokens > 0 ||
+    input.outputTokens > 0 ||
+    (input.cacheWriteTokens ?? 0) > 0;
+  // No tokens burned: there is nothing to price, so the provider's figure
+  // (including a legitimate zero) stands as reported.
+  if (!hasTokenUsage) return "reported";
+  const billedCents =
+    typeof input.billedCostCents === "number" && Number.isFinite(input.billedCostCents)
+      ? input.billedCostCents
+      : typeof input.costUsd === "number" && Number.isFinite(input.costUsd)
+        ? Math.max(0, Math.round(input.costUsd * 100))
+        : 0;
+  if (billedCents > 0) return "reported";
+  // Real tokens, no credible cost. Priced from the rate card if we can, and
+  // loudly unpriced if we cannot - never a silent zero.
+  return input.rateCardCents == null ? "unpriced" : "derived";
 }
 
 export function resolveCacheAdjustedCostUsd(input: {
@@ -3987,6 +4029,7 @@ function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTota
     inputTokens: Math.max(0, Math.floor(asNumber(usage.inputTokens, 0))),
     cachedInputTokens: Math.max(0, Math.floor(asNumber(usage.cachedInputTokens, 0))),
     outputTokens: Math.max(0, Math.floor(asNumber(usage.outputTokens, 0))),
+    cacheWriteTokens: Math.max(0, Math.floor(asNumber(usage.cacheWriteTokens, 0))),
   };
 }
 
@@ -4006,8 +4049,12 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     0,
     Math.floor(asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0))),
   );
+  const cacheWriteTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawCacheWriteTokens, asNumber(parsed.cacheWriteTokens, 0))),
+  );
 
-  if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
+  if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0 && cacheWriteTokens <= 0) {
     return null;
   }
 
@@ -4015,6 +4062,7 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     inputTokens,
     cachedInputTokens,
     outputTokens,
+    cacheWriteTokens,
   };
 }
 
@@ -4031,11 +4079,15 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
   const outputTokens = current.outputTokens >= previous.outputTokens
     ? current.outputTokens - previous.outputTokens
     : current.outputTokens;
+  const cacheWriteTokens = current.cacheWriteTokens >= previous.cacheWriteTokens
+    ? current.cacheWriteTokens - previous.cacheWriteTokens
+    : current.cacheWriteTokens;
 
   return {
     inputTokens: Math.max(0, inputTokens),
     cachedInputTokens: Math.max(0, cachedInputTokens),
     outputTokens: Math.max(0, outputTokens),
+    cacheWriteTokens: Math.max(0, cacheWriteTokens),
   };
 }
 
@@ -13929,15 +13981,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
+    const cacheWriteTokens = usage?.cacheWriteTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
+    // Cash actually billed. Unchanged semantics: 0 for subscription_included,
+    // and the only figure that feeds budget enforcement. Prefers the adapter's
+    // cache-adjusted figure when it supplies one.
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
     const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
-    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    const hasTokenUsage =
+      inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0 || cacheWriteTokens > 0;
+    const model = result.model ?? "unknown";
+    const occurredAt = new Date();
+    // Notional list-price figure, recorded alongside (never instead of) the
+    // billed cost so subscription burn is visible without touching budgets.
+    const rateCardCents = deriveRateCardCents(
+      model,
+      { inputTokens, cachedInputTokens, outputTokens, cacheWriteTokens },
+      occurredAt,
+    );
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
+      billedCostCents: additionalCostCents,
       inputTokens,
       cachedInputTokens,
       outputTokens,
+      cacheWriteTokens,
+      rateCardCents,
     });
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -13971,12 +14040,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         biller,
         billingType,
         costStatus,
-        model: result.model ?? "unknown",
+        model,
         inputTokens,
         cachedInputTokens,
         outputTokens,
+        cacheWriteTokens,
         costCents: additionalCostCents,
-        occurredAt: new Date(),
+        rateCardCents: rateCardCents ?? 0,
+        occurredAt,
       });
     }
   }
@@ -16376,6 +16447,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : "failed";
 
       const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+      // Notional list-price figure for this run's normalized usage. Recorded on
+      // the run snapshot as a cross-check against the ledger row, and used to
+      // tell "we priced it" apart from "we have no rate for this model".
+      const runRateCardCents = normalizedUsage
+        ? deriveRateCardCents(
+            readNonEmptyString(adapterResult.model) ?? "unknown",
+            normalizedUsage,
+            new Date(),
+          )
+        : null;
+
+
       const usageJson =
         normalizedUsage || adapterResult.costUsd != null || cacheAdjustedCostUsd != null
           ? ({
@@ -16384,6 +16467,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 rawInputTokens: rawUsage.inputTokens,
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
                 rawOutputTokens: rawUsage.outputTokens,
+                rawCacheWriteTokens: rawUsage.cacheWriteTokens,
               } : {}),
               ...(sessionUsageResolution.derivedFromSessionTotals
                 ? { usageSource: "session_delta" }
@@ -16404,11 +16488,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
+              ...(runRateCardCents != null ? { rateCardCents: runRateCardCents } : {}),
               costStatus: resolveLedgerCostStatus({
                 costUsd: cacheAdjustedCostUsd,
+                billedCostCents: normalizeBilledCostCents(
+                  cacheAdjustedCostUsd,
+                  normalizeLedgerBillingType(adapterResult.billingType),
+                ),
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,
+                cacheWriteTokens: normalizedUsage?.cacheWriteTokens ?? 0,
+                rateCardCents: runRateCardCents,
               }),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)

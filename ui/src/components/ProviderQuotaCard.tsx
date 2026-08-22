@@ -3,6 +3,7 @@ import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@pape
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
+import { RateCardEquivalent } from "./RateCardEquivalent";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
 import {
@@ -54,10 +55,12 @@ export function ProviderQuotaCard({
   const totals = useMemo(() => {
     let inputTokens = 0, outputTokens = 0, costCents = 0;
     let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+    let subRateCardCents = 0;
     for (const r of rows) {
       inputTokens += r.inputTokens;
       outputTokens += r.outputTokens;
       costCents += r.costCents;
+      subRateCardCents += r.subscriptionRateCardCents;
       apiRunCount += r.apiRunCount;
       subRunCount += r.subscriptionRunCount;
       subInputTokens += r.subscriptionInputTokens;
@@ -72,6 +75,7 @@ export function ProviderQuotaCard({
       totalOutputTokens: outputTokens,
       totalTokens,
       totalCostCents: costCents,
+      totalSubRateCardCents: subRateCardCents,
       totalApiRuns: apiRunCount,
       totalSubRuns: subRunCount,
       totalSubInputTokens: subInputTokens,
@@ -86,6 +90,7 @@ export function ProviderQuotaCard({
     totalOutputTokens,
     totalTokens,
     totalCostCents,
+    totalSubRateCardCents,
     totalApiRuns,
     totalSubRuns,
     totalSubInputTokens,
@@ -152,9 +157,12 @@ export function ProviderQuotaCard({
               )}
             </CardDescription>
           </div>
-          <span className="text-xl font-bold tabular-nums shrink-0">
-            {formatCents(totalCostCents)}
-          </span>
+          <div className="text-right shrink-0">
+            <span className="text-xl font-bold tabular-nums">
+              {formatCents(totalCostCents)}
+            </span>
+            <RateCardEquivalent cents={totalSubRateCardCents} className="block text-xs tabular-nums" />
+          </div>
         </div>
       </CardHeader>
 
@@ -280,7 +288,12 @@ export function ProviderQuotaCard({
                         <span className="text-muted-foreground">
                           {formatTokens(rowTokens)} tok
                         </span>
-                        <span className="font-medium">{formatCents(row.costCents)}</span>
+                        <span className="font-medium">
+                          {formatCents(row.costCents)}
+                          {row.costCents > 0 ? null : (
+                            <RateCardEquivalent cents={row.subscriptionRateCardCents} className="ml-1" />
+                          )}
+                        </span>
                       </div>
                     </div>
                     {/* token share bar */}

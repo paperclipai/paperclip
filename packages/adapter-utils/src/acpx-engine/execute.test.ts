@@ -1049,8 +1049,14 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(result.exitCode).toBe(0);
     expect(statusCalls).toBe(2);
-    // Cache-write tokens count as input tokens; cached reads stay separate.
-    expect(result.usage).toEqual({ inputTokens: 150, outputTokens: 4500, cachedInputTokens: 900 });
+    // Cache writes carry a write premium, so they ride on their own field
+    // instead of being folded into inputTokens; cached reads stay separate too.
+    expect(result.usage).toEqual({
+      inputTokens: 120,
+      outputTokens: 4500,
+      cachedInputTokens: 900,
+      cacheWriteTokens: 30,
+    });
     expect(result.usageBasis).toBe("per_run");
     // Agent-reported cost is cumulative; this run pays the delta.
     expect(result.costUsd).toBeCloseTo(0.75);
@@ -1110,7 +1116,12 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
-    expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
+    expect(result.usage).toEqual({
+      inputTokens: 40,
+      outputTokens: 700,
+      cachedInputTokens: 60,
+      cacheWriteTokens: 0,
+    });
     expect(result.usageBasis).toBe("per_run");
     expect(result.costUsd).toBeCloseTo(0.31);
     expect(result.provider).toBe("acpx");
@@ -2456,6 +2467,7 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
       inputTokens: 25,
       outputTokens: 75,
       cachedInputTokens: 5,
+      cacheWriteTokens: 0,
     });
     expect(summary.usageDetail).toMatchObject(current);
   });
@@ -2483,6 +2495,7 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
       inputTokens: 25,
       outputTokens: 75,
       cachedInputTokens: 5,
+      cacheWriteTokens: 0,
     });
   });
 
