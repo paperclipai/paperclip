@@ -1,0 +1,11 @@
+{
+  "rules": [
+    "Every mutation must write an activity_log entry",
+    "All domain entities must be company-scoped",
+    "No hardcoded credentials — use env vars",
+    "Tests must pass before merge",
+    "TypeScript strict mode — no any types without justification",
+    "All API endpoints must validate input",
+    "Budget operations require board approval flags"
+  ]
+}
