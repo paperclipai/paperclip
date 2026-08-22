@@ -1526,9 +1526,8 @@ Duplicate headings receive stable suffixes.
     expect(overview.eventIngestion.enabled).toBe(false);
 
     const pages = await harness.executeTool<{ content?: string }>("wiki_list_pages", {
-      companyId: COMPANY_ID,
       wikiId: "default",
-    });
+    }, { companyId: COMPANY_ID });
     expect(pages.content).toBe("No pages indexed yet.");
   });
 
@@ -3472,25 +3471,129 @@ Duplicate headings receive stable suffixes.
 
     await plugin.definition.setup(harness.ctx);
     const staleWrite = harness.executeTool("wiki_write_page", {
-      companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/plugin-boundaries.md",
       contents: "# New Title\n",
       expectedHash: "stale",
-    });
+    }, { companyId: COMPANY_ID });
     await expect(staleWrite).rejects.toThrow("Refusing to overwrite");
 
     const result = await harness.executeTool<{ data?: { hash: string } }>("wiki_write_page", {
-      companyId: COMPANY_ID,
       wikiId: "default",
       path: "wiki/concepts/plugin-boundaries.md",
       contents: "# Plugin Boundaries\n\nSee [Knowledge](wiki/areas/knowledge.md).",
-    });
+    }, { companyId: COMPANY_ID });
 
     expect(result.data?.hash).toHaveLength(64);
     expect(files.get("wiki/concepts/plugin-boundaries.md")).toContain("Plugin Boundaries");
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_pages"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(true);
+  });
+
+  // The company a wiki tool acts on comes from the agent run context that the
+  // host supplies, never from the tool parameters. A model can put any value
+  // into a tool parameter, so a parameter is not evidence of anything. These
+  // sweeps are driven from the manifest tool list, so a tool added later is
+  // covered without editing a list of names here.
+  const declaredToolNames = (manifest.tools ?? []).map((tool) => tool.name);
+
+  async function toolOutcome(
+    harness: ReturnType<typeof createTestHarness>,
+    name: string,
+    params: Record<string, unknown>,
+    runCompanyId: string,
+  ): Promise<string> {
+    return harness
+      .executeTool(name, params, { companyId: runCompanyId })
+      .then(() => "resolved without an error", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+  }
+
+  it("declares wiki tools, so the company scope sweeps cannot pass vacuously", () => {
+    expect(declaredToolNames).toContain("wiki_write_page");
+    expect(declaredToolNames.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("never asks the model for a companyId in a tool schema", () => {
+    const offenders: string[] = [];
+    for (const tool of manifest.tools ?? []) {
+      const schema = tool.parametersSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+      if (schema?.properties && "companyId" in schema.properties) offenders.push(`${tool.name}: declares companyId`);
+      if (schema?.required?.includes("companyId")) offenders.push(`${tool.name}: requires companyId`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("refuses every tool when a companyId parameter names another company", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const offenders: string[] = [];
+    for (const name of declaredToolNames) {
+      const outcome = await toolOutcome(harness, name, { companyId: OTHER_COMPANY_ID, wikiId: "default" }, COMPANY_ID);
+      if (!outcome.includes("companyId parameter does not match the company of the agent run")) {
+        offenders.push(`${name}: ${outcome}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(harness.dbExecutes).toHaveLength(0);
+  });
+
+  it("refuses every tool when the run context names no company", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const offenders: string[] = [];
+    for (const name of declaredToolNames) {
+      const outcome = await toolOutcome(harness, name, { companyId: COMPANY_ID, wikiId: "default" }, "");
+      if (!outcome.includes("require an agent run context that names a company")) {
+        offenders.push(`${name}: ${outcome}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("writes to the run company when the parameters name no company", async () => {
+    const harness = createTestHarness({ manifest });
+    const writes: Array<{ companyId: string; relativePath: string }> = [];
+    const files = new Map<string, string>();
+    harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
+      const value = files.get(relativePath);
+      if (value == null) throw new Error("missing");
+      return value;
+    };
+    harness.ctx.localFolders.writeTextAtomic = async (companyId, _folderKey, relativePath, contents) => {
+      writes.push({ companyId, relativePath });
+      files.set(relativePath, contents);
+      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+    };
+
+    await plugin.definition.setup(harness.ctx);
+    await harness.executeTool("wiki_write_page", {
+      wikiId: "default",
+      path: "wiki/concepts/run-scope.md",
+      contents: "# Run scope\n",
+    }, { companyId: COMPANY_ID });
+
+    expect(writes.map((write) => write.companyId)).toEqual([COMPANY_ID]);
+    const companyScoped = [...harness.dbQueries, ...harness.dbExecutes].filter((statement) => statement.sql.includes("company_id"));
+    expect(companyScoped.length).toBeGreaterThan(0);
+    for (const statement of companyScoped) {
+      expect(statement.params).toContain(COMPANY_ID);
+      expect(statement.params).not.toContain(OTHER_COMPANY_ID);
+    }
+  });
+
+  it("reads from the run company when the parameters name no company", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.executeTool("wiki_list_pages", { wikiId: "default" }, { companyId: COMPANY_ID });
+
+    const companyScoped = harness.dbQueries.filter((query) => query.sql.includes("company_id"));
+    expect(companyScoped.length).toBeGreaterThan(0);
+    for (const query of companyScoped) {
+      expect(query.params).toContain(COMPANY_ID);
+    }
   });
 
   it("blocks agent-tool writes to AGENTS.md but allows explicit board edits", async () => {
@@ -3511,11 +3614,10 @@ Duplicate headings receive stable suffixes.
     await plugin.definition.setup(harness.ctx);
 
     await expect(harness.executeTool("wiki_write_page", {
-      companyId: COMPANY_ID,
       wikiId: "default",
       path: "AGENTS.md",
       contents: "# LLM Wiki Maintainer\n\nCompromised instructions.\n",
-    })).rejects.toThrow("Refusing to overwrite protected wiki control file AGENTS.md");
+    }, { companyId: COMPANY_ID })).rejects.toThrow("Refusing to overwrite protected wiki control file AGENTS.md");
 
     const result = await harness.performAction<{ hash: string }>("write-page", {
       companyId: COMPANY_ID,
