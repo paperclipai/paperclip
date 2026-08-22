@@ -1272,12 +1272,14 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
-    const company = await svc.remove(companyId);
+    const company = await svc.remove(companyId, {
+      deleteFiles: parseBooleanQuery(req.query.deleteFiles),
+    });
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json({ ok: true });
+    res.json({ ok: true, fileCleanup: company.fileCleanup });
   });
 
   return router;

@@ -18,6 +18,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useToastActions } from "../context/ToastContext";
 import {
   Pencil,
   Check,
@@ -46,6 +48,7 @@ export function Companies() {
   // A cloud stack holds exactly one company; creating another is a 403 floor
   // server-side, so the wizard entry point is hidden rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
+  const { pushToast } = useToastActions();
 
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
@@ -56,6 +59,7 @@ export function Companies() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteFiles, setDeleteFiles] = useState(false);
 
   const editMutation = useMutation({
     mutationFn: ({ id, newName }: { id: string; newName: string }) =>
@@ -67,11 +71,20 @@ export function Companies() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => companiesApi.remove(id),
-    onSuccess: () => {
+    mutationFn: ({ id, deleteFiles }: { id: string; deleteFiles: boolean }) =>
+      companiesApi.remove(id, { deleteFiles }),
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
       setConfirmDeleteId(null);
+      setDeleteFiles(false);
+      if (result.fileCleanup === "failed") {
+        pushToast({
+          tone: "warn",
+          title: "Company deleted, but file cleanup failed",
+          body: "Some Paperclip-managed local files may need to be removed manually.",
+        });
+      }
     },
   });
 
@@ -250,7 +263,10 @@ export function Companies() {
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"
-                        onClick={() => setConfirmDeleteId(company.id)}
+                        onClick={() => {
+                          setConfirmDeleteId(company.id);
+                          setDeleteFiles(false);
+                        }}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                         Delete Company
@@ -292,17 +308,32 @@ export function Companies() {
               {/* Delete confirmation */}
               {isConfirmingDelete && (
                 <div
-                  className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3"
+                  className="mt-4 flex items-start justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <p className="text-sm text-destructive font-medium">
-                    Delete this company and all its data? This cannot be undone.
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-sm text-destructive font-medium">
+                      Delete this company and all its data? This cannot be undone.
+                    </p>
+                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Checkbox
+                        checked={deleteFiles}
+                        onCheckedChange={(checked) => setDeleteFiles(checked === true)}
+                        disabled={deleteMutation.isPending || company.status !== "archived"}
+                      />
+                      {company.status === "archived"
+                        ? "Also delete Paperclip-managed local files"
+                        : "Archive the company first to delete managed files"}
+                    </label>
+                  </div>
                   <div className="flex items-center gap-2 ml-4 shrink-0">
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setConfirmDeleteId(null)}
+                      onClick={() => {
+                        setConfirmDeleteId(null);
+                        setDeleteFiles(false);
+                      }}
                       disabled={deleteMutation.isPending}
                     >
                       Cancel
@@ -310,7 +341,7 @@ export function Companies() {
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => deleteMutation.mutate(company.id)}
+                      onClick={() => deleteMutation.mutate({ id: company.id, deleteFiles })}
                       disabled={deleteMutation.isPending}
                     >
                       {deleteMutation.isPending ? "Deleting…" : "Delete"}

@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -33,11 +35,42 @@ import {
   routineRevisions,
   routines,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { loadConfig } from "../config.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+async function removeCompanyManagedFiles(companyId: string): Promise<void> {
+  if (!SAFE_PATH_SEGMENT.test(companyId)) {
+    throw new Error("Invalid company id for managed-file cleanup");
+  }
+
+  const instanceRoot = resolvePaperclipInstanceRoot();
+  const config = loadConfig();
+  const targets = [
+    path.resolve(instanceRoot, "companies", companyId),
+    path.resolve(instanceRoot, "projects", companyId),
+    path.resolve(instanceRoot, "skills", companyId),
+    path.resolve(instanceRoot, "data", "run-logs", companyId),
+  ];
+  if (config.storageProvider === "local_disk") {
+    targets.push(path.resolve(config.storageLocalDiskBaseDir, companyId));
+  }
+
+  const results = await Promise.allSettled(
+    targets.map((target) => rm(target, { recursive: true, force: true })),
+  );
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+}
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -55,7 +88,14 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db) {
+export function companyService(
+  db: Db,
+  options: {
+    removeManagedFiles?: (companyId: string) => Promise<void>;
+    drainActiveRunExecutions?: () => Promise<void>;
+    waitForRunExecutionDrain?: (runId: string) => Promise<void>;
+  } = {},
+) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
@@ -63,12 +103,16 @@ export function companyService(db: Db) {
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-  async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
+  async function applyCompanyStopCascadeInTx(
+    tx: CompanyTx,
+    id: string,
+    input: { pauseReason: string; wakeupCancellationReason: string },
+  ) {
     const pausedAgentRows = await tx
       .update(agents)
       .set({
         status: "paused",
-        pauseReason: "company_archived",
+        pauseReason: input.pauseReason,
         pausedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -83,7 +127,7 @@ export function companyService(db: Db) {
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, id),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
+        inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
       ))
       .then((rows) => rows.map((row) => row.id));
 
@@ -91,7 +135,7 @@ export function companyService(db: Db) {
       .update(agentWakeupRequests)
       .set({
         status: "cancelled",
-        error: "Cancelled because the company was archived",
+        error: input.wakeupCancellationReason,
         finishedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -102,6 +146,33 @@ export function companyService(db: Db) {
       ));
 
     return { agentsPaused: pausedAgentRows.length, activeRunIds };
+  }
+
+  async function getCompanyFileDeletionRunIds(tx: CompanyTx, id: string) {
+    // Wakeup admission takes this same lock before its final active-company
+    // check. The lock makes scheduling and destructive deletion mutually
+    // exclusive instead of relying on a timing-sensitive sequence of reads.
+    const company = await tx
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, id))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!company) return null;
+    if (company.status !== "archived") {
+      throw conflict("Archive the company before deleting managed files");
+    }
+
+    const runRows = await tx
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, id));
+    if (runRows.some((run) =>
+      run.status === "scheduled_retry" || run.status === "queued" || run.status === "running"
+    )) {
+      throw conflict("Wait for company runs to finish before deleting managed files");
+    }
+    return runRows.map((run) => run.id);
   }
 
   async function finalizeArchive(
@@ -340,7 +411,12 @@ export function companyService(db: Db) {
           agentsRestored = restoredRows.length;
         }
 
-        const archiveCascade = willArchive ? await applyArchiveCascadeInTx(tx, id) : null;
+        const archiveCascade = willArchive
+          ? await applyCompanyStopCascadeInTx(tx, id, {
+              pauseReason: "company_archived",
+              wakeupCancellationReason: "Cancelled because the company was archived",
+            })
+          : null;
 
         if (logoAssetId === null) {
           await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
@@ -416,7 +492,12 @@ export function companyService(db: Db) {
             .where(eq(companies.id, id));
         }
 
-        const cascade = wasAlreadyArchived ? null : await applyArchiveCascadeInTx(tx, id);
+        const cascade = wasAlreadyArchived
+          ? null
+          : await applyCompanyStopCascadeInTx(tx, id, {
+              pauseReason: "company_archived",
+              wakeupCancellationReason: "Cancelled because the company was archived",
+            });
 
         const row = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
@@ -437,8 +518,22 @@ export function companyService(db: Db) {
       return result.company;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+      if (removeOptions.deleteFiles) {
+        const initialRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
+        if (!initialRunIds) return null;
+        await (options.drainActiveRunExecutions ?? heartbeat.drainActiveRunExecutions)();
+        const stableRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
+        if (!stableRunIds) return null;
+        for (const runId of stableRunIds) {
+          await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
+        }
+      }
+
+      const company = await db.transaction(async (tx) => {
+        if (removeOptions.deleteFiles && !(await getCompanyFileDeletionRunIds(tx, id))) {
+          return null;
+        }
         // Delete from child tables in dependency order
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })
@@ -485,7 +580,22 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
-      }),
+      });
+      if (!company) return null;
+
+      let fileCleanup: FileCleanupStatus = "not_requested";
+      if (removeOptions.deleteFiles) {
+        try {
+          await (options.removeManagedFiles ?? removeCompanyManagedFiles)(id);
+          fileCleanup = "succeeded";
+        } catch (err) {
+          fileCleanup = "failed";
+          logger.warn({ err, companyId: id }, "company deleted but managed-file cleanup failed");
+        }
+      }
+
+      return { ...company, fileCleanup };
+    },
 
     stats: () =>
       Promise.all([

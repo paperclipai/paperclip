@@ -26,6 +26,7 @@ import { api, detachInflightGet, type RequestOptions } from "./client";
 const COMPANIES_LIST_PATH = "/companies";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
 
 /**
  * Import fields for a zip package upload: everything the JSON request carries
@@ -113,7 +114,10 @@ export const companiesApi = {
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
-  remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
+  remove: (companyId: string, options: { deleteFiles?: boolean } = {}) =>
+    api.delete<{ ok: true; fileCleanup: FileCleanupStatus }>(
+      `/companies/${companyId}${options.deleteFiles ? "?deleteFiles=true" : ""}`,
+    ),
   exportBundle: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
