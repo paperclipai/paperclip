@@ -5453,6 +5453,49 @@ export function issueService(db: Db) {
     });
   }
 
+  // A terminated agent can never run again, so an issue still pointing at one is
+  // unowned in practice — but the checkout guard below only accepts a null
+  // assignee, so the row stays frozen forever. Release the dead assignee when no
+  // run holds the issue, which lets the normal checkout path claim it. Callers
+  // run this after clearExecutionRunIfTerminal/clearCheckoutRunIfTerminal, so a
+  // stale lock left by the terminated agent is already gone by this point.
+  async function releaseTerminatedAssignee(issueId: string): Promise<boolean> {
+    const before = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const released = await db
+      .update(issues)
+      .set({ assigneeAgentId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(issues.id, issueId),
+          isNull(issues.checkoutRunId),
+          isNull(issues.executionRunId),
+          sql`exists (select 1 from ${agents} where ${agents.id} = ${issues.assigneeAgentId} and ${agents.status} = 'terminated')`,
+        ),
+      )
+      .returning({ id: issues.id, companyId: issues.companyId })
+      .then((rows) => rows[0] ?? null);
+    if (!released) return false;
+    // Ownership changes here without an actor request, so record why. An operator
+    // who sees an issue lose its assignee must be able to read the reason.
+    await logActivity(db, {
+      companyId: released.companyId,
+      actorType: "system",
+      actorId: "issue_service",
+      action: "issue.terminated_assignee_released",
+      entityType: "issue",
+      entityId: released.id,
+      details: {
+        previousAssigneeAgentId: before?.assigneeAgentId ?? null,
+        reason: "assignee_agent_terminated",
+      },
+    });
+    return true;
+  }
+
   async function addStopRelayCommentIfNeeded(
     child: typeof issues.$inferSelect,
     dbOrTx: any = db,
@@ -8160,6 +8203,7 @@ export function issueService(db: Db) {
 
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
+      await releaseTerminatedAssignee(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const readiness = dependencyReadiness.get(id);

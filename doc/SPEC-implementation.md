@@ -1038,6 +1038,8 @@ Server behavior:
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
 
+A terminated agent can never run again, so work it still holds is unowned. Before the checkout update, the server clears an assignee that points at a terminated agent when `checkout_run_id` and `execution_run_id` are both null. The issue authorization boundary applies the same rule, so any agent in the company can also update such an issue. The same rule applies to routines: an agent that is not the assignee may manage a routine whose assignee agent is terminated.
+
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects

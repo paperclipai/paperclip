@@ -4072,6 +4072,13 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
+    // A terminated agent has no live run and can never resume, so its issues are
+    // unowned in practice. The authorization service reports that with its own
+    // reason. Without this the assignee run lock below freezes every issue the
+    // terminated agent held, with no supported path back.
+    if (boundaryDecision.reason === "allow_terminated_assignee") {
+      return true;
+    }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;

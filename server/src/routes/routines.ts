@@ -15,6 +15,7 @@ import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { isTerminatedAgentId } from "../services/terminated-assignee.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -112,7 +113,12 @@ export function routineRoutes(
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (routine.assigneeAgentId !== req.actor.agentId) {
-      throw forbidden("Agents can only manage routines assigned to themselves");
+      // A routine owned by a terminated agent keeps firing and minting issues
+      // nobody can pick up. The dead owner holds no real claim, so any agent in
+      // the company may take it over, pause it, or retarget it.
+      if (!(await isTerminatedAgentId(db, routine.assigneeAgentId))) {
+        throw forbidden("Agents can only manage routines assigned to themselves");
+      }
     }
     return routine;
   }
