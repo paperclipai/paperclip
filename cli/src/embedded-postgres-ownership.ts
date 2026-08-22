@@ -14,6 +14,14 @@ import {
  */
 const IDENTIFY_TIMEOUT_MS = 3_000;
 
+/**
+ * Connect timeout for a single identify probe, in seconds. Must stay below the
+ * budget above: the driver default (5s) outlives it, so a port held by something
+ * that accepts the socket and then stalls would burn the entire budget on one
+ * attempt and never reach the retry loop.
+ */
+const IDENTIFY_CONNECT_TIMEOUT_SECONDS = 1;
+
 export type EmbeddedClusterDecision =
   /** A cluster of ours already serves this directory on `port`; reuse it. */
   | { action: "adopt"; port: number }
@@ -74,7 +82,10 @@ export async function decideEmbeddedCluster(
     // Confirm the server there serves THIS directory before handing it to callers
     // that will create databases and take backups on it.
     const port = inspected.lock.port ?? preferredPort;
-    await waitForPostgresReady(adminConnectionString(port), { timeoutMs: IDENTIFY_TIMEOUT_MS });
+    await waitForPostgresReady(adminConnectionString(port), {
+      timeoutMs: IDENTIFY_TIMEOUT_MS,
+      connectTimeoutSeconds: IDENTIFY_CONNECT_TIMEOUT_SECONDS,
+    });
     const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
     if (
       typeof actualDataDir !== "string" ||
@@ -98,7 +109,10 @@ export async function decideEmbeddedCluster(
 
   let servesThisDirectory: boolean;
   try {
-    await waitForPostgresReady(adminConnectionString(preferredPort), { timeoutMs: IDENTIFY_TIMEOUT_MS });
+    await waitForPostgresReady(adminConnectionString(preferredPort), {
+      timeoutMs: IDENTIFY_TIMEOUT_MS,
+      connectTimeoutSeconds: IDENTIFY_CONNECT_TIMEOUT_SECONDS,
+    });
     const actualDataDir = await getPostgresDataDirectory(adminConnectionString(preferredPort));
     servesThisDirectory =
       typeof actualDataDir === "string" &&

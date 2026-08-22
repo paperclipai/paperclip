@@ -79,6 +79,14 @@ async function findAvailablePort(startPort: number): Promise<number> {
 const IDENTIFY_TIMEOUT_MS = 3_000;
 
 /**
+ * Connect timeout for a single identify probe, in seconds. Must stay below the
+ * budget above: the driver default (5s) outlives it, so a port held by something
+ * that accepts the socket and then stalls would burn the entire budget on one
+ * attempt and never reach the retry loop.
+ */
+const IDENTIFY_CONNECT_TIMEOUT_SECONDS = 1;
+
+/**
  * Whether the server answering on `port` is serving exactly `dataDir`.
  *
  * The readiness wait is not optional. `getPostgresDataDirectory` swallows every
@@ -88,7 +96,10 @@ const IDENTIFY_TIMEOUT_MS = 3_000;
  * so identify the server only once it can answer.
  */
 async function isServingDataDirectory(port: number, dataDir: string): Promise<boolean> {
-  await waitForPostgresReady(adminConnectionString(port), { timeoutMs: IDENTIFY_TIMEOUT_MS });
+  await waitForPostgresReady(adminConnectionString(port), {
+    timeoutMs: IDENTIFY_TIMEOUT_MS,
+    connectTimeoutSeconds: IDENTIFY_CONNECT_TIMEOUT_SECONDS,
+  });
   const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
   return (
     typeof actualDataDir === "string" &&

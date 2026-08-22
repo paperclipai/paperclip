@@ -199,6 +199,14 @@ export function isPostgresNotReadyError(err: unknown): boolean {
 export type WaitForPostgresReadyOptions = {
   /** Give up after this long. Defaults to 60s, enough for local WAL replay. */
   timeoutMs?: number;
+  /**
+   * postgres.js `connect_timeout` for one probe attempt, in seconds. Keep it
+   * below `timeoutMs`: a socket that opens but never finishes the handshake
+   * costs a full connect timeout, so a probe allowed to outlast the budget
+   * spends all of it on attempt one and the retry loop below never runs.
+   * Defaults to 5s, which suits the 60s default budget.
+   */
+  connectTimeoutSeconds?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;
   onRetry?: (info: { attempt: number; elapsedMs: number; delayMs: number; err: unknown }) => void;
@@ -210,14 +218,21 @@ export type WaitForPostgresReadyOptions = {
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
 const DEFAULT_READY_INITIAL_DELAY_MS = 100;
 const DEFAULT_READY_MAX_DELAY_MS = 1_000;
+const DEFAULT_PROBE_CONNECT_TIMEOUT_SECONDS = 5;
 
-async function defaultReadinessProbe(url: string): Promise<void> {
-  const sql = postgres(url, { max: 1, onnotice: () => {}, connect_timeout: 5 });
-  try {
-    await sql`select 1`;
-  } finally {
-    await sql.end({ timeout: 5 }).catch(() => {});
-  }
+function createReadinessProbe(connectTimeoutSeconds: number) {
+  return async function readinessProbe(url: string): Promise<void> {
+    const sql = postgres(url, {
+      max: 1,
+      onnotice: () => {},
+      connect_timeout: connectTimeoutSeconds,
+    });
+    try {
+      await sql`select 1`;
+    } finally {
+      await sql.end({ timeout: 5 }).catch(() => {});
+    }
+  };
 }
 
 /**
@@ -237,7 +252,9 @@ export async function waitForPostgresReady(
   const maxDelayMs = options.maxDelayMs ?? DEFAULT_READY_MAX_DELAY_MS;
   const now = options.now ?? (() => Date.now());
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const probe = options.probe ?? defaultReadinessProbe;
+  const probe =
+    options.probe ??
+    createReadinessProbe(options.connectTimeoutSeconds ?? DEFAULT_PROBE_CONNECT_TIMEOUT_SECONDS);
 
   const startedAt = now();
   let delayMs = options.initialDelayMs ?? DEFAULT_READY_INITIAL_DELAY_MS;
@@ -251,7 +268,8 @@ export async function waitForPostgresReady(
       if (!isPostgresNotReadyError(err)) throw err;
       if (elapsedMs + delayMs >= timeoutMs) {
         throw new Error(
-          `PostgreSQL did not become ready within ${timeoutMs}ms (${attempt} attempt(s)): ` +
+          `PostgreSQL did not become ready within ${timeoutMs}ms ` +
+            `(${attempt} attempt(s), ${elapsedMs}ms elapsed): ` +
             `${err instanceof Error ? err.message : String(err)}`,
           { cause: err },
         );

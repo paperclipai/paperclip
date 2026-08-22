@@ -379,6 +379,10 @@ export async function startServer(): Promise<StartedServer> {
     // delay startup. Distinct from the post-start readiness budget, which has
     // to cover WAL recovery and so uses waitForPostgresReady's own default.
     const EMBEDDED_POSTGRES_PROBE_TIMEOUT_MS = 3_000;
+    // Must stay below the budget above. The driver's 5s default outlives it, so
+    // a port held by something that accepts the socket and never answers would
+    // spend the whole budget on a single attempt instead of retrying.
+    const EMBEDDED_POSTGRES_PROBE_CONNECT_TIMEOUT_SECONDS = 1;
     const dataDir = resolve(config.embeddedPostgresDataDir);
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
@@ -485,6 +489,7 @@ export async function startServer(): Promise<StartedServer> {
         // the post-start wait below, once we know who owns the directory.
         await waitForPostgresReady(configuredAdminConnectionString, {
           timeoutMs: EMBEDDED_POSTGRES_PROBE_TIMEOUT_MS,
+          connectTimeoutSeconds: EMBEDDED_POSTGRES_PROBE_CONNECT_TIMEOUT_SECONDS,
         });
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (

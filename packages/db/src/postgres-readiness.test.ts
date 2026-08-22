@@ -143,4 +143,52 @@ describe("waitForPostgresReady", () => {
     );
     expect(probe).toHaveBeenCalledTimes(1);
   });
+
+  it("retries when a single attempt costs less than the deadline", async () => {
+    // Each attempt burns its connect timeout before failing, the way a socket
+    // that opens but never finishes the handshake does.
+    let clock = 0;
+    const probe = vi.fn(async () => {
+      clock += 500;
+      throw connectionError("CONNECT_TIMEOUT");
+    });
+
+    await expect(
+      waitForPostgresReady(url, {
+        probe,
+        timeoutMs: 3_000,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }),
+    ).rejects.toThrow(/did not become ready within 3000ms/);
+
+    expect(probe.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("spends the whole budget on one attempt when the probe outlives it", async () => {
+    // Regression guard for the identify probes. Their connect timeout has to
+    // stay under the budget they run within: a 5s connect timeout beneath a 3s
+    // deadline fails on attempt one, so the backoff above never runs and a
+    // postmaster replaying WAL reads as unidentifiable rather than as ours.
+    let clock = 0;
+    const probe = vi.fn(async () => {
+      clock += 5_000;
+      throw connectionError("CONNECT_TIMEOUT");
+    });
+
+    await expect(
+      waitForPostgresReady(url, {
+        probe,
+        timeoutMs: 3_000,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }),
+    ).rejects.toThrow(/1 attempt\(s\), 5000ms elapsed/);
+
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
 });
