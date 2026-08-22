@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import { extractPaperclipDisposition, type ParsedDisposition } from "@paperclipai/adapter-utils";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -70,7 +71,6 @@ import {
 // otherwise valid lifecycle decision. Mirror the ACPX contract: parse the
 // final response for the strict single-line PAPERCLIP_DISPOSITION record,
 // tolerant of Markdown-concatenated markers (`**Final**PAPERCLIP_...`).
-const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 const PAPERCLIP_DISPOSITION_STATUSES = new Set(["done", "cancelled", "in_review", "blocked"]);
 
 type ParsedHermesDisposition = {
@@ -99,31 +99,6 @@ function parseDispositionRecord(value: unknown): ParsedHermesDisposition | null 
   };
 }
 
-function extractPaperclipDisposition(text: string): {
-  disposition: ParsedHermesDisposition | null;
-  cleanedText: string;
-} {
-  let match: RegExpExecArray | null = null;
-  let lastValid: { disposition: ParsedHermesDisposition; index: number; fullMatch: string } | null = null;
-  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
-    try {
-      const disposition = parseDispositionRecord(JSON.parse(match[1] ?? "null"));
-      if (!disposition) continue;
-      lastValid = { disposition, index: match.index, fullMatch: match[0] };
-    } catch {
-      // Only the exact JSON contract is lifecycle data; ignore malformed prose.
-    }
-  }
-  if (!lastValid) {
-    return { disposition: null, cleanedText: text.trim() };
-  }
-  return {
-    disposition: lastValid.disposition,
-    cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-  };
-}
 
 function cfgString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;

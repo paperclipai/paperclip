@@ -1,3 +1,5 @@
+import { extractPaperclipDisposition, type ParsedDisposition } from "@paperclipai/adapter-utils";
+
 export interface ParsedAntigravityOutput {
   sessionId: string | null;
   summary: string;
@@ -40,7 +42,6 @@ const ANTIGRAVITY_QUOTA_EXHAUSTED_RE =
   /(?:resource[ _-]?exhausted|resource has been exhausted|quota (?:exceeded|exhausted|reached)|individual quota reached|exceeded your[^.\n]{0,40}quota|ineligible[ _-]?tier|upgrade your subscription to increase your limits)/i;
 const ANTIGRAVITY_RESET_IN_RE =
   /resets?\s+in\s+(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/i;
-const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 const PAPERCLIP_DISPOSITION_STATUSES = new Set(["done", "cancelled", "in_review", "blocked"]);
 
 type TokenUsage = ParsedAntigravityOutput["usage"];
@@ -115,29 +116,6 @@ function parseDispositionRecord(value: unknown): ParsedAntigravityOutput["dispos
   };
 }
 
-function extractPaperclipDisposition(text: string): {
-  disposition: ParsedAntigravityOutput["disposition"];
-  cleanedText: string;
-} {
-  let match: RegExpExecArray | null;
-  let lastValid: { disposition: NonNullable<ParsedAntigravityOutput["disposition"]>; index: number; fullMatch: string } | null = null;
-  PAPERCLIP_DISPOSITION_RE.lastIndex = 0;
-  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
-    try {
-      const disposition = parseDispositionRecord(JSON.parse(match[1] ?? "null"));
-      if (disposition) lastValid = { disposition, index: match.index, fullMatch: match[0] };
-    } catch {
-      // Malformed prose is not lifecycle data.
-    }
-  }
-  if (!lastValid) return { disposition: null, cleanedText: text.trim() };
-  return {
-    disposition: lastValid.disposition,
-    cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-  };
-}
 
 function readEventText(event: Record<string, unknown>): string | null {
   const type = typeof event.type === "string" ? event.type.toLowerCase() : "";

@@ -1,4 +1,5 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
+import { extractPaperclipDisposition, type ParsedDisposition } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -19,65 +20,8 @@ import {
 // (for example `**Final check**PAPERCLIP_DISPOSITION {...}`).  Accept that
 // bounded delimiter as well as a line break so a valid terminal disposition is
 // never lost merely because the renderer coalesced output chunks.
-const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
-type ParsedDisposition = {
-  status: string;
-  hasBlocker: boolean;
-  blocker?: string;
-  reviewer?: string;
-};
 
-function extractPaperclipDisposition(text: string): {
-  disposition: ParsedDisposition | null;
-  cleanedText: string;
-} {
-  let match: RegExpExecArray | null = null;
-  let lastValid:
-    | {
-        disposition: ParsedDisposition;
-        index: number;
-        fullMatch: string;
-      }
-    | null = null;
-
-  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1] ?? "null") as Record<string, unknown> | null;
-      const status = typeof parsed?.status === "string" ? parsed.status.trim() : "";
-      if (!status) continue;
-      lastValid = {
-        disposition: {
-          status,
-          hasBlocker: parsed?.hasBlocker === true,
-          ...(typeof parsed?.blocker === "string" && parsed.blocker.trim().length > 0
-            ? { blocker: parsed.blocker.trim() }
-            : {}),
-          ...(typeof parsed?.reviewer === "string" && parsed.reviewer.trim().length > 0
-            ? { reviewer: parsed.reviewer.trim() }
-            : {}),
-        },
-        index: match.index,
-        fullMatch: match[0],
-      };
-    } catch {
-      continue;
-    }
-  }
-
-  if (!lastValid) {
-    return { disposition: null, cleanedText: text.trim() };
-  }
-
-  const cleanedText = `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  return {
-    disposition: lastValid.disposition,
-    cleanedText,
-  };
-}
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, context, authToken, onLog, onMeta } = ctx;

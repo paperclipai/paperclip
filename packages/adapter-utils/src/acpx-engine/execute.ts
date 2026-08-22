@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { extractPaperclipDisposition, type ParsedDisposition } from "../disposition-marker.js";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -102,7 +103,6 @@ const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 // without preserving the newline (`**Final check**PAPERCLIP_DISPOSITION …`).
 // Accept a marker after whitespace, a line start, a backtick, or Markdown
 // emphasis, but still require a valid JSON record to the end of that line.
-const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 const ACPX_FINALIZATION_REMINDER =
   "Before ending this ACP run, record the real issue state through Paperclip. " +
   "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +
@@ -115,12 +115,6 @@ const ACPX_FINALIZATION_REMINDER =
   "loses the handoff and blocks the issue. Every run must end with exactly one " +
   "PAPERCLIP_DISPOSITION line — in_review while work remains, done when it is complete.";
 
-type ParsedDisposition = {
-  status: string;
-  hasBlocker: boolean;
-  blocker?: string;
-  reviewer?: string;
-};
 
 const PAPERCLIP_DISPOSITION_STATUSES = new Set([
   "done",
@@ -129,26 +123,6 @@ const PAPERCLIP_DISPOSITION_STATUSES = new Set([
   "blocked",
 ]);
 
-function parseDispositionRecord(value: unknown): ParsedDisposition | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const status = typeof record.status === "string" ? record.status.trim() : "";
-  if (!PAPERCLIP_DISPOSITION_STATUSES.has(status)) return null;
-
-  const blocker = [record.blocker, record.reason, record.statusReason]
-    .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
-    ?.trim();
-  const reviewer = typeof record.reviewer === "string" && record.reviewer.trim()
-    ? record.reviewer.trim()
-    : undefined;
-
-  return {
-    status,
-    hasBlocker: record.hasBlocker === true || status === "blocked",
-    ...(blocker ? { blocker } : {}),
-    ...(reviewer ? { reviewer } : {}),
-  };
-}
 
 /**
  * ACPX emits final assistant output as text deltas rather than through the
@@ -156,60 +130,6 @@ function parseDispositionRecord(value: unknown): ParsedDisposition | null {
  * same strict final-line disposition contract here so an ACP run cannot lose
  * an otherwise valid lifecycle decision at the adapter boundary.
  */
-function extractPaperclipDisposition(text: string): {
-  disposition: ParsedDisposition | null;
-  cleanedText: string;
-} {
-  let match: RegExpExecArray | null = null;
-  let lastValid: { disposition: ParsedDisposition; index: number; fullMatch: string } | null = null;
-
-  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
-    try {
-      const disposition = parseDispositionRecord(JSON.parse(match[1] ?? "null"));
-      if (!disposition) continue;
-      lastValid = {
-        disposition,
-        index: match.index,
-        fullMatch: match[0],
-      };
-    } catch {
-      // Ignore malformed prose. Only the exact JSON contract is lifecycle data.
-    }
-  }
-
-  if (!lastValid) {
-    // Some ACP agents faithfully return a machine-readable final JSON result
-    // after an in-run Paperclip write fails, but omit the required marker.
-    // Treat only a *whole* final JSON object with an explicit `disposition`
-    // field as a fallback. This is intentionally narrower than accepting an
-    // arbitrary JSON blob, so prose and tool output cannot accidentally alter
-    // an issue state. It closes the otherwise expensive successful-run handoff
-    // loop for a verified blocked/done result.
-    try {
-      const parsed = JSON.parse(text.trim()) as Record<string, unknown>;
-      const rawDisposition = parsed?.disposition;
-      const fallback = typeof rawDisposition === "string"
-        ? parseDispositionRecord({ ...parsed, status: rawDisposition })
-        : parseDispositionRecord(rawDisposition);
-      if (fallback) {
-        const summary = [
-          `Reported disposition: ${fallback.status}.`,
-          fallback.blocker,
-        ].filter(Boolean).join(" ");
-        return { disposition: fallback, cleanedText: summary };
-      }
-    } catch {
-      // The strict marker path above remains the normal contract.
-    }
-    return { disposition: null, cleanedText: text.trim() };
-  }
-  return {
-    disposition: lastValid.disposition,
-    cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-  };
-}
 
 interface ChildStderrState {
   logPath: string | null;

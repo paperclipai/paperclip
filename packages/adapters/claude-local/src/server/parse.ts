@@ -1,4 +1,5 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
+import { extractPaperclipDisposition, type ParsedDisposition } from "@paperclipai/adapter-utils";
 import { weightedBudgetTokens } from "@paperclipai/adapter-utils";
 import {
   asString,
@@ -19,67 +20,7 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
-const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
-function extractPaperclipDisposition(text: string): {
-  disposition: {
-    status: string;
-    hasBlocker: boolean;
-    blocker?: string;
-    reviewer?: string;
-  } | null;
-  cleanedText: string;
-} {
-  let match: RegExpExecArray | null = null;
-  let lastValid:
-    | {
-        disposition: {
-          status: string;
-          hasBlocker: boolean;
-          blocker?: string;
-          reviewer?: string;
-        };
-        index: number;
-        fullMatch: string;
-      }
-    | null = null;
-
-  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1] ?? "null") as Record<string, unknown> | null;
-      const status = typeof parsed?.status === "string" ? parsed.status.trim() : "";
-      if (!status) continue;
-      lastValid = {
-        disposition: {
-          status,
-          hasBlocker: parsed?.hasBlocker === true,
-          ...(typeof parsed?.blocker === "string" && parsed.blocker.trim().length > 0
-            ? { blocker: parsed.blocker.trim() }
-            : {}),
-          ...(typeof parsed?.reviewer === "string" && parsed.reviewer.trim().length > 0
-            ? { reviewer: parsed.reviewer.trim() }
-            : {}),
-        },
-        index: match.index,
-        fullMatch: match[0],
-      };
-    } catch {
-      continue;
-    }
-  }
-
-  if (!lastValid) {
-    return { disposition: null, cleanedText: text.trim() };
-  }
-
-  const cleanedText = `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return {
-    disposition: lastValid.disposition,
-    cleanedText,
-  };
-}
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
