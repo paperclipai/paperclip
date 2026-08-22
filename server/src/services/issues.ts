@@ -6699,9 +6699,13 @@ export function issueService(db: Db) {
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
+        .where(and(
+          eq(issues.companyId, parent.companyId),
+          eq(issues.parentId, parent.id),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ));
       if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
-        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
+        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} active child issues for this helper`);
       }
 
       const {
