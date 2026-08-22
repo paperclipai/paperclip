@@ -5996,7 +5996,17 @@ export function issueRoutes(
       res.status(400).json({ error: "view must be 'compact' when provided" });
       return;
     }
-    if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+    // A limit above ISSUE_LIST_MAX_LIMIT used to be clamped silently, so `?limit=100000` answered
+    // with exactly ISSUE_LIST_MAX_LIMIT rows and no signal that the rest of the board was cut off.
+    // Callers that trusted the number read a partial board as a complete one; reject loudly instead
+    // and let them page with `offset`.
+    if (
+      rawLimit !== undefined
+      && (parsedLimit === null
+        || !Number.isInteger(parsedLimit)
+        || parsedLimit <= 0
+        || parsedLimit > ISSUE_LIST_MAX_LIMIT)
+    ) {
       res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}` });
       return;
     }
