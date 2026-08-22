@@ -6258,6 +6258,162 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     await db.delete(companies);
   });
 
+  it("allocates distinct actual ports for pinned services in sibling execution workspaces on macOS", async () => {
+    if (process.platform !== "linux") return;
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const firstWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pinned-first-"));
+    const secondWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pinned-second-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pinned-home-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const originalPlatform = process.platform;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-pinned-${randomUUID()}`;
+
+    const portProbe = net.createServer();
+    await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+    const address = portProbe.address();
+    const basePort = typeof address === "object" && address ? address.port : null;
+    await new Promise<void>((resolve, reject) => {
+      portProbe.close((err) => err ? reject(err) : resolve());
+    });
+    expect(basePort).toBeTypeOf("number");
+
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const firstExecutionWorkspaceId = randomUUID();
+    const secondExecutionWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Pinned port siblings", status: "active" });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: firstExecutionWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "First sibling",
+        status: "active",
+        cwd: firstWorkspaceRoot,
+        providerType: "local_fs",
+        providerRef: firstWorkspaceRoot,
+      },
+      {
+        id: secondExecutionWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Second sibling",
+        status: "active",
+        cwd: secondWorkspaceRoot,
+        providerType: "local_fs",
+        providerRef: secondWorkspaceRoot,
+      },
+    ]);
+
+    const actor = { id: agentId, name: "Codex Coder", companyId };
+    const config = {
+      workspaceRuntime: {
+        services: [{
+          name: "paperclip-dev",
+          command: "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+          port: { type: "fixed", value: basePort },
+          readiness: {
+            type: "http",
+            urlTemplate: "http://127.0.0.1:{{port}}",
+            timeoutSec: 10,
+            intervalMs: 100,
+          },
+          expose: { type: "url", urlTemplate: "http://127.0.0.1:{{port}}" },
+          lifecycle: "shared",
+          reuseScope: "execution_workspace",
+          stopPolicy: { type: "manual" },
+        }],
+      },
+    };
+
+    try {
+      const first = await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor,
+        issue: null,
+        workspace: { ...buildWorkspace(firstWorkspaceRoot), projectId, workspaceId: null },
+        executionWorkspaceId: firstExecutionWorkspaceId,
+        config,
+        adapterEnv: {},
+      });
+      const second = await (async () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        try {
+          return await startRuntimeServicesForWorkspaceControl({
+            db,
+            actor,
+            issue: null,
+            workspace: { ...buildWorkspace(secondWorkspaceRoot), projectId, workspaceId: null },
+            executionWorkspaceId: secondExecutionWorkspaceId,
+            config,
+            adapterEnv: {},
+          });
+        } finally {
+          Object.defineProperty(process, "platform", { value: originalPlatform });
+        }
+      })();
+
+      expect(first[0]?.port).toBe(basePort);
+      expect(second[0]?.port).toBeGreaterThan(basePort!);
+      expect(second[0]?.port).not.toBe(first[0]?.port);
+      expect(second[0]?.url).toBe(`http://127.0.0.1:${second[0]?.port}`);
+      await expect(fetch(first[0]!.url!)).resolves.toMatchObject({ ok: true });
+      await expect(fetch(second[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+      const persisted = await db.select().from(workspaceRuntimeServices);
+      expect(persisted).toEqual(expect.arrayContaining([
+        expect.objectContaining({ executionWorkspaceId: firstExecutionWorkspaceId, port: first[0]?.port, url: first[0]?.url }),
+        expect.objectContaining({ executionWorkspaceId: secondExecutionWorkspaceId, port: second[0]?.port, url: second[0]?.url }),
+      ]));
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: firstExecutionWorkspaceId,
+        workspaceCwd: firstWorkspaceRoot,
+      });
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: secondExecutionWorkspaceId,
+        workspaceCwd: secondWorkspaceRoot,
+      });
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("persists provisioning before starting and excludes provision time from readiness timeout", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-slow-control-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-home-"));

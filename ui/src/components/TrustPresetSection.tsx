@@ -13,7 +13,7 @@ import {
   lowTrustBoundaryHasScope,
   setSingleLowTrustBoundaryTarget,
   summarizeLowTrustBoundaryTarget,
-  TRUST_PRESET_DESCRIPTIONS,
+  TRUST_PRESET_CONSEQUENCES,
   TRUST_PRESET_LABELS,
   type LowTrustBoundaryTarget,
 } from "../lib/trust-policy-ui";
@@ -106,18 +106,49 @@ export function TrustPresetSection({
     <div>
       <h3 className="mb-3 text-sm font-medium">Trust</h3>
       <div className="rounded-lg border border-border p-4 space-y-3">
-        <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
-          <select
-            className={inputClass}
-            value={preset}
-            onChange={(event) => handlePresetChange(event.target.value)}
-            disabled={disabled}
-          >
-            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
-            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
-          </select>
-        </Field>
-        <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
+        <div>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <label className="text-xs text-muted-foreground">Trust preset</label>
+          </div>
+          <div role="radiogroup" aria-label="Trust preset" className="grid gap-2 sm:grid-cols-2">
+            {(["standard", "low_trust_review"] as TrustPreset[]).map((value) => {
+              const selected = preset === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={disabled}
+                  onClick={() => handlePresetChange(value)}
+                  className={cn(
+                    "flex flex-col gap-1.5 rounded-lg border p-3 text-left transition-colors",
+                    selected
+                      ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                      : "border-border hover:bg-accent/40",
+                    disabled && "pointer-events-none opacity-60",
+                  )}
+                >
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "flex size-3.5 shrink-0 items-center justify-center rounded-full border",
+                        selected ? "border-primary" : "border-muted-foreground/40",
+                      )}
+                    >
+                      {selected ? <span className="size-1.5 rounded-full bg-primary" /> : null}
+                    </span>
+                    {TRUST_PRESET_LABELS[value]}
+                  </span>
+                  <span className="text-xs leading-5 text-muted-foreground">
+                    {TRUST_PRESET_CONSEQUENCES[value]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         {lowTrust ? (
           <div
