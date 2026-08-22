@@ -64,7 +64,7 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-COPY scripts/paperclip-bwrap /etc/sudoers/
+
 RUN pnpm --filter @paperclipai/shared build
 RUN pnpm --filter @paperclipai/db build
 RUN pnpm --filter @paperclipai/adapter-utils build
@@ -122,6 +122,9 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+# Sudoers Drop-in mit korrekten Rechten kopieren:
+COPY --chmod=0440 scripts/paperclip-bwrap /etc/sudoers.d/paperclip-bwrap
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
