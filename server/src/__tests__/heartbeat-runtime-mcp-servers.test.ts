@@ -16,6 +16,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfiles);
+    await db.delete(toolStdioCommandTemplates);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(agents);
@@ -78,7 +80,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       type: "mcp_http",
       status: "active",
     }).returning();
-    const [installedConnection, uninstalledConnection] = await db.insert(toolConnections).values([
+    const [installedConnection, unpermittedConnection] = await db.insert(toolConnections).values([
       {
         companyId: company!.id,
         applicationId: application!.id,
@@ -92,7 +94,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       {
         companyId: company!.id,
         applicationId: application!.id,
-        name: "Uninstalled MCP",
+        name: "Unpermitted MCP",
         uid: `test/${randomUUID()}`,
         transport: "mcp_remote",
         status: "active",
@@ -138,7 +140,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       url: expect.stringMatching(/^https:\/\/paperclip\.example\.test\/api\/tool-gateway\/gateways\/.+\/mcp$/),
       token: expect.stringMatching(/^pcgw_/),
     });
-    expect(first.some((server) => server.connectionId === uninstalledConnection!.id)).toBe(false);
+    expect(first.some((server) => server.connectionId === unpermittedConnection!.id)).toBe(false);
     expect(second).toHaveLength(1);
 
     const gateways = await db.select().from(toolMcpGateways);
@@ -184,6 +186,23 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       enabled: true,
       config: { url: "https://zapier.example.test/mcp" },
     }).returning();
+    const [stdioApplication] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-diagnostic-stdio-${randomUUID().slice(0, 8)}`,
+      name: "Local stdio",
+      type: "mcp_stdio",
+      status: "active",
+    }).returning();
+    const [stdioConnection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: stdioApplication!.id,
+      name: "Local stdio",
+      uid: `test/${randomUUID()}`,
+      transport: "local_stdio",
+      status: "active",
+      enabled: true,
+      config: { templateId: "local.uninstalled" },
+    }).returning();
     const [profile] = await db.insert(toolProfiles).values({
       companyId: company!.id,
       profileKey: `app:${connection!.id}`,
@@ -201,6 +220,26 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.insert(toolProfileBindings).values({
       companyId: company!.id,
       profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    const [stdioProfile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${stdioConnection!.id}`,
+      name: "Local stdio",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: stdioProfile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: stdioApplication!.id,
+      connectionId: stdioConnection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: stdioProfile!.id,
       targetType: "agent",
       targetId: agent!.id,
     });
@@ -227,8 +266,11 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       details: expect.objectContaining({
         reasonCode: "permitted_connections_not_installed",
         deliveredServerCount: 0,
-        permittedNotInstalledCount: 1,
-        permittedNotInstalledConnections: [{ id: connection!.id, name: "Zapier" }],
+        permittedNotInstalledCount: 2,
+        permittedNotInstalledConnections: [
+          { id: stdioConnection!.id, name: "Local stdio" },
+          { id: connection!.id, name: "Zapier" },
+        ],
       }),
     });
     const [audit] = await db.select().from(toolAccessAuditEvents);
@@ -240,4 +282,170 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       details: expect.objectContaining({ runId, deliveredServerCount: 0 }),
     });
   });
+
+  it("provisions gateways for installed remote and local stdio connections", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({
+      name: `Runtime MCP ${randomUUID()}`,
+      issuePrefix: `RM${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Runtime MCP Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-${randomUUID().slice(0, 8)}`,
+      name: "Runtime MCP App",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [stdioApplication] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-stdio-${randomUUID().slice(0, 8)}`,
+      name: "Runtime stdio MCP App",
+      type: "mcp_stdio",
+      status: "active",
+    }).returning();
+    const [installedConnection, unpermittedConnection] = await db.insert(toolConnections).values([
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Installed MCP",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "active",
+        enabled: true,
+        config: { url: "https://installed.example.test/mcp" },
+      },
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Unpermitted MCP",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "active",
+        enabled: true,
+        config: { url: "https://uninstalled.example.test/mcp" },
+      },
+    ]).returning();
+    const stdioTemplateKey = `test.${randomUUID()}`;
+    await db.insert(toolStdioCommandTemplates).values({
+      companyId: company!.id,
+      templateKey: stdioTemplateKey,
+      name: "Installed stdio MCP",
+      command: "node",
+      args: ["server.js"],
+    });
+    const [stdioConnection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: stdioApplication!.id,
+      name: "Installed stdio MCP",
+      uid: `test/${randomUUID()}`,
+      transport: "local_stdio",
+      status: "active",
+      enabled: true,
+      config: { templateId: ` ${stdioTemplateKey} ` },
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${installedConnection!.id}`,
+      name: "Installed MCP",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: installedConnection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    const [stdioProfile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${stdioConnection!.id}`,
+      name: "Installed stdio MCP",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: stdioProfile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: stdioApplication!.id,
+      connectionId: stdioConnection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: stdioProfile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: installedConnection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: stdioConnection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+
+    const before = Date.now();
+    const first = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+    const second = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+
+    expect(first).toHaveLength(2);
+    expect(first).toContainEqual(expect.objectContaining({
+      name: "Installed MCP",
+      connectionId: installedConnection!.id,
+      url: expect.stringMatching(/^https:\/\/paperclip\.example\.test\/api\/tool-gateway\/gateways\/.+\/mcp$/),
+      token: expect.stringMatching(/^pcgw_/),
+    }));
+    expect(first).toContainEqual(expect.objectContaining({
+      name: "Installed stdio MCP",
+      connectionId: stdioConnection!.id,
+      url: expect.stringMatching(/^https:\/\/paperclip\.example\.test\/api\/tool-gateway\/gateways\/.+\/mcp$/),
+      token: expect.stringMatching(/^pcgw_/),
+    }));
+    expect(first.some((server) => server.connectionId === unpermittedConnection!.id)).toBe(false);
+    expect(second).toHaveLength(2);
+
+    const gateways = await db.select().from(toolMcpGateways);
+    expect(gateways).toHaveLength(2);
+    expect(gateways.map((gateway) => gateway.metadata)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ managedRuntimeConnectionId: installedConnection!.id }),
+      expect.objectContaining({ managedRuntimeConnectionId: stdioConnection!.id }),
+    ]));
+    const tokens = await db.select().from(toolMcpGatewayTokens);
+    expect(tokens).toHaveLength(4);
+    for (const token of tokens) {
+      expect(token.subjectType).toBe("heartbeat_run");
+      expect(token.subjectId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(token.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
+      expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
+    }
+    expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
+
+    await db
+      .update(toolStdioCommandTemplates)
+      .set({ status: "disabled", disabledAt: new Date() })
+      .where(eq(toolStdioCommandTemplates.templateKey, stdioTemplateKey));
+    const afterDisable = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+    expect(afterDisable).toHaveLength(1);
+    expect(afterDisable[0]).toMatchObject({ connectionId: installedConnection!.id });
+  });
+
 });
