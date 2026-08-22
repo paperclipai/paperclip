@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -76,6 +76,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "productivity_review",
   "blocker_attention",
   "review",
+  "manual_issue",
   "failed_run",
   "budget_alert",
   "agent_error_alert",
@@ -98,8 +99,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   decision: 6,
   issue_thread_interaction: 7,
   review: 8,
-  productivity_review: 9,
-  join_request: 10,
+  manual_issue: 9,
+  productivity_review: 10,
+  join_request: 11,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1951,6 +1953,90 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             images: [],
           },
         }));
+      }
+
+      // Manual board/user work has no formal interaction row to feed the desk.
+      // Surface it directly for the requesting user, unless a more specific
+      // Attention source already represents the same issue.
+      if (options.userId) {
+        const manualIssueCandidates = await db
+          .select({
+            id: issues.id,
+            assigneeUserId: issues.assigneeUserId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "manual"),
+            or(eq(issues.assigneeUserId, options.userId), isNotNull(issues.executionState)),
+            inArray(issues.status, ["backlog", "todo", "in_progress", "blocked"]),
+            visibleIssueCondition(),
+          ))
+          .orderBy(desc(issues.updatedAt), desc(issues.id));
+        const manualIssueRows = manualIssueCandidates.filter((row) => {
+          if (row.assigneeUserId === options.userId) return true;
+          const executionState = parseIssueExecutionState(row.executionState);
+          return executionState?.status === "pending"
+            && executionState.currentParticipant?.type === "user"
+            && executionState.currentParticipant.userId === options.userId;
+        });
+        const manualIssueIds = manualIssueRows.map((row) => row.id);
+        const [manualIssueMap, openManualDecisionRows] = await Promise.all([
+          issueSummaryMap(db, companyId, manualIssueIds),
+          manualIssueIds.length === 0
+            ? Promise.resolve([])
+            : db
+              .select({ issueId: decisions.originIssueId })
+              .from(decisions)
+              .where(and(
+                eq(decisions.companyId, companyId),
+                eq(decisions.status, "open"),
+                inArray(decisions.originIssueId, manualIssueIds),
+              )),
+        ]);
+        const coveredIssueIds = new Set<string>(openManualDecisionRows.map((row) => row.issueId));
+        for (const row of approvalIssueRows) coveredIssueIds.add(row.issueId);
+        for (const row of visibleInteractionRows) coveredIssueIds.add(row.issueId);
+        for (const item of collected) {
+          if (item.sourceKind !== "approval"
+            && item.sourceKind !== "decision"
+            && item.sourceKind !== "issue_thread_interaction"
+            && item.sourceKind !== "blocker_attention") {
+            continue;
+          }
+          if (item.relatedIssue) coveredIssueIds.add(item.relatedIssue.id);
+          if (item.sourceKind === "blocker_attention") coveredIssueIds.add(item.subject.id);
+          const metadataIssueId = item.subject.metadata?.issueId;
+          if (typeof metadataIssueId === "string") coveredIssueIds.add(metadataIssueId);
+        }
+        for (const row of manualIssueRows) {
+          if (coveredIssueIds.has(row.id)) continue;
+          const issue = manualIssueMap.get(row.id);
+          if (!issue) continue;
+          add(createItem({
+            companyId,
+            sourceKind: "manual_issue",
+            subject: issueSubject(prefix, issue),
+            whyNow: "This manual issue requires your board or user disposition.",
+            decisionVerbs: decisionVerbs({
+              id: "review_issue",
+              label: "Review issue",
+              description: "Open the issue and record the disposition.",
+            }),
+            inlineResolvable: false,
+            entryRule: "Visible manual issue is non-terminal and assigned to the current user without a more specific Attention source.",
+            exitRule: "Issue becomes terminal, hidden, reassigned, or gains a more specific Attention source.",
+            dedupKey: `manual_issue:${issue.id}`,
+            severity: issue.status === "blocked" ? "high" : "medium",
+            activityAt: toIso(issue.updatedAt),
+            createdAt: toIso(issue.createdAt),
+            updatedAt: toIso(issue.updatedAt),
+            relatedIssue: null,
+            ...issueContext(issue),
+            detail: genericDetail(issue.title, []),
+          }));
+        }
       }
 
       const deduped = new Map<string, AttentionItem>();

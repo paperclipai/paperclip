@@ -238,7 +238,8 @@ async function sourceIssueId(
     }
     case "productivity_review":
     case "blocker_attention":
-    case "review": {
+    case "review":
+    case "manual_issue": {
       const row = await db.select({ id: issues.id })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceId), isNull(issues.hiddenAt)))

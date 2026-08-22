@@ -56,6 +56,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   productivity_review: { label: "Productivity review" },
   blocker_attention: { label: "Blocked dependency" },
   review: { label: "Review" },
+  manual_issue: { label: "Board decision" },
   failed_run: { label: "Failed run" },
   budget_alert: { label: "Budget" },
   agent_error_alert: { label: "Agent error" },
@@ -132,6 +133,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "join_request":
     case "review":
     case "productivity_review":
+    case "manual_issue":
     default:
       return "review";
   }
