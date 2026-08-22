@@ -20,6 +20,16 @@ const WORKTREE_PORT_REGISTRY_LOCK_HEARTBEAT_MS = 1_000;
 const WORKTREE_PORT_REGISTRY_LOCK_PROBE_TIMEOUT_MS = 500;
 const WORKTREE_PORT_REGISTRY_RENAME_TIMEOUT_MS = 2_000;
 const WORKTREE_PORT_REGISTRY_RENAME_RETRY_MS = 10;
+/**
+ * How long the parent waits for the heartbeat worker to report ready.
+ *
+ * The worker takes its first ownership reading before signalling, so this has to
+ * cover a `readFileSync` and a `utimesSync` against the lock directory, not just
+ * worker startup. On a network-mounted home directory, or while a virus scanner
+ * holds the freshly written owner file, that read can take seconds; too tight a
+ * budget here fails lock acquisition outright rather than waiting it out.
+ */
+const WORKTREE_PORT_REGISTRY_LOCK_START_TIMEOUT_MS = 8_000;
 const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 type RegistryLockOwner = {
@@ -175,8 +185,11 @@ function readRegistryLockOwner(lockPath: string): RegistryLockOwner | null {
  * a bounded window turns a hard failure back into the atomic replace the rest
  * of this module assumes it has.
  */
-function renameWithRetrySync(from: string, to: string): void {
-  const deadline = Date.now() + WORKTREE_PORT_REGISTRY_RENAME_TIMEOUT_MS;
+function renameWithRetrySync(
+  from: string,
+  to: string,
+  deadline = Date.now() + WORKTREE_PORT_REGISTRY_RENAME_TIMEOUT_MS,
+): void {
   for (;;) {
     try {
       fs.renameSync(from, to);
@@ -192,6 +205,11 @@ function renameWithRetrySync(from: string, to: string): void {
 
 function writeRegistryLockOwner(lockPath: string, owner: RegistryLockOwner): void {
   const contents = `${JSON.stringify(owner)}\n`;
+  // One deadline for the whole write, not one per file. Both owner records are
+  // rewritten on every acquisition, so a per-file budget would let a single
+  // write stall for twice the retry window and eat a fifth of the caller's
+  // WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS before the lock is even held.
+  const deadline = Date.now() + WORKTREE_PORT_REGISTRY_RENAME_TIMEOUT_MS;
   for (const ownerFile of [
     WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE,
     WORKTREE_PORT_REGISTRY_LOCK_OWNER_BACKUP_FILE,
@@ -199,7 +217,7 @@ function writeRegistryLockOwner(lockPath: string, owner: RegistryLockOwner): voi
     const ownerPath = path.join(lockPath, ownerFile);
     const temporaryPath = `${ownerPath}.${owner.token}.tmp`;
     fs.writeFileSync(temporaryPath, contents, { mode: 0o600 });
-    renameWithRetrySync(temporaryPath, ownerPath);
+    renameWithRetrySync(temporaryPath, ownerPath, deadline);
   }
 }
 
@@ -304,7 +322,7 @@ function startRegistryLockHeartbeat(lockPath: string, token: string): RegistryLo
       token,
     },
   });
-  Atomics.wait(control, 0, 0, 2_000);
+  Atomics.wait(control, 0, 0, WORKTREE_PORT_REGISTRY_LOCK_START_TIMEOUT_MS);
   if (Atomics.load(control, 0) !== 1) {
     void worker.terminate();
     throw new Error(`Failed to start worktree port reservation lock heartbeat at ${lockPath}`);
