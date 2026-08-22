@@ -20,7 +20,8 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
 
   try {
     if (config.llm.provider === "claude") {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ?? "https://api.anthropic.com";
+      const res = await fetch(`${anthropicBaseUrl}/v1/messages`, {
         method: "POST",
         headers: {
           "x-api-key": config.llm.apiKey,
