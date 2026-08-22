@@ -1,0 +1,3 @@
+# Ensure migration SQL files always use LF line endings so that
+# SHA-256 hashes match between npm-published dist/ and git checkouts.
+*.sql text eol=lf
