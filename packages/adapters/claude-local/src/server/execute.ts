@@ -82,6 +82,13 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  CLAUDE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+  createClaudeOutputInactivityMonitor,
+  formatOutputInactivityMonitorErrorMessage,
+  resolveClaudeInactivityTimeout,
+  resolveClaudeRunWallClockTimeoutSec,
+} from "./output-inactivity-monitor.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
@@ -91,6 +98,29 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
+
+function signalClaudeChild(
+  target: { pid: number | null; processGroupId: number | null },
+  signal: NodeJS.Signals,
+): boolean {
+  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
+    try {
+      process.kill(-target.processGroupId, signal);
+      return true;
+    } catch {
+      // Fall back to direct child signal if group signaling fails (e.g. group already gone).
+    }
+  }
+  if (target.pid && target.pid > 0) {
+    try {
+      process.kill(target.pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -475,6 +505,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
   );
+
+  // Run-level liveness guards (ENGA-578 part 2):
+  //  1. Output-inactivity monitor — abort a streaming inference that emits no
+  //     stdout (incl. thinking) for too long, instead of holding the slot.
+  //  2. Wall-clock cap backstop — hard-kill a genuinely hung run so it frees
+  //     its slot rather than waiting for the platform-level safety net.
+  const inactivityResolution = resolveClaudeInactivityTimeout(config.outputInactivityTimeoutMs);
+  if (inactivityResolution.mode === "disabled") {
+    await onLog(
+      "stdout",
+      "[paperclip] Claude output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung claude runs will only be detected by the platform-level silent-run safety net.\n",
+    );
+  } else if (inactivityResolution.mode === "default" && "reason" in inactivityResolution) {
+    await onLog(
+      "stdout",
+      `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${inactivityResolution.timeoutMs}ms.\n`,
+    );
+  }
+
+  const wallClockResolution = resolveClaudeRunWallClockTimeoutSec({
+    resolvedTimeoutSec: timeoutSec,
+    rawRunWallClockTimeoutSec: config.runWallClockTimeoutSec,
+  });
+  const runWallClockTimeoutSec = wallClockResolution.mode === "disabled" ? 0 : wallClockResolution.timeoutSec;
+  if (wallClockResolution.mode === "disabled") {
+    await onLog(
+      "stdout",
+      "[paperclip] Claude run-level wall-clock cap is DISABLED via adapterConfig.runWallClockTimeoutSec=null. A hung run will only be reaped by the platform-level safety net.\n",
+    );
+  } else if (wallClockResolution.mode === "default" && "reason" in wallClockResolution) {
+    await onLog(
+      "stdout",
+      `[paperclip] Ignoring non-positive adapterConfig.runWallClockTimeoutSec; falling back to default ${wallClockResolution.timeoutSec}s.\n`,
+    );
+  }
+
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -917,26 +983,127 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-      cwd,
-      env,
-      stdin: prompt,
-      timeoutSec,
-      graceSec,
-      onSpawn,
-      onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog,
-      runLogTail: paperclipBridge?.runLogTail,
-      terminalResultCleanup: {
-        graceMs: terminalResultCleanupGraceMs,
-        hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
-      },
-      localProcessSandbox,
-    });
+    let monitorFired = false;
+    let monitorTerminationSignal: NodeJS.Signals | null = null;
+    let monitorElapsedMs = 0;
+    let monitorTimeoutMs = 0;
+    let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
+    let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+    let monitorLogPromise: Promise<unknown> | null = null;
 
-    const parsedStream = parseClaudeStreamJson(proc.stdout);
-    const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
-    return { proc, parsedStream, parsed };
+    const monitor =
+      inactivityResolution.mode === "disabled"
+        ? null
+        : createClaudeOutputInactivityMonitor({
+            timeoutMs: inactivityResolution.timeoutMs,
+            onFire: (state) => {
+              const elapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+              const target = killTarget;
+              // Never report an inactivity failure we did not actually act on.
+              // The monitor is only armed from onSpawn, which the runtime calls
+              // with a real pid (and, off Windows, a process group), so this is
+              // a guard rather than an expected path — but latching `fired`
+              // without terminating anything would fail a run whose child may
+              // still be alive and may still succeed. Stay silent instead.
+              if (!target || (target.pid == null && target.processGroupId == null)) {
+                monitorLogPromise = Promise.resolve(
+                  onLog(
+                    "stderr",
+                    `[paperclip] adapter.invoke output-inactivity monitor reached ${inactivityResolution.timeoutMs}ms ` +
+                      "but no terminable child was recorded; leaving the run untouched rather than failing it. " +
+                      "The platform-level silent-run safety net still applies.\n",
+                  ),
+                ).catch(() => {});
+                return;
+              }
+              monitorFired = true;
+              monitorElapsedMs = elapsedMs;
+              monitorTimeoutMs = inactivityResolution.timeoutMs;
+              const message = formatOutputInactivityMonitorErrorMessage(monitorElapsedMs);
+              const elapsedSec = Math.round(monitorElapsedMs / 1000);
+              const timeoutSecLabel = Math.round(inactivityResolution.timeoutMs / 1000);
+              const logLine =
+                `[paperclip] adapter.invoke ${message}; ` +
+                `timeoutMs=${inactivityResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
+                `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
+                `terminating claude child via SIGTERM (5s grace, then SIGKILL).\n`;
+              // Issue the log without awaiting on the kill hot path, but capture
+              // the promise so the surrounding try/finally can await flush before
+              // the run resolves. Without this the diagnostic that explains the
+              // kill could be dropped if the child exits faster than onLog flushes.
+              monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
+              if (signalClaudeChild(target, "SIGTERM")) monitorTerminationSignal = "SIGTERM";
+              sigkillTimer = setTimeout(() => {
+                sigkillTimer = null;
+                if (signalClaudeChild(target, "SIGKILL")) monitorTerminationSignal = "SIGKILL";
+              }, CLAUDE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+              if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
+                (sigkillTimer as { unref: () => void }).unref();
+              }
+            },
+          });
+
+    const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+      killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+      // Start the inactivity deadline only now: the target exists and can be
+      // terminated. Arming earlier would let a slow execution-target startup
+      // (remote SSH, image pull) burn the whole window before there is any
+      // child, failing a run that then goes on to succeed.
+      monitor?.noteSpawned();
+      if (onSpawn) {
+        await onSpawn(meta);
+      }
+    };
+
+    try {
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        cwd,
+        env,
+        stdin: prompt,
+        timeoutSec: runWallClockTimeoutSec,
+        graceSec,
+        onSpawn: wrappedOnSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
+        onLog: async (stream, chunk) => {
+          if (stream === "stdout") {
+            monitor?.noteStdoutChunk(chunk);
+          }
+          await onLog(stream, chunk);
+        },
+        runLogTail: paperclipBridge?.runLogTail,
+        terminalResultCleanup: {
+          graceMs: terminalResultCleanupGraceMs,
+          hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
+        },
+        localProcessSandbox,
+      });
+
+      const parsedStream = parseClaudeStreamJson(proc.stdout);
+      const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+      return {
+        proc,
+        parsedStream,
+        parsed,
+        monitor: monitorFired
+          ? {
+              fired: true as const,
+              terminationSignal: monitorTerminationSignal,
+              elapsedMsSinceLastEvent: monitorElapsedMs,
+              timeoutMs: monitorTimeoutMs,
+            }
+          : { fired: false as const },
+      };
+    } finally {
+      monitor?.stop();
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
+      if (monitorLogPromise) {
+        await monitorLogPromise;
+        monitorLogPromise = null;
+      }
+    }
   };
 
   const toAdapterResult = (
@@ -944,10 +1111,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       proc: RunProcessResult;
       parsedStream: ReturnType<typeof parseClaudeStreamJson>;
       parsed: Record<string, unknown> | null;
+      monitor?:
+        | { fired: false }
+        | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
     },
     opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
   ): AdapterExecutionResult => {
     const { proc, parsedStream, parsed } = attempt;
+    // Output-inactivity monitor fired: the streaming inference stalled with no
+    // stdout for too long and we killed it. Surface as a distinct failure
+    // (errorMessage set + timedOut:false → heartbeat maps to `failed`) so the
+    // run is retried at the run level rather than blocking the slot.
+    if (attempt.monitor?.fired) {
+      const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
+      return {
+        exitCode: null,
+        signal: attempt.monitor.terminationSignal ?? proc.signal,
+        timedOut: false,
+        errorMessage,
+        errorCode: "claude_output_inactivity_monitor",
+        errorFamily: null,
+        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        resultJson: {
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          outputInactivityMonitor: {
+            kind: "output_inactivity",
+            timeoutMs: attempt.monitor.timeoutMs,
+            elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
+            terminationSignal: attempt.monitor.terminationSignal,
+          },
+        },
+      };
+    }
     const loginMeta = detectClaudeLoginRequired({
       parsed,
       stdout: proc.stdout,
@@ -965,7 +1161,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage: `Timed out after ${runWallClockTimeoutSec || timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
