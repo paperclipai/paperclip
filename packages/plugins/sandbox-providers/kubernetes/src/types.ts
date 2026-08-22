@@ -66,6 +66,21 @@ export const kubernetesProviderConfigSchema = z
      *   installed, or when you need stable (non-alpha) k8s APIs.
      */
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
+
+    /**
+     * Keep the Sandbox CR and its pod alive on `releaseLease` so paperclip-server
+     * can resume the lease for a later run instead of paying a cold provision
+     * (see `supportsReusableLeases` on the driver manifest).
+     *
+     * Only the `sandbox-cr` backend can be reused: a Job's pod is terminal once
+     * the Job finishes, so there is nothing left to exec into. Leases that
+     * carried a task-scoped egress grant are always torn down on release, so a
+     * per-run network grant can never outlive its run.
+     *
+     * Default false: release tears the workload down, which is what every
+     * existing environment already does.
+     */
+    reuseLease: z.boolean().default(false),
   })
   .refine(
     (cfg) => cfg.inCluster || cfg.kubeconfig,
@@ -90,6 +105,18 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Whether `reuseLease` was on when this lease was acquired.
+   *
+   * paperclip-server fixes a lease's policy (`reuse_by_environment` vs
+   * `ephemeral`) at acquisition and never revisits it, so a lease acquired
+   * while reuse was off can never be resumed no matter what the config says
+   * later. Release therefore requires reuse to have been on at BOTH ends:
+   * turning `reuseLease` on mid-lease must not make release keep a workload
+   * the server has already written off as ephemeral, which nothing would ever
+   * reclaim. Absent (leases from before this field existed) means false.
+   */
+  acquiredForReuse: boolean;
   scopedNetworkPolicyName: string | null;
   scopedNetworkEgress: {
     allowFqdns: string[];
