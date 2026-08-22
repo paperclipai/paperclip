@@ -852,6 +852,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "GET /api/companies/{companyId}/agents/audit-roster",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
@@ -1686,6 +1687,25 @@ registry.registerPath({
   summary: "List agents in a company",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agents/audit-roster",
+  tags: ["agents"],
+  summary: "Compare the configured agent roster with the live agents of a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      manifest: z
+        .string()
+        .optional()
+        .describe(
+          "Repository roster manifest as a JSON array of objects with a name, an optional id, and an optional role. The server reads the PAPERCLIP_AGENT_MANIFEST environment variable when this is absent.",
+        ),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

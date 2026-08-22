@@ -2,7 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, costEvents, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -68,6 +68,7 @@ import {
   collectAgentAdapterWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { auditRoster, parseRosterManifest, type RosterManifestEntry } from "../services/roster-audit.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -2831,6 +2832,27 @@ export function agentRoutes(
       res.json(snapshot);
     },
   );
+
+  router.get("/companies/:companyId/agents/audit-roster", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    let manifest: RosterManifestEntry[] = [];
+    const rawManifest = typeof req.query.manifest === "string" ? req.query.manifest : process.env.PAPERCLIP_AGENT_MANIFEST;
+    if (rawManifest) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawManifest);
+      } catch { res.status(400).json({ error: "manifest must be a JSON array" }); return; }
+      const result = parseRosterManifest(parsed);
+      if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+      manifest = result.manifest;
+    }
+    const live = await db.select({ id: agentsTable.id, name: agentsTable.name, role: agentsTable.role, status: agentsTable.status }).from(agentsTable).where(eq(agentsTable.companyId, companyId));
+    const costRows = await db.select({ agentId: costEvents.agentId }).from(costEvents).where(eq(costEvents.companyId, companyId)).groupBy(costEvents.agentId);
+    const costIds = new Set(costRows.map((row) => row.agentId));
+    res.json(auditRoster(manifest, live.map((agent) => ({ ...agent, hasCostHistory: costIds.has(agent.id) }))));
+  });
 
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
