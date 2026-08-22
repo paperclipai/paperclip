@@ -117,6 +117,48 @@ interface ClaudeRuntimeConfig {
   extraArgs: string[];
 }
 
+/**
+ * Terminal error-code resolution for a completed Claude run.
+ *
+ * A run that produced a successful terminal result (`failed === false`) is, by
+ * definition, authenticated — so `requiresLogin` must be gated on `failed`.
+ * `detectClaudeLoginRequired` scans the assistant's own result text plus
+ * stdout/stderr, so a `subtype=success` / `is_error=false` / `exitCode=0` run
+ * whose output merely *mentions* auth/login would otherwise be terminally
+ * misclassified `failed(claude_auth_required)`. Genuine auth failures always
+ * carry `is_error=true` or a non-zero exit, so `failed` is true for them and
+ * they remain correctly classified. See JAC-3738.
+ *
+ * Extracted from `toAdapterResult` (previously an inline ternary chain) so the
+ * classification is a pure, unit-testable function.
+ */
+export function resolveClaudeErrorCode(inputs: {
+  requiresLogin: boolean;
+  failed: boolean;
+  modelNotFound: boolean;
+  clearSessionForMaxTurns: boolean;
+  poisonedPreviousMessageId: boolean;
+  providerQuota: boolean;
+  transientUpstream: boolean;
+  claudeRefusal: boolean;
+}) {
+  return inputs.requiresLogin && inputs.failed
+    ? "claude_auth_required"
+    : inputs.failed && inputs.modelNotFound
+    ? "model_not_found"
+    : inputs.failed && inputs.clearSessionForMaxTurns
+    ? "max_turns_exhausted"
+    : inputs.failed && inputs.poisonedPreviousMessageId
+    ? "claude_poisoned_previous_message_id"
+    : inputs.providerQuota
+    ? "provider_quota"
+    : inputs.transientUpstream
+    ? "claude_transient_upstream"
+    : inputs.claudeRefusal
+    ? "claude_refusal"
+    : null;
+}
+
 export function claudeSessionCwdMatchesExecutionTarget(input: {
   runtimeSessionCwd: string;
   effectiveExecutionCwd: string;
@@ -1134,26 +1176,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
-    const resolvedErrorCode = loginMeta.requiresLogin
-      ? "claude_auth_required"
-      : failed && isClaudeModelNotFoundError({
+    const modelNotFound =
+      failed &&
+      isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
         errorMessage,
-      })
-      ? "model_not_found"
-      : failed && clearSessionForMaxTurns
-      ? "max_turns_exhausted"
-      : failed && poisonedPreviousMessageId
-      ? "claude_poisoned_previous_message_id"
-      : providerQuota
-      ? "provider_quota"
-      : transientUpstream
-      ? "claude_transient_upstream"
-      : claudeRefusal
-      ? "claude_refusal"
-      : null;
+      });
+    const resolvedErrorCode = resolveClaudeErrorCode({
+      requiresLogin: loginMeta.requiresLogin,
+      failed,
+      modelNotFound,
+      clearSessionForMaxTurns,
+      poisonedPreviousMessageId,
+      providerQuota,
+      transientUpstream,
+      claudeRefusal,
+    });
     const errorFamily = providerQuota
       ? "provider_quota"
       : transientUpstream
