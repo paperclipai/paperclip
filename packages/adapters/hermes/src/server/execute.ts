@@ -76,6 +76,78 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
 
+/**
+ * Resolve `AGENT_HOME` for one run and prove it belongs to the run's own agent.
+ *
+ * `AGENT_HOME` is the anchor for every memory path in an agent's operating
+ * instructions (`$AGENT_HOME/MEMORY.md`, `$AGENT_HOME/life/`,
+ * `$AGENT_HOME/memory/YYYY-MM-DD.md`). If it names another agent's directory,
+ * an agent that follows its instructions literally writes its memory into that
+ * other agent's home: two agents' daily notes collide on the same
+ * `memory/YYYY-MM-DD.md`, and — where the other agent is read-only oversight
+ * (IOA / Deputy IOA) — the audited party gets a writable path inside the
+ * auditor's home. See RBR-943.
+ *
+ * The heartbeat resolves the correct per-agent home and publishes it on
+ * `context.paperclipWorkspace.agentHome`. This adapter previously never read
+ * that value, so the only `AGENT_HOME` a Hermes child ever saw was whatever it
+ * inherited from the server process environment — which on a host with a stale
+ * `export AGENT_HOME=...` in a shell rc file is a *fixed* foreign agent id, for
+ * every agent, on every run.
+ *
+ * Two rules, both required:
+ *   1. The run-resolved home wins over anything inherited.
+ *   2. An inherited value that cannot be confirmed as this agent's home is
+ *      deleted rather than passed through. A missing `AGENT_HOME` is a loud,
+ *      recoverable failure; a confidently wrong one silently corrupts memory.
+ */
+export function resolveAgentHomeEnv(input: {
+  inherited?: string | null;
+  resolvedAgentHome?: string | null;
+  agentId?: string | null;
+}): { agentHome: string | null; warning: string | null } {
+  const resolved = typeof input.resolvedAgentHome === "string" ? input.resolvedAgentHome.trim() : "";
+  const inherited = typeof input.inherited === "string" ? input.inherited.trim() : "";
+  const agentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
+
+  if (resolved) {
+    if (inherited && inherited !== resolved) {
+      return {
+        agentHome: resolved,
+        warning:
+          `Ignoring inherited AGENT_HOME "${inherited}" — it does not match the home resolved for ` +
+          `agent ${agentId || "(unknown)"} ("${resolved}"). Using the run-resolved home.`,
+      };
+    }
+    return { agentHome: resolved, warning: null };
+  }
+
+  // No run-resolved home. An inherited value is only safe to keep if it is
+  // demonstrably this agent's own directory (its final path segment is the
+  // agent id). Anything else belongs to some other agent and must not be
+  // handed to a process whose instructions treat it as a write target.
+  if (inherited && agentId) {
+    const segments = inherited.split(/[\\/]+/).filter(Boolean);
+    if (segments[segments.length - 1] === agentId) {
+      return { agentHome: inherited, warning: null };
+    }
+    return {
+      agentHome: null,
+      warning:
+        `Dropping inherited AGENT_HOME "${inherited}" — it does not belong to agent ${agentId}, and no ` +
+        `per-run agent home was resolved. Writing memory there would cross-contaminate another agent's home.`,
+    };
+  }
+  if (inherited) {
+    return {
+      agentHome: null,
+      warning:
+        `Dropping inherited AGENT_HOME "${inherited}" — it could not be attributed to this run's agent.`,
+    };
+  }
+  return { agentHome: null, warning: null };
+}
+
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -468,6 +540,29 @@ export async function execute(
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
   };
+
+  // AGENT_HOME must name *this* agent's home. The heartbeat publishes the
+  // resolved per-agent home on context.paperclipWorkspace.agentHome; it wins
+  // over any inherited value, and an inherited value that cannot be attributed
+  // to this agent is dropped rather than passed through. See RBR-943 and
+  // resolveAgentHomeEnv above.
+  {
+    const workspaceContext =
+      (ctx as any).context?.paperclipWorkspace &&
+      typeof (ctx as any).context.paperclipWorkspace === "object"
+        ? ((ctx as any).context.paperclipWorkspace as Record<string, unknown>)
+        : {};
+    const agentHomeResolution = resolveAgentHomeEnv({
+      inherited: env.AGENT_HOME,
+      resolvedAgentHome: cfgString(workspaceContext.agentHome) ?? null,
+      agentId: ctx.agent?.id ?? null,
+    });
+    if (agentHomeResolution.agentHome) env.AGENT_HOME = agentHomeResolution.agentHome;
+    else delete env.AGENT_HOME;
+    if (agentHomeResolution.warning) {
+      await ctx.onLog("stdout", `[hermes] Warning: ${agentHomeResolution.warning}\n`);
+    }
+  }
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
