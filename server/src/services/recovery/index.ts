@@ -37,11 +37,33 @@ export {
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
   findExistingRunLivenessContinuationWake,
+  isActionableLivenessStateForContinuation,
   readContinuationAttempt,
 } from "./run-liveness-continuations.js";
 export type {
+  RunContinuationBackoff,
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
+export {
+  DEFAULT_LIVENESS_CONTINUATION_THROTTLE_CONFIG,
+  LIVENESS_CONTINUATION_RETRY_REASON,
+  UPSTREAM_THROTTLE_CEILING_PAUSE_REASON,
+  UPSTREAM_THROTTLE_LIVENESS_STATE,
+  buildUpstreamThrottleCeilingNoticeMarker,
+  computeLivenessContinuationBackoff,
+  decideUpstreamThrottleCeiling,
+  isUpstreamThrottleExitRun,
+  resolveLivenessContinuationThrottleConfig,
+  summarizeUpstreamThrottleStreak,
+} from "./liveness-continuation-throttle.js";
+export type {
+  LivenessContinuationBackoffSchedule,
+  LivenessContinuationThrottleConfig,
+  LivenessContinuationThrottleMode,
+  ThrottleExitRunLike,
+  UpstreamThrottleCeilingDecision,
+  UpstreamThrottleStreak,
+} from "./liveness-continuation-throttle.js";
 export {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
