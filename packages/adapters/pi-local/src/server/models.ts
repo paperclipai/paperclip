@@ -177,24 +177,36 @@ export async function ensurePiModelConfiguredAndAvailable(input: {
     throw new Error("Pi requires `adapterConfig.model` in provider/model format.");
   }
 
-  const models = await discoverPiModelsCached({
-    command: input.command,
-    cwd: input.cwd,
-    env: input.env,
-  });
+  try {
+    const models = await discoverPiModelsCached({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
 
-  if (models.length === 0) {
-    throw new Error("Pi returned no models. Run `pi --list-models` and verify provider auth.");
+    if (models.length === 0) {
+      throw new Error("Pi returned no models. Run `pi --list-models` and verify provider auth.");
+    }
+
+    if (!models.some((entry) => entry.id === model)) {
+      const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+      throw new Error(
+        `Configured Pi model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      );
+    }
+
+    return models;
+  } catch (e) {
+    // Fallback: if model discovery fails (e.g. pi --list-models fails because
+    // secret_ref env values are not resolved to strings by normalizeEnv, or
+    // Pi extensions hang during model listing), trust the configured model
+    // and allow the agent to start. The actual API key resolution happens at
+    // agent execution time (execute.ts), not during model discovery, so the
+    // agent can still authenticate with the provider even if pi --list-models
+    // cannot.
+    console.warn(`[pi-local] Model discovery failed for ${model}, using fallback:`, (e as Error).message?.slice(0, 120));
+    return [{ id: model, label: model } as AdapterModel];
   }
-
-  if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
-    throw new Error(
-      `Configured Pi model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
-    );
-  }
-
-  return models;
 }
 
 export async function listPiModels(): Promise<AdapterModel[]> {
