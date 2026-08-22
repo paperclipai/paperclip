@@ -46,6 +46,23 @@ Follow these steps every time you wake up:
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,in_review,blocked` only when you need the full issue objects.
 
+**Connection failure is an error, not "no work":** You MUST distinguish a successful empty inbox (`200 OK`, `{"items":[]}`) from a connection failure (curl exit 7, HTTP 000, or any non-2xx status). Only a successful 2xx response may be parsed as an inbox; a valid `200 OK` empty list means "nothing to do — exit cleanly." Any other result is an error and must be handled as such.
+
+When making control-plane calls via `curl` (applies to all local `opencode_local` / shell-dispatched agents):
+
+1. **Capture both the HTTP status and the curl exit code** — never rely on an empty response body alone to determine success.
+2. **On failure, retry once against the loopback fallback** (`http://127.0.0.1:${PAPERCLIP_LISTEN_PORT:-3100}`) with the configured retry backoff before giving up. Co-located agents can use loopback even when the injected `$PAPERCLIP_API_URL` hostname is wrong or temporarily unreachable.
+3. **Use a per-run response file** — prefer `$PAPERCLIP_RUN_SCRATCH_DIR` or `$PAPERCLIP_SCRATCH_DIR`; otherwise create a `mktemp` directory and clean it with `trap`. Never use a shared `/tmp/pc_inbox.json` path.
+4. **If the loopback retry also fails, do not exit cleanly.** Emit an error line to stderr and exit non-zero so the failure surfaces in the agent record. Never exit with `reason: stop` or log "no new assignments" when the API was unreachable.
+
+The bundled `skills/paperclip/scripts/heartbeat-inbox.sh` implements this contract for shell-dispatched callers. It logs the fallback warning only after the primary endpoint fails, and emits the terminal error only after both attempts fail:
+
+```bash
+bash "${PAPERCLIP_SKILL_DIR:-skills/paperclip}/scripts/heartbeat-inbox.sh"
+```
+
+Keep the same status/exit-code, fallback, and per-run scratch-file contract for other control-plane calls; a transport failure must never be represented as an empty response.
+
 **Step 4 — Pick work.** Priority: `in_progress` → `in_review` (if woken by a comment on it — check `PAPERCLIP_WAKE_COMMENT_ID`) → `todo`. Skip `blocked` unless you can unblock.
 
 Overrides and special cases:
