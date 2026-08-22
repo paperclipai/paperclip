@@ -464,14 +464,20 @@ When authenticated with the current run's agent JWT, list the secrets available 
 ```bash
 PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
 PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
-curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -s --config - \
   "$PAPERCLIP_API_BASE/api/agents/me/secrets"
 ```
 
 The list is metadata-only. Fetch a specific value only when needed; the request has no body:
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -s -X POST --config - \
   "$PAPERCLIP_API_BASE/api/agents/me/secrets/github_token/value"
 ```
 
