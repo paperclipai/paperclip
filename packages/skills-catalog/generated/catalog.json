@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-07T20:30:29.973Z",
+  "generatedAt": "2026-08-22T00:27:37.935Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -37,6 +37,42 @@
         }
       ],
       "contentHash": "sha256:2e02299210fd17c1fe1867b4ee8c144a11b6fe1fe481f83b8268cfbaaf10f9aa"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:cycle-report",
+      "key": "paperclipai/bundled/paperclip-operations/cycle-report",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "cycle-report",
+      "name": "cycle-report",
+      "description": "At the end of every cycle, write a structured outcome report to the issue's `cycle-report` document — what happened, what you did, what the Board should know, and whether anything is waiting on review. This is how Paperclip's own success/quality trend gets measured over time; skipping it leaves this cycle invisible to that record.",
+      "path": "catalog/bundled/paperclip-operations/cycle-report",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "engineer",
+        "product",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "reporting",
+        "operations",
+        "observability"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 5862,
+          "sha256": "4191c25a07c55b6123c31c8c40fe06376c7acf21f7c707fac5c2e28c68569303"
+        }
+      ],
+      "contentHash": "sha256:e1e61a48ae2eba7364fb7ed399d864025d40d1ac02b2b75f17aa1fbeb654d668"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:issue-triage",
