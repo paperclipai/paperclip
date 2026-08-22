@@ -25,6 +25,7 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
+import { readCodexSubscriptionCredentialIdentity } from "@paperclipai/adapter-utils/acpx-engine/codex-credential-identity";
 import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
@@ -36,11 +37,16 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import {
+  classifyCodexAuthRefreshFailure,
+  extractCodexRetryNotBefore,
+  isCodexProviderQuotaError,
+} from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
   evaluateCodexCredentialReadiness,
+  resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
@@ -62,10 +68,20 @@ type CodexEngineResolutionInput =
   Pick<AdapterExecutionContext, "config"> &
   Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>;
 
-type CodexAcpExecutorOptions = Omit<
+type CodexAcpEngineOptions = Omit<
   AcpxEngineExecutorOptions,
   "adapterType" | "moduleDir" | "packageRootDir"
 >;
+
+interface CodexQuotaRotationDeps {
+  readCredentialIdentity: (ctx: AdapterExecutionContext) => Promise<string | null>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
+type CodexAcpExecutorOptions = CodexAcpEngineOptions & {
+  quotaRotationDeps?: Partial<CodexQuotaRotationDeps>;
+};
 
 type CodexAcpExecutor = (ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult>;
 
@@ -274,7 +290,7 @@ async function prepareCodexRemoteManagedHome(
   };
 }
 
-function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
+function withCodexAcpDefaults(options: CodexAcpEngineOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
@@ -285,25 +301,110 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
-function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+const CODEX_QUOTA_ROTATION_POLL_MS = 1_000;
+const MAX_CODEX_QUOTA_ROTATION_WAIT_SEC = 300;
+
+function resolveCodexQuotaRotationWaitSec(config: Record<string, unknown>): number {
+  const configured = asNumber(config.quotaRotationWaitSec, 0);
+  if (!Number.isFinite(configured) || configured <= 0) return 0;
+  return Math.min(configured, MAX_CODEX_QUOTA_ROTATION_WAIT_SEC);
+}
+
+function resolveCodexCredentialHome(ctx: AdapterExecutionContext): string {
+  const envConfig = parseObject(parseObject(ctx.config).env);
+  const configuredHome = asString(envConfig.CODEX_HOME, "").trim();
+  return configuredHome
+    ? path.resolve(configuredHome)
+    : resolveManagedCodexHomeDir(process.env, ctx.agent.companyId);
+}
+
+async function readEffectiveCodexCredentialIdentity(
+  ctx: AdapterExecutionContext,
+): Promise<string | null> {
+  return readCodexSubscriptionCredentialIdentity(resolveCodexCredentialHome(ctx));
+}
+
+function readAttemptCredentialIdentity(result: AdapterExecutionResult): string | null {
+  const sessionParams = parseObject(result.sessionParams);
+  const skills = parseObject(sessionParams.skills);
+  const identity = asString(skills.credentialIdentityHash, "").trim();
+  return identity || null;
+}
+
+async function waitForChangedCodexCredential(input: {
+  baselineIdentity: string;
+  waitSec: number;
+  readCredentialIdentity: () => Promise<string | null>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}): Promise<boolean> {
+  const deadline = input.now() + input.waitSec * 1_000;
+  while (true) {
+    const currentIdentity = await input.readCredentialIdentity();
+    if (currentIdentity && currentIdentity !== input.baselineIdentity) return true;
+
+    const remainingMs = deadline - input.now();
+    if (remainingMs <= 0) return false;
+    await input.sleep(Math.min(CODEX_QUOTA_ROTATION_POLL_MS, remainingMs));
+  }
+}
+
+function markCodexQuotaCredentialHandoff(
+  result: AdapterExecutionResult,
+): AdapterExecutionResult {
+  return {
+    ...result,
+    resultJson: {
+      ...(result.resultJson ?? {}),
+      quotaCredentialHandoff: {
+        attempted: true,
+        credentialChanged: true,
+      },
+    },
+  };
+}
+
+function withCodexAcpFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
+  const errorMessage = [result.errorMessage ?? "", result.summary ?? "", stopReason]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
   const authFailure = classifyCodexAuthRefreshFailure({
-    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n"),
+    errorMessage,
   });
-  if (!authFailure) return result;
+  if (authFailure) {
+    return {
+      ...result,
+      errorCode: authFailure,
+      errorFamily: authFailure,
+      resultJson: {
+        ...(result.resultJson ?? {}),
+        errorFamily: authFailure,
+      },
+    };
+  }
 
+  if (!isCodexProviderQuotaError({ errorMessage })) return result;
+
+  const retryNotBefore = extractCodexRetryNotBefore({ errorMessage })?.toISOString() ?? null;
   return {
     ...result,
-    errorCode: authFailure,
-    errorFamily: authFailure,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore,
     resultJson: {
       ...(result.resultJson ?? {}),
-      errorFamily: authFailure,
+      errorFamily: "provider_quota",
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            transientRetryNotBefore: retryNotBefore,
+            providerQuotaRetryNotBefore: retryNotBefore,
+          }
+        : {}),
     },
   };
 }
@@ -343,19 +444,79 @@ export function resolveCodexAcpBillingIdentity(
 }
 
 export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): CodexAcpExecutor {
+  const {
+    quotaRotationDeps,
+    ...engineOptions
+  } = options;
+  const readCredentialIdentity =
+    quotaRotationDeps?.readCredentialIdentity ?? readEffectiveCodexCredentialIdentity;
+  const readCredentialIdentitySafely = async (
+    ctx: AdapterExecutionContext,
+  ): Promise<string | null> => {
+    try {
+      return await readCredentialIdentity(ctx);
+    } catch {
+      return null;
+    }
+  };
+  const sleep = quotaRotationDeps?.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = quotaRotationDeps?.now ?? (() => Date.now());
   let executor: CodexAcpExecutor | null = null;
   return async (ctx) => {
     let currentExecutor = executor;
     if (!currentExecutor) {
       const { createAcpxEngineExecutor } = await import("@paperclipai/adapter-utils/acpx-engine/execute");
-      currentExecutor = createAcpxEngineExecutor(withCodexAcpDefaults(options));
+      currentExecutor = createAcpxEngineExecutor(withCodexAcpDefaults(engineOptions));
       executor = currentExecutor;
     }
-    const result = await currentExecutor({
+    const quotaRotationWaitSec = resolveCodexQuotaRotationWaitSec(ctx.config);
+    const subscriptionHandoffEnabled =
+      quotaRotationWaitSec > 0 && resolveCodexAcpBillingIdentity(ctx).billingType === "subscription";
+    const preAttemptIdentity = subscriptionHandoffEnabled
+      ? await readCredentialIdentitySafely(ctx)
+      : null;
+    const executionContext = {
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
+    };
+    const result = withCodexAcpFailureClassification(
+      await currentExecutor(executionContext),
+    );
+    if (!subscriptionHandoffEnabled || result.errorFamily !== "provider_quota") {
+      return result;
+    }
+
+    const baselineIdentity = readAttemptCredentialIdentity(result) ?? preAttemptIdentity;
+    if (!baselineIdentity) return result;
+
+    await ctx.onLog(
+      "stderr",
+      `[paperclip] Codex subscription quota reached; waiting up to ${quotaRotationWaitSec}s for an external credential watcher to switch accounts.\n`,
+    );
+    const credentialChanged = await waitForChangedCodexCredential({
+      baselineIdentity,
+      waitSec: quotaRotationWaitSec,
+      readCredentialIdentity: () => readCredentialIdentitySafely(ctx),
+      sleep,
+      now,
     });
-    return withCodexAuthRefreshFailureClassification(result);
+    if (!credentialChanged) {
+      await ctx.onLog(
+        "stderr",
+        "[paperclip] Codex credential watcher handoff timed out; returning the original provider-quota failure.\n",
+      );
+      return result;
+    }
+
+    await ctx.onLog(
+      "stderr",
+      "[paperclip] Codex credential watcher changed the subscription account; retrying once with a fresh credential-aware session.\n",
+    );
+    const retry = withCodexAcpFailureClassification(
+      await currentExecutor(executionContext),
+    );
+    return markCodexQuotaCredentialHandoff(retry);
   };
 }
 

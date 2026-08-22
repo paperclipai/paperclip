@@ -93,6 +93,16 @@ function subscriptionAuthJson(accountId: string, lastRefresh: string, marker: st
   );
 }
 
+function providerQuotaTerminal(): FakeRuntimeTurnResult {
+  return {
+    status: "failed",
+    error: {
+      message:
+        "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:33 PM.",
+    },
+  } as unknown as FakeRuntimeTurnResult;
+}
+
 // Enumerate the host staged-home temp dirs `stageCodexHomeForSync` created for a
 // given runId (`paperclip-codex-home-sync-<runId>-<random>` under os.tmpdir()).
 // A unique per-test runId scopes the match to this run's staging dirs only, so
@@ -1179,6 +1189,288 @@ describe("codex_local ACP lane", () => {
     expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
   });
 
+  it("classifies ACP subscription usage-limit failures as provider quota", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-provider-quota-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: {
+            message:
+              "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:33 PM.",
+          },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toEqual(expect.any(String));
+    expect(result.resultJson?.errorFamily).toBe("provider_quota");
+    expect(result.resultJson?.providerQuotaRetryNotBefore).toBe(result.retryNotBefore);
+  });
+
+  it("keeps quota watcher handoff disabled when quotaRotationWaitSec is absent", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-handoff-disabled-");
+    let identityReads = 0;
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => {
+          identityReads += 1;
+          return "identity-unused";
+        },
+      },
+      createRuntime: (options: FakeRuntimeOptions) =>
+        new FakeRuntime(options, [], providerQuotaTerminal()) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.resultJson).not.toHaveProperty("quotaCredentialHandoff");
+    expect(identityReads).toBe(0);
+  });
+
+  it("does not use subscription quota handoff for API-key-authenticated ACP runs", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-handoff-api-key-");
+    process.env.OPENAI_API_KEY = "sk-api-key-auth";
+    let identityReads = 0;
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => {
+          identityReads += 1;
+          return "identity-unused";
+        },
+      },
+      createRuntime: (options: FakeRuntimeOptions) =>
+        new FakeRuntime(options, [], providerQuotaTerminal()) as never,
+    });
+    const context = buildContext(root);
+    context.config = { ...context.config, quotaRotationWaitSec: 75 };
+
+    const result = await execute(context);
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.resultJson).not.toHaveProperty("quotaCredentialHandoff");
+    expect(identityReads).toBe(0);
+  });
+
+  it("retries once after the external watcher changes the subscription identity", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-handoff-");
+    const runtimes: FakeRuntime[] = [];
+    const identities = ["identity-before", "identity-after"];
+    const logs: string[] = [];
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => identities.shift() ?? "identity-after",
+        sleep: async () => {
+          throw new Error("identity changed before polling sleep");
+        },
+        now: () => 0,
+      },
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(
+          options,
+          [],
+          runtimes.length === 0 ? providerQuotaTerminal() : undefined,
+        );
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const context = buildContext(root, {
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    });
+    context.config = { ...context.config, quotaRotationWaitSec: 75 };
+
+    const result = await execute(context);
+
+    expect(result.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.startInputs[0]?.text).toContain("Task context");
+    expect(result.resultJson?.quotaCredentialHandoff).toEqual({
+      attempted: true,
+      credentialChanged: true,
+    });
+    expect(logs.join("\n")).not.toContain("identity-before");
+    expect(logs.join("\n")).not.toContain("identity-after");
+  });
+
+  it("returns the original quota failure unchanged when the watcher does not switch accounts", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-timeout-");
+    const runtimes: FakeRuntime[] = [];
+    const sleeps: number[] = [];
+    let now = 0;
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => "identity-same",
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+          now += ms;
+        },
+        now: () => now,
+      },
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options, [], providerQuotaTerminal());
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const context = buildContext(root);
+    context.config = { ...context.config, quotaRotationWaitSec: 2 };
+
+    const result = await execute(context);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toEqual(expect.any(String));
+    expect(result.resultJson).not.toHaveProperty("quotaCredentialHandoff");
+    expect(runtimes).toHaveLength(1);
+    expect(sleeps).toEqual([1_000, 1_000]);
+  });
+
+  it("caps the configured credential watcher wait at five minutes", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-wait-cap-");
+    let now = 0;
+    let sleptMs = 0;
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => "identity-same",
+        sleep: async (ms: number) => {
+          sleptMs += ms;
+          now += ms;
+        },
+        now: () => now,
+      },
+      createRuntime: (options: FakeRuntimeOptions) =>
+        new FakeRuntime(options, [], providerQuotaTerminal()) as never,
+    });
+    const context = buildContext(root);
+    context.config = { ...context.config, quotaRotationWaitSec: 999 };
+
+    const result = await execute(context);
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(sleptMs).toBe(300_000);
+  });
+
+  it("returns the quota failure when the credential identity cannot be read", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-identity-read-error-");
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => {
+          throw new Error("simulated credential read failure");
+        },
+        sleep: async () => {
+          throw new Error("missing identity must not enter the wait loop");
+        },
+      },
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options, [], providerQuotaTerminal());
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const context = buildContext(root);
+    context.config = { ...context.config, quotaRotationWaitSec: 75 };
+
+    const result = await execute(context);
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.resultJson).not.toHaveProperty("quotaCredentialHandoff");
+    expect(runtimes).toHaveLength(1);
+  });
+
+  it("does not loop when the one credential-handoff retry also hits provider quota", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-handoff-terminal-");
+    const runtimes: FakeRuntime[] = [];
+    const identities = ["identity-before", "identity-after", "identity-third"];
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        readCredentialIdentity: async () => identities.shift() ?? "identity-third",
+        sleep: async () => {},
+        now: () => 0,
+      },
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options, [], providerQuotaTerminal());
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const context = buildContext(root);
+    context.config = { ...context.config, quotaRotationWaitSec: 75 };
+
+    const result = await execute(context);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.resultJson?.quotaCredentialHandoff).toEqual({
+      attempted: true,
+      credentialChanged: true,
+    });
+    expect(runtimes).toHaveLength(2);
+  });
+
+  it("detects a watcher account switch that occurs during the failed ACP attempt", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-quota-switch-during-attempt-");
+    const codexHome = path.join(root, "codex-home");
+    const authPath = path.join(codexHome, "auth.json");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      authPath,
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      quotaRotationDeps: {
+        sleep: async () => {
+          throw new Error("account changed during the first attempt");
+        },
+      },
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(
+          options,
+          [],
+          runtimes.length === 0 ? providerQuotaTerminal() : undefined,
+        );
+        if (runtimes.length === 0) {
+          const ensureSession = runtime.ensureSession.bind(runtime);
+          runtime.ensureSession = async (input) => {
+            const handle = await ensureSession(input);
+            await fs.writeFile(
+              authPath,
+              subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+              { mode: 0o600 },
+            );
+            return handle;
+          };
+        }
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const context = buildContext(root);
+    context.config = { ...context.config, quotaRotationWaitSec: 75 };
+
+    const result = await execute(context);
+
+    expect(result.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBeUndefined();
+    expect(JSON.stringify(result.sessionParams)).not.toContain("acct-before");
+    expect(JSON.stringify(result.sessionParams)).not.toContain("acct-after");
+    expect(JSON.stringify(result.sessionParams)).not.toContain("after-account");
+  });
+
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-resume-");
     const runtimes: FakeRuntime[] = [];
@@ -1203,6 +1495,186 @@ describe("codex_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+
+  it("keeps the Codex ACP session when the same subscription account refreshes tokens", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-same-credential-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-same", OLDER_REFRESH, "before-refresh"),
+      { mode: 0o600 },
+    );
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root));
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "after-refresh"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+
+  it("starts a fresh Codex ACP session when the subscription account changes", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-changed-credential-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root));
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+      context: {
+        issueId: "issue-1",
+        paperclipTaskMarkdown: "Credential-aware continuation context",
+        paperclipWorkspace: {
+          cwd: root,
+          source: "project_workspace",
+          workspaceId: "workspace-1",
+        },
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBeUndefined();
+    expect(runtimes[1]?.startInputs[0]?.text).toContain("Credential-aware continuation context");
+    expect(JSON.stringify(first.sessionParams)).not.toContain("acct-before");
+    expect(JSON.stringify(second.sessionParams)).not.toContain("acct-after");
+    expect(JSON.stringify(first.sessionParams)).not.toContain("before-account");
+    expect(JSON.stringify(second.sessionParams)).not.toContain("after-account");
+  });
+
+  it("ignores subscription identity when a local run authenticates with an API key", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-api-key-credential-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    process.env.OPENAI_API_KEY = "sk-api-key-auth";
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root));
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+
+  it("uses subscription identity when an empty adapter API key suppresses the host key", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-empty-api-key-");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-before", OLDER_REFRESH, "before-account"),
+      { mode: 0o600 },
+    );
+    process.env.OPENAI_API_KEY = "sk-suppressed-host-key";
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const buildSubscriptionContext = (
+      overrides: Partial<AdapterExecutionContext> = {},
+    ): AdapterExecutionContext => {
+      const context = buildContext(root, overrides);
+      return {
+        ...context,
+        config: {
+          ...context.config,
+          env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "" },
+        },
+      };
+    };
+
+    const first = await execute(buildSubscriptionContext());
+    await fs.writeFile(
+      path.join(codexHome, "auth.json"),
+      subscriptionAuthJson("acct-after", NEWER_REFRESH, "after-account"),
+      { mode: 0o600 },
+    );
+    const second = await execute(buildSubscriptionContext({
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+    }));
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBeUndefined();
   });
 });
 
