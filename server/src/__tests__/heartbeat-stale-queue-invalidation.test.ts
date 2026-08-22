@@ -4,12 +4,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  approvals,
   companies,
   costEvents,
   createDb,
   documentRevisions,
   documents,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issues,
@@ -1515,7 +1517,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
-  it("cancels queued continuation recovery when the continuation summary parks executor work for review", async () => {
+  it("cancels queued continuation recovery when the continuation summary parks executor work AND a real review posture (executionState.reviewRequest) still exists", async () => {
+    // Regression guard: the stale-summary text alone must never be
+    // sufficient. This case additionally carries a live executionState.reviewRequest,
+    // so cancellation with issue_continuation_waiting_on_review remains correct.
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -1525,6 +1530,18 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: { instructions: "Please review the diff before I continue." },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
     });
     await seedContinuationSummary({
       companyId,
@@ -1583,6 +1600,233 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_continuation_waiting_on_review" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("does not cancel queued continuation recovery on stale summary text when no real review posture exists", async () => {
+    // The continuation summary's "Next Action" says to wait for reviewer
+    // feedback (written while the issue was briefly in_review), but the issue
+    // has no live executionState.reviewRequest, no pending issue-thread
+    // interaction, and no open approval. The queued continuation must be
+    // allowed to run instead of being cancelled with
+    // issue_continuation_waiting_on_review. This must fail against unfixed
+    // master, which cancels here purely on the stale summary text.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale review text with no live reviewer",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await seedContinuationSummary({
+      companyId,
+      issueId,
+      agentId,
+      body: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: {
+        retryReason: "issue_continuation_needed",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded" || run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("does not cancel queued continuation recovery when the only open approval is unrelated to review of this issue's work (hire_agent)", async () => {
+    // An issue can be linked to an approval purely for provenance -- e.g. the
+    // agent working the issue also requested hiring a teammate, and the new
+    // hire approval was linked back to the source issue. That approval says
+    // nothing about whether this issue's own work is under review, so it must
+    // not gate this issue's continuation.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale review text with an unrelated pending hire_agent approval",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await seedContinuationSummary({
+      companyId,
+      issueId,
+      agentId,
+      body: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+
+    const [approval] = await db
+      .insert(approvals)
+      .values({
+        companyId,
+        type: "hire_agent",
+        requestedByAgentId: agentId,
+        status: "pending",
+        payload: { name: "New teammate" },
+      })
+      .returning();
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId,
+      approvalId: approval.id,
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: {
+        retryReason: "issue_continuation_needed",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded" || run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("cancels queued continuation recovery when a pending request_board_approval reviews this issue's own work", async () => {
+    // Unlike hire_agent, request_board_approval is raised while executing this
+    // issue's own high-risk tool action and blocks that same work until a
+    // human decides -- this is genuine live review posture and must continue
+    // to gate the continuation.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Implementation parked pending a high-risk tool approval",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await seedContinuationSummary({
+      companyId,
+      issueId,
+      agentId,
+      body: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+
+    const [approval] = await db
+      .insert(approvals)
+      .values({
+        companyId,
+        type: "request_board_approval",
+        requestedByAgentId: agentId,
+        status: "pending",
+        payload: { title: "Approve high-risk tool action" },
+      })
+      .returning();
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId,
+      approvalId: approval.id,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: {
+        retryReason: "issue_continuation_needed",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(wakeup?.status).toBe("skipped");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
