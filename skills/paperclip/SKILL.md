@@ -79,6 +79,28 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
+**Handing off to another agent.** When your next step needs a *different agent* to act — review a PR, apply a label, answer a question — do **not** set `blocked`. `blocked` is for first-class `blockedByIssueIds`; a self-declared block has no wake attached, so the issue stalls until a human notices. Create a review stage naming them instead, in a single request:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "in_review",
+  "executionPolicy": {
+    "stages": [
+      {
+        "type": "review",
+        "approvalsNeeded": 1,
+        "participants": [{ "type": "agent", "agentId": "<their-agent-id>" }]
+      }
+    ]
+  }
+}
+```
+
+Paperclip derives `executionState.currentParticipant`, reassigns the issue to that agent, and wakes them. No separate setup call is needed — send the policy and the status together. Resolve the agent id with `GET /api/companies/{companyId}/agents`.
+
+Once handed off you are no longer the current participant, so you cannot advance or cancel the stage yourself; the issue is theirs until they decide.
+
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
 If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint:
@@ -95,7 +117,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
-- If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
+- If blocked, move the issue to `blocked` with the unblock owner and exact action needed — unless that owner is another agent, in which case hand off to them instead (see **Handing off to another agent**).
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
 ### Generated Artifacts and Work Products
@@ -112,13 +134,13 @@ For technical upload instructions, read `references/artifacts.md`.
 
 **Bounded write retry.** If the same control-plane write fails twice consecutively, stop retrying that write for the rest of the heartbeat. Continue any useful work that does not depend on it, report the failed write in your final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Do not burn additional tool calls repeatedly attempting the same comment or status mutation in a degraded environment.
 
-If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
+If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act. If the actor who needs to act is another agent, hand off to them instead of blocking — a handoff wakes them, a block does not.
 
 Before ending any heartbeat, apply this final-disposition checklist:
 
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
-- `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an actually-scheduled issue monitor (non-null `monitorNextCheckAt`, not merely described in a comment) that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
-- `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
+- `in_review`: a real reviewer path exists, such as a typed execution participant (see **Handing off to another agent** above — this is the correct disposition when another agent must act next), board/user owner, linked approval, pending interaction, or an actually-scheduled issue monitor (non-null `monitorNextCheckAt`, not merely described in a comment) that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
+- `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve, or a named **non-agent** owner (a board user, or a third party outside this company) takes a concrete unblock action. If the owner you would name is an agent in this company, hand off to them instead — see **Handing off to another agent** above. `blocked` schedules no wake of its own: if nothing here resolves it, nobody is coming.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or a real scheduled monitor/recovery path (not a narrated one) that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
 
