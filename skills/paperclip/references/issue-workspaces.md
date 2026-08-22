@@ -1,6 +1,6 @@
 # Issue Workspace Runtime Controls
 
-Use this reference when an issue has an isolated execution workspace and you need to inspect or run that workspace's services, especially for QA/browser verification.
+Use this reference when an issue has an isolated execution workspace and you need to inspect or run that workspace's services (especially for QA/browser verification), or when you work with git branches inside an issue worktree.
 
 ## Discover the Workspace
 
@@ -19,6 +19,28 @@ Read `currentExecutionWorkspace`:
 - `runtimeServices[]` — current services, including `serviceName`, `status`, `healthStatus`, `url`, `port`, and `runtimeServiceId`
 
 If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
+
+## Branch Discipline in Issue Worktrees
+
+Git-worktree execution workspaces have a *recorded branch* (`branchName` above, also exported as `PAPERCLIP_WORKSPACE_BRANCH`). Paperclip validates that the worktree's `HEAD` is on the recorded branch at run start and at run finalization. Leaving the worktree parked on another branch fails workspace validation for every later run that shares the workspace — including other issues' runs.
+
+When you need to publish work to a different branch (for example a PR branch cherry-picked onto newer master), do one of these:
+
+- **Publish from a separate worktree.** Create a throwaway worktree for the publishing branch and leave the issue worktree untouched:
+
+  ```sh
+  git worktree add "$PAPERCLIP_RUN_SCRATCH_DIR/publish" -b <pr-branch> <base-ref>
+  # commit/cherry-pick/push from that directory, then:
+  git worktree remove "$PAPERCLIP_RUN_SCRATCH_DIR/publish"
+  ```
+
+- **Or restore the recorded branch before the run ends.** If you did switch branches in place, finish with:
+
+  ```sh
+  git checkout "$PAPERCLIP_WORKSPACE_BRANCH"
+  ```
+
+A clean worktree parked on a local branch ref is self-healing (Paperclip restores the recorded branch and posts an audit comment), but do not rely on that: restore deliberately so the workspace is coherent for the next run. Never leave the worktree dirty, mid-rebase/merge, or on a detached `HEAD` — those states cannot be auto-repaired and will stop the next run.
 
 ## Control Services
 
