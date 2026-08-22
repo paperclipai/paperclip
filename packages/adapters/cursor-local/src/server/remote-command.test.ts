@@ -44,6 +44,43 @@ printf '%s\\n' ok
 }
 
 describe("prepareCursorSandboxCommand", () => {
+  it("preserves the normalized runtime PATH when the input omits PATH", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-remote-command-path-"));
+    const systemHomeDir = path.join(root, "system-home");
+    const remoteWorkspace = path.join(root, "workspace");
+    await fs.mkdir(remoteWorkspace, { recursive: true });
+
+    try {
+      const result = await prepareCursorSandboxCommand({
+        runId: "run-remote-command-path",
+        target: {
+          kind: "remote",
+          transport: "sandbox",
+          shellCommand: "bash",
+          remoteCwd: remoteWorkspace,
+          runner: createLocalSandboxRunner(),
+          timeoutMs: 30_000,
+        },
+        command: "custom-agent",
+        cwd: remoteWorkspace,
+        env: {
+          HOME: systemHomeDir,
+        },
+        remoteSystemHomeDirHint: systemHomeDir,
+        timeoutSec: 30,
+        graceSec: 5,
+      });
+
+      expect(result.env.PATH?.split(":").slice(0, 2)).toEqual([
+        path.join(systemHomeDir, ".local", "bin"),
+        path.join(systemHomeDir, ".cursor", "bin"),
+      ]);
+      expect(result.env.PATH?.split(":")).toContain("/usr/bin");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("prefers the Cursor installer bin directory when the default agent entrypoint is installed there", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-remote-command-cursor-bin-"));
     const systemHomeDir = path.join(root, "system-home");
