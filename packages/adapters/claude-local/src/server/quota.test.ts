@@ -129,4 +129,39 @@ describe.skipIf(!supportsScriptPty)("executeClaudeCliShellProbe process groups",
     expect(result.dispatchedSignals[0]).toBe("SIGTERM");
     expect(result.dispatchedSignals).toContain("SIGKILL");
   });
+
+  it("terminates the probe immediately when the output goes over maxBuffer", async () => {
+    const temporaryDirectory = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-quota-probe-"),
+    );
+    temporaryDirectories.push(temporaryDirectory);
+    const pidFile = path.join(temporaryDirectory, "pids");
+
+    // The child floods stdout and then stays alive. Only an immediate termination
+    // can settle this probe, because the timeout is far away.
+    const command = [
+      `sh -c ${quoteForShell(`echo $$ >> ${quoteForShell(pidFile)}; exec sleep 30`)}`,
+      "|",
+      `sh -c ${quoteForShell(
+        `echo $$ >> ${quoteForShell(pidFile)}; exec script -q -e -f -c ${quoteForShell(
+          `echo $$ >> ${quoteForShell(pidFile)}; yes paperclip`,
+        )} /dev/null`,
+      )}`,
+    ].join(" ");
+
+    const startedAt = Date.now();
+    const execution = executeClaudeCliShellProbe(command, {
+      env: process.env,
+      timeoutMs: 30_000,
+      terminationGraceMs: 300,
+      maxBufferBytes: 1_024,
+    });
+    const pids = (await waitForLines(pidFile, 3)).map(Number);
+
+    await expect(execution).rejects.toMatchObject({
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    });
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    await expectProcessesGone(pids);
+  });
 });

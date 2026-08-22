@@ -1,4 +1,5 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -565,12 +566,42 @@ async function waitForClaudeCliProbeGroupsToExit(
   return alive;
 }
 
+async function terminateClaudeCliProbe(
+  child: ChildProcess,
+  terminationGraceMs: number,
+): Promise<void> {
+  const processGroupIds =
+    typeof child.pid === "number" && child.pid > 0
+      ? snapshotClaudeCliProbeProcessGroups(child.pid)
+      : [];
+  if (process.platform === "win32") {
+    signalClaudeCliProbeTarget(child, null, "SIGTERM");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, terminationGraceMs));
+    if (child.exitCode === null && child.signalCode === null) {
+      signalClaudeCliProbeTarget(child, null, "SIGKILL");
+    }
+    return;
+  }
+  // Stop nested pty groups before their parents so script(1) can reap
+  // the child instead of leaving a reparented zombie behind.
+  for (const processGroupId of processGroupIds) {
+    signalClaudeCliProbeTarget(child, processGroupId, "SIGTERM");
+    const stillAlive = await waitForClaudeCliProbeGroupsToExit(
+      [processGroupId],
+      terminationGraceMs,
+    );
+    if (stillAlive.length === 0) continue;
+    signalClaudeCliProbeTarget(child, processGroupId, "SIGKILL");
+    await waitForClaudeCliProbeGroupsToExit(stillAlive, 1_000);
+  }
+}
+
 export function executeClaudeCliShellProbe(
   command: string,
   options: ClaudeCliShellProbeOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    let timedOut = false;
+    let terminating = false;
     let settled = false;
     let outputExceededMaxBuffer = false;
     let stdout = "";
@@ -583,9 +614,35 @@ export function executeClaudeCliShellProbe(
     });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
+
+    // execFile kills the child as soon as the output goes over maxBuffer. Keep that
+    // contract: terminate the whole probe group now and fail with the maxBuffer code,
+    // instead of letting a noisy probe run on and surface as a timeout.
+    const terminateAndReject = (buildError: () => Error): void => {
+      if (terminating || settled) return;
+      terminating = true;
+      clearTimeout(timeout);
+      void (async () => {
+        await terminateClaudeCliProbe(
+          child,
+          options.terminationGraceMs ?? CLAUDE_CLI_PROBE_TERMINATION_GRACE_MS,
+        );
+        if (settled) return;
+        settled = true;
+        reject(buildError());
+      })();
+    };
+
+    const buildMaxBufferError = (): Error => {
+      const error = new Error("Claude CLI usage probe exceeded maxBuffer");
+      Object.assign(error, { stdout, stderr, code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+      return error;
+    };
+
     const appendOutput = (current: string, chunk: string): string => {
       if (Buffer.byteLength(current) + Buffer.byteLength(chunk) > maxBufferBytes) {
         outputExceededMaxBuffer = true;
+        terminateAndReject(buildMaxBufferError);
         return current;
       }
       return current + chunk;
@@ -598,54 +655,22 @@ export function executeClaudeCliShellProbe(
     });
 
     const timeout = setTimeout(() => {
-      timedOut = true;
-      void (async () => {
-        const processGroupIds =
-          typeof child.pid === "number" && child.pid > 0
-            ? snapshotClaudeCliProbeProcessGroups(child.pid)
-            : [];
-        const terminationGraceMs =
-          options.terminationGraceMs ?? CLAUDE_CLI_PROBE_TERMINATION_GRACE_MS;
-        if (process.platform === "win32") {
-          signalClaudeCliProbeTarget(child, null, "SIGTERM");
-          await new Promise((resolveDelay) => setTimeout(
-            resolveDelay,
-            terminationGraceMs,
-          ));
-          if (child.exitCode === null && child.signalCode === null) {
-            signalClaudeCliProbeTarget(child, null, "SIGKILL");
-          }
-        } else {
-          // Stop nested pty groups before their parents so script(1) can reap
-          // the child instead of leaving a reparented zombie behind.
-          for (const processGroupId of processGroupIds) {
-            signalClaudeCliProbeTarget(child, processGroupId, "SIGTERM");
-            const stillAlive = await waitForClaudeCliProbeGroupsToExit(
-              [processGroupId],
-              terminationGraceMs,
-            );
-            if (stillAlive.length === 0) continue;
-            signalClaudeCliProbeTarget(child, processGroupId, "SIGKILL");
-            await waitForClaudeCliProbeGroupsToExit(stillAlive, 1_000);
-          }
-        }
-        if (settled) return;
-        settled = true;
+      terminateAndReject(() => {
         const timeoutError = new Error(`Claude CLI usage probe timed out after ${options.timeoutMs}ms`);
         Object.assign(timeoutError, { stdout, stderr, code: "ETIMEDOUT" });
-        reject(timeoutError);
-      })();
+        return timeoutError;
+      });
     }, options.timeoutMs);
 
     child.once("error", (error) => {
       clearTimeout(timeout);
-      if (settled || timedOut) return;
+      if (settled || terminating) return;
       settled = true;
       reject(error);
     });
     child.once("close", (code, signal) => {
       clearTimeout(timeout);
-      if (settled || timedOut) return;
+      if (settled || terminating) return;
       settled = true;
       if (outputExceededMaxBuffer) {
         const error = new Error("Claude CLI usage probe exceeded maxBuffer");
