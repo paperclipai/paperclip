@@ -36,40 +36,45 @@ const PTY_INPUT_TEXT_ENCODER = new TextEncoder();
  * byte array into chunks of at most {@link PTY_INPUT_CHUNK_BYTES}, and calls
  * `sendInput` for each chunk in order.
  *
- * The loop is synchronous. `sendInput` reaches `ws.send` before its first `await`,
- * so a synchronous loop puts the chunks on the wire in order with no queue. The
- * function adds no `await` and no async queue, so the wire order matches the slice
- * order.
+ * The loop awaits each chunk before it sends the next chunk. The `await` keeps
+ * the wire order equal to the slice order, and it makes the chunk send fail-fast:
+ * after a chunk rejects, the function sends no further chunk of this payload. A
+ * synchronous loop could not fail-fast, because `sendInput` reaches `ws.send`
+ * before its first `await`, so a synchronous loop puts every chunk on the wire
+ * before the first rejection settles. The awaited loop learns the rejection
+ * before it sends the next chunk, so it stops.
  *
- * Each `sendInput` call carries the `onError` handler. The handler runs at most
- * one time, because the function latches the first rejected chunk. After a chunk
- * rejects, the function sends no further chunk of this payload. A rejected send
- * never throws out of this function, so the caller's stream stays the single
- * result path.
+ * The function does not overlap two calls for the same channel. The caller
+ * serializes its writes (for example, through a promise chain), so the awaited
+ * loop of one payload never interleaves its chunks with the chunks of the next
+ * payload.
+ *
+ * `onError` runs at most one time. The function reports the first rejected chunk
+ * and returns. A rejected send never throws out of this function, so the caller's
+ * stream stays the single result path.
  *
  * @param sendInput - Sends one raw byte chunk to the pseudo-terminal.
  * @param payload - The host-to-sandbox payload, as a string or raw bytes.
  * @param onError - Optional. The function calls it one time on the first rejected chunk.
  */
-export function sendPtyInputInChunks(
+export async function sendPtyInputInChunks(
   sendInput: (chunk: Uint8Array) => Promise<void>,
   payload: string | Uint8Array,
   onError?: () => void,
-): void {
+): Promise<void> {
   const bytes = typeof payload === "string" ? PTY_INPUT_TEXT_ENCODER.encode(payload) : payload;
-  let failed = false;
-  const handleRejection = (): void => {
-    // Report the first rejected chunk one time. A later chunk's rejection is a
-    // no-op, so the caller sees one write error for the whole payload.
-    if (failed) return;
-    failed = true;
-    onError?.();
-  };
   for (let offset = 0; offset < bytes.length; offset += PTY_INPUT_CHUNK_BYTES) {
-    // Stop sending the remaining chunks after a chunk rejects. The latch also
-    // guards a rejection that a fake `sendInput` settles before the loop advances.
-    if (failed) break;
     const chunk = bytes.subarray(offset, offset + PTY_INPUT_CHUNK_BYTES);
-    void sendInput(chunk).catch(handleRejection);
+    try {
+      // Await the send before the next chunk. The await keeps the wire order and
+      // lets the loop learn a rejection before it starts a later send.
+      await sendInput(chunk);
+    } catch {
+      // Report the first rejected chunk one time and stop. The function starts no
+      // later send for this payload, so the wire keeps the ordered, fail-fast
+      // behavior. The raw provider error never leaves this function.
+      onError?.();
+      return;
+    }
   }
 }

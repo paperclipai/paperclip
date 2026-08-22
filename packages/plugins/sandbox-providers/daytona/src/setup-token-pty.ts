@@ -153,6 +153,11 @@ export async function openDaytonaSetupTokenPtySession(
   // to the command, not to a shell.
   await handle.sendInput(`exec ${command}${PTY_COMMAND_TERMINATOR}`);
 
+  // The tail of the write chain. The chunker awaits each chunk, so one write can
+  // suspend between its chunks. The chain runs each write after the previous
+  // write ends, so the chunks of two writes never interleave on the wire.
+  let writeChain: Promise<void> = Promise.resolve();
+
   return {
     onData(next: (chunk: string) => void): void {
       listener = next;
@@ -165,9 +170,13 @@ export async function openDaytonaSetupTokenPtySession(
     write(data: string): void {
       // Send the input as byte-bounded chunks under the provider message cap. The
       // login input is short today, so the latent defect never fires, but the same
-      // unbounded write goes through the one chunker. A write error must not throw
-      // into the runner, so the runner's fixed status stays the single result path.
-      sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data);
+      // unbounded write goes through the one chunker. The chain runs this write
+      // after the previous write ends, so two writes keep their order and never
+      // interleave their chunks. A write error must not throw into the runner, so
+      // the runner's fixed status stays the single result path.
+      writeChain = writeChain.then(() =>
+        sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data),
+      );
     },
     async wait(): Promise<{ exitCode: number | null }> {
       const result = await handle.wait();

@@ -36,23 +36,23 @@ function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
 }
 
 describe("sendPtyInputInChunks", () => {
-  it("sends a payload below the cap as exactly one send", () => {
+  it("sends a payload below the cap as exactly one send", async () => {
     const recorder = createByteRecorder();
 
-    sendPtyInputInChunks(recorder.sendInput, "a small frame\n");
+    await sendPtyInputInChunks(recorder.sendInput, "a small frame\n");
 
     expect(recorder.chunks).toHaveLength(1);
     expect(recorder.chunks[0]?.length).toBeLessThanOrEqual(PTY_MESSAGE_CAP_BYTES);
   });
 
-  it("splits a payload above the cap into more than one send, each at or below the cap", () => {
+  it("splits a payload above the cap into more than one send, each at or below the cap", async () => {
     const recorder = createByteRecorder();
     // A fixed payload well above the provider message cap. It stays fixed, so a
     // raised chunk size above this size makes the payload one send and fails this
     // test.
     const payload = new Uint8Array(150_416).fill(65);
 
-    sendPtyInputInChunks(recorder.sendInput, payload);
+    await sendPtyInputInChunks(recorder.sendInput, payload);
 
     expect(recorder.chunks.length).toBeGreaterThan(1);
     for (const chunk of recorder.chunks) {
@@ -62,7 +62,7 @@ describe("sendPtyInputInChunks", () => {
     expect(concatChunks(recorder.chunks)).toEqual(payload);
   });
 
-  it("slices a multi-byte character across a boundary by bytes and rejoins it", () => {
+  it("slices a multi-byte character across a boundary by bytes and rejoins it", async () => {
     const recorder = createByteRecorder();
     // A fixed payload: one 1-byte "x", then the 3-byte character "€" repeated. It
     // stays fixed, so a raised chunk size above this size makes the payload one
@@ -74,7 +74,7 @@ describe("sendPtyInputInChunks", () => {
     const inputBytes = new TextEncoder().encode(text);
     expect(inputBytes.length).toBe(90_001);
 
-    sendPtyInputInChunks(recorder.sendInput, text);
+    await sendPtyInputInChunks(recorder.sendInput, text);
 
     expect(recorder.chunks.length).toBeGreaterThan(1);
     // The first chunk holds exactly the byte cap and ends inside a "€" sequence,
@@ -88,22 +88,51 @@ describe("sendPtyInputInChunks", () => {
     expect(new TextDecoder("utf-8").decode(joined)).toBe(text);
   });
 
-  it("reports the first rejected chunk one time", async () => {
+  it("resolves each send before it starts the next send", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const sendCount = { value: 0 };
+    // A `sendInput` that stays active across a microtask. The awaited loop starts
+    // the next send only after the previous send resolves, so at most one send is
+    // active at a time. A synchronous burst would start every send at once.
+    const sendInput = async (): Promise<void> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await Promise.resolve();
+      sendCount.value += 1;
+      active -= 1;
+    };
+    // Three chunks of the byte cap plus a short tail.
+    const payload = new Uint8Array(PTY_INPUT_CHUNK_BYTES * 3 + 10).fill(65);
+
+    await sendPtyInputInChunks(sendInput, payload);
+
+    expect(sendCount.value).toBe(4);
+    expect(maxActive).toBe(1);
+  });
+
+  it("stops sending later chunks after a chunk rejects", async () => {
     const chunks: Uint8Array[] = [];
     let errorCount = 0;
+    // A `sendInput` that records the chunk, then rejects on a later microtask. The
+    // rejection is asynchronous, so a synchronous burst could not stop the later
+    // sends. The awaited loop learns the rejection before the next send, so it
+    // sends one chunk only.
     const sendInput = async (chunk: Uint8Array): Promise<void> => {
       chunks.push(chunk);
+      await Promise.resolve();
       throw new Error("RAW-PROVIDER-BROKEN-PIPE");
     };
 
-    // A payload above the cap, so the chunker fires more than one chunk. Every
-    // chunk rejects, but the error handler runs one time.
-    sendPtyInputInChunks(sendInput, new Uint8Array(150_416).fill(65), () => {
+    // A payload above the cap, so the chunker would fire more than one chunk with
+    // no fail-fast. The loop stops after the first rejected chunk.
+    await sendPtyInputInChunks(sendInput, new Uint8Array(150_416).fill(65), () => {
       errorCount += 1;
     });
-    // Let the rejected sends settle.
-    await new Promise((resolve) => setImmediate(resolve));
 
+    // The loop sent one chunk, learned the rejection, and started no later send.
+    expect(chunks).toHaveLength(1);
+    // The error handler ran one time for the whole payload.
     expect(errorCount).toBe(1);
   });
 });

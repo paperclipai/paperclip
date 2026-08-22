@@ -274,6 +274,8 @@ describe("openDaytonaDuplexChannelSession", () => {
 
     // The launch wrapper is the first input; the host frame write is the second.
     session.write('{"version":1,"type":"heartbeat"}\n');
+    // The chunker awaits each send, so let the write settle before the assertion.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(process.handle?.inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
     // The fake terminal echoes nothing, so the write produces no data callback.
     // A real terminal in raw mode with echo off behaves the same way.
@@ -392,6 +394,8 @@ describe("openDaytonaDuplexChannelSession", () => {
     // test. The payload is ASCII, so the fake's per-send decode keeps each byte.
     const payload = "x".repeat(150_416);
     session.write(payload);
+    // The chunker awaits each send, so let the write settle before the assertion.
+    await new Promise((resolve) => setImmediate(resolve));
 
     const sends = handle.inputs.slice(before);
     expect(sends.length).toBeGreaterThan(1);
@@ -411,8 +415,49 @@ describe("openDaytonaDuplexChannelSession", () => {
     const before = handle.inputs.length;
 
     session.write('{"version":1,"type":"heartbeat"}\n');
+    // The chunker awaits each send, so let the write settle before the assertion.
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(handle.inputs.slice(before)).toHaveLength(1);
+  });
+
+  it("keeps two writes in order and never interleaves their chunks", async () => {
+    // A handle whose `sendInput` yields a microtask before it records the chunk.
+    // The yield opens a window where a second write could jump ahead. The session
+    // chains the writes, so the second write starts only after the first ends.
+    const inputs: string[] = [];
+    const handle: DaytonaPtyHandle = {
+      async waitForConnection(): Promise<void> {},
+      async sendInput(data: string | Uint8Array): Promise<void> {
+        await Promise.resolve();
+        inputs.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+      },
+      wait(): Promise<{ exitCode?: number; error?: string }> {
+        return new Promise(() => {});
+      },
+      async kill(): Promise<void> {},
+      async disconnect(): Promise<void> {},
+    };
+    const process: DaytonaPtyProcess = {
+      async createPty(): Promise<DaytonaPtyHandle> {
+        return handle;
+      },
+    };
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    // Two payloads above the cap, so each write is more than one chunk. "a" marks
+    // the first write and "b" marks the second write.
+    const first = "a".repeat(150_416);
+    const second = "b".repeat(150_416);
+
+    session.write(first);
+    session.write(second);
+    // Let both writes settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Drop the launch wrapper (the first input) and rejoin the chunks. The rejoin
+    // equals the first payload then the second payload, so no chunk of the second
+    // write lands between the chunks of the first write.
+    expect(inputs.slice(1).join("")).toBe(`${first}${second}`);
   });
 
   it("kills the child on stop and releases the socket on close", async () => {

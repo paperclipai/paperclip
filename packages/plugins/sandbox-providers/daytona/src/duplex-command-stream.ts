@@ -218,6 +218,13 @@ export async function openDaytonaDuplexChannelSession(
     void handle.kill().catch(() => undefined);
   };
 
+  // The tail of the write chain. The chunker awaits each chunk, so one write can
+  // suspend between its chunks. The chain runs each write after the previous
+  // write ends, so the chunks of two writes never interleave on the wire. The
+  // chain never rejects, because the chunker maps a rejected send to
+  // `endOnWriteError` and returns.
+  let writeChain: Promise<void> = Promise.resolve();
+
   return {
     onData(next: (chunk: string) => void): void {
       listener = next;
@@ -230,12 +237,16 @@ export async function openDaytonaDuplexChannelSession(
     write(data: string): void {
       // Send the input as byte-bounded chunks under the provider message cap. A
       // whole payload in one message can cross the cap and take the channel down,
-      // so the chunker slices the payload and sends each chunk in order. A write
-      // error must not throw into the transport, so the transport's stream stays
-      // the single result path. On a rejected chunk, the chunker ends the channel
-      // one time through `endOnWriteError` and sends no later chunk. The raw
-      // provider error never reaches a sink.
-      sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data, endOnWriteError);
+      // so the chunker slices the payload and sends each chunk in order. The chain
+      // runs this write after the previous write ends, so two writes keep their
+      // order and never interleave their chunks. A write error must not throw into
+      // the transport, so the transport's stream stays the single result path. On
+      // a rejected chunk, the chunker ends the channel one time through
+      // `endOnWriteError` and sends no later chunk. The raw provider error never
+      // reaches a sink.
+      writeChain = writeChain.then(() =>
+        sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data, endOnWriteError),
+      );
     },
     async wait(): Promise<{ exitCode: number | null; transportClosed: boolean }> {
       const result = await handle.wait();
