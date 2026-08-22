@@ -4,9 +4,9 @@ FROM paperclipai/agent-runtime-base:${BASE_TAG}
 
 USER root
 # pi is the multi-provider Pi coding-agent router. Verified npm package:
-# @mariozechner/pi-coding-agent (binary 'pi' → dist/cli.js). Same package
+# @earendil-works/pi-coding-agent (binary 'pi' → dist/cli.js). Same package
 # is used by SANDBOX_INSTALL_COMMAND in pi-local/src/index.ts.
-RUN npm install -g @mariozechner/pi-coding-agent@latest \
+RUN npm install -g @earendil-works/pi-coding-agent@latest \
     && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000

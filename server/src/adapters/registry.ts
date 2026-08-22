@@ -499,7 +499,7 @@ const piLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
+    buildNpmRuntimeCommandSpec(config, "pi", "@earendil-works/pi-coding-agent"),
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
