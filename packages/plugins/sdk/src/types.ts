@@ -39,6 +39,7 @@ import type {
   PluginManagedSkillResolution,
   CompanySkill,
   Routine,
+  RoutineListItem,
   RoutineRun,
   Agent,
   Goal,
@@ -74,6 +75,7 @@ export type {
   PluginManagedSkillResolution,
   CompanySkill,
   Routine,
+  RoutineListItem,
   RoutineRun,
   PluginLocalFolderDeclaration,
   PluginCompanySettings,
@@ -897,11 +899,29 @@ export interface PluginExecutionWorkspacesClient {
 }
 
 /**
- * `ctx.routines` — resolve and reconcile plugin-managed Paperclip routines.
+ * `ctx.routines` — read company routines, and resolve/reconcile plugin-managed
+ * Paperclip routines.
  *
- * Requires `routines.managed` capability.
+ * Reads require the `routines.read` capability; `managed.*` requires
+ * `routines.managed`.
  */
 export interface PluginRoutinesClient {
+  /**
+   * List the company's routines (any origin, not just plugin-managed), each
+   * enriched with its triggers, latest run summary, and active issue — the
+   * same shape the REST routine list returns. Requires `routines.read`.
+   */
+  list(input: {
+    companyId: string;
+    projectId?: string | null;
+    limit?: number;
+    offset?: number;
+  }): Promise<RoutineListItem[]>;
+  /**
+   * Fetch one routine by id, company-scoped (null when the routine does not
+   * exist or belongs to another company). Requires `routines.read`.
+   */
+  get(routineId: string, companyId: string): Promise<Routine | null>;
   managed: {
     get(routineKey: string, companyId: string): Promise<PluginManagedRoutineResolution>;
     reconcile(
