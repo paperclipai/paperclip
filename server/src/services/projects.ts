@@ -32,6 +32,8 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { ensureLocalPathGitWorkspaceInitialized } from "./git-workspace-utils.js";
+import { logger } from "../middleware/logger.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -921,6 +923,26 @@ export function projectService(db: Db) {
         cwd,
         repoUrl,
       });
+
+      if (sourceType === "local_path" && cwd) {
+        const result = await ensureLocalPathGitWorkspaceInitialized(cwd);
+        if (result.outcome === "failed") {
+          logger.warn(
+            { projectId, cwd, error: result.error },
+            "failed to git-init local_path project workspace directory; continuing without git metadata",
+          );
+        } else {
+          if (result.outcome === "initialized") {
+            logger.info({ projectId, cwd }, "git-initialized local_path project workspace directory");
+          }
+          if (result.safeDirectoryWarning) {
+            logger.warn(
+              { projectId, cwd, error: result.safeDirectoryWarning },
+              "failed to register local_path project workspace directory as a git safe.directory; git commands against it may later fail with a dubious ownership error",
+            );
+          }
+        }
+      }
 
       const existing = await db
         .select()
