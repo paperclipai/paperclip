@@ -255,8 +255,8 @@ describe("CommentThread", () => {
     expect(container.textContent).not.toContain("Re-open");
 
     const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
-    const submitButton = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent === "Comment",
+    const submitButton = container.querySelector(
+      '[data-testid="comment-thread-send-button"]',
     ) as HTMLButtonElement | undefined;
     expect(editor).not.toBeNull();
     expect(submitButton).toBeDefined();
