@@ -168,6 +168,36 @@ export interface AdapterRuntimeEvent {
   payload?: Record<string, unknown>;
 }
 
+/**
+ * Whether a spawned run's stdout/stderr are piped directly into this server
+ * process. `"server_stdio"` means the process's only output channel is a
+ * socketpair/pipe peer inside this server, so the process cannot outlive a
+ * server restart without being drained first. `"detached"` means the output
+ * is genuinely independent of this process (today: none of the local
+ * producers set this; a future file-backed local run or a remote/sandbox
+ * transport will).
+ */
+export type AdapterProcessTopology = "server_stdio" | "detached";
+
+/** Which execution engine actually drove this run: the ACP protocol, or a plain CLI process. */
+export type AdapterExecutionEngine = "acp" | "cli";
+
+export interface AdapterProcessSpawnMeta {
+  pid: number;
+  processGroupId: number | null;
+  startedAt: string;
+  /**
+   * Producer-derived, not adapter-name-derived. Set by whatever actually
+   * spawned the process (`runChildProcess` for local CLI processes, the ACPX
+   * engine for ACP runs) from the real stdio wiring / engine used, never from
+   * an `adapterType` allowlist. Optional so an intermediate caller that only
+   * forwards `pid`/`processGroupId`/`startedAt` (e.g. a warm-handle reuse
+   * announcement) keeps compiling.
+   */
+  processTopology?: AdapterProcessTopology;
+  executionEngine?: AdapterExecutionEngine;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -188,7 +218,7 @@ export interface AdapterExecutionContext {
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: AdapterProcessSpawnMeta) => Promise<void>;
   authToken?: string;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root

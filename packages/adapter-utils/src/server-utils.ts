@@ -11,6 +11,7 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
+  AdapterProcessSpawnMeta,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
@@ -3296,7 +3297,7 @@ export async function runChildProcess(
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
-    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+    onSpawn?: (meta: AdapterProcessSpawnMeta) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
@@ -3339,19 +3340,37 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
+        const stdio: ["pipe" | "ignore", "pipe", "pipe"] = [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"];
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio,
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
+        // Derived from the stdio spec actually passed to `spawn()`, never from
+        // `command`/adapter identity. Every local child spawned here has its
+        // stdout/stderr wired to a pipe whose peer lives in this server
+        // process, so its only output channel dies with the server: that is
+        // "server_stdio". A future file-backed local run (AGE-656) will pass a
+        // file-descriptor/path stdio spec instead and derive "detached" here.
+        const processTopology: "server_stdio" | "detached" =
+          stdio[1] === "pipe" && stdio[2] === "pipe" ? "server_stdio" : "detached";
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
-            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
+            ? opts.onSpawn({
+              pid: child.pid,
+              processGroupId,
+              startedAt,
+              processTopology,
+              // `runChildProcess` spawns a plain CLI process directly; the ACP
+              // engine never routes a spawn through here, it announces its own
+              // process identity via the ACPX runtime's `onAgentSpawn` hook.
+              executionEngine: "cli",
+            }).catch((err) => {
               onLogError(err, runId, "failed to record child process metadata");
             })
             : Promise.resolve();
