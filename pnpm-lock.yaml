@@ -392,8 +392,8 @@ importers:
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.3)
       googleapis:
-        specifier: ^174.0.1
-        version: 174.0.1
+        specifier: ^175.0.0
+        version: 175.0.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -5449,6 +5449,9 @@ packages:
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
+  '@types/node@24.13.3':
+    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
   '@types/node@25.2.3':
     resolution: {integrity: sha512-m0jEgYlYz+mDJZ2+F4v8D1AyQb+QzsNqRuI7xg1VQX/KlKS0qT9r1Mo16yo5F/MtifXFgaofIFsdFMox2SxIbQ==}
 
@@ -6920,8 +6923,8 @@ packages:
     resolution: {integrity: sha512-7g1yzQKx0mmNTjiK0H9dJ8eqKqDBveES9vLHeg5neb3BMQy/d1oQefIMhIpOVT8a+f+LOcixMEdRbFIW/cQUJw==}
     engines: {node: '>=18'}
 
-  googleapis@174.0.1:
-    resolution: {integrity: sha512-51B9r4WnyAyUXvsDhDswpSVZbqx3afSBEzrzshxBivysBKsB6kJ+X5CVOybRV/R3HIURiR01uHXLGkEm7On3dA==}
+  googleapis@175.0.0:
+    resolution: {integrity: sha512-7lZeP5w6lfoX/0AxFMH5J4FdxrQXEzjeKUtcVbrRBqo1T5raQsNaPhCjp7AI1lxu03f8o08p8JrM9oG6ns1hmg==}
     engines: {node: '>=18'}
 
   gopd@1.2.0:
@@ -13373,6 +13376,10 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
+  '@types/node@24.13.3':
+    dependencies:
+      undici-types: 7.18.2
+
   '@types/node@25.2.3':
     dependencies:
       undici-types: 7.16.0
@@ -14967,7 +14974,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  googleapis@174.0.1:
+  googleapis@175.0.0:
     dependencies:
       google-auth-library: 10.5.0
       googleapis-common: 8.0.3
