@@ -76,6 +76,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
     enableApps: false,
+    enableOffice3D: false,
+    office3dUrl: null,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,

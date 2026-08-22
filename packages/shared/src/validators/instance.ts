@@ -48,6 +48,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableApps: z.boolean().default(false),
+  enableOffice3D: z.boolean().default(false),
+  office3dUrl: z.string().url().nullable().default(null),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),

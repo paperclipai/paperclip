@@ -54,6 +54,10 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
   enableApps: boolean;
+  /** Reveal the 2.5D⇄3D toggle on Org → Office (embeds the CLAW3D 3D office). */
+  enableOffice3D: boolean;
+  /** URL of the running CLAW3D instance to embed when enableOffice3D is on. */
+  office3dUrl: string | null;
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;

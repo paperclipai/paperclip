@@ -240,6 +240,8 @@
   --motion-status-enter: var(--motion-duration-fast);
   --motion-status-exit: var(--motion-duration-fast);
   --motion-approval-pulse: 1.6s;
+  --motion-live-pulse: 2s;              /* gentle "live" beacon ring (Org/Office) */
+  --motion-live-beam: 1.4s;            /* one signal-travel pass along a connection */
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
   --motion-count-tween: var(--motion-duration-slow);
@@ -561,6 +563,8 @@
     --motion-duration-deliberate: 0ms;
     --motion-cot-line-stagger: 0ms;
     --motion-approval-pulse: 0ms;
+    --motion-live-pulse: 0ms;
+    --motion-live-beam: 0ms;
     --motion-plan-entry-stagger: 0ms;
     --motion-streaming-cursor-blink: 0ms;
     --motion-turn-fold: 0ms;
@@ -704,6 +708,26 @@
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
 
+/* ────────────────────────────────────────────────────────────────────────
+   Org / Office live activity: "gentle pulse when live" + "beams of light"
+   when agents talk (delegation / @mention) or sync. Reduced-motion fallbacks
+   are added to the blocks below.
+   ──────────────────────────────────────────────────────────────────────── */
+@keyframes live-pulse-ring {
+  0% { transform: scale(1); opacity: 0.5; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+@keyframes live-beam-travel {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}
+.live-ping { animation: live-pulse-ring var(--motion-live-pulse) var(--motion-ease-out) infinite; }
+.live-beam {
+  stroke-dasharray: 18 82;
+  animation: live-beam-travel var(--motion-live-beam) linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tc-enter-bubble,
   .tc-enter-marker,
@@ -723,6 +747,10 @@
   .tc-scroll-pill-out { transform: translate(-50%, 0); }
   .tc-approval { animation: none; box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 18%, transparent); }
   .tc-cursor { animation: none; opacity: 1; }
+  /* Live pulse ring hides; the solid status dot still conveys "live". Beams
+     render as a faint static line for their brief lifetime. */
+  .live-ping { animation: none; opacity: 0; }
+  .live-beam { animation: none; stroke-dasharray: none; opacity: 0.4; }
 }
 
 /* Expandable dialog transition for max-width changes */

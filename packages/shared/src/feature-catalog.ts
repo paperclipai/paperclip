@@ -81,6 +81,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableOffice3D: {
+    title: "3D Office",
+    description:
+      "Reveal a 2.5D⇄3D toggle on the Org → Office view that embeds the CLAW3D 3D office. Requires office3dUrl to point at a running CLAW3D instance.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enablePipelines: {
     title: "Pipelines",
     description: "Enable pipeline definitions and pipeline-driven case production surfaces.",
