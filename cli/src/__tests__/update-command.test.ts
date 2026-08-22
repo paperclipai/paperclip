@@ -10,7 +10,7 @@ let root: string;
 let previousHome: string | undefined;
 let previousPaperclipHome: string | undefined;
 
-function record(payloadPath: string, version: string, channel: "latest" | "canary" | "pinned" = "latest"): InstallRecord {
+function record(payloadPath: string, version: string, channel: "latest" | "beta" | "nightly" | "canary" | "pinned" = "latest"): InstallRecord {
   return { source: "npm", version, channel, payloadPath, installedAt: `2026-07-22T00:00:0${version}.000Z` };
 }
 function createPayload(payloadPath: string, version: string): string {
@@ -54,11 +54,16 @@ describe("update command", () => {
     expect(detectInstallMode(path.join(source, "cli", "src", "index.ts"), paths)).toBe("source");
   });
 
-  it("resolves channels and keeps pinned installs pinned by default", () => {
+  it("resolves every channel and preserves the recorded channel by default", () => {
     const manifest = { channel: "pinned", version: "1.2.3" } as InstallManifest;
     expect(resolveUpdateRequest(manifest, {})).toEqual({ spec: "1.2.3", channel: "pinned", explicit: false });
     expect(resolveUpdateRequest(manifest, { latest: true })).toEqual({ spec: "latest", channel: "latest", explicit: true });
-    expect(() => resolveUpdateRequest(manifest, { latest: true, canary: true })).toThrow("only one");
+    expect(resolveUpdateRequest(manifest, { beta: true })).toEqual({ spec: "beta", channel: "beta", explicit: true });
+    expect(resolveUpdateRequest(manifest, { nightly: true })).toEqual({ spec: "nightly", channel: "nightly", explicit: true });
+    expect(resolveUpdateRequest(manifest, { canary: true })).toEqual({ spec: "canary", channel: "canary", explicit: true });
+    expect(resolveUpdateRequest({ ...manifest, channel: "beta" }, {})).toEqual({ spec: "beta", channel: "beta", explicit: false });
+    expect(resolveUpdateRequest({ ...manifest, channel: "nightly" }, {})).toEqual({ spec: "nightly", channel: "nightly", explicit: false });
+    expect(() => resolveUpdateRequest(manifest, { latest: true, beta: true })).toThrow("only one");
   });
 
   it("re-resolves a moving git branch and activates the new SHA payload", async () => {

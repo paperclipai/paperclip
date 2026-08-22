@@ -80,6 +80,8 @@ program
   .alias("upgrade")
   .description("Check, update, or roll back the Paperclip CLI")
   .option("--latest", "Switch to the latest stable channel")
+  .option("--beta", "Switch to the beta channel")
+  .option("--nightly", "Switch to the nightly channel")
   .option("--canary", "Switch to the canary channel")
   .option("--version <version>", "Install an exact published version")
   .option("--rollback", "Flip back to the retained previous managed payload")

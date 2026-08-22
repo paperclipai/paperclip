@@ -176,9 +176,15 @@ Select a different release source explicitly:
 
 ```sh
 paperclipai update --latest
+paperclipai update --beta
+paperclipai update --nightly
 paperclipai update --canary
 paperclipai update --version 2026.720.0
 ```
+
+`--latest`, `--beta`, `--nightly`, and `--canary` follow the corresponding npm
+dist-tag. A later `paperclipai update` with no channel flag stays on the channel
+recorded in the install manifest. `--version` pins that exact version instead.
 
 Managed updates create a database backup before switching payloads, verify the
 new CLI, atomically flip `current`, and restart an installed service. A failed

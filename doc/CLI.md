@@ -166,7 +166,7 @@ paperclipai install --canary
 paperclipai install --version <version>
 paperclipai install --ref <branch|tag|sha> [--repo owner/repo]
 paperclipai update
-paperclipai update --latest|--canary|--version <version>
+paperclipai update --latest|--beta|--nightly|--canary|--version <version>
 paperclipai update --rollback
 paperclipai upgrade
 paperclipai uninstall
