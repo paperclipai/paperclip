@@ -58,6 +58,7 @@ import {
 import {
   assertNestedDuplexBrokerBudgets,
   createDuplexBridgeBroker,
+  DUPLEX_CHANNEL_LOST_ERROR_CODE,
   type DuplexBrokerForwardResult,
   type DuplexBrokerLossRecord,
   type DuplexBrokerRequestRecord,
@@ -5863,5 +5864,178 @@ describe("sandbox target spec parse: enableSandboxDuplexBridge", () => {
     const localTarget = parseAdapterExecutionTarget({ kind: "local", environmentId: "env-1", leaseId: "lease-1" });
     expect(adapterExecutionTargetEnablesSandboxDuplexBridge(localTarget)).toBe(false);
     expect(adapterExecutionTargetEnablesSandboxDuplexBridge(null)).toBe(false);
+  });
+});
+
+describe("settleRunDisposition atomic read and mark", () => {
+  it("marks the orderly completion and reports a success for a healthy channel", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+    });
+    broker.start();
+
+    // The one atomic step marks the orderly completion and reads the success.
+    expect(broker.settleRunDisposition()).toEqual({ failed: false, lossReason: null });
+    // A later teardown loss orders after the mark, so it stays a normal teardown.
+    fake.emitExit({ exitCode: 0 });
+    await flushMacrotasks();
+    expect(broker.runDisposition).toEqual({ failed: false, lossReason: null });
+  });
+
+  it("reports the failure and does not mark for a latched loss", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+    });
+    broker.start();
+
+    // A loss ordered before any orderly completion latches the failure.
+    fake.emitExit({ exitCode: 1 });
+    await flushMacrotasks();
+    // The atomic step reads the failure and no-ops the mark, so a later
+    // completion cannot clear the latch.
+    expect(broker.settleRunDisposition()).toEqual({ failed: true, lossReason: "provider_exit" });
+    broker.markOrderlyCompletion();
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
+  });
+});
+
+describe("CLI-lane run-disposition seam", () => {
+  const CLEAN_RESULT = {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: "ok\n",
+    stderr: "",
+    pid: null,
+    startedAt: "2026-08-22T00:00:00.000Z",
+  } as const;
+
+  function mockRunner(result: Record<string, unknown>) {
+    return { execute: vi.fn(async () => result) };
+  }
+
+  function sandboxTarget(runner: unknown): AdapterSandboxExecutionTarget {
+    return {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: "/workspace",
+      timeoutMs: 30_000,
+      runner,
+    } as AdapterSandboxExecutionTarget;
+  }
+
+  function startBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+    });
+    broker.start();
+    return broker;
+  }
+
+  it("fails a clean CLI completion closed when the duplex channel was lost mid-turn", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = startBroker(fake);
+    // The control channel dies mid-turn, before the CLI process exits.
+    fake.emitExit({ exitCode: 1 });
+    await flushMacrotasks();
+
+    const runner = mockRunner({ ...CLEAN_RESULT });
+    const result = await runAdapterExecutionTargetProcess("run-cli-lost", sandboxTarget(runner), "agent-cli", [], {
+      cwd: "/local",
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+      runDisposition: () => broker.runDisposition,
+    });
+
+    // The lost channel overrides the clean exit to a failure with the typed code.
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe(DUPLEX_CHANNEL_LOST_ERROR_CODE);
+    // The note names only the typed loss reason, not raw provider text.
+    expect(result.stderr).toContain("provider_exit");
+  });
+
+  it("keeps a clean CLI completion a success when the channel stays healthy, and a teardown loss stays benign", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = startBroker(fake);
+
+    const runner = mockRunner({ ...CLEAN_RESULT });
+    const result = await runAdapterExecutionTargetProcess("run-cli-ok", sandboxTarget(runner), "agent-cli", [], {
+      cwd: "/local",
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+      runDisposition: () => broker.runDisposition,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode ?? null).toBeNull();
+    // The gateway close frame marks the orderly completion at agent completion.
+    // A teardown loss ordered after it is a normal teardown, so the run stays a
+    // success.
+    broker.markOrderlyCompletion();
+    fake.emitExit({ exitCode: 0 });
+    await flushMacrotasks();
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
+  it("cannot clear the loss latch with a later completion", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = startBroker(fake);
+    // The loss latches before the CLI process exits.
+    fake.emitExit({ exitCode: 1 });
+    await flushMacrotasks();
+    // A later orderly completion cannot clear the latch.
+    broker.markOrderlyCompletion();
+
+    const runner = mockRunner({ ...CLEAN_RESULT });
+    const result = await runAdapterExecutionTargetProcess("run-cli-latch", sandboxTarget(runner), "agent-cli", [], {
+      cwd: "/local",
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+      runDisposition: () => broker.runDisposition,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe(DUPLEX_CHANNEL_LOST_ERROR_CODE);
+  });
+
+  it("leaves an already-failed CLI result unchanged and never reads the disposition", async () => {
+    const fake = createFakeDuplexChannel();
+    const broker = startBroker(fake);
+    // The control channel is lost, but the process itself also exited non-zero.
+    fake.emitExit({ exitCode: 1 });
+    await flushMacrotasks();
+
+    let reads = 0;
+    const runner = mockRunner({ ...CLEAN_RESULT, exitCode: 2, stderr: "boom\n" });
+    const result = await runAdapterExecutionTargetProcess("run-cli-failed", sandboxTarget(runner), "agent-cli", [], {
+      cwd: "/local",
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+      runDisposition: () => {
+        reads += 1;
+        return broker.runDisposition;
+      },
+    });
+
+    // A non-zero exit is already a failure, so the seam leaves it unchanged and
+    // reports no transport-level code. This is the same success-eligibility rule
+    // the ACP lane applies.
+    expect(result.exitCode).toBe(2);
+    expect(result.errorCode ?? null).toBeNull();
+    expect(reads).toBe(0);
   });
 });

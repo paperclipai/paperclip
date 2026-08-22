@@ -5770,6 +5770,7 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     });
     broker.start();
     const markOrderlyCompletion = vi.fn(() => broker.markOrderlyCompletion());
+    const settleRunDisposition = vi.fn(() => broker.settleRunDisposition());
     const stop = vi.fn(async () => {});
     const handle = {
       env: {
@@ -5778,10 +5779,11 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
         PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
       },
       readRunDisposition: () => broker.runDisposition,
+      settleRunDisposition,
       markOrderlyCompletion,
       stop,
     };
-    return { broker, handle, markOrderlyCompletion };
+    return { broker, handle, markOrderlyCompletion, settleRunDisposition };
   }
 
   // A runtime whose one turn completes cleanly. The `beforeResult` hook runs at
@@ -5801,6 +5803,31 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
         result: (async () => {
           beforeResult?.();
           return { status: "completed" as const, stopReason: "end_turn" };
+        })(),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
+  // A runtime whose one turn fails. The `beforeResult` hook runs at the exact
+  // point the ACP terminal resolves, so the test orders channel activity before
+  // the failed finalization when it needs to.
+  function runtimeWithFailedResult(beforeResult?: () => void) {
+    return {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: (async () => {
+          beforeResult?.();
+          return { status: "failed" as const, error: new Error("agent failed") };
         })(),
         cancel: async () => {},
       }),
@@ -5864,7 +5891,7 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
   it("fails a completed run when the duplex channel was lost before the completion", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeDuplexChannel();
-    const { handle, markOrderlyCompletion } = bridgeOverBroker(fake);
+    const { broker, handle, settleRunDisposition } = bridgeOverBroker(fake);
     // Latch the loss before the ACP terminal resolves.
     const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
 
@@ -5876,14 +5903,16 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     // The message carries only the typed loss reason, not raw provider text.
     expect(result.errorMessage).toContain("provider_exit");
     expect(result.resultJson).toMatchObject({ status: "failed" });
-    // The seam did not mark an orderly completion for a lost channel.
-    expect(markOrderlyCompletion).not.toHaveBeenCalled();
+    // The seam read the disposition through the atomic settle step, and the
+    // latched loss kept the failure, so no orderly completion ordered.
+    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
+    expect(broker.runDisposition.failed).toBe(true);
   });
 
   it("keeps a completed run a success when the channel stays live, and a later teardown loss is benign", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeDuplexChannel();
-    const { broker, handle, markOrderlyCompletion } = bridgeOverBroker(fake);
+    const { broker, handle, settleRunDisposition } = bridgeOverBroker(fake);
     // No loss before the completion.
     const runtime = runtimeWithControlledResult();
 
@@ -5891,8 +5920,9 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode ?? null).toBeNull();
-    // The seam marked the orderly completion for the success-eligible terminal.
-    expect(markOrderlyCompletion).toHaveBeenCalledTimes(1);
+    // The atomic settle step marked the orderly completion for the
+    // success-eligible terminal.
+    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
     // A teardown loss ordered after the orderly completion is a normal teardown,
     // so the run disposition stays a success.
     fake.emitExit({ exitCode: 0 });
@@ -5916,5 +5946,24 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     fake.emitExit({ exitCode: 0 });
     expect(broker.runDisposition.failed).toBe(true);
     expect(broker.runDisposition.lossReason).toBe("provider_exit");
+  });
+
+  it("marks an orderly completion on a failed terminal so the teardown loss emits no false loss", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeDuplexChannel();
+    const { broker, handle, markOrderlyCompletion } = bridgeOverBroker(fake);
+    // The turn fails, and no channel loss ordered before the finalization.
+    const runtime = runtimeWithFailedResult();
+
+    const result = await runRemote(handle, runtime, sandbox);
+
+    // The failed terminal stays a failure, but not a duplex loss.
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).not.toBe("duplex_channel_lost");
+    // The non-success-eligible terminal marked the orderly completion, so the
+    // teardown channel_exit orders after the mark and does not latch a loss.
+    expect(markOrderlyCompletion).toHaveBeenCalledTimes(1);
+    fake.emitExit({ exitCode: 0 });
+    expect(broker.runDisposition.failed).toBe(false);
   });
 });

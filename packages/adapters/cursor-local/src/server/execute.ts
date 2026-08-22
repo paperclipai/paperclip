@@ -651,6 +651,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await flushStdoutChunk(chunk);
       },
       runLogTail: paperclipBridge?.runLogTail,
+      runDisposition: paperclipBridge?.readRunDisposition,
     });
     await flushStdoutChunk("", true);
 
@@ -670,6 +671,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: boolean;
         stdout: string;
         stderr: string;
+        errorCode?: string | null;
       };
       parsed: ReturnType<typeof parseCursorJsonl>;
     },
@@ -715,6 +717,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      // Forward the transport-level error code from the run-disposition seam. A
+      // lost duplex control channel surfaces the typed `duplex_channel_lost`
+      // code; every other result carries no code here.
+      errorCode: attempt.proc.errorCode ?? null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

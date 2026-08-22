@@ -97,6 +97,13 @@ export function typedDuplexLossReason(reason: DuplexBrokerLossReason): DuplexLos
 }
 
 /**
+ * The typed error code the host reports when the duplex control channel died
+ * before an orderly completion. Both the ACP lane and the CLI lane report this
+ * one code, so the run disposition is identical across the two lanes.
+ */
+export const DUPLEX_CHANNEL_LOST_ERROR_CODE = "duplex_channel_lost";
+
+/**
  * The terminal run disposition the broker computes from its ordered lifecycle. A
  * `failed` disposition means a terminal loss ordered before an orderly completion,
  * so the run must not report success. The typed loss reason names the cause; it is
@@ -259,6 +266,15 @@ export interface DuplexBridgeBroker {
    * and on a host-initiated orderly close. Safe to call more than one time.
    */
   markOrderlyCompletion(): void;
+  /**
+   * Atomically read the run disposition and mark the host-observed orderly
+   * completion in one synchronous step. The host calls it at the run-disposition
+   * seam for a success-eligible terminal. The broker marks the orderly completion
+   * only while no loss ordered, then returns the disposition, so no caller can
+   * insert an `await` between the read and the mark. A loss that already latched
+   * keeps the failure, because the mark no-ops after a latched loss.
+   */
+  settleRunDisposition(): DuplexBrokerRunDisposition;
   /** Start the broker. It wires the channel listeners and moves to `open`. */
   start(): void;
   /** Close the channel cleanly. It moves through `closing` to `closed`. */
@@ -395,6 +411,14 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   const markOrderlyCompletion = (): void => {
     if (orderlyCompletionSeq !== null || lossSeq !== null) return;
     orderlyCompletionSeq = nextLifecycleSeq();
+  };
+  // Atomically read the run disposition and mark the host-observed orderly
+  // completion. The mark and the read run in one synchronous step, so no caller
+  // can insert an `await` between them and no teardown loss can slip in. The mark
+  // no-ops once a loss latched, so a real mid-run loss keeps the failure.
+  const settleRunDisposition = (): DuplexBrokerRunDisposition => {
+    markOrderlyCompletion();
+    return { failed: lossSeq !== null, lossReason: typedLossReason };
   };
   // The ids the broker already dispatched. The broker forwards one id one time,
   // so a repeated frame never reaches the API twice.
@@ -873,6 +897,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       return { failed: lossSeq !== null, lossReason: typedLossReason };
     },
     markOrderlyCompletion,
+    settleRunDisposition,
     start,
     close,
     stop,
