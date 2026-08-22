@@ -2676,6 +2676,89 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description?.endsWith("—")).toBe(true);
     expect(result?.descriptionTruncated).toBe(true);
   });
+
+  it("checkout writes the issue id into the heartbeat run contextSnapshot", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "CheckoutCoder" }));
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout context snapshot",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo"], checkoutRunId);
+    expect(result).toBeTruthy();
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, checkoutRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+    });
+  });
+
+  it("checkout does not lock the issue when the heartbeat run belongs to another agent", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(agents).values([
+      agentRow(companyId, { id: agentId, name: "CheckoutCoder" }),
+      agentRow(companyId, { id: otherAgentId, name: "OtherCheckoutCoder" }),
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout run owned by another agent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], checkoutRunId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const issue = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue?.status).toBe("todo");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
+  });
 });
 
 describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
