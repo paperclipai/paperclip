@@ -11,9 +11,16 @@ else
   export PATH="/Users/glad0s/.grok/bin:/Users/glad0s/.local/bin:/Applications/Codex.app/Contents/Resources:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 fi
 
-NODE_V22_BIN="/Users/glad0s/.local/bin"
-if [ -x "$NODE_V22_BIN/node" ]; then
-  export PATH="$NODE_V22_BIN:$PATH"
+# Node pin (2026-08-22 upstream cutover): upstream now requires Node >=24.11.
+# Prefer the nvm Node 24 install; fall back to the legacy ~/.local/bin node
+# (hermes-bundled v22) only if 24 is missing. Decouples the control plane's
+# Node from the hermes install so a hermes upgrade cannot change it.
+NODE24_BIN="$(ls -d /Users/glad0s/.nvm/versions/node/v24.*/bin 2>/dev/null | sort -V | tail -1)"
+NODE_LEGACY_BIN="/Users/glad0s/.local/bin"
+if [ -n "$NODE24_BIN" ] && [ -x "$NODE24_BIN/node" ]; then
+  export PATH="$NODE24_BIN:$PATH"
+elif [ -x "$NODE_LEGACY_BIN/node" ]; then
+  export PATH="$NODE_LEGACY_BIN:$PATH"
 fi
 
 export PAPERCLIP_UI_DEV_MIDDLEWARE="${PAPERCLIP_UI_DEV_MIDDLEWARE:-true}"

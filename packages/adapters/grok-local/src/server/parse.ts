@@ -1,4 +1,4 @@
-import { asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { extractPaperclipDisposition, type ParsedDisposition } from "@paperclipai/adapter-utils";
 import { applyTurnBoundary, createTurnBoundaryState } from "../shared/turn-boundary.js";
 
@@ -9,6 +9,10 @@ export interface ParsedGrokJsonl {
   errorMessage: string | null;
   stopReason: string | null;
   requestId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costUsd: number | null;
   disposition: {
     status: string;
     hasBlocker: boolean;
@@ -40,6 +44,10 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
   let stopReason: string | null = null;
   let requestId: string | null = null;
   let errorMessage: string | null = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
+  let costUsd: number | null = null;
   const thoughtParts: string[] = [];
   const textParts: string[] = [];
   const thoughtBoundary = createTurnBoundaryState();
@@ -68,6 +76,14 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
       sessionId = asString(event.sessionId, "").trim() || sessionId;
       stopReason = asString(event.stopReason, "").trim() || stopReason;
       requestId = asString(event.requestId, "").trim() || requestId;
+      const usage = parseObject(event.usage);
+      inputTokens = asNumber(usage.input_tokens, inputTokens);
+      outputTokens = asNumber(usage.output_tokens, outputTokens);
+      cachedInputTokens = asNumber(usage.cache_read_input_tokens, cachedInputTokens);
+      const totalCostUsd = event.total_cost_usd;
+      if (typeof totalCostUsd === "number" && Number.isFinite(totalCostUsd)) {
+        costUsd = totalCostUsd;
+      }
       continue;
     }
 
@@ -86,6 +102,10 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
     errorMessage,
     stopReason,
     requestId,
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    costUsd,
     disposition,
   };
 }

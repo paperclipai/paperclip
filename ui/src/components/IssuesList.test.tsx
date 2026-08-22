@@ -198,6 +198,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -765,6 +766,54 @@ describe("IssuesList", () => {
       expect(rows.find((row) => row.textContent?.includes("Active blocker"))?.getAttribute("data-current-step")).toBe("true");
       expect(rows.find((row) => row.textContent?.includes("Done first"))?.getAttribute("data-title-class")).toContain("text-muted-foreground");
       expect(container.textContent).toContain("blocked by PAP-3 · step 2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Priority option from the Sort and Group menus while priority UI is off (PAP-411)", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-1", identifier: "PAP-1", title: "Task one" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(0);
+    });
+
+    const sortButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("title") === "Sort",
+    );
+    expect(sortButton).toBeTruthy();
+    act(() => {
+      sortButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const labels = Array.from(document.body.querySelectorAll("button")).map((b) => b.textContent ?? "");
+      // Status sort option renders, but the Priority option is gated off (PAP-411).
+      expect(labels.some((text) => text.includes("Status"))).toBe(true);
+      expect(labels.some((text) => text.includes("Priority"))).toBe(false);
+    });
+
+    const groupButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.getAttribute("title") === "Group",
+    );
+    expect(groupButton).toBeTruthy();
+    act(() => {
+      groupButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const labels = Array.from(document.body.querySelectorAll("button")).map((b) => b.textContent ?? "");
+      expect(labels.some((text) => text.includes("Status"))).toBe(true);
+      expect(labels.some((text) => text.includes("Priority"))).toBe(false);
     });
 
     act(() => {

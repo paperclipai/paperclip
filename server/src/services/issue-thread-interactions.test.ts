@@ -85,6 +85,46 @@ describe("issueThreadInteractionService", () => {
     vi.clearAllMocks();
   });
 
+  it.each([
+    ["ask_user_questions", undefined, {}, "anyone", "anyone", "inherited", "requested"],
+    ["suggest_tasks", undefined, {}, "anyone", "anyone", "inherited", "requested"],
+    ["request_confirmation", "board_or_agents", {}, "anyone", "anyone", "explicit", "requested"],
+    ["request_confirmation", "board_only", {}, "human_only", "human_only", "explicit", "requested"],
+    ["request_checkbox_confirmation", undefined, { request_checkbox_confirmation: { defaultPolicy: "not_creator" } }, "not_creator", "not_creator", "inherited", "requested"],
+    ["request_item_verdicts", "anyone", { request_item_verdicts: { cap: "not_creator" } }, "anyone", "not_creator", "explicit", "company_cap"],
+  ] as const)(
+    "resolves %s requested/default/cap policy snapshots",
+    async (kind, requested, governance, expectedRequested, expectedEffective, expectedProvenance, expectedSource) => {
+      const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+      expect(resolveInteractionPolicy({
+        kind,
+        requested,
+        governance,
+        hasToolAction: false,
+      })).toEqual({
+        requestedResolverPolicy: expectedRequested,
+        effectiveResolverPolicy: expectedEffective,
+        resolverPolicyProvenance: expectedProvenance,
+        effectiveResolverPolicySource: expectedSource,
+      });
+    },
+  );
+
+  it("always clamps tool-action confirmations to human-only", async () => {
+    const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+    expect(resolveInteractionPolicy({
+      kind: "request_confirmation",
+      requested: "board_or_agents",
+      governance: { request_confirmation: { defaultPolicy: "board_or_agents", cap: "board_or_agents" } },
+      hasToolAction: true,
+    })).toEqual({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
+    });
+  });
+
   it("create reuses an existing interaction for the same idempotency key", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
 
@@ -95,6 +135,10 @@ describe("issueThreadInteractionService", () => {
       kind: "suggest_tasks",
       status: "pending",
       continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
       idempotencyKey: "run-1:suggest",
       sourceCommentId: null,
       sourceRunId: "22222222-2222-4222-8222-222222222222",

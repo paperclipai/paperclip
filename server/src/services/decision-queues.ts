@@ -534,6 +534,7 @@ export function decisionQueueService(db: Db) {
       key: string;
       sourceKind: AttentionSourceKind;
       sourceId: string;
+      reason?: string;
       authActor: AuthorizationActor;
       actor: DecisionMutationActor;
     }) => {
@@ -569,6 +570,7 @@ export function decisionQueueService(db: Db) {
           sourceKind: input.sourceKind,
           sourceId: input.sourceId,
           action: "queue_item.removed",
+          details: input.reason ? { reason: input.reason } : {},
           ...eventActorColumns(input.actor),
         });
         await recordActivity(txDb, input.actor, {
@@ -576,7 +578,11 @@ export function decisionQueueService(db: Db) {
           action: "decision_queue_item.removed",
           entityType: "decision_queue",
           entityId: queue.id,
-          details: { sourceKind: input.sourceKind, sourceId: input.sourceId },
+          details: {
+            sourceKind: input.sourceKind,
+            sourceId: input.sourceId,
+            ...(input.reason ? { reason: input.reason } : {}),
+          },
         });
         return toQueueItem(removed);
       });

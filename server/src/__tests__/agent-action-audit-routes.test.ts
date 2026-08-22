@@ -115,6 +115,42 @@ describePostgres("agent action audit routes", () => {
     return { company, agent, otherAgent, issue, comment, issueDocument, run };
   }
 
+  async function seedActorOnlyRows(companyId: string) {
+    return db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "board-user",
+        action: "company.updated",
+        entityType: "company",
+        entityId: companyId,
+        responsibleUserId: "sensitive-responsible-user",
+        details: { changed: "name" },
+        createdAt: new Date("2026-07-17T00:00:06.000Z"),
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "scheduler",
+        action: "heartbeat.scheduled",
+        entityType: "company",
+        entityId: companyId,
+        details: { schedule: "private-schedule" },
+        createdAt: new Date("2026-07-17T00:00:05.000Z"),
+      },
+      {
+        companyId,
+        actorType: "plugin",
+        actorId: "example-plugin",
+        action: "plugin.synced",
+        entityType: "company",
+        entityId: companyId,
+        details: { pluginConfig: "private-config" },
+        createdAt: new Date("2026-07-17T00:00:04.000Z"),
+      },
+    ]).returning();
+  }
+
   it("denies agents and board users without the audit permission", async () => {
     const { company, agent } = await seed();
     const agentResponse = await request(await createApp(db, {
@@ -122,12 +158,145 @@ describePostgres("agent action audit routes", () => {
     })).get(`/api/companies/${company.id}/audit/agent-actions`);
     expect(agentResponse.status).toBe(403);
 
+    const agentAllActorsResponse = await request(await createApp(db, {
+      type: "agent", agentId: agent.id, companyId: company.id, runId: null, source: "agent_jwt",
+    })).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all`);
+    expect(agentAllActorsResponse.status, JSON.stringify(agentAllActorsResponse.body)).toBe(200);
+    expect(agentAllActorsResponse.body.items).toHaveLength(3);
+    expect(agentAllActorsResponse.body.items.every((item: { responsibleUserId: string | null }) => (
+      item.responsibleUserId === null
+    ))).toBe(true);
+
     const boardResponse = await request(await createApp(db, {
       type: "board", userId: "reader", companyIds: [company.id], source: "session", isInstanceAdmin: false,
     })).get(`/api/companies/${company.id}/audit/agent-actions`);
     expect(boardResponse.status).toBe(403);
     expect(boardResponse.body.error).toContain("audit:view_agent_actions");
+
+    const invalidBoardResponse = await request(await createApp(db, {
+      type: "board", userId: "reader", companyIds: [company.id], source: "session", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions?limit=invalid`);
+    expect(invalidBoardResponse.status).toBe(403);
+    expect(invalidBoardResponse.body.error).toContain("audit:view_agent_actions");
   }, 30_000);
+
+  it("lets a company member read basic all-actor rows without attribution", async () => {
+    const { company } = await seed();
+    await seedActorOnlyRows(company.id);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "reader",
+      status: "active",
+      membershipRole: "viewer",
+    });
+    const app = await createApp(db, {
+      type: "board",
+      userId: "reader",
+      companyIds: [company.id],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const items: Array<Record<string, unknown>> = [];
+    let cursor: string | null = null;
+    do {
+      const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+      const response = await request(app)
+        .get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&limit=2${cursorQuery}`);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      items.push(...response.body.items);
+      expect(response.body.accessTier).toBe("basic");
+      cursor = response.body.nextCursor;
+    } while (cursor);
+
+    expect(items).toHaveLength(6);
+    expect(new Set(items.map((item) => item.actorType))).toEqual(
+      new Set(["agent", "user", "system", "plugin"]),
+    );
+    for (const item of items) {
+      expect(item).toMatchObject({
+        agentId: null,
+        runId: null,
+        responsibleUserId: null,
+        details: null,
+      });
+      expect(item).toEqual(expect.objectContaining({
+        actorType: expect.any(String),
+        actorId: expect.any(String),
+        action: expect.any(String),
+        entityType: expect.any(String),
+        entityId: expect.any(String),
+        createdAt: expect.any(String),
+      }));
+    }
+  });
+
+  it("rejects the full filter set for a basic all-actors reader", async () => {
+    const { company, agent, issue, run } = await seed();
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "reader",
+      status: "active",
+      membershipRole: "viewer",
+    });
+    const app = await createApp(db, {
+      type: "board",
+      userId: "reader",
+      companyIds: [company.id],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const filters = [
+      `agentId=${agent.id}`,
+      "responsibleUserId=legacy-user",
+      `runId=${run.id}`,
+      "entityType=issue",
+      `entityId=${issue.id}`,
+      "action=issue.",
+      "actorType=agent",
+      "from=2026-07-17T00%3A00%3A00.000Z",
+      "to=2026-07-18T00%3A00%3A00.000Z",
+    ];
+
+    for (const filter of filters) {
+      const response = await request(app).get(
+        `/api/companies/${company.id}/audit/agent-actions?actorScope=all&${filter}`,
+      );
+      expect(response.status, filter).toBe(403);
+      expect(response.body.error).toContain("audit:view_agent_actions");
+    }
+  });
+
+  it("keeps the default scope unchanged and gives permitted readers the full all-actors view", async () => {
+    const { company } = await seed();
+    const actorOnlyRows = await seedActorOnlyRows(company.id);
+    const app = await createApp(db, {
+      type: "board",
+      userId: "local-board",
+      companyIds: [company.id],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+
+    const defaultResponse = await request(app)
+      .get(`/api/companies/${company.id}/audit/agent-actions`);
+    expect(defaultResponse.status, JSON.stringify(defaultResponse.body)).toBe(200);
+    expect(defaultResponse.body.items).toHaveLength(3);
+    expect(defaultResponse.body.items.map((item: { id: string }) => item.id)).not.toContain(actorOnlyRows[0]!.id);
+
+    const allResponse = await request(app)
+      .get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all`);
+    expect(allResponse.status, JSON.stringify(allResponse.body)).toBe(200);
+    expect(defaultResponse.body.accessTier).toBe("full");
+    expect(allResponse.body.accessTier).toBe("full");
+    expect(allResponse.body.items).toHaveLength(6);
+    expect(allResponse.body.items.find((item: { id: string }) => item.id === actorOnlyRows[0]!.id)).toMatchObject({
+      responsibleUserId: "sensitive-responsible-user",
+      details: { changed: "name" },
+    });
+  });
 
   it("returns a client error for invalid audit query parameters", async () => {
     const { company } = await seed();
@@ -136,6 +305,12 @@ describePostgres("agent action audit routes", () => {
     })).get(`/api/companies/${company.id}/audit/agent-actions?limit=invalid`);
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("Invalid agent action audit query");
+
+    const scopeResponse = await request(await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=unknown`);
+    expect(scopeResponse.status).toBe(400);
+    expect(scopeResponse.body.error).toBe("Invalid agent action audit query");
 
     const cursorResponse = await request(await createApp(db, {
       type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,

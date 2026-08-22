@@ -18,6 +18,7 @@ import {
 } from "../config/home.js";
 import { assertForegroundRunAllowed } from "../services/service-manager.js";
 import { printUpdateNotice } from "../update-notice.js";
+import { ensureWorktreeSeeded } from "./worktree.js";
 
 interface RunOptions {
   config?: string;
@@ -65,6 +66,11 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
     p.log.step("No config found. Starting onboarding...");
     await onboard({ config: configPath, invokedByRun: true, bind: opts.bind });
+  }
+
+  const seedResult = await ensureWorktreeSeeded({ config: configPath });
+  if (seedResult.seeded) {
+    p.log.success("Completed deferred worktree database seed.");
   }
 
   p.log.step("Running doctor checks...");

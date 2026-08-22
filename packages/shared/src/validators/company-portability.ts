@@ -222,6 +222,12 @@ export const portabilityIssueManifestEntrySchema = z.object({
   workProducts: z.array(portabilityIssueWorkProductManifestEntrySchema).default([]),
   monitor: portabilityIssueMonitorManifestEntrySchema.nullable().default(null),
   attachments: z.array(portabilityIssueAttachmentManifestEntrySchema).default([]),
+  parentSlug: z.string().min(1).nullable().optional(),
+  createdAt: z.string().datetime().nullable().optional(),
+  updatedAt: z.string().datetime().nullable().optional(),
+  startedAt: z.string().datetime().nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  cancelledAt: z.string().datetime().nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
@@ -230,7 +236,7 @@ export const portabilityManifestSchema = z.object({
   generatedAt: z.string().datetime(),
   source: z
     .object({
-      companyId: z.string().uuid(),
+      companyId: z.string().guid(),
       companyName: z.string().min(1),
     })
     .nullable(),
@@ -277,7 +283,7 @@ export const portabilityTargetSchema = z.discriminatedUnion("mode", [
   }),
   z.object({
     mode: z.literal("existing_company"),
-    companyId: z.string().uuid(),
+    companyId: z.string().guid(),
   }),
 ]);
 

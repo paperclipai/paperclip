@@ -16,6 +16,10 @@ type IssueRecoveryActionRow = typeof issueRecoveryActions.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
 
+function asDatabaseDate(value: string | Date | null) {
+  return typeof value === "string" ? new Date(value) : value;
+}
+
 export type UpsertIssueRecoveryActionInput = {
   companyId: string;
   sourceIssueId: string;
@@ -29,6 +33,8 @@ export type UpsertIssueRecoveryActionInput = {
   cause: string;
   fingerprint: string;
   evidence?: Record<string, unknown>;
+  /** Evidence written only when this upsert creates a new action row. */
+  evidenceOnCreate?: Record<string, unknown>;
   nextAction: string;
   wakePolicy?: Record<string, unknown> | null;
   monitorPolicy?: Record<string, unknown> | null;
@@ -36,6 +42,16 @@ export type UpsertIssueRecoveryActionInput = {
   initialAttemptCount?: number | null;
   timeoutAt?: Date | null;
   lastAttemptAt?: Date | null;
+  attemptCount?: number;
+  // When true, a change of (cause, fingerprint) does not overwrite the active
+  // action in place. The service resolves the prior action and inserts a new
+  // one. The new failure then gets a distinct recovery identity and a fresh
+  // operator notice, and the prior identity stays as a resolved record.
+  supersedeOnIdentityChange?: boolean;
+  // Rollout compatibility for active pre-policy actions. Refresh their
+  // evidence/attempt metadata without silently changing the recorded owner or
+  // the wake/monitor contract that made that owner authoritative.
+  preserveExistingOwner?: boolean;
 };
 
 export type ResolveIssueRecoveryActionInput = {
@@ -97,7 +113,26 @@ function isUniqueRecoveryActionConflict(error: unknown) {
   );
 }
 
-function assertBoardOwnedActionHasArtifact(input: UpsertIssueRecoveryActionInput, ownerType: IssueRecoveryActionOwnerType) {
+// Fork (TSMC-20155/20183): a board-owned action's receipt is the board-visible
+// carrier of the requested action. When an upsert preserves an existing BOARD
+// owner (upstream f572e0867 `preserveExistingOwner`), refresh the link to the
+// receipt the caller just ensured (it may be a fresh card after the board closed
+// the prior one) and never drop it to null. Legacy agent/system-owned rows keep
+// whatever they carried.
+function resolvePreservedRecoveryIssueId(
+  existing: Pick<IssueRecoveryAction, "ownerType" | "recoveryIssueId">,
+  input: Pick<UpsertIssueRecoveryActionInput, "recoveryIssueId">,
+) {
+  if (existing.ownerType === "board") {
+    return input.recoveryIssueId ?? existing.recoveryIssueId ?? null;
+  }
+  return existing.recoveryIssueId;
+}
+
+function assertBoardOwnedActionHasArtifact(
+  input: Pick<UpsertIssueRecoveryActionInput, "sourceIssueId" | "recoveryIssueId">,
+  ownerType: IssueRecoveryActionOwnerType,
+) {
   // A board owner is not an execution destination.  It is only meaningful when
   // there is a durable, board-visible issue carrying the requested action.
   // Keep this at the write boundary so a new caller cannot recreate the
@@ -144,8 +179,12 @@ export function issueRecoveryActionService(db: Db) {
     }
   }
 
-  async function getActiveForIssue(companyId: string, sourceIssueId: string): Promise<IssueRecoveryAction | null> {
-    const row = await db
+  async function getActiveForIssue(
+    companyId: string,
+    sourceIssueId: string,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<IssueRecoveryAction | null> {
+    const row = await dbOrTx
       .select()
       .from(issueRecoveryActions)
       .where(
@@ -198,39 +237,170 @@ export function issueRecoveryActionService(db: Db) {
     return upsertSourceScopedUnlocked(input, retryCount + 1);
   }
 
+  function buildInsertValues(
+    input: UpsertIssueRecoveryActionInput,
+    ownerType: IssueRecoveryActionOwnerType,
+    now: Date,
+  ) {
+    return {
+      companyId: input.companyId,
+      sourceIssueId: input.sourceIssueId,
+      recoveryIssueId: input.recoveryIssueId ?? null,
+      kind: input.kind,
+      status: "active" as const,
+      ownerType,
+      ownerAgentId: input.ownerAgentId ?? null,
+      ownerUserId: input.ownerUserId ?? null,
+      previousOwnerAgentId: input.previousOwnerAgentId ?? null,
+      returnOwnerAgentId: input.returnOwnerAgentId ?? null,
+      cause: input.cause,
+      fingerprint: input.fingerprint,
+      evidence: {
+        ...(input.evidence ?? {}),
+        ...(input.evidenceOnCreate ?? {}),
+      },
+      nextAction: input.nextAction,
+      wakePolicy: input.wakePolicy ?? null,
+      monitorPolicy: input.monitorPolicy ?? null,
+      attemptCount:
+        input.attemptCount ?? Math.max(1, Math.floor(input.initialAttemptCount ?? 1)),
+      maxAttempts: input.maxAttempts ?? null,
+      timeoutAt: input.timeoutAt ?? null,
+      lastAttemptAt: input.lastAttemptAt ?? now,
+    };
+  }
+
+  // Resolve the prior active action, then insert a new one in one transaction.
+  // The prior identity stays as a cancelled record and the new failure gets a
+  // fresh action row with its own id. The partial unique index on the active
+  // status stays satisfied because only the new row is active at commit.
+  async function supersedePriorAndInsert(
+    input: UpsertIssueRecoveryActionInput,
+    priorActionId: string,
+    ownerType: IssueRecoveryActionOwnerType,
+    now: Date,
+    retryCount: number,
+  ): Promise<IssueRecoveryAction> {
+    try {
+      const created = await db.transaction(async (tx) => {
+        const [superseded] = await tx
+          .update(issueRecoveryActions)
+          .set({
+            status: "cancelled",
+            outcome: "cancelled",
+            resolutionNote: "A new failure with a different identity superseded this recovery action.",
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issueRecoveryActions.id, priorActionId),
+              inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+            ),
+          )
+          .returning();
+        // Another writer resolved the prior action first. Abort and retry the
+        // whole upsert so the retry reads the current active state.
+        if (!superseded) return null;
+        const [row] = await tx
+          .insert(issueRecoveryActions)
+          .values(buildInsertValues(input, ownerType, now))
+          .returning();
+        return row ?? null;
+      });
+      if (!created) return retryUpsertSourceScoped(input, retryCount);
+      return toReadModel(created);
+    } catch (error) {
+      if (!isUniqueRecoveryActionConflict(error)) throw error;
+      return retryUpsertSourceScoped(input, retryCount, error);
+    }
+  }
+
   async function upsertSourceScopedUnlocked(
     input: UpsertIssueRecoveryActionInput,
     retryCount = 0,
   ): Promise<IssueRecoveryAction> {
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
-    assertBoardOwnedActionHasArtifact(input, ownerType);
+    // Fail at the write boundary before touching the database for the plain
+    // path. `preserveExistingOwner` keeps the existing row's owner contract, so
+    // for that path the fork's board-receipt invariant is checked below against
+    // the EFFECTIVE owner and receipt: a legacy agent-owned action folded with
+    // board-shaped input stays agent-owned (no receipt needed); a board-owned
+    // action keeps or refreshes its receipt; a fresh board write still needs one.
+    if (!input.preserveExistingOwner) {
+      assertBoardOwnedActionHasArtifact(input, ownerType);
+    }
     const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
+    if (input.preserveExistingOwner) {
+      assertBoardOwnedActionHasArtifact(
+        {
+          sourceIssueId: input.sourceIssueId,
+          recoveryIssueId: existing
+            ? resolvePreservedRecoveryIssueId(existing, input)
+            : input.recoveryIssueId ?? null,
+        },
+        existing ? existing.ownerType : ownerType,
+      );
+    }
     const now = new Date();
-    const initialAttemptCount = Math.max(1, Math.floor(input.initialAttemptCount ?? 1));
     if (existing) {
+      // A distinct failure identity must not overwrite the active action of a
+      // prior identity. Resolve the prior action and insert a new one, so the
+      // operator gets a new notice for the new failure.
+      if (
+        input.supersedeOnIdentityChange &&
+        (existing.cause !== input.cause || existing.fingerprint !== input.fingerprint)
+      ) {
+        return supersedePriorAndInsert(input, existing.id, ownerType, now, retryCount);
+      }
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
-          recoveryIssueId: input.recoveryIssueId ?? null,
-          kind: input.kind,
-          status: "active",
-          ownerType,
-          ownerAgentId: input.ownerAgentId ?? null,
-          ownerUserId: input.ownerUserId ?? null,
-          previousOwnerAgentId: input.previousOwnerAgentId ?? existing.previousOwnerAgentId,
-          returnOwnerAgentId: input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
-          cause: input.cause,
-          fingerprint: input.fingerprint,
-          evidence: input.evidence ?? existing.evidence,
-          nextAction: input.nextAction,
-          wakePolicy: input.wakePolicy ?? null,
-          monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: existing.attemptCount + 1,
-          maxAttempts: input.maxAttempts ?? null,
-          timeoutAt: input.timeoutAt ?? null,
-          lastAttemptAt: input.lastAttemptAt ?? now,
-          outcome: null,
-          resolutionNote: null,
+          recoveryIssueId: input.preserveExistingOwner
+            ? resolvePreservedRecoveryIssueId(existing, input)
+            : input.recoveryIssueId ?? null,
+          kind: input.preserveExistingOwner ? existing.kind : input.kind,
+          status: input.preserveExistingOwner ? existing.status : "active",
+          ownerType: input.preserveExistingOwner ? existing.ownerType : ownerType,
+          ownerAgentId: input.preserveExistingOwner
+            ? existing.ownerAgentId
+            : input.ownerAgentId ?? null,
+          ownerUserId: input.preserveExistingOwner
+            ? existing.ownerUserId
+            : input.ownerUserId ?? null,
+          previousOwnerAgentId: input.preserveExistingOwner
+            ? existing.previousOwnerAgentId
+            : input.previousOwnerAgentId ?? existing.previousOwnerAgentId,
+          returnOwnerAgentId: input.preserveExistingOwner
+            ? existing.returnOwnerAgentId
+            : input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
+          cause: input.preserveExistingOwner ? existing.cause : input.cause,
+          fingerprint: input.preserveExistingOwner ? existing.fingerprint : input.fingerprint,
+          evidence: input.preserveExistingOwner
+            ? {
+              ...(existing.evidence ?? {}),
+              ...(input.evidence ?? {}),
+            }
+            : input.evidence ?? existing.evidence,
+          nextAction: input.preserveExistingOwner ? existing.nextAction : input.nextAction,
+          wakePolicy: input.preserveExistingOwner
+            ? existing.wakePolicy
+            : input.wakePolicy ?? null,
+          monitorPolicy: input.preserveExistingOwner
+            ? existing.monitorPolicy
+            : input.monitorPolicy ?? null,
+          attemptCount: input.attemptCount ?? existing.attemptCount + 1,
+          maxAttempts: input.preserveExistingOwner
+            ? existing.maxAttempts
+            : input.maxAttempts ?? null,
+          timeoutAt: input.preserveExistingOwner
+            ? asDatabaseDate(existing.timeoutAt)
+            : input.timeoutAt ?? null,
+          lastAttemptAt: input.preserveExistingOwner
+            ? asDatabaseDate(existing.lastAttemptAt)
+            : input.lastAttemptAt ?? now,
+          outcome: input.preserveExistingOwner ? existing.outcome : null,
+          resolutionNote: input.preserveExistingOwner ? existing.resolutionNote : null,
           resolvedAt: null,
           updatedAt: now,
         })
@@ -250,28 +420,7 @@ export function issueRecoveryActionService(db: Db) {
     try {
       const [created] = await db
         .insert(issueRecoveryActions)
-        .values({
-          companyId: input.companyId,
-          sourceIssueId: input.sourceIssueId,
-          recoveryIssueId: input.recoveryIssueId ?? null,
-          kind: input.kind,
-          status: "active",
-          ownerType,
-          ownerAgentId: input.ownerAgentId ?? null,
-          ownerUserId: input.ownerUserId ?? null,
-          previousOwnerAgentId: input.previousOwnerAgentId ?? null,
-          returnOwnerAgentId: input.returnOwnerAgentId ?? null,
-          cause: input.cause,
-          fingerprint: input.fingerprint,
-          evidence: input.evidence ?? {},
-          nextAction: input.nextAction,
-          wakePolicy: input.wakePolicy ?? null,
-          monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: initialAttemptCount,
-          maxAttempts: input.maxAttempts ?? null,
-          timeoutAt: input.timeoutAt ?? null,
-          lastAttemptAt: input.lastAttemptAt ?? now,
-        })
+        .values(buildInsertValues(input, ownerType, now))
         .returning();
       return toReadModel(created!);
     } catch (error) {

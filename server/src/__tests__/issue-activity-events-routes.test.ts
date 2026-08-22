@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   listAttachments: vi.fn(async () => []),
   listComments: vi.fn(async () => []),
+  getByIdForUpdate: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -117,6 +118,7 @@ function registerModuleMocks() {
     }),
     issueThreadInteractionService: () => ({
       listForIssue: vi.fn(async () => []),
+      expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
       expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
       expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
       // Mock-gap fill: the PATCH issue path expires pending interactions on
@@ -206,6 +208,7 @@ describe("issue activity event routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.getDependencyReadiness.mockResolvedValue({
@@ -485,6 +488,12 @@ describe("issue activity event routes", () => {
       ...issue,
       ...patch,
       updatedAt: new Date(),
+      changes: {
+        executionWorkspaceId: {
+          from: issue.executionWorkspaceId,
+          to: nextExecutionWorkspaceId,
+        },
+      },
     }));
 
     const dbMock = {
@@ -580,6 +589,7 @@ describe("issue activity event routes", () => {
     };
     let selectCallCount = 0;
     const dbMock = {
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
       select: () => {
         selectCallCount += 1;
         return {

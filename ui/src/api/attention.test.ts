@@ -15,6 +15,7 @@ describe("attentionApi.list", () => {
   it("encodes feed filters, decide sorting, and cursor pagination", async () => {
     await attentionApi.list("company-1", {
       includeDismissed: true,
+      archived: true,
       activitySince: "2026-08-01T00:00:00.000Z",
       activityUntil: "2026-08-01T23:59:59.999Z",
       queue: "release review",
@@ -24,7 +25,15 @@ describe("attentionApi.list", () => {
     });
 
     expect(mockApi.get).toHaveBeenCalledWith(
-      "/companies/company-1/attention?includeDismissed=true&activitySince=2026-08-01T00%3A00%3A00.000Z&activityUntil=2026-08-01T23%3A59%3A59.999Z&queue=release+review&sort=decide&cursor=next%2Fpage&limit=25",
+      "/companies/company-1/attention?includeDismissed=true&archived=true&activitySince=2026-08-01T00%3A00%3A00.000Z&activityUntil=2026-08-01T23%3A59%3A59.999Z&queue=release+review&sort=decide&cursor=next%2Fpage&limit=25",
+    );
+  });
+
+  it("requests a complete filtered snapshot for complete-set actions", async () => {
+    await attentionApi.list("company-1", { queue: "release review", all: true });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/attention?all=true&queue=release+review",
     );
   });
 

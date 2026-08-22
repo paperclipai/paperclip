@@ -50,6 +50,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -118,8 +119,43 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
   "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
+/**
+ * Each first-party sandbox provider's documented credential fallback env
+ * var. Environment rows may omit `config.apiKey` (managed/platform-
+ * provisioned rows always do — see `managed-environments.ts`), in which
+ * case the provider reads its documented process env var. That fallback
+ * executes inside the plugin worker, whose environment is scrubbed, so
+ * the deployment-level var must be forwarded explicitly.
+ *
+ * Keyed by the installed npm package name and cross-checked against the
+ * manifest's declared driver key — but name and manifest are both
+ * plugin-authored, so neither is proof of identity on its own. The gate
+ * therefore also requires a trusted install origin: a registry install
+ * (`packagePath` null — the `@paperclipai` scope is project-controlled at
+ * the registry), or a local path inside the repo/bundled plugin catalog,
+ * which ships inside the release image and is as trusted as the server
+ * code itself. An operator-added local plugin directory can claim any
+ * name and driver key and still receives nothing.
+ */
+const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
+  string,
+  { driverKey: string; envVars: readonly string[] }
+> = {
+  "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
+  "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
+  "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
+  "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
+};
+
 export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
+    environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
+  };
+  packageName?: string;
+  /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
+  packagePath?: string | null;
+  /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
+  trustedLocalPluginRoots?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -132,7 +168,22 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+  const trustedLocalRoots = input.trustedLocalPluginRoots
+    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
+  const installOriginTrusted =
+    input.packagePath == null
+    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
+  const credentialEntry = installOriginTrusted && input.packageName
+    ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
+    : undefined;
+  const credentialKeys =
+    credentialEntry
+      && (input.manifest.environmentDrivers ?? []).some(
+        (driver) => driver.driverKey === credentialEntry.driverKey,
+      )
+      ? credentialEntry.envVars
+      : [];
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
@@ -2222,7 +2273,12 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        env: buildPluginWorkerEnv({
+          manifest,
+          packageName: activePlugin.packageName,
+          packagePath: activePlugin.packagePath,
+          instanceInfo,
+        }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
         // before any setup()-time worker→host call (LOOA-695). The authorized

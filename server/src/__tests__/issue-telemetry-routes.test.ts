@@ -6,6 +6,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   listAttachments: vi.fn(async () => []),
   listComments: vi.fn(async () => []),
+  getByIdForUpdate: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
@@ -23,13 +24,31 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
       Promise.resolve([]).then(onFulfilled, onRejected),
   }),
+  for: () => ({
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([{
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        agentId: "agent-1",
+        contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+        permissions: null,
+      }]).then(onFulfilled, onRejected),
+  }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
+    Promise.resolve([{
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      agentId: "agent-1",
+      contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+      permissions: null,
+    }]).then(onFulfilled, onRejected),
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect })),
 }));
 
 function registerModuleMocks() {
@@ -87,6 +106,7 @@ function registerModuleMocks() {
     }),
     issueThreadInteractionService: () => ({
       listForIssue: vi.fn(async () => []),
+      expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
       expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
       expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
       // Mock-gap fill: the PATCH issue path expires pending interactions on
@@ -149,6 +169,7 @@ describe("issue telemetry routes", () => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -163,8 +184,24 @@ describe("issue telemetry routes", () => {
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
           Promise.resolve([]).then(onFulfilled, onRejected),
       }),
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([{
+            id: "22222222-2222-4222-8222-222222222222",
+            companyId: "company-1",
+            agentId: "agent-1",
+            contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+            permissions: null,
+          }]).then(onFulfilled, onRejected),
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
+        Promise.resolve([{
+          id: "22222222-2222-4222-8222-222222222222",
+          companyId: "company-1",
+          agentId: "agent-1",
+          contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+          permissions: null,
+        }]).then(onFulfilled, onRejected),
     }));
   });
 
@@ -181,7 +218,7 @@ describe("issue telemetry routes", () => {
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
-      runId: null,
+      runId: "22222222-2222-4222-8222-222222222222",
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")

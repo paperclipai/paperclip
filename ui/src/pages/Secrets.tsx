@@ -110,6 +110,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
+import { ProposalsTab } from "./secrets/ProposalsTab";
 import { SecretPathName } from "./secrets/SecretPathName";
 import {
   buildSecretPathBreadcrumbs,
@@ -132,7 +133,7 @@ type CreateMode = "managed" | "external";
 type RotateMode = "value" | "reference";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
-type SecretsTab = "secrets" | "my-secrets" | "vaults";
+type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
 type SecretsViewMode = "folders" | "flat";
 
 const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
@@ -773,8 +774,17 @@ export function Secrets() {
     retry: false,
   });
 
+  const proposalsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "__disabled__"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId),
+  });
+
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
   const userDefinitions = userDefinitionsQuery.data ?? EMPTY_USER_SECRET_DEFINITIONS;
+  const pendingProposalCount = proposalsQuery.data?.length ?? 0;
   const myUserSecrets = myUserSecretsQuery.data ?? EMPTY_MY_USER_SECRETS;
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
@@ -1783,7 +1793,7 @@ export function Secrets() {
 
   return (
     <TooltipProvider>
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex max-w-6xl flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Secrets</h1>
@@ -1792,20 +1802,36 @@ export function Secrets() {
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}
-        className="flex min-h-0 flex-1 flex-col gap-4"
+        className="flex flex-col gap-4"
       >
         <PageTabBar
           items={[
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
             { value: "vaults", label: "Provider vaults" },
+            {
+              value: "proposals",
+              label: (
+                <span className="inline-flex items-center gap-1.5">
+                  Proposals
+                  {pendingProposalCount > 0 ? (
+                    <Badge
+                      variant="outline"
+                      className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                    >
+                      {pendingProposalCount}
+                    </Badge>
+                  ) : null}
+                </span>
+              ),
+            },
           ]}
           align="start"
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as SecretsTab)}
         />
 
-        <TabsContent value="secrets" className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+        <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-80">
@@ -1910,7 +1936,7 @@ export function Secrets() {
               </Button>
             </div>
           ) : null}
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div>
             {secretsQuery.isError || userDefinitionsQuery.isError ? (
               <div className="text-sm text-destructive flex items-center gap-2 py-4">
                 <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
@@ -2157,11 +2183,11 @@ export function Secrets() {
         </TabsContent>
         <TabsContent
           value="my-secrets"
-          className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+          className="flex flex-col gap-3"
         >
           <MyUserSecretsTab companyId={selectedCompanyId} />
         </TabsContent>
-        <TabsContent value="vaults" className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="vaults">
           <ProviderVaultsTab
             providers={providers}
             providerConfigs={providerConfigs}
@@ -2183,6 +2209,11 @@ export function Secrets() {
               null
             }
           />
+        </TabsContent>
+        <TabsContent value="proposals">
+          {selectedCompanyId ? (
+            <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
+          ) : null}
         </TabsContent>
       </Tabs>
 
@@ -3886,7 +3917,7 @@ function AwsProviderVaultDiscoveryError({
   const detailsText = JSON.stringify(safeDetails, null, 2);
 
   const copyDetails = () => {
-    void navigator.clipboard?.writeText(detailsText);
+    void copyTextToClipboard(detailsText).catch(() => {});
   };
 
   return (
@@ -4035,7 +4066,7 @@ function SecretCreateError({
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={() => void navigator.clipboard?.writeText(detailsText)}
+                onClick={() => void copyTextToClipboard(detailsText).catch(() => {})}
               >
                 Copy
               </Button>

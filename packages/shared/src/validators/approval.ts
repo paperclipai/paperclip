@@ -29,9 +29,9 @@ const humanJudgementDeclarationSchema = z.object({
 
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
-  requestedByAgentId: z.string().uuid().optional().nullable(),
+  requestedByAgentId: z.string().guid().optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
-  issueIds: z.array(z.string().uuid()).optional(),
+  issueIds: z.array(z.string().guid()).optional(),
 }).superRefine((value, ctx) => {
   if (value.type !== "request_board_approval") return;
 

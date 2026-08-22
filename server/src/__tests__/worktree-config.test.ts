@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -443,13 +444,27 @@ describe("worktree config repair", () => {
     const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
     const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
 
-    const writeWorktree = async (worktreeRoot: string, name: string) => {
+    const writeWorktree = async (
+      worktreeRoot: string,
+      name: string,
+      databaseMode: "embedded-postgres" | "postgres" = "embedded-postgres",
+    ) => {
       const paperclipDir = path.join(worktreeRoot, ".paperclip");
       const instanceRoot = path.join(isolatedHome, "instances", name.toLowerCase());
+      const config = buildIsolatedConfig(instanceRoot, 45439, 55439);
       await fs.mkdir(paperclipDir, { recursive: true });
       await fs.writeFile(
         path.join(paperclipDir, "config.json"),
-        `${JSON.stringify(buildIsolatedConfig(instanceRoot, 45439, 55439), null, 2)}\n`,
+        `${JSON.stringify({
+          ...config,
+          database: {
+            ...config.database,
+            mode: databaseMode,
+            ...(databaseMode === "postgres"
+              ? { connectionString: "postgres://paperclip:paperclip@127.0.0.1:55439/paperclip" }
+              : {}),
+          },
+        }, null, 2)}\n`,
         "utf8",
       );
       await fs.writeFile(
@@ -479,7 +494,7 @@ describe("worktree config repair", () => {
       delete process.env.DATABASE_URL;
     };
 
-    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
+    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills", "postgres");
     await writeWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
     const staleLockPath = path.join(isolatedHome, ".worktree-port-reservations.lock");
     await fs.mkdir(staleLockPath, { recursive: true });
@@ -979,6 +994,83 @@ describe("worktree config repair", () => {
     expect(writtenConfig.server.port).toBe(3103);
     expect(writtenConfig.database.embeddedPostgresPort).toBe(54335);
     expect(writtenConfig.auth.publicBaseUrl).toBe("https://paperclip.example");
+  });
+
+  it("preserves top-level and nested config extensions while persisting runtime ports", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-config-extensions-"));
+    const worktreeRoot = path.join(tempRoot, "config-extensions");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const instanceRoot = path.join(isolatedHome, "instances", "config-extensions");
+    const base = buildIsolatedConfig(instanceRoot, 3101, 54331);
+    const config = {
+      ...base,
+      topLevelExtension: { enabled: true },
+      database: {
+        ...base.database,
+        backup: {
+          ...base.database.backup,
+          backupExtension: "keep",
+        },
+      },
+      server: {
+        ...base.server,
+        serverExtension: "keep",
+      },
+      storage: {
+        ...base.storage,
+        localDisk: {
+          ...base.storage.localDisk,
+          driverExtension: "keep",
+        },
+      },
+    };
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      path.join(paperclipDir, ".env"),
+      ["# Paperclip environment variables", "PAPERCLIP_IN_WORKTREE=true", ""].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "config-extensions";
+    process.env.PAPERCLIP_HOME = isolatedHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "config-extensions";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
+
+    const open = vi.spyOn(fsSync, "openSync");
+    const sync = vi.spyOn(fsSync, "fsyncSync");
+    maybePersistWorktreeRuntimePorts({ serverPort: 3103, databasePort: 54335 });
+
+    expect(open).toHaveBeenCalledWith(paperclipDir, "r");
+    expect(sync).toHaveBeenCalled();
+
+    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(writtenConfig).toMatchObject({
+      topLevelExtension: { enabled: true },
+      database: {
+        embeddedPostgresPort: 54335,
+        backup: { backupExtension: "keep" },
+      },
+      server: {
+        port: 3103,
+        serverExtension: "keep",
+      },
+      storage: {
+        localDisk: { driverExtension: "keep" },
+      },
+    });
+
+    const stableTime = new Date("2020-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, stableTime, stableTime);
+    maybePersistWorktreeRuntimePorts({ serverPort: 3103, databasePort: 54335 });
+    expect((await fs.stat(configPath)).mtimeMs).toBe(stableTime.getTime());
   });
 
   it("can update the in-memory config when auth URL already includes a port", () => {

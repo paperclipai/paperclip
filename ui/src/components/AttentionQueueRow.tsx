@@ -2,10 +2,10 @@ import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
+  CalendarClock,
   ChevronDown,
   ChevronUp,
   ExternalLink,
-  GraduationCap,
   Loader2,
   MoreHorizontal,
   RotateCcw,
@@ -18,17 +18,21 @@ import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { describeAttentionResolverAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
+import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
   attentionDetailImages,
   attentionDetailLine,
   attentionImageUrl,
   attentionStatus,
   attentionTaskRef,
+  decideByLabel,
   isInlineResolvable,
   sourceMeta,
 } from "../lib/attention";
-import { isTrainable } from "../lib/decisionTraining";
 import { cn, relativeTime } from "../lib/utils";
+import { DecisionTriageStrip } from "./DecisionTriageStrip";
+import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
@@ -45,6 +49,8 @@ import {
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
 import { DecisionResolver } from "./DecisionResolver";
+import { StalledReviewActions } from "./StalledReviewActions";
+import { readIssueReviewPolicyMetadata } from "../lib/review-policy";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -79,13 +85,15 @@ interface AttentionQueueRowProps {
   onToggleExpand: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
   onSnooze?: (item: AttentionItem, snoozedUntil: string) => void;
-  /** Open the decision-training drawer for this row (create or view). */
-  onTrain?: (item: AttentionItem) => void;
   /** Restore a snoozed/dismissed row (curtain variant only). */
   onRestore?: (item: AttentionItem) => void;
   /** "active" renders the live queue row; "hidden" renders a curtain row. */
   variant?: "active" | "hidden";
   agentMap?: Map<string, Agent>;
+  /** Company agents, for the triage strip's route-to-agent picker. */
+  agents?: Agent[];
+  /** Render the per-card triage strip (queue/decide-by/snooze/route) when expanded. */
+  showTriage?: boolean;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   selected?: boolean;
@@ -105,10 +113,11 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onToggleExpand,
   onDismiss,
   onSnooze,
-  onTrain,
   onRestore,
   variant = "active",
   agentMap,
+  agents,
+  showTriage = false,
   currentUserId,
   userLabelMap,
   selected = false,
@@ -130,16 +139,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // "n more" affordance in the expanded gallery.
   const issueHref = item.relatedIssue?.href ?? href;
   // Inline-resolvable active rows expand to reveal their resolver; rows with
-  // images expand to reveal a larger gallery (PAP-13544). Either case gives a
-  // header/thumbnail click somewhere to go. Non-inline, image-less rows keep the
-  // explicit Open button and never toggle on a stray click.
-  const expandable = inline || (!isHidden && hasImages);
-  // Any issue-anchored approval or interaction is
-  // trainable at any time (pending or resolved). Trained/untrained renders
-  // purely from the feed's `trainingExampleId` — no per-row fetch.
-  const trainable = !isHidden && !!onTrain && isTrainable(item);
-  const trained = item.trainingExampleId != null;
-
+  // images expand to reveal a larger gallery (PAP-13544); triage-enabled rows
+  // expand to reveal the per-card triage strip (PAP-16032 §4.5). Any of these
+  // gives a header/thumbnail click somewhere to go. Non-inline, image-less rows
+  // with no triage keep the explicit Open button and never toggle on a stray click.
+  const triageEnabled = showTriage && !isHidden;
+  const expandable = inline || (!isHidden && hasImages) || triageEnabled;
   const activate = () => {
     if (expandable) onToggleExpand(item);
   };
@@ -154,6 +159,11 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
   const compactActions = !isHidden ? collectCompactActions(item) : [];
+  // Who the server will let resolve this interaction. A collapsed row offers
+  // Accept/Reject before anything fetches the interaction, so the audience
+  // travels with the feed item; null for every non-interaction source and for a
+  // feed built before the metadata existed (PAP-17287).
+  const audience = describeAttentionResolverAudience(item);
   const showOpen = !inline && !!href;
   const showRestore = isHidden && !!onRestore;
   // An expanded inline row hands its footer to the resolver, which owns the
@@ -194,7 +204,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
         <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
           {showCompact && (
-            <CompactDecisionActions item={item} companyId={companyId} onOpen={() => onToggleExpand(item)} />
+            <CompactDecisionActions
+              item={item}
+              companyId={companyId}
+              audience={audience}
+              onOpen={() => onToggleExpand(item)}
+            />
           )}
 
           {showOpen && (
@@ -256,19 +271,21 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               </Link>
             </>
           )}
-          {trainable && trained && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-px text-(length:--text-nano) font-medium text-primary hover:bg-primary/15"
-              onClick={(event) => {
-                event.stopPropagation();
-                onTrain?.(item);
-              }}
-              data-testid="attention-trained-badge"
-            >
-              <GraduationCap className="h-3 w-3 fill-primary/25" />
-              Trained ✓
-            </button>
+          {item.decideBy && (
+            <>
+              <EyebrowSeparator />
+              <span
+                className="inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground"
+                data-attention-decide-by={item.decideBy}
+                title={decideByProvenance(item) ? `Set by ${decideByProvenance(item)}` : undefined}
+              >
+                <CalendarClock className="h-3 w-3" />
+                {decideByLabel(item.decideBy)}
+                {decideByProvenance(item) && (
+                  <span className="text-muted-foreground/80">· set by {decideByProvenance(item)}</span>
+                )}
+              </span>
+            </>
           )}
         </div>
 
@@ -296,19 +313,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {/* Training moved off the header strip (which now carries only
-                    recency + overflow) but keeps its testids so the affordance
-                    is still addressable. */}
-                {trainable && (
-                  <DropdownMenuItem
-                    data-training-state={trained ? "trained" : "untrained"}
-                    data-testid="attention-train-button"
-                    onClick={() => onTrain?.(item)}
-                  >
-                    <GraduationCap className={cn("h-4 w-4", trained && "fill-primary/25")} />
-                    {trained ? "View training example" : "Train this decision"}
-                  </DropdownMenuItem>
-                )}
                 {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
                 <DropdownMenuItem onClick={() => onDismiss(item)}>
                   <X className="h-4 w-4" />
@@ -362,6 +366,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           <CollapsibleContent data-decision-disclosure className="-mt-4">
             <div className="flex flex-col gap-4 pt-4">
               {hasImages && <ThumbnailStack images={images} />}
+              {/* The audience reads *before* the verbs it qualifies: a compact
+                  Accept sitting alone asks for a decision without saying whose
+                  it is (PAP-17287). */}
+              {audience && <InteractionAudienceLine audience={audience} variant="compact" />}
               {inline && renderFooter({ compact: true })}
             </div>
           </CollapsibleContent>
@@ -378,6 +386,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <CollapsibleContent data-decision-disclosure className="-mt-4">
           <div className="flex flex-col gap-4 pt-4">
             {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
+            {triageEnabled && <DecisionTriageStrip item={item} companyId={companyId} agents={agents} />}
             {inline && (
               <InlineResolver
                 item={item}
@@ -466,10 +475,13 @@ function collectCompactActions(item: AttentionItem): CompactAction[] {
 function CompactDecisionActions({
   item,
   companyId,
+  audience,
   onOpen,
 }: {
   item: AttentionItem;
   companyId: string;
+  /** Effective resolver audience, so a denial can name who *can* respond. */
+  audience: InteractionAudienceDescription | null;
   onOpen: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -509,9 +521,11 @@ function CompactDecisionActions({
       });
     },
     onError: (error, action) => {
+      // A policy denial is permanent, so it keeps the server's reason and names
+      // the real responder instead of asking for a retry that will fail again.
       pushToast({
         title: `Could not ${decisionLabel(action)}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: interactionResolutionErrorMessage(error, audience),
         tone: "error",
       });
     },
@@ -704,6 +718,18 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
   );
 }
 
+/**
+ * Who set this row's decide-by deadline, for the card's provenance line
+ * ("· set by Prioritizer"). Returns null when unattributed so the chip shows
+ * the deadline alone rather than a hollow "set by".
+ */
+function decideByProvenance(item: AttentionItem): string | null {
+  const attribution = item.decideByAttribution;
+  if (!attribution) return null;
+  if (attribution.type === "agent") return attribution.agentName ?? "an agent";
+  return "you";
+}
+
 /** Compact "when does this snooze end" label, e.g. `in 2h`, `in 3d`. */
 function reappearLabel(snoozedUntil: string): string {
   const diffMs = new Date(snoozedUntil).getTime() - Date.now();
@@ -774,6 +800,19 @@ function InlineResolver({
 
   if (item.sourceKind === "join_request") {
     return <JoinRequestResolver item={item} companyId={companyId} toggle={toggle} />;
+  }
+
+  if (item.sourceKind === "review") {
+    // Inline only for stalled reviews (server sets inlineResolvable then); the
+    // subject IS the issue, so its id is the decision target.
+    return (
+      <StalledReviewActions
+        issueId={item.subject.id}
+        companyId={companyId}
+        footerSlot={toggle}
+        reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)}
+      />
+    );
   }
 
   return null;

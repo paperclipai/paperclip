@@ -1,13 +1,15 @@
 import { z } from "zod";
 import {
   COMPANY_STATUSES,
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
+import { objectWithoutDefaults } from "./partial.js";
 
-const logoAssetIdSchema = z.string().uuid().nullable().optional();
+const logoAssetIdSchema = z.string().guid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
-const strandedRecoveryOwnerAgentIdSchema = z.string().uuid().nullable().optional();
+const strandedRecoveryOwnerAgentIdSchema = z.string().guid().nullable().optional();
 const workProductsRootSchema = z.string().min(1).nullable().optional();
 const attachmentMaxBytesSchema = z
   .number()
@@ -17,6 +19,19 @@ const attachmentMaxBytesSchema = z
 const routineGuardConfigSchema = z.object({
   minimumScheduleIntervalMinutes: z.number().int().min(1).max(24 * 60).optional(),
 }).strict();
+
+const interactionResolverKindGovernanceSchema = z.object({
+  defaultPolicy: z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES).optional(),
+  cap: z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES).optional(),
+}).strict();
+
+export const interactionResolverGovernanceSchema = z.object({
+  suggest_tasks: interactionResolverKindGovernanceSchema.optional(),
+  ask_user_questions: interactionResolverKindGovernanceSchema.optional(),
+  request_confirmation: interactionResolverKindGovernanceSchema.optional(),
+  request_checkbox_confirmation: interactionResolverKindGovernanceSchema.optional(),
+  request_item_verdicts: interactionResolverKindGovernanceSchema.optional(),
+}).strict().default({});
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -28,23 +43,26 @@ export const createCompanySchema = z.object({
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
-export const updateCompanySchema = createCompanySchema
-  .partial()
-  .extend({
-    status: z.enum(COMPANY_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
-    requireBoardApprovalForNewAgents: z.boolean().optional(),
-    feedbackDataSharingEnabled: z.boolean().optional(),
-    feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
-    feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
-    feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
-    strandedRecoveryOwnerAgentId: strandedRecoveryOwnerAgentIdSchema,
-    workProductsRoot: workProductsRootSchema,
-    brandColor: brandColorSchema,
-    logoAssetId: logoAssetIdSchema,
-    attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
-    routineGuardConfig: routineGuardConfigSchema.optional(),
-  });
+export const updateCompanySchema = objectWithoutDefaults(
+  createCompanySchema
+    .partial()
+    .extend({
+      status: z.enum(COMPANY_STATUSES).optional(),
+      spentMonthlyCents: z.number().int().nonnegative().optional(),
+      requireBoardApprovalForNewAgents: z.boolean().optional(),
+      interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
+      feedbackDataSharingEnabled: z.boolean().optional(),
+      feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
+      feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
+      feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
+      strandedRecoveryOwnerAgentId: strandedRecoveryOwnerAgentIdSchema,
+      workProductsRoot: workProductsRootSchema,
+      brandColor: brandColorSchema,
+      logoAssetId: logoAssetIdSchema,
+      attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+      routineGuardConfig: routineGuardConfigSchema.optional(),
+    }),
+);
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
 

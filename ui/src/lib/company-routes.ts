@@ -20,6 +20,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "costs",
   "usage",
   "activity",
+  "audit",
   "decisions",
   "inbox",
   "board-chat",

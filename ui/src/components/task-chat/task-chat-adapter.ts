@@ -9,6 +9,7 @@
  */
 import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
+import { resolveCommentAttribution } from "@/lib/comment-attribution";
 import type { TaskChatAuthorKind, TaskChatItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
@@ -16,11 +17,10 @@ export interface TaskChatAdapterContext {
   userLabelMap?: ReadonlyMap<string, string> | null;
   currentUserId?: string | null;
   /**
-   * Capitalized mode chip for agent-authored bubbles ("Agent mode" / "Plan
-   * mode" / "Ask mode") — resolved per comment, so each reply is tagged with
-   * the mode its request actually ran under (not the issue's current mode).
+   * Task's current assignee. Agent comments from anyone else are cross-issue
+   * writes and get a "for {user}" attribution chip (the open cross-task write design (attribution)).
    */
-  agentModeLabelFor?: (comment: IssueChatComment) => string | undefined;
+  issueAssigneeAgentId?: string | null;
 }
 
 function effectiveAgentId(comment: IssueChatComment): string | null {
@@ -28,13 +28,17 @@ function effectiveAgentId(comment: IssueChatComment): string | null {
 }
 
 function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
+  // System authorship wins over any derivable run→agent linkage (PAP-443):
+  // recovery notices carry a derivedAuthorAgentId but must not render as
+  // agent bubbles.
+  if (comment.authorType === "system") return "system";
   if (effectiveAgentId(comment)) return "agent";
   if (comment.authorType === "user") return "human";
-  if (comment.authorType === "agent") return "agent";
-  return "system";
+  return "agent";
 }
 
-function formatTimestamp(value: unknown): string | undefined {
+/** Shared bubble-footer time format ("2:34 PM") — also used by the description bubble (PAP-375). */
+export function formatTaskChatTimestamp(value: unknown): string | undefined {
   if (!value) return undefined;
   const d = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(d.getTime())) return undefined;
@@ -51,19 +55,33 @@ export function commentsToTaskChatItems(
     const kind = authorKind(comment);
     let authorName: string | undefined;
     let agentIcon: string | null | undefined;
+    let onBehalfOfUserName: string | undefined;
     if (kind === "agent") {
       const agentId = effectiveAgentId(comment);
       authorName = (agentId && ctx.agentMap?.get(agentId)?.name) || "Agent";
       agentIcon = agentId ? ctx.agentMap?.get(agentId)?.icon : undefined;
+      onBehalfOfUserName = resolveCommentAttribution({
+        authorAgentId: agentId,
+        onBehalfOfUserId: comment.onBehalfOfUserId ?? null,
+        issueAssigneeAgentId: ctx.issueAssigneeAgentId,
+        resolveUserLabel: (userId) => ctx.userLabelMap?.get(userId),
+      })?.userName;
     } else if (kind === "human") {
       authorName =
         (comment.authorUserId && ctx.userLabelMap?.get(comment.authorUserId)) || undefined;
     }
+    const queued = comment.queueState === "queued" || comment.clientStatus === "queued";
     const optimistic =
-      comment.clientStatus === "queued"
+      queued
         ? "queued"
         : comment.clientStatus === "pending"
           ? "pending"
+          : undefined;
+    const createdAtIso =
+      comment.createdAt instanceof Date
+        ? comment.createdAt.toISOString()
+        : comment.createdAt
+          ? String(comment.createdAt)
           : undefined;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
@@ -71,10 +89,17 @@ export function commentsToTaskChatItems(
       author: kind,
       authorName,
       text: comment.body,
-      timestamp: formatTimestamp(comment.createdAt),
+      timestamp: formatTaskChatTimestamp(comment.createdAt),
       optimistic,
+      queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,
       agentIcon,
-      modeLabel: kind === "agent" ? ctx.agentModeLabelFor?.(comment) : undefined,
+      onBehalfOfUserName,
+      // System notices carry their structured hints through to the render
+      // layer (PAP-443); other authors keep the item lean.
+      presentation: kind === "system" ? comment.presentation ?? null : undefined,
+      metadata: kind === "system" ? comment.metadata ?? null : undefined,
+      runAgentId: kind === "system" ? comment.runAgentId ?? null : undefined,
+      createdAtIso: kind === "system" ? createdAtIso : undefined,
     });
   }
   return items;

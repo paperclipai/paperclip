@@ -88,6 +88,13 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
+  it("treats /audit as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/audit")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/audit")).toBeNull();
+    expect(applyCompanyPrefix("/audit", "PAP")).toBe("/PAP/audit");
+    expect(toCompanyRelativePath("/PAP/audit")).toBe("/audit");
+  });
+
   it("treats /tools routes as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/tools")).toBe(true);
     expect(isBoardPathWithoutPrefix("/tools/runtime")).toBe(true);

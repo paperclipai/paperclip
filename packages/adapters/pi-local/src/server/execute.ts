@@ -16,6 +16,8 @@ import {
   ensureAdapterExecutionTargetFile,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
+  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
@@ -469,6 +471,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
         target: runtimeExecutionTarget,
+        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+        duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(runtimeExecutionTarget),
         runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "pi",
         timeoutSec,

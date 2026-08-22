@@ -41,6 +41,11 @@ export const Stopped: Story = {
   args: { services: [entry({ state: "stopped" })] },
 };
 
+export const Provisioning: Story = {
+  name: "Provisioning (lazy runtime setup)",
+  args: { services: [entry({ state: "provisioning", url: null, port: null })] },
+};
+
 export const Starting: Story = {
   args: { services: [entry({ state: "starting" })] },
 };
@@ -195,6 +200,7 @@ export const AllStates: Story = {
       {(
         [
           ["Stopped", entry({ state: "stopped" })],
+          ["Provisioning", entry({ state: "provisioning", url: null, port: null })],
           ["Starting", entry({ state: "starting" })],
           ["Running", entry()],
           ["Unhealthy", entry({ healthStatus: "unhealthy" })],

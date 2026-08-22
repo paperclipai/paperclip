@@ -9,6 +9,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
+import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -19,6 +20,9 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
   getConfigSchema as getClaudeConfigSchema,
+  CLAUDE_SETUP_TOKEN_COMMAND,
+  parseSetupTokenPrompt,
+  parseSetupTokenCredential,
 } from "@paperclipai/adapter-claude-local/server";
 import {
   agentConfigurationDoc as claudeAgentConfigurationDoc,
@@ -33,6 +37,8 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
   getConfigSchema as getCodexConfigSchema,
+  CODEX_DEVICE_LOGIN_COMMAND,
+  parseDeviceLoginPrompt,
 } from "@paperclipai/adapter-codex-local/server";
 import {
   agentConfigurationDoc as codexAgentConfigurationDoc,
@@ -83,6 +89,17 @@ import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
+import {
+  execute as kimiExecute,
+  listKimiSkills,
+  syncKimiSkills,
+  testEnvironment as kimiTestEnvironment,
+  sessionCodec as kimiSessionCodec,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+} from "@paperclipai/adapter-kimi-local";
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
@@ -194,6 +211,43 @@ The standalone ACPX adapter has been retired. Use:
 Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly instead of falling back to the process adapter.
 `;
 
+// The Claude interactive login capability. Claude runs `claude setup-token` on a
+// real pseudo-terminal. The user pastes a browser code back into the flow. The
+// flow uses a fixed host-side timeout and records a stored session identifier on
+// success. The capability data holds no secret; the callbacks return runtime
+// values only.
+const claudeLoginCapability: AdapterLoginCapability = {
+  panelMode: "submitted_browser_code",
+  sandboxTransport: "pseudo_terminal",
+  timeoutPolicy: "fixed",
+  getCommand: () => CLAUDE_SETUP_TOKEN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseSetupTokenPrompt(output);
+    return prompt ? { url: prompt.url } : null;
+  },
+  captureCredential: (output) => {
+    const token = parseSetupTokenCredential(output);
+    return token === null ? null : Buffer.from(token, "utf8");
+  },
+  completionClaim: "storedSessionId",
+};
+
+// The Codex interactive login capability. Codex runs `codex login --device-auth`
+// over the streamed exec channel. The flow shows a one-time code that the user
+// enters in the browser. The caller sets the host-side timeout. The device-login
+// flow writes its credential inside the sandbox, so the capability declares no
+// terminal credential capture and no completion claim.
+const codexLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  sandboxTransport: "streamed_exec",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => CODEX_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: stampClaudeAgentIdHeader(claudeExecute),
@@ -202,7 +256,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
     agentId: "claude",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=22.12.0",
+      nodeRange: ">=24.11.0",
       packages: ["@agentclientprotocol/claude-agent-acp"],
     },
   },
@@ -223,6 +277,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,
+  loginCapability: claudeLoginCapability,
 };
 
 const acpxLocalAdapter: ServerAdapterModule = {
@@ -275,7 +330,7 @@ const codexLocalAdapter: ServerAdapterModule = {
     agentId: "codex",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=22.13.0",
+      nodeRange: ">=24.11.0",
       packages: ["@agentclientprotocol/codex-acp"],
     },
   },
@@ -295,6 +350,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getConfigSchema: getCodexConfigSchema,
   getQuotaWindows: codexGetQuotaWindows,
+  loginCapability: codexLoginCapability,
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
@@ -339,7 +395,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
     agentId: "gemini",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=20.0.0",
+      nodeRange: ">=24.11.0",
       packages: ["@google/gemini-cli"],
     },
   },
@@ -398,6 +454,32 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+};
+
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  acp: {
+    agentId: "kimi",
+    skillsMode: "ephemeral",
+    prerequisites: {
+      nodeRange: ">=20.0.0",
+      packages: ["@moonshot-ai/kimi-code"],
+    },
+  },
+  listSkills: listKimiSkills,
+  syncSkills: syncKimiSkills,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  models: kimiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "kimi", "@moonshot-ai/kimi-code"),
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
 };
 
 const hermesGatewayAdapter = createHermesGatewayServerAdapter();
@@ -477,6 +559,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     antigravityLocalAdapter,
     grokLocalAdapter,
+    kimiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
     openclawGatewayAdapter,

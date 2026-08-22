@@ -182,3 +182,75 @@ export const decisionTriageEvents = pgTable(
     ),
   }),
 );
+
+export const decisionRetention = pgTable(
+  "decision_retention",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceActivityAt: timestamp("source_activity_at", { withTimezone: true }).notNull(),
+    keep: boolean("keep").notNull().default(false),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    archivedReason: text("archived_reason"),
+    archivedByType: text("archived_by_type"),
+    archivedByAgentId: uuid("archived_by_agent_id").references(() => agents.id),
+    archivedByUserId: text("archived_by_user_id"),
+    archivedByRunId: uuid("archived_by_run_id").references(() => heartbeatRuns.id),
+    version: integer("version").notNull().default(1),
+    archiveVersion: integer("archive_version").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companySourceUq: uniqueIndex("decision_retention_company_source_uq").on(
+      table.companyId,
+      table.sourceKind,
+      table.sourceId,
+    ),
+    companyArchivedIdx: index("decision_retention_company_archived_idx").on(table.companyId, table.archivedAt),
+    archiveActorCheck: check(
+      "decision_retention_archive_actor_check",
+      sql`(
+        (${table.archivedAt} IS NULL AND ${table.archivedByType} IS NULL AND ${table.archivedByAgentId} IS NULL AND ${table.archivedByUserId} IS NULL)
+        OR (${table.archivedAt} IS NOT NULL AND ${table.archivedByType} = 'system' AND ${table.archivedByAgentId} IS NULL AND ${table.archivedByUserId} IS NULL)
+        OR (${table.archivedAt} IS NOT NULL AND ${table.archivedByType} = 'agent' AND ${table.archivedByAgentId} IS NOT NULL AND ${table.archivedByUserId} IS NULL)
+        OR (${table.archivedAt} IS NOT NULL AND ${table.archivedByType} = 'user' AND ${table.archivedByAgentId} IS NULL AND ${table.archivedByUserId} IS NOT NULL)
+      )`,
+    ),
+  }),
+);
+
+export const decisionArchiveNotificationOutbox = pgTable(
+  "decision_archive_notification_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    archiveVersion: integer("archive_version").notNull(),
+    originAgentId: uuid("origin_agent_id").notNull().references(() => agents.id),
+    originIssueId: uuid("origin_issue_id").notNull(),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    notificationUq: uniqueIndex("decision_archive_notification_outbox_uq").on(
+      table.companyId,
+      table.sourceKind,
+      table.sourceId,
+      table.archiveVersion,
+      table.originAgentId,
+    ),
+    pendingIdx: index("decision_archive_notification_outbox_pending_idx").on(table.status, table.createdAt),
+    statusCheck: check(
+      "decision_archive_notification_outbox_status_check",
+      sql`${table.status} IN ('pending', 'delivering', 'delivered')`,
+    ),
+  }),
+);

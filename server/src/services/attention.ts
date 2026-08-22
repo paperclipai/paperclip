@@ -37,20 +37,35 @@ import type {
   AttentionItemDetail,
   AttentionProjectRef,
   AttentionQueueRef,
+  AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
   AttentionTriageAttribution,
   AttentionWorkspaceRef,
+  IssueThreadInteractionEffectiveResolverPolicySource,
+  IssueThreadInteractionResolverPolicyProvenance,
+  IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
 import { budgetService } from "./budgets.js";
-import { issueService } from "./issues.js";
+import {
+  BLOCKER_ATTENTION_MAX_DEPTH,
+  BLOCKER_ATTENTION_MAX_NODES,
+  issueService,
+} from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
+import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
+import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
+import {
+  decisionRetentionService,
+  DEFAULT_DECISION_SHELF_DAYS,
+} from "./decision-retention.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -98,6 +113,13 @@ const OPEN_DECISION_DEFAULT_LIMIT = 500;
 const OPEN_DECISION_MAX_LIMIT = 1_000;
 const ATTENTION_PAGE_DEFAULT_LIMIT = 50;
 const ATTENTION_PAGE_MAX_LIMIT = 100;
+const ATTENTION_GRAPH_QUERY_CHUNK_SIZE = 500;
+
+function chunkValues<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
 
 type IssueSummaryRow = {
   id: string;
@@ -106,6 +128,8 @@ type IssueSummaryRow = {
   title: string;
   status: string;
   priority: string;
+  /** Who may give the `in_review` verdict; `null`/absent ≡ "anyone" (PAP-16506). */
+  reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   createdAt: Date;
@@ -135,6 +159,8 @@ type BlockingIssueSummary = {
 
 type AttentionListOptions = AttentionFeedQuery & {
   userId?: string | null;
+  /** Internal-only escape hatch for callers that need one stable, unpaginated feed snapshot. */
+  allowUnscopedAll?: boolean;
 };
 
 type AttentionServiceOptions = {
@@ -217,10 +243,11 @@ function isPlanDocumentTarget(payload: Record<string, unknown>) {
   return target.type === "issue_document" && target.key === "plan";
 }
 
-function issueContext(issue: IssueSummaryRow | null | undefined) {
+function issueContext(issue: IssueSummaryRow | IssueSubjectRow | null | undefined) {
+  const summary = issue && "project" in issue ? issue : null;
   return {
-    project: issue?.project ?? null,
-    workspace: issue?.workspace ?? null,
+    project: summary?.project ?? null,
+    workspace: summary?.workspace ?? null,
   };
 }
 
@@ -321,6 +348,9 @@ function issueSubject(prefix: string, issue: IssueSubjectRow): AttentionSubject 
       priority: issue.priority,
       assigneeAgentId: issue.assigneeAgentId,
       assigneeUserId: issue.assigneeUserId,
+      // Only present when the row was selected with the column, so subjects
+      // built from narrower selects do not claim a policy they never read.
+      ...(issue.reviewPolicy !== undefined ? { reviewPolicy: issue.reviewPolicy } : {}),
     },
   };
 }
@@ -344,6 +374,11 @@ type CreateAttentionItemInput = Omit<AttentionItem,
   | "ruleKey"
   | "originAgentName"
   | "queues"
+  | "shelf"
+  | "retentionDays"
+  | "keep"
+  | "archivedAt"
+  | "retentionVersion"
   | "decideBy"
   | "decideByAttribution"
   | "snoozedUntil"
@@ -370,11 +405,17 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     ruleKey: input.ruleKey ?? null,
     originAgentName: input.originAgentName ?? null,
     queues: [],
+    shelf: false,
+    retentionDays: DEFAULT_DECISION_SHELF_DAYS,
+    keep: false,
+    archivedAt: null,
+    retentionVersion: 0,
     decideBy: null,
     decideByAttribution: null,
     snoozedUntil: null,
     detail: input.detail ?? null,
     trainingExampleId: null,
+    resolverAudience: input.resolverAudience ?? null,
     rank: 0,
   };
 }
@@ -387,6 +428,32 @@ function compareAttentionItems(left: AttentionItem, right: AttentionItem) {
   const sourceDiff = SOURCE_RANK[left.sourceKind] - SOURCE_RANK[right.sourceKind];
   if (sourceDiff !== 0) return sourceDiff;
   return left.dedupKey.localeCompare(right.dedupKey);
+}
+
+function blockedTaskCount(item: AttentionItem) {
+  return item.sourceKind === "blocker_attention"
+    && item.detail?.kind === "blocker"
+    && typeof item.detail.blockedTaskCount === "number"
+    ? item.detail.blockedTaskCount
+    : null;
+}
+
+/** Preserve the selected desk sort for every row slot while ordering blocker
+ * rows by the amount of work they hold up. */
+function orderBlockedAttentionByWeight(
+  items: AttentionItem[],
+  fallback: (left: AttentionItem, right: AttentionItem) => number,
+) {
+  const blockers = items
+    .filter((item) => blockedTaskCount(item) !== null)
+    .sort((left, right) => {
+      const weightDiff = (blockedTaskCount(right) ?? 0) - (blockedTaskCount(left) ?? 0);
+      return weightDiff !== 0 ? weightDiff : fallback(left, right);
+    });
+  if (blockers.length < 2) return items;
+
+  let blockerIndex = 0;
+  return items.map((item) => blockedTaskCount(item) === null ? item : blockers[blockerIndex++]!);
 }
 
 function sourceKey(sourceKind: AttentionSourceKind, sourceId: string) {
@@ -438,6 +505,12 @@ function isDecideNow(item: AttentionItem, now: number) {
   return bucket === 0 && deadline <= endOfUtcDay(now);
 }
 
+/** Surfaced today (arrival). Mirrors `attentionIsNewToday` in `ui/src/lib/attention.ts`. */
+function isNewToday(item: AttentionItem, now: number) {
+  const ts = timestamp(item.createdAt);
+  return ts > 0 && ts >= startOfUtcDay(now);
+}
+
 function compareDecideItems(left: AttentionItem, right: AttentionItem, now: number) {
   const [leftBucket, leftDeadline] = decideOrder(left, now);
   const [rightBucket, rightDeadline] = decideOrder(right, now);
@@ -479,7 +552,7 @@ function parseActivityBoundary(value: string | undefined, field: "activitySince"
   return parsed;
 }
 
-async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[]) {
+async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[], now: number) {
   if (items.length === 0) return items;
   const sourceIds = [...new Set(items.map((item) => item.subject.id))];
   const queueRows = await db
@@ -488,6 +561,7 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       sourceId: decisionQueueItems.sourceId,
       key: decisionQueues.key,
       title: decisionQueues.title,
+      retentionDays: decisionQueues.retentionDays,
     })
     .from(decisionQueueItems)
     .innerJoin(decisionQueues, and(
@@ -500,11 +574,17 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
     ))
     .orderBy(asc(decisionQueues.title), asc(decisionQueues.key));
   const queuesBySource = new Map<string, AttentionQueueRef[]>();
+  const retentionDaysBySource = new Map<string, number[]>();
   for (const row of queueRows) {
     const key = sourceKey(row.sourceKind as AttentionSourceKind, row.sourceId);
     const queues = queuesBySource.get(key) ?? [];
     queues.push({ key: row.key, title: row.title });
     queuesBySource.set(key, queues);
+    if (row.retentionDays != null) {
+      const values = retentionDaysBySource.get(key) ?? [];
+      values.push(row.retentionDays);
+      retentionDaysBySource.set(key, values);
+    }
   }
 
   const triageRows = await db
@@ -529,7 +609,7 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
     .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)))
     .then((rows) => rows.map((row) => [row.id, row.name] as const)));
 
-  return items.map((item) => {
+  const enriched = items.map((item) => {
     const triage = triageBySource.get(itemSourceKey(item));
     const decideBy = triage?.decideBy === "date" ? triage.decideByDate : triage?.decideBy ?? null;
     const decideByAttribution: AttentionTriageAttribution | null = triage ? {
@@ -549,6 +629,21 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       decideBy,
       decideByAttribution,
       snoozedUntil: triage?.snoozedUntil ? toIso(triage.snoozedUntil) : null,
+    };
+  });
+  const retentionBySource = await decisionRetentionService(db).syncItems(companyId, enriched);
+  return enriched.map((item) => {
+    const key = itemSourceKey(item);
+    const retention = retentionBySource.get(key);
+    const overrides = retentionDaysBySource.get(key) ?? [];
+    const retentionDays = overrides.length > 0 ? Math.min(...overrides) : DEFAULT_DECISION_SHELF_DAYS;
+    return {
+      ...item,
+      shelf: timestamp(item.activityAt) <= now - retentionDays * 86_400_000,
+      retentionDays,
+      keep: retention?.keep ?? false,
+      archivedAt: retention?.archivedAt ? toIso(retention.archivedAt) : null,
+      retentionVersion: retention?.version ?? 0,
     };
   });
 }
@@ -624,6 +719,71 @@ function interactionVerbs(kind: string, payload: Record<string, unknown>) {
   );
 }
 
+/**
+ * The resolver audience carried by an `issue_thread_interaction` feed row
+ * (PAP-17287). A collapsed queue row offers Accept/Reject long before anything
+ * fetches the interaction itself, so the audience the server will enforce has
+ * to ride along with the item — the queue must never ask for a decision without
+ * saying whose decision it is.
+ *
+ * Facts only. The stored columns are canonicalized through the same helper the
+ * resolution evaluator uses, so a pre-migration row cannot read as `Anyone`
+ * here while the API still treats it as `not_creator`.
+ */
+export function interactionResolverAudience(
+  row: {
+    addresseeAgentId: string | null;
+    createdByAgentId: string | null;
+    requestedResolverPolicy: string;
+    effectiveResolverPolicy: string;
+    resolverPolicyProvenance: string | null;
+    effectiveResolverPolicySource: string | null;
+  },
+  agentName: (agentId: string) => string | null,
+): AttentionResolverAudience {
+  const provenance = (row.resolverPolicyProvenance
+    ?? (row.requestedResolverPolicy === "board_only" || row.requestedResolverPolicy === "board_or_agents"
+      ? "legacy_inherited_restriction"
+      : "inherited")) as IssueThreadInteractionResolverPolicyProvenance;
+  return {
+    requestedResolverPolicy: canonicalizeStoredResolverPolicy(row.requestedResolverPolicy, provenance),
+    effectiveResolverPolicy: canonicalizeStoredResolverPolicy(row.effectiveResolverPolicy, provenance),
+    effectiveResolverPolicySource:
+      (row.effectiveResolverPolicySource ?? "requested") as IssueThreadInteractionEffectiveResolverPolicySource,
+    resolverPolicyProvenance: provenance,
+    addresseeAgentId: row.addresseeAgentId,
+    addresseeName: row.addresseeAgentId ? agentName(row.addresseeAgentId) : null,
+    createdByAgentId: row.createdByAgentId,
+    createdByAgentName: row.createdByAgentId ? agentName(row.createdByAgentId) : null,
+  };
+}
+
+function collapsePendingConfirmationsToNewest<T extends {
+  id: string;
+  issueId: string;
+  kind: string;
+  createdAt: Date;
+}>(rows: T[]) {
+  const newestByGroup = new Map<string, T>();
+  for (const row of rows) {
+    if (row.kind !== "request_confirmation") continue;
+    const groupKey = `${row.issueId}:${row.kind}`;
+    const newest = newestByGroup.get(groupKey);
+    if (
+      !newest
+      || row.createdAt.getTime() > newest.createdAt.getTime()
+      || (row.createdAt.getTime() === newest.createdAt.getTime() && row.id > newest.id)
+    ) {
+      newestByGroup.set(groupKey, row);
+    }
+  }
+
+  return rows.filter((row) => (
+    row.kind !== "request_confirmation"
+    || newestByGroup.get(`${row.issueId}:${row.kind}`)?.id === row.id
+  ));
+}
+
 function budgetObservedPercent(amountObserved: number, amountLimit: number) {
   return amountLimit > 0 ? Math.round((amountObserved / amountLimit) * 10_000) / 100 : 0;
 }
@@ -666,6 +826,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       title: issues.title,
       status: issues.status,
       priority: issues.priority,
+      reviewPolicy: issues.reviewPolicy,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeUserId: issues.assigneeUserId,
       createdAt: issues.createdAt,
@@ -683,7 +844,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       eq(issues.projectWorkspaceId, projectWorkspaces.id),
       eq(projectWorkspaces.companyId, companyId),
     ))
-    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), isNull(issues.hiddenAt)));
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), visibleIssueCondition()));
   return new Map(rows.map((row) => [row.id, {
     id: row.id,
     companyId: row.companyId,
@@ -691,6 +852,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
     title: row.title,
     status: row.status,
     priority: row.priority,
+    reviewPolicy: row.reviewPolicy ?? null,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     createdAt: row.createdAt,
@@ -787,6 +949,94 @@ async function blockingIssueMap(db: Db, companyId: string, blockedIssueIds: Arra
   return map;
 }
 
+type BlockedWorkEdge = {
+  fromIssueId: string | null;
+  issueId: string;
+};
+
+/**
+ * Counts open work held behind each blocker. The walk starts with explicit
+ * dependents, then follows both further dependency edges and issue children.
+ * Per-root visited sets make corrupt cycles harmless; the blocker analyzer's
+ * existing traversal caps bound unusually large graphs.
+ */
+async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: string[]) {
+  const rootIds = [...new Set(blockerIssueIds)];
+  const seenByRoot = new Map(rootIds.map((rootId) => [rootId, new Set<string>()]));
+  if (rootIds.length === 0) return new Map<string, number>();
+
+  const loadEdges = async (fromIssueIds: string[], includeChildren: boolean) => {
+    const rows: BlockedWorkEdge[] = [];
+    for (const chunk of chunkValues(fromIssueIds, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
+      const dependentRowsPromise: Promise<BlockedWorkEdge[]> = db
+        .select({
+          fromIssueId: issueRelations.issueId,
+          issueId: issues.id,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.issueId, chunk),
+          eq(issues.companyId, companyId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ));
+      const childRowsPromise: Promise<BlockedWorkEdge[]> = includeChildren
+        ? db
+          .select({
+            fromIssueId: issues.parentId,
+            issueId: issues.id,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, chunk),
+            isNull(issues.hiddenAt),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ))
+        : Promise.resolve([]);
+      const [dependentRows, childRows] = await Promise.all([dependentRowsPromise, childRowsPromise]);
+      rows.push(...dependentRows, ...childRows);
+    }
+    return rows;
+  };
+
+  let rootsByFrontierId = new Map<string, Set<string>>();
+  for (const edge of await loadEdges(rootIds, false)) {
+    if (!edge.fromIssueId || edge.issueId === edge.fromIssueId) continue;
+    const seen = seenByRoot.get(edge.fromIssueId);
+    if (!seen || seen.size >= BLOCKER_ATTENTION_MAX_NODES || seen.has(edge.issueId)) continue;
+    seen.add(edge.issueId);
+    const roots = rootsByFrontierId.get(edge.issueId) ?? new Set<string>();
+    roots.add(edge.fromIssueId);
+    rootsByFrontierId.set(edge.issueId, roots);
+  }
+
+  for (let depth = 1; rootsByFrontierId.size > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
+    const nextRootsByFrontierId = new Map<string, Set<string>>();
+    const edges = await loadEdges([...rootsByFrontierId.keys()], true);
+    for (const edge of edges) {
+      if (!edge.fromIssueId) continue;
+      const roots = rootsByFrontierId.get(edge.fromIssueId);
+      if (!roots) continue;
+      for (const rootId of roots) {
+        if (edge.issueId === rootId) continue;
+        const seen = seenByRoot.get(rootId);
+        if (!seen || seen.size >= BLOCKER_ATTENTION_MAX_NODES || seen.has(edge.issueId)) continue;
+        seen.add(edge.issueId);
+        const nextRoots = nextRootsByFrontierId.get(edge.issueId) ?? new Set<string>();
+        nextRoots.add(rootId);
+        nextRootsByFrontierId.set(edge.issueId, nextRoots);
+      }
+    }
+    rootsByFrontierId = nextRootsByFrontierId;
+  }
+
+  return new Map([...seenByRoot].map(([rootId, seen]) => [rootId, seen.size]));
+}
+
 /**
  * The task that blocks `issue` — never `issue` itself.
  *
@@ -824,8 +1074,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
   );
   return {
     list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
-      const prefix = await companyPrefix(db, companyId);
-      const dismissals = await dismissalByKey(db, companyId, options.userId);
+      if (options.all && !options.queue && !options.allowUnscopedAll) {
+        throw badRequest("all requires a queue filter");
+      }
+      const [prefix, dismissals] = await Promise.all([
+        companyPrefix(db, companyId),
+        dismissalByKey(db, companyId, options.userId),
+      ]);
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
       const collected: AttentionItem[] = [];
@@ -916,7 +1171,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
           payload: issueThreadInteractions.payload,
+          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
+          requestedResolverPolicy: issueThreadInteractions.requestedResolverPolicy,
+          effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
+          resolverPolicyProvenance: issueThreadInteractions.resolverPolicyProvenance,
+          effectiveResolverPolicySource: issueThreadInteractions.effectiveResolverPolicySource,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
         })
@@ -926,11 +1186,38 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
-      const interactionIssueMap = await issueSummaryMap(db, companyId, interactionRows.map((row) => row.issueId));
-      const interactionImageMap = await issueImageMap(db, companyId, interactionRows.map((row) => row.issueId));
-      const interactionPlanDocumentMap = await planDocumentMap(db, companyId, interactionRows.map((row) => row.issueId));
+      // Addressee invokability needs the org graph; the audience line also needs
+      // the creator's name whenever the effective policy excludes it, so a
+      // creator-excluding row pulls the roster in too (PAP-17287).
+      const needsCompanyAgents = interactionRows.some((row) =>
+        row.addresseeAgentId !== null
+        || canonicalizeStoredResolverPolicy(row.effectiveResolverPolicy, row.resolverPolicyProvenance) === "not_creator"
+      );
+      const companyAgentRows: AgentOrgRow[] = needsCompanyAgents
+        ? await db
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            reportsTo: agents.reportsTo,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, companyId))
+        : [];
+      const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
+      const boardInteractionRows = interactionRows.filter((row) =>
+        row.addresseeAgentId === null ||
+        !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable
+      );
+      const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
+      const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
+        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),
+        issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),
+        planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),
+      ]);
 
-      for (const interaction of interactionRows) {
+      for (const interaction of visibleInteractionRows) {
         const issue = interactionIssueMap.get(interaction.issueId) ?? null;
         const payload = readRecord(interaction.payload);
         const detail = interactionDetail({
@@ -974,10 +1261,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail,
+          resolverAudience: interactionResolverAudience(
+            interaction,
+            (agentId) => companyAgentMap.get(agentId)?.name ?? null,
+          ),
         }));
       }
 
-      const openDecisions = await db.select({
+      const openDecisionQuery = db.select({
         id: decisions.id,
         bundleId: decisions.bundleId,
         originAgentId: decisions.originAgentId,
@@ -990,18 +1281,22 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         createdAt: decisions.createdAt,
         updatedAt: decisions.updatedAt,
       }).from(decisions).where(and(eq(decisions.companyId, companyId), eq(decisions.status, "open")))
-        .orderBy(desc(decisions.updatedAt), desc(decisions.id))
-        .limit(openDecisionLimit);
-      const decisionIssueMap = await issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId));
+        .orderBy(desc(decisions.updatedAt), desc(decisions.id));
+      const openDecisions = options.all
+        ? await openDecisionQuery
+        : await openDecisionQuery.limit(openDecisionLimit);
       // Bundle titles let the feed render a single "Agent proposed N decisions"
       // group header over sibling decisions (v1 still decides each independently).
       const bundleIds = [...new Set(openDecisions.map((decision) => decision.bundleId).filter((value): value is string => Boolean(value)))];
       const bundleTitleMap = new Map<string, string>();
-      if (bundleIds.length > 0) {
-        const bundleRows = await db.select({ id: decisionBundles.id, title: decisionBundles.title })
-          .from(decisionBundles).where(and(eq(decisionBundles.companyId, companyId), inArray(decisionBundles.id, bundleIds)));
-        for (const row of bundleRows) bundleTitleMap.set(row.id, row.title);
-      }
+      const [decisionIssueMap, bundleRows] = await Promise.all([
+        issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId)),
+        bundleIds.length > 0
+          ? db.select({ id: decisionBundles.id, title: decisionBundles.title })
+            .from(decisionBundles).where(and(eq(decisionBundles.companyId, companyId), inArray(decisionBundles.id, bundleIds)))
+          : Promise.resolve([]),
+      ]);
+      for (const row of bundleRows) bundleTitleMap.set(row.id, row.title);
       for (const decision of openDecisions) {
         const issue = decisionIssueMap.get(decision.originIssueId) ?? null;
         add(createItem({
@@ -1099,12 +1394,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
-      const recoveryIssueMap = await issueSummaryMap(
-        db,
-        companyId,
-        recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId]),
-      );
-      const recoveryImageMap = await issueImageMap(db, companyId, recoveryRows.map((row) => row.sourceIssueId));
+      const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
+        issueSummaryMap(
+          db,
+          companyId,
+          recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId]),
+        ),
+        issueImageMap(db, companyId, recoveryRows.map((row) => row.sourceIssueId)),
+      ]);
 
       for (const recovery of recoveryRows) {
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
@@ -1176,9 +1473,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           notInArray(issues.status, [...PRODUCTIVITY_REVIEW_TERMINAL_STATUSES]),
         ))
         .orderBy(desc(issues.updatedAt), desc(issues.id));
-      const productivitySourceMap = await issueSummaryMap(db, companyId, productivityRows.map((row) => row.originId));
-      const productivityReviewMap = await issueSummaryMap(db, companyId, productivityRows.map((row) => row.id));
-      const productivityImageMap = await issueImageMap(db, companyId, productivityRows.map((row) => row.id));
+      const [productivitySourceMap, productivityReviewMap, productivityImageMap] = await Promise.all([
+        issueSummaryMap(db, companyId, productivityRows.map((row) => row.originId)),
+        issueSummaryMap(db, companyId, productivityRows.map((row) => row.id)),
+        issueImageMap(db, companyId, productivityRows.map((row) => row.id)),
+      ]);
 
       for (const review of productivityRows) {
         const reviewIssue = productivityReviewMap.get(review.id);
@@ -1210,14 +1509,39 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
-      const blockedIssueSummaries = await issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id));
-      const blockedImageMap = await issueImageMap(db, companyId, blockedIssues.map((issue) => issue.id));
-      const blockingIssues = await blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id));
-      for (const issue of blockedIssues as Array<IssueSubjectRow & {
-        blockerAttention?: { state?: string; sampleStalledBlockerIdentifier?: string | null; sampleBlockerIdentifier?: string | null } | null;
+      type BlockedAttentionIssue = IssueSubjectRow & {
+        blockerAttention?: {
+          state?: string;
+          sampleStalledBlockerIdentifier?: string | null;
+          sampleBlockerIdentifier?: string | null;
+          blockingTreeLive?: boolean;
+          terminalBlockerIssueId?: string | null;
+        } | null;
         unblockDescriptor?: { owner: { userId: string } | { agentId: string } | "board"; action: string } | null;
         blockedTransitionAt?: Date | null;
-      }>) {
+      };
+      const typedBlockedIssues = blockedIssues as BlockedAttentionIssue[];
+      const terminalBlockerIssueIds = typedBlockedIssues
+        .map((issue) => issue.blockerAttention?.terminalBlockerIssueId)
+        .filter((issueId): issueId is string => Boolean(issueId));
+      const [blockedIssueSummaries, terminalBlockerSummaries, blockerImageMap, blockingIssues] = await Promise.all([
+        issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id)),
+        issueSummaryMap(db, companyId, terminalBlockerIssueIds),
+        issueImageMap(
+          db,
+          companyId,
+          [...blockedIssues.map((issue) => issue.id), ...terminalBlockerIssueIds],
+        ),
+        blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id)),
+      ]);
+      const terminalCandidates = new Map<string, {
+        issue: BlockedAttentionIssue;
+        issueSummary: IssueSummaryRow | null;
+        terminalSummary: IssueSummaryRow | IssueSubjectRow;
+        state: "stalled" | "needs_attention";
+      }>();
+
+      for (const issue of typedBlockedIssues) {
         const descriptor = issue.unblockDescriptor;
         const humanOwnerMatches = descriptor?.owner === "board"
           || (descriptor?.owner && "userId" in descriptor.owner && descriptor.owner.userId === options.userId);
@@ -1245,44 +1569,62 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             detail: {
               kind: "blocker",
               blockingIssue: resolveBlockingIssue(issue, blockingIssues.get(issue.id)),
-              images: issueImages(blockedImageMap, issue.id),
+              images: issueImages(blockerImageMap, issue.id),
             },
           }));
         }
         const blockerAttention = issue.blockerAttention;
         if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
+        if (blockerAttention.blockingTreeLive) continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
-        const summarizedIssue = issueSummary ?? issue;
-        const sampledBlocker = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
-        const blockingIssue = resolveBlockingIssue(issue, blockingIssues.get(issue.id), sampledBlocker);
-        // The dedup key keeps its original fallback chain (including the issue's
-        // own identifier) on purpose: it is the stable identity a dismissal is
-        // recorded against, so narrowing it would resurrect dismissed rows.
-        const sample = sampledBlocker ?? issue.identifier ?? issue.id;
-        const dedupKey = `blocker:${issue.id}:${sample}`;
+        const terminalIssueId = blockerAttention.terminalBlockerIssueId ?? issue.id;
+        const terminalSummary = terminalBlockerSummaries.get(terminalIssueId)
+          ?? (terminalIssueId === issue.id ? issueSummary ?? issue : null);
+        if (!terminalSummary) continue;
+        const current = terminalCandidates.get(terminalIssueId);
+        if (!current || issue.updatedAt > current.issue.updatedAt) {
+          terminalCandidates.set(terminalIssueId, {
+            issue,
+            issueSummary,
+            terminalSummary,
+            state: blockerAttention.state,
+          });
+        }
+      }
+
+      const blockedWorkCounts = await blockedWorkCountMap(db, companyId, [...terminalCandidates.keys()]);
+      for (const [terminalIssueId, candidate] of terminalCandidates) {
+        const blockedTaskCount = blockedWorkCounts.get(terminalIssueId) ?? 0;
+        const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
+        const dedupKey = `blocker:${terminalIssueId}`;
         add(createItem({
           companyId,
           sourceKind: "blocker_attention",
-          subject: issueSubject(prefix, summarizedIssue),
-          whyNow: blockerAttention.state === "needs_attention"
-            ? "Blocked dependency chain needs human attention."
-            : "Blocked dependency chain is stalled and needs a human to choose the next owner or action.",
+          subject: issueSubject(prefix, candidate.terminalSummary),
+          whyNow: candidate.state === "needs_attention"
+            ? `Blocks ${blockedTaskCount} ${taskLabel} and needs human attention.`
+            : `Blocks ${blockedTaskCount} ${taskLabel}; choose the next owner or action.`,
           decisionVerbs: decisionVerbs(
             { id: "unblock", label: "Unblock", description: "Repair or replace the stalled blocker path." },
             { id: "reassign", label: "Reassign", description: "Assign the stalled blocker to a live owner." },
             { id: "nudge", label: "Nudge", description: "Wake or prompt the current owner." },
           ),
           inlineResolvable: false,
-          entryRule: `blocked issue has blockerAttention.state = '${blockerAttention.state}'`,
-          exitRule: "Blocker chain is no longer stalled or the issue leaves blocked status.",
+          entryRule: `terminal blocker has a non-live blockerAttention.state = '${candidate.state}'`,
+          exitRule: "The blocking tree becomes live or no open work remains blocked.",
           dedupKey,
           severity: "high",
-          activityAt: toIso(issue.updatedAt),
-          createdAt: toIso(issue.createdAt),
-          updatedAt: toIso(issue.updatedAt),
-          relatedIssue: null,
-          ...issueContext(issueSummary),
-          detail: { kind: "blocker", blockingIssue, images: issueImages(blockedImageMap, issue.id) },
+          activityAt: toIso(candidate.terminalSummary.updatedAt),
+          createdAt: toIso(candidate.terminalSummary.createdAt),
+          updatedAt: toIso(candidate.terminalSummary.updatedAt),
+          relatedIssue: candidate.issueSummary ? issueSubject(prefix, candidate.issueSummary) : null,
+          ...issueContext(candidate.terminalSummary),
+          detail: {
+            kind: "blocker",
+            blockingIssue: null,
+            blockedTaskCount,
+            images: issueImages(blockerImageMap, terminalIssueId),
+          },
         }));
       }
 
@@ -1301,7 +1643,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), isNull(issues.hiddenAt)))
+        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), visibleIssueCondition()))
         .orderBy(desc(issues.updatedAt), desc(issues.id));
       const reviewIssueIds = reviewRows.map((row) => row.id);
       const pendingReviewApprovalRows = reviewIssueIds.length === 0
@@ -1317,36 +1659,57 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(approvals.status, "pending"),
           ));
       const pendingApprovalByIssueId = new Map(pendingReviewApprovalRows.map((row) => [row.issueId, row.approvalId]));
-      const reviewIssueMap = await issueSummaryMap(db, companyId, reviewIssueIds);
-      const reviewImageMap = await issueImageMap(db, companyId, reviewIssueIds);
+      const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([
+        issueService(db).listReviewAttention(companyId, reviewRows),
+        issueSummaryMap(db, companyId, reviewIssueIds),
+        issueImageMap(db, companyId, reviewIssueIds),
+      ]);
 
       for (const review of reviewRows) {
         const state = parseIssueExecutionState(review.executionState);
         const currentParticipant = state?.status === "pending" ? state.currentParticipant : null;
         const hasHumanParticipant = currentParticipant?.type === "user";
         const pendingApprovalId = pendingApprovalByIssueId.get(review.id) ?? null;
-        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId) continue;
+        const reviewAttention = reviewAttentionByIssueId.get(review.id);
+        const stalled = reviewAttention?.state === "stalled";
+        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId && !stalled) continue;
         const issue = reviewIssueMap.get(review.id);
         if (!issue) continue;
         const dedupKey = `review:${review.id}`;
+        // A stalled review carries no interaction/approval/monitor to open, so
+        // it is resolved in-row with the three review verbs (PAP-16080 §4.4).
+        // Covered reviews still deep-link — their real action lives elsewhere
+        // (the pending interaction/approval card, a monitor, a live run).
+        const reviewSubject = issueSubject(prefix, issue);
         add(createItem({
           companyId,
           sourceKind: "review",
-          subject: issueSubject(prefix, issue),
-          whyNow: pendingApprovalId
+          subject: stalled
+            ? { ...reviewSubject, metadata: { ...reviewSubject.metadata, reviewAttentionState: "stalled" } }
+            : reviewSubject,
+          whyNow: stalled
+            ? "Issue is in review without a maintained reviewer, interaction, approval, monitor, run, wake, or recovery path."
+            : pendingApprovalId
             ? "Issue is in review with a linked pending approval."
             : hasHumanParticipant
               ? "Issue is in review and the current execution participant is a user."
               : "Issue is in review and assigned to a user.",
-          decisionVerbs: decisionVerbs(
-            { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
-            { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
-          ),
-          inlineResolvable: false,
-          entryRule: "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
+          decisionVerbs: stalled
+            ? decisionVerbs(
+                { id: "choose_review_path", label: "Choose review path", description: "Add a reviewer or waiting path, return the issue to work, or accept it." },
+                { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
+              )
+            : decisionVerbs(
+                { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
+                { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
+              ),
+          inlineResolvable: stalled,
+          entryRule: stalled
+            ? "issues.status = 'in_review' and reviewAttention.state = 'stalled'."
+            : "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
           exitRule: "Issue leaves in_review or the human review path resolves.",
           dedupKey,
-          severity: "medium",
+          severity: stalled ? "high" : "medium",
           activityAt: toIso(review.updatedAt),
           createdAt: toIso(review.createdAt),
           updatedAt: toIso(review.updatedAt),
@@ -1391,37 +1754,43 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const failedRows = [...latestExhaustedByRunId.values()];
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
-      const failedIssueMap = await issueSummaryMap(
-        db,
-        companyId,
-        failedIssueIds,
-      );
-      const failedImageMap = await issueImageMap(db, companyId, failedIssueIds);
       const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
       const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
         if (!oldest || row.createdAt < oldest) return row.createdAt;
         return oldest;
       }, null);
+      const [failedIssueMap, failedImageMap, newerRuns] = await Promise.all([
+        issueSummaryMap(
+          db,
+          companyId,
+          failedIssueIds,
+        ),
+        issueImageMap(db, companyId, failedIssueIds),
+        oldestFailedRunCreatedAt && failedAgentIds.length > 0
+          ? db
+            .select({
+              agentId: heartbeatRuns.agentId,
+              createdAt: heartbeatRuns.createdAt,
+              // Project just the ids readRunIssueId needs; pulling the whole
+              // context_snapshot detoasts megabytes per feed build.
+              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
+            })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, companyId),
+              inArray(heartbeatRuns.agentId, failedAgentIds),
+              gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
+            ))
+          : Promise.resolve([]),
+      ]);
       const latestRunCreatedAtByKey = new Map<string, Date>();
-      if (oldestFailedRunCreatedAt && failedAgentIds.length > 0) {
-        const newerRuns = await db
-          .select({
-            agentId: heartbeatRuns.agentId,
-            createdAt: heartbeatRuns.createdAt,
-            contextSnapshot: heartbeatRuns.contextSnapshot,
-          })
-          .from(heartbeatRuns)
-          .where(and(
-            eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.agentId, failedAgentIds),
-            gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
-          ));
-        for (const newerRun of newerRuns) {
-          const newerRunKey = `${newerRun.agentId}:${readRunIssueId(newerRun.contextSnapshot) ?? ""}`;
-          const latestCreatedAt = latestRunCreatedAtByKey.get(newerRunKey);
-          if (!latestCreatedAt || newerRun.createdAt > latestCreatedAt) {
-            latestRunCreatedAtByKey.set(newerRunKey, newerRun.createdAt);
-          }
+      for (const newerRun of newerRuns) {
+        const newerRunIssueId = readRunIssueId({ issueId: newerRun.runIssueId, taskId: newerRun.runTaskId });
+        const newerRunKey = `${newerRun.agentId}:${newerRunIssueId ?? ""}`;
+        const latestCreatedAt = latestRunCreatedAtByKey.get(newerRunKey);
+        if (!latestCreatedAt || newerRun.createdAt > latestCreatedAt) {
+          latestRunCreatedAtByKey.set(newerRunKey, newerRun.createdAt);
         }
       }
       for (const run of failedRows) {
@@ -1592,7 +1961,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
-      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems);
+      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
       const activityUntil = parseActivityBoundary(options.activityUntil, "activityUntil");
@@ -1601,6 +1970,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const queueKey = options.queue?.trim() || null;
       const visibleItems = enrichedItems.filter((item) => {
+        if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
         if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
         const activity = timestamp(item.activityAt);
         if (activitySince != null && activity < activitySince) return false;
@@ -1611,25 +1981,38 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const sort = options.sort ?? "activity";
       if (sort !== "activity" && sort !== "decide") throw badRequest("sort must be 'activity' or 'decide'");
-      const rankedItems = visibleItems
-        .sort(sort === "decide"
-          ? (left, right) => compareDecideItems(left, right, now)
-          : compareAttentionItems)
+      const selectedComparator = sort === "decide"
+        ? (left: AttentionItem, right: AttentionItem) => compareDecideItems(left, right, now)
+        : compareAttentionItems;
+      const rankedItems = orderBlockedAttentionByWeight(
+        visibleItems.sort(selectedComparator),
+        selectedComparator,
+      )
         .map((item, index) => ({ ...item, rank: index + 1 }));
-      const limit = options.limit ?? ATTENTION_PAGE_DEFAULT_LIMIT;
-      if (!Number.isInteger(limit) || limit < 1 || limit > ATTENTION_PAGE_MAX_LIMIT) {
-        throw badRequest(`limit must be an integer between 1 and ${ATTENTION_PAGE_MAX_LIMIT}`);
+      let items: AttentionItem[];
+      let nextCursor: string | null;
+      if (options.all) {
+        if (options.cursor || options.limit !== undefined) {
+          throw badRequest("all cannot be combined with cursor or limit");
+        }
+        items = rankedItems;
+        nextCursor = null;
+      } else {
+        const limit = options.limit ?? ATTENTION_PAGE_DEFAULT_LIMIT;
+        if (!Number.isInteger(limit) || limit < 1 || limit > ATTENTION_PAGE_MAX_LIMIT) {
+          throw badRequest(`limit must be an integer between 1 and ${ATTENTION_PAGE_MAX_LIMIT}`);
+        }
+        let pageStart = 0;
+        if (options.cursor) {
+          const cursorItemId = decodeCursor(options.cursor, sort);
+          const cursorIndex = rankedItems.findIndex((item) => item.id === cursorItemId);
+          if (cursorIndex < 0) throw badRequest("Attention cursor no longer matches the filtered feed");
+          pageStart = cursorIndex + 1;
+        }
+        items = rankedItems.slice(pageStart, pageStart + limit);
+        const hasNextPage = pageStart + items.length < rankedItems.length;
+        nextCursor = hasNextPage && items.length > 0 ? encodeCursor(sort, items[items.length - 1]!) : null;
       }
-      let pageStart = 0;
-      if (options.cursor) {
-        const cursorItemId = decodeCursor(options.cursor, sort);
-        const cursorIndex = rankedItems.findIndex((item) => item.id === cursorItemId);
-        if (cursorIndex < 0) throw badRequest("Attention cursor no longer matches the filtered feed");
-        pageStart = cursorIndex + 1;
-      }
-      const items = rankedItems.slice(pageStart, pageStart + limit);
-      const hasNextPage = pageStart + items.length < rankedItems.length;
-      const nextCursor = hasNextPage && items.length > 0 ? encodeCursor(sort, items[items.length - 1]!) : null;
 
       if (options.userId) {
         const trainable: Array<{ sourceKind: "approval" | "interaction"; sourceId: string }> = [];
@@ -1674,7 +2057,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
-        decideNowCount: rankedItems.filter((item) => isDecideNow(item, now)).length,
+        // Desk badge: distinct items that surfaced
+        // today OR carry an explicit decide-by deadline due today/past. Counted
+        // over the full ranked set (pre-pagination) so the sidebar badge stays
+        // company-wide accurate even on a small first page.
+        deskBadgeCount: rankedItems.filter((item) => isNewToday(item, now) || isDecideNow(item, now)).length,
         nextCursor,
         countsBySourceKind,
         items,

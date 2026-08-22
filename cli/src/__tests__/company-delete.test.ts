@@ -34,6 +34,8 @@ function makeCompany(overrides: Partial<Company>): Company {
     updatedAt: new Date(),
     ...overrides,
     workProductsRoot: overrides.workProductsRoot ?? null,
+    interactionResolverGovernance: overrides.interactionResolverGovernance ?? {},
+    routineGuardConfig: overrides.routineGuardConfig ?? {},
   };
 }
 

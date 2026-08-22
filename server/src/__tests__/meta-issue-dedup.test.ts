@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, issueComments, issues } from "@paperclipai/db";
+import { agents, companies, createDb, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { ensureUnblockBlockerCard } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
-import {
-  RECOVERY_CARD_TERMINAL_SUPPRESSION_MS,
-  UNBLOCK_CARD_TERMINAL_SUPPRESSION_MS,
-} from "../services/meta-issue-dedup.js";
+import { UNBLOCK_CARD_TERMINAL_SUPPRESSION_MS } from "../services/meta-issue-dedup.js";
 import { recoveryService } from "../services/recovery/service.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -247,7 +244,27 @@ describeEmbeddedPostgres("meta-issue dedup", () => {
         );
     }
 
-    it("second escalation reuses the open recovery card and records the occurrence as a comment", async () => {
+    async function boardReceipts(companyId: string) {
+      return db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "recovery_loop_cap_escalation"),
+          ),
+        );
+    }
+
+    // fork law / upstream f572e0867 (merged 2026-08-22): stranded escalation no
+    // longer mints the per-source "Recover ..." wrapper card — it was assigned to
+    // a substitute owner and woke them, i.e. the automatic takeover upstream
+    // removed. The board-visible artifact is the fork's signature-scoped board
+    // receipt (TSMC-20155/20183), linked on the board-owned action. The dedup
+    // contract this block pins is therefore the receipt's: one open receipt per
+    // (company, recovery signature), reused across occurrences and sources, and
+    // re-minted only once the board closes it.
+    it("second escalation reuses the open board receipt and folds the occurrence into the action (no per-source takeover card)", async () => {
       const seed = await seedCompany();
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
@@ -266,23 +283,26 @@ describeEmbeddedPostgres("meta-issue dedup", () => {
         comment: "Automatic continuation recovery failed.",
       });
 
-      const cards = await recoveryCards(seed.companyId, seed.sourceIssueId);
-      expect(cards).toHaveLength(1);
-      expect(cards[0]?.title).toBe(`Recover stalled issue ${seed.prefix}-1`);
-
-      const comments = await db
+      await expect(recoveryCards(seed.companyId, seed.sourceIssueId)).resolves.toHaveLength(0);
+      const [action] = await db
         .select()
-        .from(issueComments)
-        .where(eq(issueComments.issueId, cards[0]!.id));
-      const reuseComments = comments.filter((row) =>
-        row.body.includes("Reusing this open recovery card"),
-      );
-      expect(reuseComments).toHaveLength(1);
-      expect(reuseComments[0]?.body).toContain(`${seed.prefix}-1`);
-      expect(reuseComments[0]?.body).toContain("stranded_assigned_issue");
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, seed.sourceIssueId));
+      expect(action).toMatchObject({
+        ownerType: "board",
+        ownerAgentId: null,
+        attemptCount: 2,
+        recoveryIssueId: expect.any(String),
+      });
+      const receipts = await boardReceipts(seed.companyId);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]?.id).toBe(action?.recoveryIssueId);
+      expect(receipts[0]?.title).toContain("BOARD ACTION REQUIRED");
+      expect(receipts[0]?.assigneeAgentId).toBeNull();
+      expect(enqueueWakeup).not.toHaveBeenCalled();
     });
 
-    it("distinct source issues still mint distinct recovery cards", async () => {
+    it("distinct source issues with one stranded signature share one board receipt", async () => {
       const seed = await seedCompany();
       const otherSourceId = randomUUID();
       await db.insert(issues).values({
@@ -310,11 +330,23 @@ describeEmbeddedPostgres("meta-issue dedup", () => {
         latestRun: latestRunFor(seed.coderId),
       });
 
-      await expect(recoveryCards(seed.companyId, seed.sourceIssueId)).resolves.toHaveLength(1);
-      await expect(recoveryCards(seed.companyId, otherSourceId)).resolves.toHaveLength(1);
+      await expect(recoveryCards(seed.companyId, seed.sourceIssueId)).resolves.toHaveLength(0);
+      await expect(recoveryCards(seed.companyId, otherSourceId)).resolves.toHaveLength(0);
+      const actions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.companyId, seed.companyId));
+      expect(actions).toHaveLength(2);
+      const receipts = await boardReceipts(seed.companyId);
+      expect(receipts).toHaveLength(1);
+      for (const action of actions) {
+        expect(action.ownerType).toBe("board");
+        expect(action.recoveryIssueId).toBe(receipts[0]?.id);
+      }
+      expect(enqueueWakeup).not.toHaveBeenCalled();
     });
 
-    it("suppresses re-creation while an identical recovery card is freshly done, then remints after the window", async () => {
+    it("reuses the open board receipt and mints a fresh one only once the board closes it", async () => {
       const seed = await seedCompany();
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
@@ -324,40 +356,36 @@ describeEmbeddedPostgres("meta-issue dedup", () => {
         previousStatus: "in_progress",
         latestRun: latestRunFor(seed.coderId),
       });
-      const [card] = await recoveryCards(seed.companyId, seed.sourceIssueId);
-      expect(card).toBeTruthy();
-      await issuesSvc.update(card!.id, { status: "done" });
-      const commentCountBefore = (
-        await db.select().from(issueComments).where(eq(issueComments.issueId, card!.id))
-      ).length;
+      const [firstReceipt] = await boardReceipts(seed.companyId);
+      expect(firstReceipt).toBeTruthy();
 
       await recovery.escalateStrandedAssignedIssue({
         issue: seed.sourceIssue,
         previousStatus: "in_progress",
         latestRun: latestRunFor(seed.coderId),
       });
+      await expect(boardReceipts(seed.companyId)).resolves.toHaveLength(1);
 
-      const afterSuppressed = await recoveryCards(seed.companyId, seed.sourceIssueId);
-      expect(afterSuppressed).toHaveLength(1);
-      expect(afterSuppressed[0]?.status).toBe("done");
-      await expect(
-        db.select().from(issueComments).where(eq(issueComments.issueId, card!.id)),
-      ).resolves.toHaveLength(commentCountBefore);
-
-      await db
-        .update(issues)
-        .set({ completedAt: new Date(Date.now() - RECOVERY_CARD_TERMINAL_SUPPRESSION_MS - 60_000) })
-        .where(eq(issues.id, card!.id));
-
+      await issuesSvc.update(firstReceipt!.id, { status: "done" });
       await recovery.escalateStrandedAssignedIssue({
         issue: seed.sourceIssue,
         previousStatus: "in_progress",
         latestRun: latestRunFor(seed.coderId),
       });
 
-      const reminted = await recoveryCards(seed.companyId, seed.sourceIssueId);
-      expect(reminted).toHaveLength(2);
-      expect(reminted.filter((row) => row.status === "done")).toHaveLength(1);
+      const receipts = await boardReceipts(seed.companyId);
+      expect(receipts).toHaveLength(2);
+      expect(receipts.filter((row) => row.status === "done")).toHaveLength(1);
+      const openReceipt = receipts.find((row) => row.status !== "done");
+      // The board-owned action re-links to the live receipt (fork invariant:
+      // a board owner is not an execution destination; the receipt is).
+      const [action] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, seed.sourceIssueId));
+      expect(action).toMatchObject({ ownerType: "board", attemptCount: 3, recoveryIssueId: openReceipt?.id });
+      await expect(recoveryCards(seed.companyId, seed.sourceIssueId)).resolves.toHaveLength(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
     });
   });
 });

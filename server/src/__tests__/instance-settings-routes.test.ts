@@ -17,6 +17,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  findManagedSandboxEnvironment: vi.fn(),
+  update: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -31,6 +33,10 @@ function registerModuleMocks() {
   }));
 }
 
+// Identity object the mocked db.transaction hands to writers; tests assert
+// both the marker clear and the settings update receive THIS same tx.
+const TX_SENTINEL = { __tx: true };
+
 async function createApp(actor: any) {
   const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -42,7 +48,13 @@ async function createApp(actor: any) {
     req.actor = actor;
     next();
   });
-  app.use("/api", instanceSettingsRoutes({} as any));
+  const mockDb = {
+    // Runs the callback with a sentinel tx and propagates throws, so a
+    // failing write inside rejects the whole request exactly like a real
+    // transaction rollback.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
+  };
+  app.use("/api", instanceSettingsRoutes(mockDb as any));
   app.use(errorHandler);
   return app;
 }
@@ -66,6 +78,9 @@ describe("instance settings routes", () => {
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
     mockEnvironmentService.getById.mockReset();
+    mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
+    mockEnvironmentService.update.mockReset();
     mockLogActivity.mockReset();
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
@@ -293,10 +308,79 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
-      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
-    });
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
+      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
+      { db: TX_SENTINEL },
+    );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the managed-default stamp marker on an explicit tenant default write", async () => {
+    // A tenant write of defaultEnvironmentId reclassifies the default as
+    // tenant-chosen: the reconciliation stamp marker on the managed
+    // sandbox row must not survive, or a later managed-sandbox-only
+    // mode-off pass would mistake the tenant's choice for a stamp.
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
+      id: "managed-env-1",
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(patchRes.status).toBe(200);
+    expect(mockEnvironmentService.update).toHaveBeenCalledWith(
+      "managed-env-1",
+      { metadata: { managedByPaperclip: true } },
+      { db: TX_SENTINEL },
+    );
+    // Both writes commit in ONE transaction — each receives the SAME tx —
+    // so no partial failure can desync the stamp marker from the default
+    // (neither a stale stamp on a tenant choice, nor a reconciliation
+    // default that lost its marker and can never revert).
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
+      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
+      { db: TX_SENTINEL },
+    );
+  });
+
+  it("aborts the whole request (no committed settings) when the stamp-marker clear fails inside the transaction", async () => {
+    // The marker clear and the settings write share a transaction, so a
+    // failure in either rolls the whole thing back — a real DB would
+    // discard both; here the settings write is never even reached.
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
+      id: "managed-env-1",
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    mockEnvironmentService.update.mockRejectedValue(new Error("metadata write failed"));
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(patchRes.status).toBeGreaterThanOrEqual(500);
+    expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
   });
 
   it("rejects unknown defaultEnvironmentId values with 422", async () => {
@@ -719,6 +803,125 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ executionMode: "kubernetes" });
+    });
+  });
+
+  describe("operator-hidden settings floor", () => {
+    const adminActor = {
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+    };
+
+    afterEach(() => {
+      delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    });
+
+    it("rejects a write that changes a hidden general field", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.censorUsernameInLogs";
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ censorUsernameInLogs: true });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("allows a same-value echo of a hidden general field", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.censorUsernameInLogs";
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ censorUsernameInLogs: false, keyboardShortcuts: true });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: true,
+      });
+    });
+
+    it("deep-compares hidden backupRetention echoes instead of rejecting them", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.backupRetention";
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      });
+      const app = await createApp(adminActor);
+
+      const echo = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } });
+      expect(echo.status).toBe(200);
+
+      const change = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ backupRetention: { dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 1 } });
+      expect(change.status).toBe(403);
+      expect(change.body.details).toMatchObject({ code: "settings_operator_managed" });
+    });
+
+    it("rejects a write that changes a hidden experimental toggle", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental.enableEnvironments";
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("allows writes to non-hidden experimental toggles while others are hidden", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.enableEnvironments,instance.experimental.enableServerInfoDebugView";
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableIsolatedWorkspaces: true });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+        enableIsolatedWorkspaces: true,
+      });
+    });
+
+    it("floors every experimental toggle when the whole Experimental page is hidden", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental";
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableIsolatedWorkspaces: true });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("keeps every field writable when the env var is unset", async () => {
+      const app = await createApp(adminActor);
+
+      const general = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ censorUsernameInLogs: true });
+      expect(general.status).toBe(200);
+
+      const experimental = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true });
+      expect(experimental.status).toBe(200);
     });
   });
 });

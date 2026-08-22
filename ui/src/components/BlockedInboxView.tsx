@@ -367,6 +367,7 @@ function BlockedInboxRow({
       issue={row.issue}
       issueLinkState={issueLinkState}
       toOverride={askDeepLink}
+      showDivider
       desktopMetaLeading={
         <BlockedRowDesktopMeta
           row={row}

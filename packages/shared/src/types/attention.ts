@@ -1,3 +1,8 @@
+import type {
+  IssueThreadInteractionCanonicalResolverPolicy,
+  IssueThreadInteractionEffectiveResolverPolicySource,
+  IssueThreadInteractionResolverPolicyProvenance,
+} from "../constants.js";
 import type { InboxDismissalKind } from "./inbox-dismissal.js";
 
 export const ATTENTION_SOURCE_KINDS = [
@@ -78,6 +83,9 @@ export type AttentionSortMode = "activity" | "decide";
 
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
+  archived?: boolean;
+  /** Return the complete filtered snapshot in one response. */
+  all?: boolean;
   activitySince?: string;
   activityUntil?: string;
   queue?: string;
@@ -155,6 +163,7 @@ export type AttentionItemDetail =
         identifier: string | null;
         title: string | null;
       } | null;
+      blockedTaskCount?: number;
       images: AttentionDetailImage[];
     }
   | {
@@ -175,6 +184,36 @@ export type AttentionItemDetail =
       summaryExcerpt: string | null;
       images: AttentionDetailImage[];
     };
+
+/**
+ * Who may resolve an issue-thread interaction, as the server evaluated it
+ * (PAP-17287). A collapsed attention row carries decision buttons before the
+ * full interaction is ever fetched, so the audience has to travel with the feed
+ * item — otherwise the queue asks for a decision without saying whose it is.
+ *
+ * These are *facts*, not copy: the canonical policy the resolution evaluator
+ * will apply plus the identities it will compare against. Presentation layers
+ * turn them into a sentence; nothing here grants or withholds capability, which
+ * the server re-checks at use time.
+ */
+export interface AttentionResolverAudience {
+  /** Canonical policy the creator asked for, before caps and clamps. */
+  requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  /** Canonical policy the server will actually enforce. */
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  /** Why the effective policy differs from the requested one, if it does. */
+  effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+  /** Whether the requested policy was explicit, inherited, or pre-migration. */
+  resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
+  /** Agent the card is addressed to, when it names one. */
+  addresseeAgentId: string | null;
+  /** Display name of {@link addresseeAgentId}, resolved server-side. */
+  addresseeName: string | null;
+  /** Agent that created the card, excluded when the policy is `not_creator`. */
+  createdByAgentId: string | null;
+  /** Display name of {@link createdByAgentId}, resolved server-side. */
+  createdByAgentName: string | null;
+}
 
 export interface AttentionItem {
   id: string;
@@ -201,18 +240,34 @@ export interface AttentionItem {
   ruleKey: string | null;
   originAgentName: string | null;
   queues: AttentionQueueRef[];
+  shelf: boolean;
+  retentionDays: number;
+  keep: boolean;
+  archivedAt: string | null;
+  retentionVersion: number;
   decideBy: string | null;
   decideByAttribution: AttentionTriageAttribution | null;
   snoozedUntil: string | null;
   detail: AttentionItemDetail | null;
   trainingExampleId: string | null;
+  /**
+   * Set for `issue_thread_interaction` rows only. Absent on every other source
+   * kind, whose decisions are not governed by a resolver policy.
+   */
+  resolverAudience?: AttentionResolverAudience | null;
 }
 
 export interface AttentionFeed {
   companyId: string;
   generatedAt: string;
   totalCount: number;
-  decideNowCount: number;
+  /**
+   * The sidebar badge: distinct items that either surfaced today ("new today")
+   * or carry an explicit decide-by deadline that is due today/past ("overdue").
+   * Computed before pagination so a small first page still reflects the
+   * company-wide load. The desk no longer editorializes about what "can wait".
+   */
+  deskBadgeCount: number;
   nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];

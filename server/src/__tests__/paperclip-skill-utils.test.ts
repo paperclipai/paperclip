@@ -90,6 +90,22 @@ describe("paperclip skill utils", () => {
     expect(normalized).toContain("Escalate sideways or up to an _agent_ first");
   });
 
+  it("documents governed agent interaction resolution invariants", async () => {
+    const apiReference = await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8");
+    const issueDocs = await fs.readFile(path.resolve("docs/api/issues.md"), "utf8");
+    for (const body of [apiReference, issueDocs]) {
+      expect(body).toContain('resolverPolicy: "anyone" | "not_creator" | "human_only"');
+      expect(body).toContain("requestedResolverPolicy");
+      expect(body).toContain("effectiveResolverPolicy");
+      expect(body).toContain("toolAction");
+      expect(body).toContain("watchdog");
+      expect(body).toContain("low-trust");
+      expect(body).toContain("addresseeAgentId");
+      expect(body).toContain("interaction_pending");
+      expect(body).toContain("attention feed");
+    }
+  });
+
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
 

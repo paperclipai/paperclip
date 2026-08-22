@@ -20,6 +20,8 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
+  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
@@ -690,6 +692,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: runtimeExecutionTarget,
+      enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+      duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(runtimeExecutionTarget),
       runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
       adapterKey: "claude",
       timeoutSec,
@@ -725,7 +729,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       effectiveEffort = "";
       await onLog(
         "stderr",
-        `[paperclip] Claude CLI in the sandbox does not advertise --effort; omitting configured effort "${effort}". Upgrade the sandbox CLI/image to restore reasoning-effort control.\n`,
+        `[paperclip] Claude CLI in the environment does not advertise --effort; omitting configured effort "${effort}". Upgrade the environment CLI/image to restore reasoning-effort control.\n`,
       );
     }
   }
@@ -848,11 +852,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
   ) => {
-    const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+    const args = ["--print", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
+      localProcessUid: process.getuid?.() ?? null,
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier

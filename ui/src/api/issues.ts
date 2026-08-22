@@ -17,6 +17,8 @@ import type {
   IssueLabel,
   IssueRecoveryAction,
   IssueRetryNowResponse,
+  StalledReviewDecision,
+  StalledReviewDecisionResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -164,6 +166,8 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  decideStalledReview: (id: string, data: StalledReviewDecision) =>
+    api.post<StalledReviewDecisionResponse>(`/issues/${id}/stalled-review-decision`, data),
   resolveRecoveryAction: (
     id: string,
     data: {
@@ -338,6 +342,8 @@ export const issuesApi = {
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
   listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
+  ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
+    api.post<IssueDocument>(`/issues/${id}/work-products/${workProductId}/review-document`, {}),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>

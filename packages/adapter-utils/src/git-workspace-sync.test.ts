@@ -11,9 +11,12 @@ import {
   createRemoteGitExportRef,
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
+  integrateImportedGitHead,
   isMissingGitPrerequisiteError,
   readGitWorkspaceSnapshot,
   runLocalGit,
+  sanitizeGitRemoteUrl,
+  setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
 
@@ -27,11 +30,37 @@ describe("git workspace sync", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    setExpensiveWorkspaceGitExecutor(null);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("delegates every host-side full-tree enumeration to the registered scheduler", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scheduler-hook-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, "untracked.txt"), "untracked\n", "utf8");
+    const operations: string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      operations.push(input.operation);
+      return await runLocalGit(input.localDir, [...input.args], {
+        timeout: input.timeout,
+        maxBuffer: input.maxBuffer,
+      });
+    });
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+
+    expect(snapshot?.overlayPaths).toContain("untracked.txt");
+    expect(operations.sort()).toEqual([
+      "adapter_sync.deleted_files",
+      "adapter_sync.ignored_files",
+      "adapter_sync.overlay_diff",
+      "adapter_sync.untracked_files",
+    ]);
   });
 
   async function createRepo(rootDir: string): Promise<string> {
@@ -70,6 +99,101 @@ describe("git workspace sync", () => {
       expect(await git(cloneDir, ["rev-list", "--count", "HEAD"])).toBe("1");
       expect(await git(cloneDir, ["branch", "--show-current"])).toBe("main");
       await expect(readFile(path.join(cloneDir, "tracked.txt"), "utf8")).resolves.toBe("base\n");
+    });
+  });
+
+  it("copies the workspace origin remote into the shallow clone", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", "https://github.com/example/repo.git"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["remote", "get-url", "origin"])).toBe("https://github.com/example/repo.git");
+    });
+  });
+
+  it("scrubs credentials from the origin remote before copying it", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-origin-scrub-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", "https://x-access-token:sekret@github.com/example/repo.git"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["remote", "get-url", "origin"])).toBe("https://github.com/example/repo.git");
+    });
+  });
+
+  it("leaves the shallow clone remote-less when the workspace has no origin", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await expect(git(cloneDir, ["remote", "get-url", "origin"])).rejects.toThrow();
+    });
+  });
+
+  it("drops a filesystem-path origin instead of copying it into the shallow clone", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-path-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", path.join(rootDir, "elsewhere.git")]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await expect(git(cloneDir, ["remote", "get-url", "origin"])).rejects.toThrow();
+    });
+  });
+
+  it("pushes new commits from the shallow clone to an origin that holds the base commit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-shallow-push-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const upstream = path.join(rootDir, "upstream.git");
+    await mkdir(upstream, { recursive: true });
+    await git(upstream, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "origin", upstream]);
+    await git(repo, ["push", "origin", "main"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await git(cloneDir, ["config", "user.name", "Paperclip Sandbox"]);
+      await git(cloneDir, ["config", "user.email", "sandbox@paperclip.dev"]);
+      await writeFile(path.join(cloneDir, "change.txt"), "sandbox change\n", "utf8");
+      await git(cloneDir, ["add", "change.txt"]);
+      await git(cloneDir, ["commit", "-m", "sandbox change"]);
+      const cloneHead = await git(cloneDir, ["rev-parse", "HEAD"]);
+
+      // A filesystem-path origin is dropped by the allowlist, so configure the
+      // remote explicitly — the property under test is the push itself: the
+      // clone is shallow (single grafted commit), but the boundary commit
+      // already exists on the origin, so the push pack closes without full
+      // ancestry. That is what makes transported branches publishable.
+      await git(cloneDir, ["remote", "add", "origin", upstream]);
+      await git(cloneDir, ["push", "origin", "HEAD:refs/heads/sandbox-change"]);
+
+      expect(await git(upstream, ["rev-parse", "refs/heads/sandbox-change"])).toBe(cloneHead);
+      expect(await git(upstream, ["merge-base", "refs/heads/main", "refs/heads/sandbox-change"])).toBe(baseHead);
     });
   });
 
@@ -298,5 +422,160 @@ describe("git workspace sync", () => {
     } finally {
       await deleteLocalGitRef({ localDir: host, ref: importedRef });
     }
+  });
+
+  it("creates the concurrent-history merge commit with a deterministic identity", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-merge-identity-"));
+    cleanupDirs.push(rootDir);
+    // No repo-local user.name/user.email on purpose: execution hosts are
+    // containers without git config, where commit-tree cannot auto-detect an
+    // identity. Setup commits pass their identity inline so only the merge
+    // commit under test depends on the sync-supplied identity.
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await writeFile(path.join(repo, "local.txt"), "local\n", "utf8");
+    await git(repo, ["add", "local.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "local advance"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await git(repo, ["checkout", "-b", "imported", baseHead]);
+    await writeFile(path.join(repo, "imported.txt"), "imported\n", "utf8");
+    await git(repo, ["add", "imported.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "sandbox change"]);
+    const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["checkout", "main"]);
+
+    // Ambient identity env vars would override the `-c` flags and make the
+    // assertion machine-dependent, so clear them for the call under test.
+    const identityEnvKeys = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"];
+    const savedEnv = new Map(identityEnvKeys.map((key) => [key, process.env[key]]));
+    for (const key of identityEnvKeys) delete process.env[key];
+    try {
+      await integrateImportedGitHead({ localDir: repo, importedHead });
+    } finally {
+      for (const [key, value] of savedEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    const parents = (await git(repo, ["rev-list", "--parents", "-1", "HEAD"])).split(" ");
+    expect(parents.slice(1)).toEqual([currentHead, importedHead]);
+    expect(await git(repo, ["log", "-1", "--format=%an|%ae|%cn|%ce"]))
+      .toBe("Paperclip|noreply@paperclip.ing|Paperclip|noreply@paperclip.ing");
+    expect(await git(repo, ["log", "-1", "--format=%s"]))
+      .toBe(`Paperclip remote git sync merge ${importedHead.slice(0, 12)}`);
+    const mergedTree = await git(repo, ["ls-tree", "--name-only", "HEAD"]);
+    expect(mergedTree).toContain("local.txt");
+    expect(mergedTree).toContain("imported.txt");
+  });
+
+  it("grafts an imported head onto the current head when histories share no ancestor", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-graft-"));
+    cleanupDirs.push(rootDir);
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await writeFile(path.join(repo, "local.txt"), "local\n", "utf8");
+    await git(repo, ["add", "local.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "local advance"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    // The shape a depth-1 shallow clone produces after `git commit --amend`:
+    // a parentless root commit that shares no ancestor with the host history.
+    const importedTree = await git(repo, ["rev-parse", `${baseHead}^{tree}`]);
+    const importedHead = await git(repo, [...setupIdentity, "commit-tree", importedTree, "-m", "sandbox rewrite"]);
+
+    await integrateImportedGitHead({ localDir: repo, importedHead });
+
+    const parents = (await git(repo, ["rev-list", "--parents", "-1", "HEAD"])).split(" ");
+    expect(parents.slice(1)).toEqual([currentHead]);
+    // The imported tree is taken wholesale: no base exists to merge against.
+    expect(await git(repo, ["rev-parse", "HEAD^{tree}"])).toBe(importedTree);
+    expect(await git(repo, ["log", "-1", "--format=%s"])).toBe("sandbox rewrite");
+    const body = await git(repo, ["log", "-1", "--format=%B"]);
+    expect(body).toContain(`Paperclip remote git sync graft ${importedHead.slice(0, 12)}`);
+    expect(body).toContain("shares no ancestor");
+  });
+
+  it("does not graft when merge-base fails for a reason other than missing ancestry", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-graft-"));
+    cleanupDirs.push(rootDir);
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    // A well-formed sha the repository does not hold: merge-base fails with an
+    // object error (exit 128), not the no-ancestor signal (exit 1). The graft
+    // must not fire, and the integration keeps its loud failure.
+    const missingHead = "0123456789abcdef0123456789abcdef01234567";
+    await expect(integrateImportedGitHead({ localDir: repo, importedHead: missingHead }))
+      .rejects.toThrow(/Failed to merge concurrent remote git histories/);
+    expect(await git(repo, ["rev-parse", "HEAD"])).toBe(currentHead);
+  });
+});
+
+describe("sanitizeGitRemoteUrl", () => {
+  it("strips userinfo, query, and fragment from http(s) URLs", () => {
+    expect(sanitizeGitRemoteUrl("https://x-access-token:sekret@github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://sekret-token@github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("http://user:pass@git.internal/example/repo.git"))
+      .toBe("http://git.internal/example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git?private_token=sekret#fragment"))
+      .toBe("https://github.com/example/repo.git");
+  });
+
+  it("strips password and query from ssh-scheme URLs but keeps the username", () => {
+    expect(sanitizeGitRemoteUrl("ssh://git@github.com/example/repo.git"))
+      .toBe("ssh://git@github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("ssh://git:sekret@github.com/example/repo.git"))
+      .toBe("ssh://git@github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("git+ssh://git@github.com/example/repo.git?key=sekret"))
+      .toBe("git+ssh://git@github.com/example/repo.git");
+  });
+
+  it("keeps credential-free scp-like remotes unchanged", () => {
+    expect(sanitizeGitRemoteUrl("git@github.com:example/repo.git"))
+      .toBe("git@github.com:example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+  });
+
+  it("drops every shape whose credential surface is unknown", () => {
+    // Filesystem paths are useless on the execution host and could leak
+    // host-layout details; unknown schemes and malformed userinfo could carry
+    // embedded secrets the sanitizer cannot recognize. All fail closed.
+    expect(sanitizeGitRemoteUrl("/tmp/local/upstream.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("ftp://user:pass@host/repo.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("user:pass@host:path/repo.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("host.example:path/repo.git")).toBeNull();
+  });
+
+  it("returns null for empty input", () => {
+    expect(sanitizeGitRemoteUrl("")).toBeNull();
+    expect(sanitizeGitRemoteUrl("   ")).toBeNull();
   });
 });

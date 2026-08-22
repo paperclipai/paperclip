@@ -1,3 +1,4 @@
+import type { InteractionResolverGovernance } from "@paperclipai/shared";
 import { type AnyPgColumn, pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
@@ -27,6 +28,10 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),
+    interactionResolverGovernance: jsonb("interaction_resolver_governance")
+      .$type<InteractionResolverGovernance>()
+      .notNull()
+      .default({}),
     feedbackDataSharingEnabled: boolean("feedback_data_sharing_enabled")
       .notNull()
       .default(false),

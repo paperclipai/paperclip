@@ -15,29 +15,53 @@ import { formatMonitorOffset } from "../lib/issue-monitor";
 import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
-import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
+import {
+  isAssignedBacklogBlocker,
+  orderWaitingBlockers,
+  type WaitingBlockerStatus,
+} from "../lib/issue-blockers";
+import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { Badge } from "@/components/ui/badge";
 import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
 } from "../lib/recovery-display";
+import {
+  formatRecoveryLineageSummary,
+  readRecoveryRetryLineage,
+} from "../lib/recovery-lineage";
 import { StatusGlyph } from "./StatusGlyph";
 
-function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
-  const state = deriveActiveRecoveryDisplayState(action);
+function BlockerRecoveryIndicator({
+  action,
+  scheduledRetry,
+}: {
+  action: IssueRecoveryAction;
+  /** The blocker's own scheduled retry, used to verify that the stored attempt is in flight. */
+  scheduledRetry?: IssueScheduledRetry | null;
+}) {
+  const liveness = { scheduledRetry: scheduledRetry ?? null };
+  const state = deriveActiveRecoveryDisplayState(action, liveness);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
-  const label = recoveryChipLabel(state, action.kind);
+  // The blocker chip reads the same stored lineage as the source task's recovery card, so
+  // a parent view never contradicts the task it is waiting on.
+  const lineage = readRecoveryRetryLineage(action, liveness);
+  const label = recoveryChipLabel(state, action.kind, lineage);
+  const detail = lineage ? formatRecoveryLineageSummary(lineage) : null;
   return (
     <Badge variant="outline"
       data-testid="issue-blocked-notice-recovery-indicator"
       data-recovery-state={state}
       data-recovery-kind={action.kind}
+      data-recovery-lane={lineage?.lane}
       role="status"
-      aria-label={label}
-      title={`${label} — open the source task to act.`}
+      aria-label={detail ? `${label} — ${detail}` : label}
+      title={detail
+        ? `${label} — ${detail}. Open the source task to act.`
+        : `${label} — open the source task to act.`}
       className={`[&>svg]:size-2.5 gap-0.5 px-1.5 text-(length:--text-nano) ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
@@ -113,27 +137,6 @@ function SuccessfulRunRetryNowControl({
 
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new Set<string>();
 
-type WaitingStepStatus = "done" | "running" | "queued";
-
-function classifyWaitingStep(
-  blocker: IssueRelationIssueSummary,
-  liveIds: ReadonlySet<string>,
-): WaitingStepStatus {
-  // A resolved blocker (done/cancelled) is a completed step; a blocker with a
-  // live run is the one currently being worked; everything else is queued.
-  if (blocker.status === "done" || blocker.status === "cancelled") return "done";
-  if (liveIds.has(blocker.id)) return "running";
-  return "queued";
-}
-
-// Ordering heuristic (plan §3): done → running → queued, tie-break by identifier
-// (P1…Pn plan naming). The payload doesn't carry explicit chain order.
-const WAITING_STEP_RANK: Record<WaitingStepStatus, number> = {
-  done: 0,
-  running: 1,
-  queued: 2,
-};
-
 function waitingTaskStatusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
@@ -170,7 +173,7 @@ function WaitingChipLink({
   );
 }
 
-function WaitingStepGlyph({ status }: { status: WaitingStepStatus }) {
+function WaitingStepGlyph({ status }: { status: WaitingBlockerStatus }) {
   if (status === "done") {
     return <CheckCircle2 className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" aria-hidden />;
   }
@@ -182,6 +185,56 @@ function WaitingStepGlyph({ status }: { status: WaitingStepStatus }) {
     );
   }
   return <Circle className="h-3.5 w-3.5 text-blue-300 dark:text-blue-500/50" aria-hidden />;
+}
+
+/**
+ * Calm in-flight counterpart to the amber "still needs a next step" alarm.
+ * The handoff is still `required`, but a correction run is live on the issue,
+ * so the alarm would be crying wolf while an agent is already working. Saying
+ * it quietly beats saying nothing: the reader still learns a disposition is
+ * outstanding, and learns that the alarm comes back if the run ends without
+ * choosing one.
+ */
+function SuccessfulRunHandoffInFlightNotice({
+  liveRunId,
+  assigneeAgentId,
+}: {
+  liveRunId?: string | null;
+  assigneeAgentId?: string | null;
+}) {
+  const shortRunId = liveRunId ? liveRunId.slice(0, 8) : null;
+  return (
+    <div
+      data-testid="issue-next-step-in-flight"
+      data-successful-run-handoff="in_flight"
+      className="mb-3 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+    >
+      <div className="flex items-start gap-2">
+        <span className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+        </span>
+        <p className="min-w-0 leading-5">
+          A correction run is in progress — the agent is working. This alert returns if the run
+          stops without choosing a next step.
+          {shortRunId ? (
+            <>
+              {" "}
+              {assigneeAgentId ? (
+                <Link
+                  to={`/agents/${assigneeAgentId}/runs/${liveRunId}`}
+                  className="font-mono underline underline-offset-2 hover:text-foreground"
+                >
+                  run {shortRunId}
+                </Link>
+              ) : (
+                <span className="font-mono">run {shortRunId}</span>
+              )}
+            </>
+          ) : null}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -204,15 +257,7 @@ function WaitingOnLiveWorkNotice({
   parkedBlockers: IssueRelationIssueSummary[];
   renderParkedChip: (blocker: IssueRelationIssueSummary) => ReactNode;
 }) {
-  const steps = chainBlockers
-    .map((blocker) => ({ blocker, status: classifyWaitingStep(blocker, liveIds) }))
-    .sort((a, b) => {
-      const rank = WAITING_STEP_RANK[a.status] - WAITING_STEP_RANK[b.status];
-      if (rank !== 0) return rank;
-      const aKey = a.blocker.identifier ?? a.blocker.id;
-      const bKey = b.blocker.identifier ?? b.blocker.id;
-      return aKey.localeCompare(bKey, undefined, { numeric: true });
-    });
+  const steps = orderWaitingBlockers(chainBlockers, liveIds);
   const total = steps.length;
   const doneCount = steps.filter((step) => step.status === "done").length;
   const runningCount = steps.filter((step) => step.status === "running").length;
@@ -379,8 +424,37 @@ export function IssueBlockedNotice({
   agentName?: string | null;
 }) {
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
-  const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
-  if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
+  // A live run on this issue means an agent is already handling it — the
+  // missing-disposition complaint only applies when the issue is stuck.
+  // `hasLiveContinuation` is the server's view; `liveIssueIds` catches runs
+  // that started after the issue payload was fetched.
+  const issueHasLiveRun = Boolean(issueId && liveIssueIds?.has(issueId));
+  const showSuccessfulRunHandoff =
+    successfulRunHandoff != null
+    && isSuccessfulRunHandoffRequired({ successfulRunHandoff, scheduledRetry })
+    && !issueHasLiveRun;
+  // Outstanding handoff + a live run on the issue: the alarm is suppressed, so
+  // render the quiet in-flight line in its place rather than nothing at all.
+  // The unpromoted-scheduled-retry carve-out keeps `showSuccessfulRunHandoff`
+  // true, so the amber notice (and its "Retry now" control) still wins there.
+  // This stands in for the handoff alarm only. When the issue also has
+  // blockers, the blocker notice below is the stronger signal and owns the
+  // slot, exactly as it did before this line existed.
+  const handoffInFlightNotice =
+    successfulRunHandoff != null
+    && successfulRunHandoff.required === true
+    && !showSuccessfulRunHandoff
+    && (successfulRunHandoff.hasLiveContinuation || issueHasLiveRun)
+      ? (
+        <SuccessfulRunHandoffInFlightNotice
+          liveRunId={successfulRunHandoff.liveRunId}
+          assigneeAgentId={successfulRunHandoff.assigneeAgentId}
+        />
+      )
+      : null;
+  if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") {
+    return handoffInFlightNotice;
+  }
   const successfulRunRetryNow = showSuccessfulRunHandoff
     && issueId
     && scheduledRetry?.status === "scheduled_retry"
@@ -483,7 +557,12 @@ export function IssueBlockedNotice({
         <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        {recoveryAction ? (
+          <BlockerRecoveryIndicator
+            action={recoveryAction}
+            scheduledRetry={blocker.scheduledRetry}
+          />
+        ) : null}
       </IssueLinkQuicklook>
     );
   };

@@ -230,11 +230,28 @@ describeEmbeddedPostgres("decision queue routes", () => {
 
     await request(app(board))
       .delete(`/api/companies/${companyId}/decision-queues/triage/items/review/${issueId}`)
+      .send({ reason: "Handled in the release review" })
       .expect(200);
     expect(await db.select().from(decisionQueueItems).where(and(
       eq(decisionQueueItems.companyId, companyId),
       eq(decisionQueueItems.sourceKind, "review"),
     ))).toHaveLength(0);
+    const removalAudit = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.action, "decision_queue_item.removed"),
+    )).then((rows) => rows[0]);
+    expect(removalAudit?.details).toMatchObject({
+      sourceKind: "review",
+      sourceId: issueId,
+      reason: "Handled in the release review",
+    });
+    const removalEvent = await db.select().from(decisionTriageEvents).where(and(
+      eq(decisionTriageEvents.companyId, companyId),
+      eq(decisionTriageEvents.sourceKind, "review"),
+      eq(decisionTriageEvents.sourceId, issueId),
+      eq(decisionTriageEvents.action, "queue_item.removed"),
+    )).then((rows) => rows[0]);
+    expect(removalEvent?.details).toEqual({ reason: "Handled in the release review" });
 
     await db.delete(approvals).where(eq(approvals.id, approvalId));
     await request(app(board))

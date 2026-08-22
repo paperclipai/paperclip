@@ -22,11 +22,16 @@ import {
   ISSUE_RECOVERY_ACTION_OUTCOMES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
   ISSUE_RECOVERY_ACTION_STATUSES,
+  ISSUE_REVIEW_POLICIES,
   ISSUE_WORK_MODES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES,
   ISSUE_THREAD_INTERACTION_KINDS,
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   MODEL_PROFILE_KEYS,
@@ -35,6 +40,7 @@ import {
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
+import { objectWithoutDefaults } from "./partial.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -62,12 +68,12 @@ export const issueBlockedInboxReasonSchema = z.enum([
 ]);
 
 export const issueBlockedInboxIssueRefSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   identifier: z.string().nullable(),
   title: z.string(),
   status: z.enum(ISSUE_STATUSES),
   priority: z.enum(ISSUE_PRIORITIES),
-  assigneeAgentId: z.string().uuid().nullable(),
+  assigneeAgentId: z.string().guid().nullable(),
   assigneeUserId: z.string().nullable(),
 }).strict();
 
@@ -79,7 +85,7 @@ export const issueBlockedInboxAttentionSchema = z.object({
   stoppedSinceAt: z.string().datetime().nullable(),
   owner: z.object({
     type: z.enum(["agent", "user", "board", "external", "unknown"]),
-    agentId: z.string().uuid().nullable(),
+    agentId: z.string().guid().nullable(),
     userId: z.string().nullable(),
     label: z.string().nullable(),
   }).strict(),
@@ -90,8 +96,8 @@ export const issueBlockedInboxAttentionSchema = z.object({
   sourceIssue: issueBlockedInboxIssueRefSchema.nullable(),
   leafIssue: issueBlockedInboxIssueRefSchema.nullable(),
   recoveryIssue: issueBlockedInboxIssueRefSchema.nullable(),
-  approvalId: z.string().uuid().nullable(),
-  interactionId: z.string().uuid().nullable(),
+  approvalId: z.string().guid().nullable(),
+  interactionId: z.string().guid().nullable(),
   sampleIssueIdentifier: z.string().nullable(),
   redaction: z.object({
     externalDetailsRedacted: z.boolean(),
@@ -108,16 +114,50 @@ export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "agent_default",
 ] as const;
 
+// Mirrors git check-ref-format for a single branch name. The runtime verifies
+// the branch actually exists before attaching, so this only rejects values
+// that could never be a branch (path escapes, option injection, ref syntax).
+export function isValidExistingBranchName(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false;
+  if (value.startsWith("-") || value.startsWith("/") || value.startsWith(".")) return false;
+  if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) return false;
+  if (value.includes("..") || value.includes("//") || value.includes("@{") || value.includes("/.")) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(value)) return false;
+  return true;
+}
+
 const executionWorkspaceStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
+    existingBranch: z.string().trim().refine(isValidExistingBranchName, {
+      message: "existingBranch must be a valid git branch name",
+    }).optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
+    runtimeProvisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((strategy, ctx) => {
+    if (!strategy.existingBranch) return;
+    if (strategy.type !== "git_worktree") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["existingBranch"],
+        message: "existingBranch requires workspaceStrategy.type \"git_worktree\"",
+      });
+    }
+    if (strategy.branchTemplate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["existingBranch"],
+        message: "existingBranch and branchTemplate are mutually exclusive",
+      });
+    }
+  });
 
 const ipv4CidrPattern = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
 const protectedTaskEgressCidrs = [
@@ -153,7 +193,8 @@ function isAllowedTaskEgressCidr(cidr: string): boolean {
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
-    environmentId: z.string().uuid().optional().nullable(),
+    sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
+    environmentId: z.string().guid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     networkEgress: z.object({
@@ -170,7 +211,16 @@ export const issueExecutionWorkspaceSettingsSchema = z
       )).max(100).optional(),
     }).strict().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((settings, ctx) => {
+    if (settings.workspaceStrategy?.existingBranch && settings.mode !== "isolated_workspace") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workspaceStrategy", "existingBranch"],
+        message: "existingBranch requires mode \"isolated_workspace\"",
+      });
+    }
+  });
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
@@ -258,7 +308,7 @@ export const issueCloseContractSchema = z.union([
 
 const issueExecutionStagePrincipalBaseSchema = z.object({
   type: z.enum(["agent", "user"]),
-  agentId: z.string().uuid().optional().nullable(),
+  agentId: z.string().guid().optional().nullable(),
   userId: z.string().optional().nullable(),
 });
 
@@ -282,7 +332,7 @@ export const issueExecutionStagePrincipalSchema = issueExecutionStagePrincipalBa
   });
 
 export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipalBaseSchema.extend({
-  id: z.string().uuid().optional(),
+  id: z.string().guid().optional(),
 }).superRefine((value, ctx) => {
   if (value.type === "agent") {
     if (!value.agentId) {
@@ -302,7 +352,7 @@ export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipal
 });
 
 export const issueExecutionStageSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: z.string().guid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
@@ -332,15 +382,15 @@ export const issueExternalWaitSchema = z.object({
 export const issueVerificationRefSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("attachment"),
-    attachmentId: z.string().uuid(),
+    attachmentId: z.string().guid(),
   }).strict(),
   z.object({
     kind: z.literal("document"),
-    documentId: z.string().uuid(),
+    documentId: z.string().guid(),
   }).strict(),
   z.object({
     kind: z.literal("work_product"),
-    workProductId: z.string().uuid(),
+    workProductId: z.string().guid(),
   }).strict(),
   z.object({
     kind: z.literal("url"),
@@ -386,31 +436,31 @@ export const issueReviewRequestSchema = z.object({
 
 export const issueExecutionStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_STATE_STATUSES),
-  currentStageId: z.string().uuid().nullable(),
+  currentStageId: z.string().guid().nullable(),
   currentStageIndex: z.number().int().nonnegative().nullable(),
   currentStageType: z.enum(ISSUE_EXECUTION_STAGE_TYPES).nullable(),
   currentParticipant: issueExecutionStagePrincipalSchema.nullable(),
   returnAssignee: issueExecutionStagePrincipalSchema.nullable(),
   reviewRequest: issueReviewRequestSchema.nullable().optional().default(null),
-  completedStageIds: z.array(z.string().uuid()).default([]),
-  lastDecisionId: z.string().uuid().nullable(),
+  completedStageIds: z.array(z.string().guid()).default([]),
+  lastDecisionId: z.string().guid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  sourceIssueId: z.string().uuid(),
-  recoveryIssueId: z.string().uuid().nullable(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  sourceIssueId: z.string().guid(),
+  recoveryIssueId: z.string().guid().nullable(),
   kind: z.enum(ISSUE_RECOVERY_ACTION_KINDS),
   status: z.enum(ISSUE_RECOVERY_ACTION_STATUSES),
   ownerType: z.enum(ISSUE_RECOVERY_ACTION_OWNER_TYPES),
-  ownerAgentId: z.string().uuid().nullable(),
+  ownerAgentId: z.string().guid().nullable(),
   ownerUserId: z.string().nullable(),
-  previousOwnerAgentId: z.string().uuid().nullable(),
-  returnOwnerAgentId: z.string().uuid().nullable(),
+  previousOwnerAgentId: z.string().guid().nullable(),
+  returnOwnerAgentId: z.string().guid().nullable(),
   cause: z.string().min(1),
   fingerprint: z.string().min(1),
   evidence: z.record(z.string(), z.unknown()),
@@ -438,7 +488,7 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
 ] as const;
 
 export const resolveIssueRecoveryActionSchema = z.object({
-  actionId: z.string().uuid().optional(),
+  actionId: z.string().guid().optional(),
   outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
   sourceIssueStatus: z.enum(["todo", "in_progress", "done", "in_review", "blocked", "cancelled"]),
   resolutionNote: multilineTextSchema.optional().nullable(),
@@ -537,14 +587,14 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
 }
 
 const createIssueBaseSchema = z.object({
-  projectId: z.string().uuid().optional().nullable(),
-  projectWorkspaceId: z.string().uuid().optional().nullable(),
-  goalId: z.string().uuid().optional().nullable(),
-  parentId: z.string().uuid().optional().nullable(),
-  blockedByIssueIds: z.array(z.string().uuid()).optional(),
+  projectId: z.string().guid().optional().nullable(),
+  projectWorkspaceId: z.string().guid().optional().nullable(),
+  goalId: z.string().guid().optional().nullable(),
+  parentId: z.string().guid().optional().nullable(),
+  blockedByIssueIds: z.array(z.string().guid()).optional(),
   unblockDescriptor: z.object({
     owner: z.union([
-      z.object({ agentId: z.string().uuid() }).strict(),
+      z.object({ agentId: z.string().guid() }).strict(),
       z.object({ userId: z.string().trim().min(1) }).strict(),
       z.literal("board"),
     ]),
@@ -553,14 +603,15 @@ const createIssueBaseSchema = z.object({
     // blockedByIssueIds; pairs with assigneeAgentId at write time.
     blockedUntil: z.string().datetime({ offset: true }).nullable().optional(),
   }).strict().optional().nullable(),
-  inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
+  inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
-  assigneeAgentId: z.string().uuid().optional().nullable(),
+  reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
+  assigneeAgentId: z.string().guid().optional().nullable(),
   preserveFallbackSisterAssignee: z.boolean().optional().default(false),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
@@ -572,16 +623,16 @@ const createIssueBaseSchema = z.object({
   /** Generation/measurement template — defaults a quality-floored closeContract when omitted (TSMC-18738). */
   cardTemplate: z.enum(GENERATION_MEASUREMENT_CARD_TEMPLATES).optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
-  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  executionWorkspaceId: z.string().guid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
-  labelIds: z.array(z.string().uuid()).optional(),
+  labelIds: z.array(z.string().guid()).optional(),
   watchdogDiscovery: z.object({
     kind: z.enum(ISSUE_WATCHDOG_DISCOVERY_KINDS),
     evidenceMarkdown: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
   watchdog: z.object({
-    agentId: z.string().uuid(),
+    agentId: z.string().guid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
 });
@@ -607,19 +658,30 @@ const createIssueDuplicateGuardSchema = {
     .default(false),
 };
 
+// Narrow intent flag set by the onboarding wizard on the single first task. The
+// server owns the resulting origin kind (clients cannot set arbitrary origin
+// kinds) and uses it to seed the agent greeting instead of an LLM welcome step.
+const onboardingFirstTaskMarkerSchema = {
+  onboardingFirstTask: z.boolean().optional(),
+};
+
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
+  ...onboardingFirstTaskMarkerSchema,
 });
 
 export const createIssueSchema = withCreateIssueStatusDefault(
-  createIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
+  createIssueBaseSchema.extend({
+    ...createIssueDuplicateGuardSchema,
+    ...onboardingFirstTaskMarkerSchema,
+  }),
 ).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
 export const upsertIssueWatchdogSchema = z.object({
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
   instructions: multilineTextSchema.optional().nullable(),
 }).strict();
 
@@ -639,7 +701,7 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
 export const createAcceptedPlanDecompositionSchema = z.object({
-  acceptedPlanRevisionId: z.string().uuid(),
+  acceptedPlanRevisionId: z.string().guid(),
   children: z.array(createChildIssueSchema).min(1).max(25),
 });
 
@@ -652,15 +714,19 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueBaseSchema.omit({
-  createdByUserId: true,
-  responsibleUserId: true,
-  watchdog: true,
-}).partial().extend({
+export const updateIssueSchema = objectWithoutDefaults(
+  createIssueBaseSchema.omit({
+    createdByUserId: true,
+    responsibleUserId: true,
+    watchdog: true,
+  }),
+).partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   verificationRef: issueVerificationRefSchema.optional(),
+  onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
+  reviewInteractionId: z.string().guid().optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
@@ -672,8 +738,23 @@ export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueVerificationRef = z.infer<typeof issueVerificationRefSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 
+export const stalledReviewDecisionSchema = z.object({
+  action: z.enum(["approve", "request_changes", "send_back"]),
+  note: multilineTextSchema.pipe(z.string().min(1)).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.action === "request_changes" && !value.note?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["note"],
+      message: "Request changes requires a note",
+    });
+  }
+});
+
+export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
+
 export const checkoutIssueSchema = z.object({
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
   checkoutType: z.enum(["execution", "review"]).optional(),
 });
@@ -719,20 +800,21 @@ const issueCommentMetadataKeyValueRowSchema = issueCommentMetadataBaseRowSchema.
 
 const issueCommentMetadataIssueLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
   type: z.literal("issue_link"),
-  issueId: z.string().uuid().nullable().optional(),
+  issueId: z.string().guid().nullable().optional(),
   identifier: z.string().trim().min(1).max(80).nullable().optional(),
   title: z.string().trim().min(1).max(240).nullable().optional(),
 }).strict();
 
 const issueCommentMetadataAgentLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
   type: z.literal("agent_link"),
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
   name: z.string().trim().min(1).max(160).nullable().optional(),
 }).strict();
 
 const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
   type: z.literal("run_link"),
-  runId: z.string().uuid(),
+  runId: z.string().guid(),
+  agentId: z.string().guid().nullable().optional(),
   title: z.string().trim().min(1).max(160).nullable().optional(),
 }).strict();
 
@@ -760,7 +842,8 @@ export const issueCommentMetadataSectionSchema = z.object({
 
 export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
-  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().guid().nullable().optional(),
+  authorizationReason: z.string().trim().min(1).max(160).nullable().optional(),
   sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
 }).strict();
 
@@ -768,6 +851,7 @@ export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
+  onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
@@ -780,6 +864,18 @@ export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
+export const issueThreadInteractionCanonicalResolverPolicySchema = z
+  .enum(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES)
+  .describe("Canonical resolver audience: anyone, not_creator, or human_only.");
+export const issueThreadInteractionResolverPolicySchema = z
+  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)
+  .describe(
+    "Resolver audience. Use anyone, not_creator, or human_only; board_or_agents and board_only are deprecated compatibility aliases.",
+  );
+export const issueThreadInteractionResolverPolicyProvenanceSchema = z
+  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES);
+export const issueThreadInteractionEffectiveResolverPolicySourceSchema = z
+  .enum(ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
@@ -794,15 +890,15 @@ export const issueDocumentKeySchema = z
 export const suggestedTaskDraftSchema = z.object({
   clientKey: z.string().trim().min(1).max(120),
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
-  parentId: z.string().uuid().nullable().optional(),
+  parentId: z.string().guid().nullable().optional(),
   title: z.string().trim().min(1).max(240),
   description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
   workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
-  assigneeAgentId: z.string().uuid().nullable().optional(),
+  assigneeAgentId: z.string().guid().nullable().optional(),
   assigneeUserId: z.string().trim().min(1).nullable().optional(),
-  projectId: z.string().uuid().nullable().optional(),
-  goalId: z.string().uuid().nullable().optional(),
+  projectId: z.string().guid().nullable().optional(),
+  goalId: z.string().guid().nullable().optional(),
   billingCode: z.string().trim().max(120).nullable().optional(),
   labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
   hiddenInPreview: z.boolean().optional(),
@@ -818,7 +914,7 @@ export const suggestedTaskDraftSchema = z.object({
 
 export const suggestTasksPayloadSchema = z.object({
   version: z.literal(1),
-  defaultParentId: z.string().uuid().nullable().optional(),
+  defaultParentId: z.string().guid().nullable().optional(),
   tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
 }).superRefine((value, ctx) => {
   const seenClientKeys = new Set<string>();
@@ -837,16 +933,16 @@ export const suggestTasksPayloadSchema = z.object({
 
 export const suggestTasksResultCreatedTaskSchema = z.object({
   clientKey: z.string().trim().min(1).max(120),
-  issueId: z.string().uuid(),
+  issueId: z.string().guid(),
   identifier: z.string().trim().min(1).nullable().optional(),
   title: z.string().trim().min(1).nullable().optional(),
-  parentIssueId: z.string().uuid().nullable().optional(),
+  parentIssueId: z.string().guid().nullable().optional(),
   parentIdentifier: z.string().trim().min(1).nullable().optional(),
 });
 
 export const suggestTasksResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed"]).optional(),
+  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
@@ -857,6 +953,12 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
+  freeText: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, selecting this option reveals an inline text field; the typed value is returned as the question's otherText. Use this for a real \"I'll describe it\" choice instead of authoring a dead option that does nothing. At most one free-text option per question.",
+    ),
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
@@ -890,6 +992,7 @@ export const askUserQuestionsPayloadSchema = z.object({
     seenQuestionIds.add(question.id);
 
     const seenOptionIds = new Set<string>();
+    let freeTextOptionCount = 0;
     for (const [optionIndex, option] of question.options.entries()) {
       if (seenOptionIds.has(option.id)) {
         ctx.addIssue({
@@ -899,6 +1002,16 @@ export const askUserQuestionsPayloadSchema = z.object({
         });
       }
       seenOptionIds.add(option.id);
+      if (option.freeText) {
+        freeTextOptionCount += 1;
+        if (freeTextOptionCount > 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "A question may declare at most one free-text option",
+            path: ["questions", questionIndex, "options", optionIndex, "freeText"],
+          });
+        }
+      }
     }
   }
 });
@@ -911,13 +1024,16 @@ export const askUserQuestionsAnswerSchema = z.object({
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed"]).optional(),
+  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
-  expirationReason: z.enum(["superseded_by_comment", "stale_issue_state"]).optional(),
-  commentId: z.string().uuid().nullable().optional(),
+  expirationReason: z.enum(["superseded_by_comment", "stale_issue_state", "superseded_by_newer_interaction"]).optional(),
+  commentId: z.string().guid().nullable().optional(),
+  // Set alongside expirationReason "superseded_by_newer_interaction": the id of
+  // the newer sibling ask_user_questions that replaced this one (PAP-437).
+  supersededByInteractionId: z.string().guid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -934,10 +1050,10 @@ const requestConfirmationTargetBaseSchema = z.object({
 
 export const requestConfirmationIssueDocumentTargetSchema = requestConfirmationTargetBaseSchema.extend({
   type: z.literal("issue_document"),
-  issueId: z.string().uuid().nullable().optional(),
-  documentId: z.string().uuid().nullable().optional(),
+  issueId: z.string().guid().nullable().optional(),
+  documentId: z.string().guid().nullable().optional(),
   key: issueDocumentKeySchema,
-  revisionId: z.string().uuid(),
+  revisionId: z.string().guid(),
   revisionNumber: z.number().int().positive().nullable().optional(),
 });
 
@@ -955,12 +1071,12 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
 
 export const requestConfirmationToolActionPayloadSchema = z.object({
   version: z.literal(1),
-  actionRequestId: z.string().uuid(),
-  invocationId: z.string().uuid(),
+  actionRequestId: z.string().guid(),
+  invocationId: z.string().guid(),
   toolName: z.string().trim().min(1).max(500),
   toolDisplayName: z.string().trim().min(1).max(500),
-  connectionId: z.string().uuid().nullable(),
-  applicationId: z.string().uuid().nullable(),
+  connectionId: z.string().guid().nullable(),
+  applicationId: z.string().guid().nullable(),
   appDisplayName: z.string().trim().min(1).max(500).nullable(),
   risk: z.enum(["write", "destructive"]),
   previewMarkdown: z.string().trim().min(1).max(20000),
@@ -993,16 +1109,27 @@ export const REQUEST_CONFIRMATION_MINIMAL_CONTRACT = {
   },
 };
 
+export const requestConfirmationSecretProposalPayloadSchema = z.object({
+  version: z.literal(1),
+  proposalId: z.string().guid(),
+  sourceSecretLabel: z.string().trim().min(1).max(500),
+  configPath: z.string().trim().min(1).max(500),
+  targetAgentId: z.string().guid(),
+  targetAgentName: z.string().trim().min(1).max(500),
+  justification: z.string().trim().min(1).max(20000),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1, {
-    errorMap: () => ({
-      message: "payload.version must be literal 1 (request_confirmation minimal contract)",
-    }),
+    error: "payload.version must be literal 1 (request_confirmation minimal contract)",
   }),
   prompt: z
     .string({
-      required_error: "payload.prompt is required (request_confirmation minimal contract)",
-      invalid_type_error: "payload.prompt must be a non-empty string (request_confirmation minimal contract)",
+      error: (issue) =>
+        issue.input === undefined
+          ? "payload.prompt is required (request_confirmation minimal contract)"
+          : "payload.prompt must be a non-empty string (request_confirmation minimal contract)",
     })
     .trim()
     .min(1, "payload.prompt is required (request_confirmation minimal contract)")
@@ -1020,6 +1147,7 @@ export const requestConfirmationPayloadSchema = z.object({
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
+  secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
 });
 
 /**
@@ -1037,14 +1165,17 @@ export const requestConfirmationCreatePayloadSchema = z.preprocess(
  * the failure is unrelated.
  */
 export function formatRequestConfirmationValidationError(error: {
-  errors: Array<{ path: (string | number)[]; message: string }>;
+  issues: Array<{ path: PropertyKey[]; message: string }>;
 }): {
   error: string;
   contract: typeof REQUEST_CONFIRMATION_MINIMAL_CONTRACT;
   details: Array<{ path: (string | number)[]; message: string }>;
   missing: string[];
 } | null {
-  const details = error.errors ?? [];
+  const details = (error.issues ?? []).map((issue) => ({
+    path: issue.path.map((segment) => (typeof segment === "symbol" ? String(segment) : segment)),
+    message: issue.message,
+  }));
   const paths = details.map((issue) => issue.path.map(String).join("."));
   const touchesConfirmation =
     paths.some((path) =>
@@ -1190,9 +1321,9 @@ export const requestConfirmationResumeFailureSchema = z.object({
   errorCode: z.string().trim().min(1).max(120).nullable(),
   attempt: z.number().int().min(0).max(100),
   maxAttempts: z.number().int().min(0).max(100),
-  runId: z.string().uuid().nullable().optional(),
-  retryRunId: z.string().uuid().nullable().optional(),
-  recoveryActionId: z.string().uuid().nullable().optional(),
+  runId: z.string().guid().nullable().optional(),
+  retryRunId: z.string().guid().nullable().optional(),
+  recoveryActionId: z.string().guid().nullable().optional(),
   updatedAt: z.string().trim().min(1).nullable().optional(),
 });
 
@@ -1209,14 +1340,33 @@ export const requestConfirmationToolActionResultSchema = z.object({
   updatedAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationSecretProposalResultSchema = z.object({
+  version: z.literal(1),
+  status: z.enum(["executed", "failed", "rejected", "withdrawn", "expired"]),
+  errorCode: z.string().trim().min(1).max(120).nullable().optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "stale_issue_state", "withdrawn", "issue_closed"]),
+  outcome: z.enum([
+    "accepted",
+    "rejected",
+    "superseded_by_comment",
+    "superseded_by_newer_request",
+    "stale_target",
+    "stale_issue_state",
+    "withdrawn",
+    "issue_closed",
+    "addressee_deleted",
+  ]),
   reason: z.string().trim().max(4000).nullable().optional(),
-  commentId: z.string().uuid().nullable().optional(),
+  commentId: z.string().guid().nullable().optional(),
+  supersededByInteractionId: z.string().guid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
   resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionResultSchema.optional(),
+  secretProposal: requestConfirmationSecretProposalResultSchema.optional(),
 });
 
 // Operator asks (request_confirmation / ask_user_questions) MUST carry a summary: a crisp
@@ -1225,10 +1375,10 @@ export const requestConfirmationResultSchema = z.object({
 // presence + length; the make-a-skill rule enforces the ASK/WHY/ACTION + user-facing-link quality.
 export const requiredAskSummarySchema = z
   .string({
-    required_error:
-      "summary is required for asks — write a crisp ASK / WHY / ACTION (one line each); request_confirmation also needs payload.version=1 and payload.prompt",
-    invalid_type_error:
-      "summary must be a non-empty string (ASK / WHY / ACTION); request_confirmation also needs payload.version=1 and payload.prompt",
+    error: (issue) =>
+      issue.input === undefined
+        ? "summary is required for asks — write a crisp ASK / WHY / ACTION (one line each); request_confirmation also needs payload.version=1 and payload.prompt"
+        : "summary must be a non-empty string (ASK / WHY / ACTION); request_confirmation also needs payload.version=1 and payload.prompt",
   })
   .trim()
   .min(1, "summary is required for asks — write a crisp ASK / WHY / ACTION (one line each)")
@@ -1261,7 +1411,7 @@ export const requestItemVerdictsItemSchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
   previewMarkdown: z.string().max(20000).nullable().optional(),
   href: requestConfirmationHrefSchema.nullable().optional(),
-  attachmentId: z.string().uuid().nullable().optional(),
+  attachmentId: z.string().guid().nullable().optional(),
 });
 
 export const requestItemVerdictsPayloadSchema = z.object({
@@ -1344,21 +1494,38 @@ export const requestItemVerdictsResultItemSchema = z.object({
   id: z.string().trim().min(1).max(120),
   verdict: requestItemVerdictValueSchema,
   reason: z.string().trim().max(4000).nullable().optional(),
-  resolvedByUserId: z.string().trim().min(1).max(255),
+  resolvedByUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  resolvedByAgentId: z.string().guid().nullable().optional(),
+  resolvedByRunId: z.string().guid().nullable().optional(),
   resolvedAt: z.union([z.string().datetime(), z.date()]),
-  commentId: z.string().uuid().nullable().optional(),
+  commentId: z.string().guid().nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (!value.resolvedByUserId && !value.resolvedByAgentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "a user or agent resolver is required",
+      path: ["resolvedByUserId"],
+    });
+  }
+  if (value.resolvedByAgentId && !value.resolvedByRunId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "resolvedByRunId is required for an agent resolver",
+      path: ["resolvedByRunId"],
+    });
+  }
 });
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "stale_issue_state", "cancelled", "withdrawn", "issue_closed"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "stale_issue_state", "cancelled", "withdrawn", "issue_closed", "addressee_deleted"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   complete: z.boolean().optional().default(false),
   items: z.array(requestItemVerdictsResultItemSchema)
     .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT)
     .optional()
     .default([]),
-  commentId: z.string().uuid().nullable().optional(),
+  commentId: z.string().guid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const itemIds = new Set<string>();
@@ -1374,32 +1541,40 @@ export const requestItemVerdictsResultSchema = z.object({
   }
 });
 
+const createIssueThreadInteractionCommon = {
+  resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
+  addresseeAgentId: z.string().guid().nullable().optional(),
+};
+
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
+    ...createIssueThreadInteractionCommon,
     kind: z.literal("suggest_tasks"),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
-    sourceCommentId: z.string().uuid().nullable().optional(),
-    sourceRunId: z.string().uuid().nullable().optional(),
+    sourceCommentId: z.string().guid().nullable().optional(),
+    sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: suggestTasksPayloadSchema,
   }),
   z.object({
+    ...createIssueThreadInteractionCommon,
     kind: z.literal("ask_user_questions"),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
-    sourceCommentId: z.string().uuid().nullable().optional(),
-    sourceRunId: z.string().uuid().nullable().optional(),
+    sourceCommentId: z.string().guid().nullable().optional(),
+    sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: requiredAskSummarySchema,
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: askUserQuestionsPayloadSchema,
   }),
   z.object({
+    ...createIssueThreadInteractionCommon,
     kind: z.literal("request_confirmation"),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
-    sourceCommentId: z.string().uuid().nullable().optional(),
-    sourceRunId: z.string().uuid().nullable().optional(),
+    sourceCommentId: z.string().guid().nullable().optional(),
+    sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: requiredAskSummarySchema,
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
@@ -1407,20 +1582,22 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     payload: requestConfirmationCreatePayloadSchema,
   }),
   z.object({
+    ...createIssueThreadInteractionCommon,
     kind: z.literal("request_checkbox_confirmation"),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
-    sourceCommentId: z.string().uuid().nullable().optional(),
-    sourceRunId: z.string().uuid().nullable().optional(),
+    sourceCommentId: z.string().guid().nullable().optional(),
+    sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: requestCheckboxConfirmationPayloadSchema,
   }),
   z.object({
+    ...createIssueThreadInteractionCommon,
     kind: z.literal("request_item_verdicts"),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
-    sourceCommentId: z.string().uuid().nullable().optional(),
-    sourceRunId: z.string().uuid().nullable().optional(),
+    sourceCommentId: z.string().guid().nullable().optional(),
+    sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
@@ -1509,13 +1686,13 @@ export const submitIssueThreadInteractionVerdictsSchema = z.object({
 export type SubmitIssueThreadInteractionVerdicts = z.infer<typeof submitIssueThreadInteractionVerdictsSchema>;
 
 export const linkIssueApprovalSchema = z.object({
-  approvalId: z.string().uuid(),
+  approvalId: z.string().guid(),
 });
 
 export type LinkIssueApproval = z.infer<typeof linkIssueApprovalSchema>;
 
 export const createIssueAttachmentMetadataSchema = z.object({
-  issueCommentId: z.string().uuid().optional().nullable(),
+  issueCommentId: z.string().guid().optional().nullable(),
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
@@ -1529,7 +1706,7 @@ export const upsertIssueDocumentSchema = z.object({
   format: issueDocumentFormatSchema,
   body: multilineTextSchema.pipe(z.string().max(524288)),
   changeSummary: z.string().trim().max(500).nullable().optional(),
-  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseRevisionId: z.string().guid().nullable().optional(),
 });
 
 export const restoreIssueDocumentRevisionSchema = z.object({});

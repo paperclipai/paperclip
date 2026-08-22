@@ -8,8 +8,9 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- Either `ANTHROPIC_API_KEY` in adapter env/host env, or a Claude Code
-  subscription login available to the execution target
+- Either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in adapter or
+  environment env (or host env), or a Claude Code subscription login
+  available to the execution target
 
 ## Configuration Fields
 
@@ -72,6 +73,7 @@ The adapter creates a temporary directory with symlinks to Paperclip skills and 
 
 ## Remote credential ownership
 
+When no API key or `CLAUDE_CODE_OAUTH_TOKEN` is configured,
 `claude_local` uses a snapshot-owns-auth topology for managed sandbox execution
 targets. When the run uses a sandbox execution target and no explicit
 `CLAUDE_CONFIG_DIR` is configured, Paperclip creates a remote
@@ -100,7 +102,7 @@ therefore shadows any Codex login already present inside the sandbox image.
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
 ```sh
-pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
+npx paperclipai agent local-cli claudecoder --company-id <company-id>
 ```
 
 This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
@@ -111,5 +113,12 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 
 - Claude CLI is installed and accessible
 - Working directory is absolute and available (auto-created if missing and permitted)
-- API key/auth mode hints (`ANTHROPIC_API_KEY` vs subscription login)
+- API key/auth mode hints (`ANTHROPIC_API_KEY` vs `CLAUDE_CODE_OAUTH_TOKEN` vs subscription login)
 - A live hello probe (`claude --print - --output-format stream-json --verbose` with prompt `Respond with hello.`) to verify CLI readiness
+
+The probe sees the same layered env as a real run: when an environment is
+selected, its environment variables (secret refs included) are resolved and
+merged under the adapter config's `env`, so environment-level auth is
+reflected in the test result. A secret binding that is missing surfaces as
+an `environment_env_binding_missing` failure instead of a silently passing
+probe.

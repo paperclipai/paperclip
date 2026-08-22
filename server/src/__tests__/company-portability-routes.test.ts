@@ -859,24 +859,29 @@ describe.sequential("company portability routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
-  it.sequential("keeps global import apply synchronous when Cloud async opt-in is absent", async () => {
+  it.sequential("keeps Cloud-managed global import apply synchronous when async opt-in is absent", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-secret");
     mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(createImportResult("created"));
-    const app = await createApp(cloudTenantActor());
+    try {
+      const app = await createApp(cloudTenantActor());
 
-    const res = await request(app)
-      .post("/api/companies/import")
-      .set(cloudHeaders)
-      .send(importRequest);
+      const res = await request(app)
+        .post("/api/companies/import")
+        .set(cloudHeaders)
+        .send(importRequest);
 
-    expect(res.status).toBe(200);
-    expect(res.body.company.id).toBe(companyId);
-    expect(res.body.company.action).toBe("created");
-    expect(res.body.job).toBeUndefined();
-    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1", { pauseAutomations: false });
-    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      action: "company.imported",
-      companyId,
-    }));
+      expect(res.status).toBe(200);
+      expect(res.body.company.id).toBe(companyId);
+      expect(res.body.company.action).toBe("created");
+      expect(res.body.job).toBeUndefined();
+      expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1", { pauseAutomations: false });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "company.imported",
+        companyId,
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it.sequential("forwards pauseAutomations from the global import body to the portability service", async () => {
