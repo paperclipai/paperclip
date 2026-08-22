@@ -71,7 +71,9 @@ jobs:
       ref: ${{ github.sha }}
 
   publish_canary:
-    if: github.event_name == 'push'
+    # Publishing requires npm auth held only by this repo; forks skip this
+    # job so master pushes stay green while verify_canary still runs.
+    if: github.event_name == 'push' && github.repository == 'paperclipai/paperclip'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -930,7 +932,8 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run
+    # Same fork guard as publish_canary: stable publishes need this repo's npm auth.
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run && github.repository == 'paperclipai/paperclip'
     needs: [preflight_stable, verify_stable]
     runs-on: ubuntu-latest
     timeout-minutes: 90
