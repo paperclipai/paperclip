@@ -2473,6 +2473,7 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export { normalizeMarkdownBody } from "./validators/text.js";
 export {
   FEATURE_TIERS,
   INSTANCE_FEATURE_CATALOG,

@@ -568,6 +568,8 @@ When asked to convert a plan into executable Paperclip tasks — depth, assignme
 
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
+**Formatting matters.** The `body` is rendered as markdown in the Plan pane. Every heading (`#`, `##`, …) must start its own line, and paragraphs must be separated by a blank line. In JSON that means real paragraph breaks encoded as `\n\n` between blocks — never run headings and paragraphs together on a single line. A body like `"# Plan ## Goal You picked…"` (headings glued mid-line) renders as one giant H1 with literal `##` markers showing inline. When you build the request from a heredoc, encode the body with a JSON-safe tool (e.g. `jq -Rs .`) so real newlines are preserved rather than stripped.
+
 Recommended API flow:
 
 ```bash
@@ -575,10 +577,12 @@ PUT /api/issues/{issueId}/documents/plan
 {
   "title": "Plan",
   "format": "markdown",
-  "body": "# Plan\n\n[your plan here]",
+  "body": "# Plan\n\n## Goal\n\n[one paragraph per idea, blank line between blocks]\n\n## Approach\n\n- step one\n- step two",
   "baseRevisionId": null
 }
 ```
+
+Note how each heading (`# Plan`, `## Goal`, `## Approach`) is separated from the surrounding text by `\n\n`. Keep that structure — a defense-in-depth guard on the write path will insert a break before a stray mid-line heading marker, but author the newlines correctly rather than relying on it.
 
 If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
 
