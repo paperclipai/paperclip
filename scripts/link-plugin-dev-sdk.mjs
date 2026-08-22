@@ -93,6 +93,15 @@ export function linkSdkInto(packageDir) {
     if (error?.code !== "ENOENT") throw error;
   }
 
-  symlinkSync(relativeSdkDir, linkTarget, "dir");
+  try {
+    symlinkSync(relativeSdkDir, linkTarget, "dir");
+  } catch (err) {
+    if (err.code === "EEXIST") {
+      // Race with another concurrent postinstall created it in between our
+      // lstat/rm/symlink. The target's existence is what we wanted anyway.
+      return true;
+    }
+    throw err;
+  }
   return true;
 }
