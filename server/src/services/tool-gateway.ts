@@ -3129,7 +3129,7 @@ export function createToolGatewayService(
       }
       if (payloadRecord.error !== undefined) {
         const errorRecord = asRecord(payloadRecord.error);
-        await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned a JSON-RPC error.");
+        // WHY: one tools/call JSON-RPC error is an invocation result, not a dead transport.
         throw new ToolGatewayHttpError(502, "Remote MCP server returned an error", "remote_mcp_error", {
           code: typeof errorRecord?.code === "number" ? errorRecord.code : null,
           connectionId: connection.id,
@@ -3155,7 +3155,7 @@ export function createToolGatewayService(
         });
       }
       if (error instanceof Error && error.name === "AbortError") {
-        await markRemoteConnectionHealth(connection, "error", "Remote MCP tool call timed out.");
+        // WHY: one slow tools/call is not a dead MCP server; healthStatus=error hides every tool.
         throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
           connectionId: connection.id,
           catalogEntryId: entry.id,

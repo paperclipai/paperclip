@@ -2923,6 +2923,52 @@ rl.on("line", (line) => {
     });
   }
 
+  it("keeps a remote MCP connection callable after one tools/call timeout", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(() => ({
+      delayMs: 75,
+      body: { jsonrpc: "2.0", id: "slow", result: { content: [{ type: "text", text: "late" }] } },
+    }));
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "timeout-keeps-connection",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === remoteTool.connection.id);
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+        timeoutMs: 10,
+      }).then(
+        () => {
+          throw new Error("Expected remote MCP call to time out");
+        },
+        (error) => expectGatewayError(error, 504, "tool_timeout"),
+      );
+
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      expect(connection?.healthStatus).toBe("ok");
+      const stillListed = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === remoteTool.connection.id);
+      expect(stillListed).toBeTruthy();
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("persists hashed sessions and accepts them across gateway service instances", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
