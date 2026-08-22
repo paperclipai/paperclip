@@ -4,6 +4,7 @@
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { createSingleFlight } from "./lib/single-flight.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -1013,6 +1014,9 @@ export async function startServer(): Promise<StartedServer> {
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
   };
+  // At most one periodic heartbeat recovery chain runs at a time; see the
+  // tick body for why stacking these chains is a stall hazard.
+  const periodicRecoveryChain = createSingleFlight();
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -1485,7 +1489,16 @@ export async function startServer(): Promise<StartedServer> {
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
+          //
+          // The chain below is the expensive full-graph maintenance pass. It is
+          // gated to one invocation at a time: the interval fires every tick
+          // regardless of how long the previous pass took, and a control plane
+          // congested enough to slow this pass past the tick interval is exactly
+          // the state in which stacking more copies of it turns congestion into
+          // a full stall (2026-08-19 seven-run recovery-burst outage). A skipped
+          // tick only delays maintenance by the interval; every stage is an
+          // idempotent backstop.
+          const recoveryChainTick = periodicRecoveryChain.run(() => heartbeat
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
@@ -1538,6 +1551,14 @@ export async function startServer(): Promise<StartedServer> {
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
+          if (recoveryChainTick.started) {
+            trackHeartbeatSchedulerWork(recoveryChainTick.settled);
+          } else {
+            logger.warn(
+              { inFlightForMs: recoveryChainTick.inFlightForMs },
+              "skipped periodic heartbeat recovery tick; previous chain still in flight",
+            );
+          }
         }
       })().catch((err) => {
         logger.error({ err }, "heartbeat scheduler tick failed");
