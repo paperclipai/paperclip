@@ -234,6 +234,9 @@ export interface WorkspaceOverviewItem {
   mode: ExecutionWorkspaceSummary["mode"];
   strategyType: ExecutionWorkspaceStrategyType;
   cwd: string | null;
+  repoUrl: string | null;
+  providerType: ExecutionWorkspaceProviderType;
+  providerRef: string | null;
   branchName: string | null;
   lastUpdatedAt: Date;
   projectWorkspaceId: string | null;

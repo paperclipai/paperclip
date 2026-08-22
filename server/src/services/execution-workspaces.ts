@@ -2016,6 +2016,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           mode: row.mode as WorkspaceOverviewItem["mode"],
           strategyType: row.strategyType as WorkspaceOverviewItem["strategyType"],
           cwd: row.cwd ?? null,
+          repoUrl: row.repoUrl ?? null,
+          providerType: row.providerType as WorkspaceOverviewItem["providerType"],
+          providerRef: row.providerRef ?? null,
           branchName: row.branchName ?? row.baseRef ?? null,
           lastUpdatedAt: maxDate(
             row.lastUsedAt,
