@@ -1591,6 +1591,23 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  // Wait for the shared plugin lifecycle manager to receive its runtime loader
+  // before accepting requests. createApp constructs `lifecycle` without a
+  // runtime-capable loader and backfills it via setLoader() in the `.finally`
+  // of `bundledPluginsStartup` (after the single startup activation pass). Until
+  // that backfill runs, a plugin-mutating route (enable/disable/unload) would
+  // drive a loader-less lifecycle: it persists `ready` and emits the
+  // tool-registration event to the dispatcher, but never spawns a worker —
+  // leaving tools advertised with no runtime behind them. Awaiting the settled
+  // promise here closes that startup window. Managed instances that declare
+  // sandbox environments already gate on the same promise via
+  // applyManagedEnvironments; this extends the guarantee to every deployment,
+  // consistent with the external-adapter wait above. The promise never rejects
+  // (createApp swallows and logs bundled-plugin failures), so a degraded plugin
+  // can never block the listener.
+  await (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
+    .locals?.bundledPluginsStartup;
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

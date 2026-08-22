@@ -641,7 +641,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
-      { toolGateway },
+      { toolGateway, lifecycleManager: lifecycle },
     ),
   );
   api.use(adapterRoutes());
@@ -876,7 +876,12 @@ export async function createApp(
   // (pluginLifecycleManager(db, { workerManager }) — no `loader` option), so
   // the lifecycle.load() that ensureBundledPlugins performs per newly
   // installed bundle only records the `ready` status and does not spawn a
-  // worker (see activateReadyPlugin in services/plugin-lifecycle.ts).
+  // worker (see activateReadyPlugin in services/plugin-lifecycle.ts). The
+  // loader is backfilled onto `lifecycle` via setLoader() only AFTER loadAll()
+  // completes (see the chain below), so this single startup activation pass is
+  // preserved while runtime route handlers — which share this same `lifecycle`
+  // instance so their events reach the tool dispatcher — can still activate
+  // workers when an operator enables a plugin later.
   //
   // Managed instances (`plugins.autoInstall` from PAPERCLIP_MANAGED_CONFIG)
   // drive the key list from the control plane; self-hosted instances keep
@@ -915,6 +920,14 @@ export async function createApp(
     }
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
+  }).finally(() => {
+    // Backfill the runtime-capable loader onto the shared lifecycle manager now
+    // that the single startup activation pass (loadAll) is done. From here on,
+    // route-triggered lifecycle transitions (enable/disable/upgrade) activate or
+    // tear down workers, and because routes share this instance their events
+    // reach the tool dispatcher's listeners. Deliberately after startup so
+    // ensureBundledPlugins' lifecycle.load() calls above do not spawn workers.
+    lifecycle.setLoader(loader);
   });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
