@@ -9,7 +9,9 @@ schickt auch keine Fehlermeldung.
   1. Datenbank auf der NAS          (täglich 02:30)  — Grenze 30 h
   2. Datenbank in der Nextcloud     (täglich 05:00)  — Grenze 30 h
   3. Claude-Code-Ordner, Nextcloud  (täglich 05:00)  — Grenze 30 h
-  4. Vault in der Nextcloud         (sonntags 03:30) — Grenze 9 Tage
+  4. Vault-Spiegel auf der NAS      (täglich 04:00)  — Grenze 30 h
+  5. Vault in der Nextcloud         (sonntags 03:30) — Grenze 9 Tage
+Dazu die Belegung des Nextcloud-Kontos (Warnung ab 80 %).
 
 WICHTIG: Nicht direkt per launchd starten. macOS verweigert einem launchd-Job
 aus zsh/bash/python den Zugriff auf SMB-Freigaben und CloudStorage (TCC).
@@ -27,6 +29,11 @@ from datetime import datetime, timedelta
 import pruefung
 
 NAS = "/Volumes/WHITESTAG-ARCHIV/Backup Mac Studio M4 Max/paperclip-db"
+# Der Vault-Spiegel meldet seinen Stand ueber eine Statusdatei. Bewusst nicht
+# ueber die mtime des Zielordners: die sieht auch dann frisch aus, wenn der
+# Lauf mittendrin abgebrochen ist.
+VAULT_SYNC_STATUS = os.path.expanduser(
+    "~/.paperclip/logs/vault-nas-sync-last.json")
 RESTIC = "/opt/homebrew/bin/restic"
 RESTIC_REPO = "rclone:hetzner-nc:Backups/MacStudio-WHITESTAG/restic-mac-studio"
 RESTIC_PASS = os.path.expanduser("~/.restic/repo.pass")
@@ -65,7 +72,17 @@ AN = "ws@whitestag.ai"
 
 
 def log(text):
+    """Ins Produktivlog schreiben — ausser unter Test.
+
+    `WAECHTER_STILL` setzt die Testsuite (conftest.py). Ohne diese Bremse
+    landeten Testlaeufe im echten Log: am 22.08.2026 standen dort Zeilen wie
+    „NAS nicht lesbar: /private/var/folders/.../pytest-...". Wer spaeter einen
+    Ausfall untersucht, haelt so etwas fuer einen echten Vorfall — das Log ist
+    Diagnosewerkzeug und muss sauber bleiben.
+    """
     zeile = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {text}"
+    if os.environ.get("WAECHTER_STILL"):
+        return
     print(zeile)
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
     with open(LOG, "a", encoding="utf-8") as fh:
@@ -94,6 +111,27 @@ def db_stand(ordner=None):
         return None, 0
     juengste = max(dumps, key=os.path.getmtime)
     return datetime.fromtimestamp(os.path.getmtime(juengste)), len(dumps)
+
+
+def status_stand(pfad):
+    """Zeitpunkt des letzten ERFOLGREICHEN Laufs aus einer Statusdatei.
+
+    None, wenn die Datei fehlt, unlesbar ist ODER der letzte Lauf
+    fehlgeschlagen ist. Ein gescheiterter Lauf darf nicht als frische
+    Sicherung durchgehen, nur weil sein Zeitstempel jung ist — das waere
+    genau die Sorte stiller Fehlmeldung, gegen die dieser Waechter existiert.
+    """
+    try:
+        with open(pfad, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if d.get("stand") != "ok":
+        return None
+    try:
+        return datetime.fromisoformat(d["zeit"].replace(" ", "T"))
+    except (KeyError, ValueError):
+        return None
 
 
 def snapshots():
@@ -215,6 +253,9 @@ def main():
                            GRENZE_TAEGLICH, "restic"),
         pruefung.Pruefling("Claude-Code-Ordner (Nextcloud)", aus_repo(TAG_CODE),
                            GRENZE_TAEGLICH, "restic"),
+        pruefung.Pruefling("Vault-Spiegel (NAS)",
+                           status_stand(VAULT_SYNC_STATUS),
+                           GRENZE_TAEGLICH, "Statusdatei"),
         pruefung.Pruefling("Vault (Nextcloud)", aus_repo(TAG_VAULT),
                            GRENZE_VAULT, "restic"),
     ]
