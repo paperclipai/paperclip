@@ -9,6 +9,7 @@ import {
   activityLog,
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   authUsers,
   budgetPolicies,
@@ -102,6 +103,7 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  finalizeRunningRunWithTaskSession,
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
@@ -415,6 +417,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
+      await db.delete(agentTaskSessions);
       try {
         await db.delete(heartbeatRuns);
         break;
@@ -5034,6 +5037,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     } finally {
       updateSpy.mockRestore();
     }
+  });
+
+  it("does not let a late cancellation overwrite a run that finalized during process termination", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+    runningProcesses.set(runId, {
+      child: { pid: 12345 } as ChildProcess,
+      graceSec: 1,
+      processGroupId: null,
+    });
+    let terminateStarted!: () => void;
+    let releaseTermination!: () => void;
+    const terminationStarted = new Promise<void>((resolve) => {
+      terminateStarted = resolve;
+    });
+    const terminationCanFinish = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    mockTerminateLocalService.mockImplementationOnce(async () => {
+      terminateStarted();
+      await terminationCanFinish;
+    });
+
+    const cancellation = heartbeat.cancelRun(runId, "probe cancellation");
+    await terminationStarted;
+    const finalization = await finalizeRunningRunWithTaskSession(db, {
+      runId,
+      status: "succeeded",
+      patch: { finishedAt: new Date() },
+    });
+    expect(finalization.updated).toBe(true);
+    releaseTermination();
+
+    const cancellationResult = await cancellation;
+    expect(cancellationResult?.status).toBe("succeeded");
+    const finalRun = await db
+      .select({ status: heartbeatRuns.status, error: heartbeatRuns.error })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(finalRun).toEqual({ status: "succeeded", error: null });
   });
 
   it("records manual cancellation stop metadata", async () => {
