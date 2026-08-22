@@ -5717,11 +5717,15 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
           companyId: issues.companyId,
+          wakePolicy: issues.wakePolicy,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
+        return null;
+      }
+      if (parent.wakePolicy?.suppressChildrenCompleted) {
         return null;
       }
 

@@ -4181,6 +4181,62 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("suppresses children_completed wake when parent has wakePolicy.suppressChildrenCompleted", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childA = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Standing issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId,
+        wakePolicy: { suppressChildrenCompleted: true },
+      },
+      {
+        id: childA,
+        companyId,
+        parentId,
+        title: "Child A",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    // Parent has wakePolicy.suppressChildrenCompleted=true, so it is not
+    // wake-eligible even though its only direct child is in a terminal state.
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+
+    // Removing the policy restores the normal behavior.
+    await svc.update(parentId, { wakePolicy: null });
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toMatchObject({
+      id: parentId,
+      assigneeAgentId,
+      childIssueIds: [childA],
+    });
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
