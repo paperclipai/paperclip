@@ -80,4 +80,40 @@ describe("parseCodexStdoutLine", () => {
       isError: true,
     }]);
   });
+
+  // Codex reports non-fatal advisories through the same `error` item type it
+  // uses for real failures. The model-metadata one is emitted at session start,
+  // before the first API call, so it lands as item_0 -- the very first line a
+  // reader sees on a run that then proceeds normally and succeeds.
+  it("demotes the model-metadata advisory to a neutral notice", () => {
+    const entries = parseCodexStdoutLine(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_0",
+        type: "error",
+        message:
+          "Model metadata for `gpt-5.6-luna` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+      },
+    }), "2026-04-08T12:00:04.000Z");
+
+    expect(entries).toEqual([{
+      kind: "system",
+      ts: "2026-04-08T12:00:04.000Z",
+      text:
+        "Model metadata for `gpt-5.6-luna` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+    }]);
+  });
+
+  it("still surfaces genuine error items as stderr", () => {
+    const entries = parseCodexStdoutLine(JSON.stringify({
+      type: "item.completed",
+      item: { id: "item_4", type: "error", message: "stream disconnected before completion" },
+    }), "2026-04-08T12:00:05.000Z");
+
+    expect(entries).toEqual([{
+      kind: "stderr",
+      ts: "2026-04-08T12:00:05.000Z",
+      text: "stream disconnected before completion",
+    }]);
+  });
 });
