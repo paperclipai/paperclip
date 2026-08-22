@@ -77,6 +77,26 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     return companyId;
   }
 
+  // MACHINE-ORG-TEMPLATE §7 law #16 (SPA-2388): every Paperclip issue must have an assignee at
+  // creation. The dedup tests run against POST /api/companies/:companyId/issues (the top-level
+  // route the law gates), so each test request must carry an assignee. The agent is seeded
+  // with `status: "paused"` so the wake-machinery bails out via DIRECT_NON_INVOKABLE_STATUSES
+  // and does not race the test assertions with environment-leases/heartbeat FK inserts.
+  async function seedAgent(companyId: string) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Dedup test agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      status: "paused",
+    });
+    return agentId;
+  }
+
   async function seedParent(companyId: string) {
     const [parent] = await db.insert(issues).values({
       companyId,
@@ -89,16 +109,18 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("replays the existing issue for the same company idempotency key", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
 
     const first = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Prepare release", idempotencyKey: "run-1:prepare-release" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Prepare release", idempotencyKey: "run-1:prepare-release" })
       .expect(201);
     const replay = await request(app)
       .post(`/api/companies/${companyId}/issues`)
       .send({
+        assigneeAgentId,
         parentId: parent.id,
         title: "Different retry payload",
         idempotencyKey: "run-1:prepare-release",
@@ -117,6 +139,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("expires old idempotency keys before replay lookup", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
     const oldIssueId = randomUUID();
@@ -141,7 +164,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const recreated = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Expired retry creates new work", idempotencyKey })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Expired retry creates new work", idempotencyKey })
       .expect(201);
 
     const rows = await db.select().from(issueCreateIdempotencyKeys);
@@ -156,16 +179,17 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("returns a recent open sibling whose normalized title matches", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
 
     const first = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Create   a single PR" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Create   a single PR" })
       .expect(201);
     const duplicate = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "  create a SINGLE pr  " })
+      .send({ assigneeAgentId, parentId: parent.id, title: "  create a SINGLE pr  " })
       .expect(200);
 
     expect(duplicate.body).toMatchObject({
@@ -177,16 +201,17 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("serializes keyed and title-only creates for the same issue", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
 
     const [keyed, titleOnly] = await Promise.all([
       request(app)
         .post(`/api/companies/${companyId}/issues`)
-        .send({ parentId: parent.id, title: "Coordinate launch", idempotencyKey: "run-2:coordinate-launch" }),
+        .send({ assigneeAgentId, parentId: parent.id, title: "Coordinate launch", idempotencyKey: "run-2:coordinate-launch" }),
       request(app)
         .post(`/api/companies/${companyId}/issues`)
-        .send({ parentId: parent.id, title: "Coordinate launch" }),
+        .send({ assigneeAgentId, parentId: parent.id, title: "Coordinate launch" }),
     ]);
 
     expect([keyed.status, titleOnly.status].sort()).toEqual([200, 201]);
@@ -202,7 +227,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const replay = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Different title", idempotencyKey: "run-2:coordinate-launch" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Different title", idempotencyKey: "run-2:coordinate-launch" })
       .expect(200);
     expect(replay.body).toMatchObject({
       id: keyed.body.id,
@@ -213,16 +238,17 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("allows an explicit duplicate create", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
 
     const first = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Investigate incident" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Investigate incident" })
       .expect(201);
     const duplicate = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Investigate incident", allowDuplicate: true })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Investigate incident", allowDuplicate: true })
       .expect(201);
 
     expect(duplicate.body.id).not.toBe(first.body.id);
@@ -230,6 +256,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("does not apply the route soft guard to internal service creates", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const svc = issueService(db);
 
@@ -251,6 +278,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("does not let closed or older issues block a recreate", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
     const oldIssueId = randomUUID();
@@ -277,11 +305,11 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const recreatedOld = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Retry old work" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Retry old work" })
       .expect(201);
     const recreatedClosed = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Retry closed work" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Retry closed work" })
       .expect(201);
 
     expect(recreatedOld.body.id).not.toBe(oldIssueId);
@@ -290,6 +318,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   it("stores the request run header on manual creates", async () => {
     const companyId = await seedCompany();
+    const assigneeAgentId = await seedAgent(companyId);
     const parent = await seedParent(companyId);
     const app = createApp();
     const runId = randomUUID();
@@ -315,7 +344,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     const response = await request(app)
       .post(`/api/companies/${companyId}/issues`)
       .set("X-Paperclip-Run-Id", runId)
-      .send({ parentId: parent.id, title: "Attributed create" })
+      .send({ assigneeAgentId, parentId: parent.id, title: "Attributed create" })
       .expect(201);
     const [created] = await db.select().from(issues).where(eq(issues.id, response.body.id));
 
