@@ -73,6 +73,7 @@ These adapters ship as standalone npm packages and are installed via the plugin 
 | Adapter | Package | Type Key | Description |
 |---------|---------|----------|-------------|
 | Droid | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
+| GitHub Copilot CLI | `@shayben/paperclip-adapter-copilot-local` | `copilot_local` | Runs GitHub Copilot CLI locally through ACP ([source](https://github.com/shayben/paperclip-adapter-copilot-local)) |
 
 ## External Adapters
 
