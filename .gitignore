@@ -51,6 +51,7 @@ diagnostics/
 .paperclip-runtime/
 /.idea/
 /.agents/
+deploy/proxmox/.env
 
 # Doc maintenance cursor
 .doc-review-cursor
