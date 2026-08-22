@@ -1,17 +1,19 @@
 # Paperclip docker-compose
 #
-# By default the production stack starts PostgreSQL, Redis, Paperclip, and the
-# TLS proxy. Keeping these core services outside profiles also ensures that a
-# plain `docker compose down` removes every container before deleting the
-# project network.
+# By default the production stack starts Redis, Paperclip with embedded
+# PostgreSQL, and the TLS proxy. A plain `docker compose down` removes those
+# containers before deleting the project network.
 #
 # Profiles
+#   postgres  — separate PostgreSQL server instead of Paperclip's embedded one
+#               Also set POSTGRES_PASSWORD and DATABASE_URL in .env.
 #   ollama    — Ollama local-LLM server
 #               Also set OLLAMA_HOST in .env, e.g.:
 #               OLLAMA_HOST=http://ollama:11434
 #
 # Examples
 #   docker compose up
+#   docker compose --profile postgres up                # use separate PostgreSQL
 #   docker compose --profile ollama up                  # also start Ollama
 
 services:
@@ -20,15 +22,16 @@ services:
   # PostgreSQL
   # ---------------------------------------------------------------------------
   postgres:
+    profiles: [postgres]
     image: postgres:17-alpine
     container_name: paperclip-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: paperclip
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set when using the postgres profile}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-}"
       POSTGRES_DB: paperclip
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_DIR:-postgres-data}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
       interval: 5s
@@ -111,8 +114,9 @@ services:
       HOST: 0.0.0.0
       PORT: 3100
       SERVE_UI: "true"
-      # Connect to the PostgreSQL service using the password from .env.
-      DATABASE_URL: "postgres://paperclip:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/paperclip"
+      # An empty DATABASE_URL selects Paperclip's embedded PostgreSQL. To use the
+      # Compose PostgreSQL service, enable the postgres profile and set DATABASE_URL.
+      DATABASE_URL: "${DATABASE_URL:-}"
       # Leave REDIS_URL unset when not using the redis profile.
       REDIS_URL: "${REDIS_URL:-}"
       PAPERCLIP_REDIS_URL: "${PAPERCLIP_REDIS_URL:-}"

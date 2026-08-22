@@ -79,32 +79,66 @@ If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to
 
 Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 
-### Full stack (with PostgreSQL)
+### Root Compose stack (embedded PostgreSQL by default)
 
-Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
+The root Compose stack starts Paperclip with its embedded PostgreSQL by default.
+It also starts Redis and the nginx TLS proxy.
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   docker compose -f docker/docker-compose.yml up --build
 ```
 
-PostgreSQL data persists in named Docker volumes. Paperclip data defaults to `./data/docker-paperclip`.
+Paperclip data, including the embedded PostgreSQL cluster, defaults to
+`./data/docker-paperclip`.
+
+To use the separate PostgreSQL 17 service instead, configure `.env` and enable
+its Compose profile:
+
+```dotenv
+COMPOSE_PROFILES=postgres
+POSTGRES_PASSWORD=change-me
+DATABASE_URL=postgres://paperclip:change-me@postgres:5432/paperclip
+POSTGRES_DATA_DIR=postgres-data
+```
+
+The PostgreSQL service is health-checked before Paperclip starts. Its data
+source defaults to the Docker named volume `postgres-data`; set
+`POSTGRES_DATA_DIR` to an absolute host path when host-managed storage is
+preferred. Changing this setting selects a different, initially empty database
+location; existing data is not migrated automatically.
 
 The root `docker-compose.yml` also includes an nginx TLS proxy. By default it generates a self-signed certificate for `localhost` into the `proxy-certs` Docker volume and publishes only ports `80` and `443`. Host-specific domains and real certificate mounts belong in ignored local override files such as `docker-compose.override.yml`, not in tracked git files.
 
-For a real certificate, create a local override similar to this:
+Put hostnames and public URL values in `.env`:
+
+```dotenv
+PAPERCLIP_PUBLIC_URL=https://paperclip.example.com
+PAPERCLIP_ALLOWED_HOSTNAMES=paperclip.example.com
+PAPERCLIP_TLS_SERVER_NAME=paperclip.example.com
+PAPERCLIP_TLS_CERT_ALT_NAMES=DNS:paperclip.example.com,DNS:localhost,IP:127.0.0.1
+```
+
+For a real certificate, keep only the host-specific bind mounts in a local
+override similar to this:
 
 ```yaml
 services:
   paperclip:
-    environment:
-      PAPERCLIP_PUBLIC_URL: https://paperclip.example.com
-      PAPERCLIP_ALLOWED_HOSTNAMES: paperclip.example.com
+    group_add:
+      - "${DOCKER_GID:-992}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
   proxy:
     volumes:
       - /path/to/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
       - /path/to/key.pem:/etc/nginx/certs/key.pem:ro
 ```
+
+`group_add`, Docker socket mounts, and certificate bind mounts are Compose
+structure and cannot be added by `.env` alone. Keep them in the ignored local
+override. The values referenced by the tracked Compose file, including
+`DOCKER_GID`, public hostnames, and TLS names, belong in `.env`.
 
 ### Untrusted PR review
 
