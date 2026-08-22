@@ -28,34 +28,30 @@ install above is the reliable path.
 
 ### Fork and clone
 
-Clone upstream as `origin`, then add your fork as a second remote. This keeps
-`git pull origin master` pointing at upstream and matches the remote layout used
-elsewhere in this project:
+Fork and clone in one step:
 
 ```bash
-git clone https://github.com/paperclipai/paperclip.git
+gh repo fork paperclipai/paperclip --clone --remote
 ```
 
 ```bash
 cd paperclip
 ```
 
-```bash
-gh repo fork --remote --remote-name fork
-```
-
-Confirm the result before you go further:
+This gives you `origin` → your fork and `upstream` → `paperclipai/paperclip`.
+Confirm it before you go further:
 
 ```bash
 git remote -v
 ```
 
-You want `origin` → `paperclipai/paperclip` and `fork` → your account. Note that
-`gh repo fork` **without** `--remote-name` does the opposite: it makes your fork
-`origin` and renames upstream to `upstream`. Either layout works, but the rest of
-this guide assumes the one above — check `git remote -v` rather than assuming.
+Push branches to `origin`, which is your fork. The push command under
+[Branch Naming](#branch-naming) assumes this layout. Open pull requests against
+`upstream/master`. Refresh your checkout with:
 
-Push branches to `fork`; open PRs against `origin/master`.
+```bash
+git pull upstream master
+```
 
 ### Set your commit identity
 
@@ -99,15 +95,18 @@ suites — see the Development section of [README.md](README.md) and
 
 ### Environment
 
-Copy the example file and fill it in:
+Local development needs no `.env` file. Leave `DATABASE_URL` unset. The server
+then starts embedded PostgreSQL and persists data under `PAPERCLIP_HOME`. See
+[doc/DEVELOPING.md](doc/DEVELOPING.md) for the data directory layout.
 
-```bash
-cp .env.example .env
-```
+Do **not** copy `.env.example` for local work. That file describes a deployment
+with external PostgreSQL. It points `DATABASE_URL` at `localhost:5432`, which no
+local process serves, and it sets `SERVE_UI=false`, which disables the UI you are
+trying to run.
 
-It declares `DATABASE_URL`, `PORT`, `SERVE_UI`, `BETTER_AUTH_SECRET`, and
-`PAPERCLIP_TOOL_ACTION_SIGNING_SECRET`. Generate real secrets for the two signing
-values — never reuse the example placeholders, and never commit `.env`.
+Set a variable only when you must override a default. Never commit `.env`. In any
+deployment, `BETTER_AUTH_SECRET` and `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` must be
+real generated secrets, never the example placeholders.
 
 ## Before You Start: Search First
 
@@ -234,12 +233,20 @@ pnpm typecheck
 ```
 
 ```bash
+pnpm typecheck:build-gaps
+```
+
+```bash
 pnpm test
 ```
 
 ```bash
 pnpm build
 ```
+
+CI runs `typecheck:build-gaps` as its own gate. `pnpm typecheck` can pass while
+that gate fails, because it does not build the server or check for build and
+typecheck coverage gaps. Run both.
 
 `pnpm test` is the cheap Vitest run and does **not** include Playwright. If you
 touched browser flows, run `pnpm test:e2e` as well and say so in your Verification
