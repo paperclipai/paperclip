@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { flushSync } from "react-dom";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -11,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, List, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 // Layout constants
@@ -22,6 +23,7 @@ const GAP_Y = 80;
 const PADDING = 60;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
+const MIN_FIT_ZOOM = 0.5;
 const TOUCH_MOVE_THRESHOLD = 6;
 
 // ── Tree layout types ───────────────────────────────────────────────────
@@ -169,6 +171,230 @@ const statusDotColor: Record<string, string> = {
 };
 const defaultDotColor = "var(--hex-a3a3a3)";
 
+// ── Exploded vertical list ──────────────────────────────────────────────
+// Renders the full org as an indented, top-to-bottom listing: every agent is a
+// full-width row and reports are nested underneath. Everything is expanded by
+// default ("exploded"), the layout never overflows horizontally, and the page
+// scrolls vertically instead of forcing horizontal pan/zoom.
+
+interface OrgListRow {
+  node: OrgNode;
+  depth: number;
+  parentId: string | null;
+}
+
+function flattenOrg(
+  nodes: OrgNode[],
+  rows: OrgListRow[] = [],
+  depth = 0,
+  parentId: string | null = null,
+): OrgListRow[] {
+  for (const n of nodes) {
+    rows.push({ node: n, depth, parentId });
+    flattenOrg(n.reports, rows, depth + 1, n.id);
+  }
+  return rows;
+}
+
+function OrgListView({
+  visible,
+  agentMap,
+  childCountById,
+  collapsed,
+  onToggle,
+  onOpenAgent,
+}: {
+  visible: OrgNode[];
+  agentMap: Map<string, Agent>;
+  childCountById: Map<string, number>;
+  collapsed: ReadonlySet<string> | null;
+  onToggle: (id: string) => void;
+  onOpenAgent: (node: OrgNode) => void;
+}) {
+  const rows = useMemo(() => flattenOrg(visible), [visible]);
+
+  // ── Connector graph ─────────────────────────────────────────────────────────
+  // Draw the parent→child links as vertical trunks with horizontal elbows inside
+  // the indent gutter, so the hierarchy reads at a glance like a tree. The
+  // lines live in a flow layout (printed along with the rows) rather than a
+  // pannable canvas, so the whole org is printable in one window.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [connectors, setConnectors] = useState<Array<{ id: string; d: string }>>([]);
+  // One indent step per depth level (px): 7 × the 4px spacing grid. Single
+  // source of truth shared by the row gutter and the connector geometry,
+  // following the named-constant convention of CompanySkills' skill tree.
+  const LIST_INDENT = 28;
+
+  const measure = useCallback(() => {
+    const list = containerRef.current;
+    if (!list) return;
+    const listRect = list.getBoundingClientRect();
+    // The connector SVG is `absolute inset-0`, so its origin is the
+    // container's PADDING box; the rows live in the padded content box.
+    // Anchor every coordinate to the SVG's origin (padding box) instead of
+    // mixing offsetParent-relative offsets — otherwise the padding shifts
+    // the cards without shifting the connector paths.
+    const originX = listRect.left + list.clientLeft;
+    const originY = listRect.top + list.clientTop;
+    const byId = new Map<string, { card: HTMLElement; depth: number; parentId: string | null }>();
+    for (const el of Array.from(list.querySelectorAll<HTMLElement>("[data-org-list-node]"))) {
+      byId.set(el.getAttribute("data-org-id") ?? "", {
+        card: el.querySelector<HTMLElement>("[data-org-card]") ?? el,
+        depth: Number(el.getAttribute("data-depth") ?? 0),
+        parentId: el.getAttribute("data-org-parent"),
+      });
+    }
+    const childrenByParent = new Map<string, Array<{ card: HTMLElement }>>();
+    for (const [id, info] of byId) {
+      if (info.parentId) {
+        const bucket = childrenByParent.get(info.parentId) ?? [];
+        bucket.push({ card: info.card });
+        childrenByParent.set(info.parentId, bucket);
+      }
+    }
+    const paths: Array<{ id: string; d: string }> = [];
+    for (const [parentId, children] of childrenByParent) {
+      const parent = byId.get(parentId);
+      if (!parent) continue;
+      const parentRect = parent.card.getBoundingClientRect();
+      const parentCardLeft = parentRect.left - originX;
+      // Trunk runs down the gutter, half an indent step to the right of the
+      // parent card's left edge, so elbows land exactly on child card edges.
+      const guideX = parentCardLeft + LIST_INDENT / 2;
+      const parentBottom = parentRect.top - originY + parentRect.height;
+      const deepestTop = Math.max(
+        ...children.map((c) => c.card.getBoundingClientRect().top - originY),
+      );
+      let d = `M ${guideX} ${parentBottom} L ${guideX} ${deepestTop}`;
+      for (const child of children) {
+        const childRect = child.card.getBoundingClientRect();
+        const childTop = childRect.top - originY;
+        d += ` M ${guideX} ${childTop} L ${childRect.left - originX} ${childTop}`;
+      }
+      paths.push({ id: parentId, d });
+    }
+    setConnectors(paths);
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, rows]);
+
+  // Re-measure when the panel is resized (e.g. window/browser chrome height
+  // changes), so the connectors stay attached to their cards.
+  useLayoutEffect(() => {
+    const list = containerRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative w-full space-y-1.5 overflow-x-hidden rounded-lg border border-border bg-muted/20 p-3"
+    >
+      {/* Connector layer: absolute SVG on top of the flow rows, invisible to
+          pointer events so clicks reach the cards. Renders along with the rows,
+          making the hierarchy printable. */}
+      <svg
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-0"
+        width="100%"
+        height="100%"
+      >
+        {connectors.map((c) => (
+          <path key={c.id} d={c.d} fill="none" stroke="var(--border)" strokeWidth={2} />
+        ))}
+      </svg>
+      <div className="relative z-10">
+      {rows.map(({ node, depth, parentId }) => {
+        const agent = agentMap.get(node.id);
+        const childCount = childCountById.get(node.id) ?? 0;
+        const isCollapsed = collapsed !== null && collapsed.has(node.id);
+        const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+
+        return (
+          <div
+            key={node.id}
+            data-org-list-node
+            data-org-id={node.id}
+            data-org-parent={parentId ?? ""}
+            data-org-name={node.name}
+            data-depth={depth}
+            className="flex w-full"
+            style={{ paddingLeft: depth * LIST_INDENT }}
+          >
+            <Card
+              data-org-card
+              data-org-list-row
+              className="w-full cursor-pointer py-2 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md print:break-inside-avoid print:shadow-none"
+              onClick={() => onOpenAgent(node)}
+            >
+              <div className="flex items-center gap-3 px-3">
+                {childCount > 0 ? (
+                  <button
+                    type="button"
+                    data-org-collapse
+                    data-testid="org-list-collapse"
+                    aria-label={isCollapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
+                    title={isCollapsed ? "Show reports" : "Hide reports"}
+                    className="flex size-6 shrink-0 items-center justify-center rounded border border-border bg-background text-muted-foreground transition-colors hover:bg-accent print:hidden"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onToggle(node.id);
+                    }}
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                ) : (
+                  <span className="size-6 shrink-0" />
+                )}
+                <div className="relative shrink-0">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted">
+                    <AgentIcon icon={agent?.icon} className="h-4 w-4 text-foreground/70" />
+                  </div>
+                  <span
+                    className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
+                    style={{ backgroundColor: dotColor }}
+                  />
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col items-start">
+                  <span className="text-sm font-semibold leading-tight text-foreground">
+                    {node.name}
+                  </span>
+                  <span className="mt-0.5 text-(length:--text-micro) leading-tight text-muted-foreground">
+                    {agent?.title ?? roleLabel(node.role)}
+                  </span>
+                  {agent && (
+                    <span className="mt-1 font-mono text-(length:--text-nano) leading-tight text-muted-foreground/60">
+                      {getAdapterLabel(agent.adapterType)}
+                    </span>
+                  )}
+                  {agent && agent.capabilities && (
+                    <span className="mt-1 line-clamp-1 leading-tight text-(length:--text-nano) text-muted-foreground/80">
+                      {agent.capabilities}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </Card>
+          </div>
+        );
+      })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
@@ -198,8 +424,46 @@ export function OrgChart() {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
 
-  // Layout computation
-  const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
+  // Collapse state: the org starts fully exploded (every node expanded), and any
+  // node with reports can be collapsed by hand for a compact view.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string> | null>(null);
+
+  // View mode: "list" is the exploded vertical listing (default) so the whole
+  // organization reads top-to-bottom in a single window; "chart" keeps the
+  // pannable/zoomable tree graph.
+  const [view, setView] = useState<"list" | "chart">("list");
+
+  const toggleCollapsed = useCallback((id: string) => {
+    setCollapsed((prev) => {
+      if (!prev) return new Set([id]);
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Pruned tree: collapsed nodes render but their subtree is not laid out.
+  const prunedTree = useMemo(() => {
+    if (!collapsed) return orgTree ?? [];
+    const prune = (n: OrgNode): OrgNode =>
+      collapsed.has(n.id) ? { ...n, reports: [] } : { ...n, reports: n.reports.map(prune) };
+    return (orgTree ?? []).map(prune);
+  }, [orgTree, collapsed]);
+
+  // Children counts from the ORIGINAL tree (needed for the collapse badge).
+  const childCountById = useMemo(() => {
+    const m = new Map<string, number>();
+    const walk = (n: OrgNode) => {
+      if (n.reports.length > 0) m.set(n.id, n.reports.length);
+      n.reports.forEach(walk);
+    };
+    for (const r of orgTree ?? []) walk(r);
+    return m;
+  }, [orgTree]);
+
+  // Layout computation over the pruned (visible) tree
+  const layout = useMemo(() => layoutForest(prunedTree), [prunedTree]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
 
@@ -240,20 +504,22 @@ export function OrgChart() {
     };
   }, []);
 
-  // Center the chart on first load
-  const hasInitialized = useRef(false);
+  // Fit the visible chart to the container. Runs on load AND whenever the
+  // visible layout changes (collapse/expand) or the chart view is re-entered,
+  // always guaranteeing readable cards.
   useEffect(() => {
-    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
-    hasInitialized.current = true;
+    if (view !== "chart") return;
+    if (allNodes.length === 0 || !containerRef.current) return;
 
     const container = containerRef.current;
     const containerW = container.clientWidth;
     const containerH = container.clientHeight;
 
-    // Fit chart to container
+    // Fit chart to container, but never shrink below a readable size —
+    // an oversized chart overflows and the user pans instead.
     const scaleX = (containerW - 40) / bounds.width;
     const scaleY = (containerH - 40) / bounds.height;
-    const fitZoom = Math.min(scaleX, scaleY, 1);
+    const fitZoom = Math.max(Math.min(scaleX, scaleY, 1), MIN_FIT_ZOOM);
 
     const chartW = bounds.width * fitZoom;
     const chartH = bounds.height * fitZoom;
@@ -263,7 +529,29 @@ export function OrgChart() {
       x: (containerW - chartW) / 2,
       y: (containerH - chartH) / 2,
     });
-  }, [allNodes, bounds]);
+  }, [allNodes, bounds, view]);
+
+  // Print: the exploded list is the only printable rendering (the chart is a
+  // fixed-height pannable surface). If the user prints while on the chart view,
+  // switch to the list synchronously, then restore the chosen view afterwards.
+  const printViewRef = useRef<"list" | "chart" | null>(null);
+  useEffect(() => {
+    const onBeforePrint = () => {
+      printViewRef.current = view;
+      if (view !== "list") flushSync(() => setView("list"));
+    };
+    const onAfterPrint = () => {
+      const prev = printViewRef.current;
+      if (prev && prev !== "list") flushSync(() => setView(prev));
+      printViewRef.current = null;
+    };
+    window.addEventListener("beforeprint", onBeforePrint);
+    window.addEventListener("afterprint", onAfterPrint);
+    return () => {
+      window.removeEventListener("beforeprint", onBeforePrint);
+      window.removeEventListener("afterprint", onAfterPrint);
+    };
+  }, [view]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -322,7 +610,7 @@ export function OrgChart() {
     const cH = containerRef.current.clientHeight;
     const scaleX = (cW - 40) / bounds.width;
     const scaleY = (cH - 40) / bounds.height;
-    const fitZoom = Math.min(scaleX, scaleY, 1);
+    const fitZoom = Math.max(Math.min(scaleX, scaleY, 1), MIN_FIT_ZOOM);
     const chartW = bounds.width * fitZoom;
     const chartH = bounds.height * fitZoom;
     setZoom(fitZoom);
@@ -442,21 +730,78 @@ export function OrgChart() {
   }
 
   return (
-    <div className="flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0">
-      <div className="mb-2 flex shrink-0 flex-wrap items-center justify-start gap-2">
-        <Link to="/company/import">
-          <Button variant="outline" size="sm">
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            Import company
-          </Button>
-        </Link>
-        <Link to="/company/export">
-          <Button variant="outline" size="sm">
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export company
-          </Button>
-        </Link>
+    <div
+      data-org-view={view}
+      className={
+        view === "list"
+          ? "flex flex-col gap-3"
+          : "flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0"
+      }
+    >
+      <div className="mb-2 flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2 print:hidden">
+          <Link to="/company/import">
+            <Button variant="outline" size="sm">
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              Import company
+            </Button>
+          </Link>
+          <Link to="/company/export">
+            <Button variant="outline" size="sm">
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Export company
+            </Button>
+          </Link>
+        </div>
+        <div className="flex items-center gap-3 print:hidden">
+          <span className="text-(length:--text-micro) text-muted-foreground">
+            {allNodes.length} agent{allNodes.length === 1 ? "" : "s"}
+          </span>
+          <div className="flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5">
+            <button
+              type="button"
+              data-testid="org-view-list"
+              aria-pressed={view === "list"}
+              className={`flex items-center gap-1 rounded-sm px-2 py-1 text-(length:--text-micro) font-medium transition-colors ${
+                view === "list"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setView("list")}
+            >
+              <List className="h-3.5 w-3.5" />
+              Exploded list
+            </button>
+            <button
+              type="button"
+              data-testid="org-view-chart"
+              aria-pressed={view === "chart"}
+              className={`flex items-center gap-1 rounded-sm px-2 py-1 text-(length:--text-micro) font-medium transition-colors ${
+                view === "chart"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setView("chart")}
+            >
+              <Network className="h-3.5 w-3.5" />
+              Chart
+            </button>
+          </div>
+        </div>
       </div>
+      {view === "list" ? (
+        <OrgListView
+          visible={prunedTree}
+          agentMap={agentMap}
+          childCountById={childCountById}
+          collapsed={collapsed}
+          onToggle={toggleCollapsed}
+          onOpenAgent={(node) => {
+            const agent = agentMap.get(node.id);
+            navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+          }}
+        />
+      ) : (
       <div
         ref={containerRef}
         data-testid="org-chart-viewport"
@@ -477,7 +822,7 @@ export function OrgChart() {
         onTouchCancel={handleTouchEnd}
       >
         {/* Zoom controls */}
-        <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5">
+        <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5 print:hidden">
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-sm transition-colors hover:bg-accent sm:size-7"
             onClick={() => {
@@ -561,12 +906,14 @@ export function OrgChart() {
           {allNodes.map((node) => {
             const agent = agentMap.get(node.id);
             const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+            const childCount = childCountById.get(node.id) ?? 0;
+            const isCollapsed = collapsed !== null && collapsed.has(node.id);
 
             return (
               <Card
                 key={node.id}
                 data-org-card
-                className="block absolute py-0 hover:shadow-md hover:border-foreground/20 transition-(--tp-box-shadow-border-color) duration-150 cursor-pointer select-none"
+                className="block absolute py-0 hover:shadow-md hover:border-foreground/20 transition-(--tp-box-shadow-border-color) duration-150 cursor-pointer select-none print:shadow-none"
                 style={{
                   left: node.x,
                   top: node.y,
@@ -581,6 +928,40 @@ export function OrgChart() {
                   e.stopPropagation();
                 }}
               >
+                {childCount > 0 && (
+                  <button
+                    type="button"
+                    data-org-collapse
+                    aria-label={isCollapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
+                    title={isCollapsed ? "Show reports" : "Hide reports"}
+                    className="absolute top-1.5 right-1.5 z-10 flex size-5 items-center justify-center rounded border border-border bg-background text-muted-foreground transition-colors hover:bg-accent active:scale-95 print:hidden"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setCollapsed((prev) => {
+                        if (!prev) return new Set([node.id]);
+                        const next = new Set(prev);
+                        if (next.has(node.id)) next.delete(node.id);
+                        else next.add(node.id);
+                        return next;
+                      });
+                    }}
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="h-3 w-3" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3" />
+                    )}
+                  </button>
+                )}
+                {childCount > 0 && isCollapsed && (
+                  <span
+                    data-org-collapse-badge
+                    className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background px-1.5 py-px text-(length:--text-nano) font-medium text-muted-foreground"
+                  >
+                    {childCount} report{childCount === 1 ? "" : "s"}
+                  </span>
+                )}
                 <div className="flex items-center px-4 py-3 gap-3">
                   {/* Agent icon + status dot */}
                   <div className="relative shrink-0">
@@ -617,6 +998,7 @@ export function OrgChart() {
           })}
         </div>
       </div>
+      )}
     </div>
   );
 }
