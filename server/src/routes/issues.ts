@@ -9685,11 +9685,15 @@ export function issueRoutes(
         lastDecisionId: decisionId,
       };
     }
+    const requestedStatusForDescriptor = typeof updateFields.status === "string" ? updateFields.status : existing.status;
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
-    if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
+    if (updateFields.unblockDescriptor && requestedStatusForDescriptor !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
+    }
+    if (requestedStatusForDescriptor === "blocked" && nextStatus !== "blocked") {
+      delete updateFields.unblockDescriptor;
     }
     const descriptor = updateFields.unblockDescriptor ?? null;
     if (descriptor && typeof descriptor === "object") {
