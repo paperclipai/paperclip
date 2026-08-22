@@ -9716,15 +9716,14 @@ export function issueRoutes(
         if (!member) throw unprocessable("Unblock owner user must be an active company member");
       }
     }
-    const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
-    if (enteringBlocked) {
-      const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
-        ? [...new Set(req.body.blockedByIssueIds as string[])]
-        : null;
-      const hasUnresolvedBlocker = requestedBlockerIds
-        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
+    const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
+      ? [...new Set(req.body.blockedByIssueIds as string[])]
+      : null;
+    const hasLiveBlockedWaitSurface = async (blockerIds: string[] | null) => {
+      const hasUnresolvedBlocker = blockerIds
+        ? blockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
           eq(issueRows.companyId, existing.companyId),
-          inArray(issueRows.id, requestedBlockerIds),
+          inArray(issueRows.id, blockerIds),
           notInArray(issueRows.status, ["done", "cancelled"]),
         )).limit(1).then((rows) => rows.length > 0)
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
@@ -9740,9 +9739,32 @@ export function issueRoutes(
           eq(approvals.status, "pending"),
         )).limit(1).then((rows) => rows[0] ?? null),
       ]);
-      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
+      return Boolean(hasUnresolvedBlocker || pendingInteraction || pendingApproval);
+    };
+    const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
+    if (enteringBlocked) {
+      if (!(await hasLiveBlockedWaitSurface(requestedBlockerIds)) && !descriptor) {
         res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
         return;
+      }
+    }
+    // `blocked` only means something while a wait surface is live. Removing the last blocker
+    // edge from an already-blocked issue used to be accepted silently, leaving it parked with
+    // nothing left to wake it ("naked blocked"). Release it to `todo` instead — but only when
+    // no pending interaction, pending approval, or unblockDescriptor is still holding it.
+    const clearingBlockersWhileBlocked =
+      !enteringBlocked &&
+      existing.status === "blocked" &&
+      requestedBlockerIds !== null &&
+      (updateFields.status === undefined || updateFields.status === "blocked");
+    let releasedFromBlocked = false;
+    if (clearingBlockersWhileBlocked) {
+      const effectiveDescriptor = updateFields.unblockDescriptor !== undefined
+        ? updateFields.unblockDescriptor
+        : existing.unblockDescriptor;
+      if (!(await hasLiveBlockedWaitSurface(requestedBlockerIds)) && !effectiveDescriptor) {
+        updateFields.status = "todo";
+        releasedFromBlocked = true;
       }
     }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
@@ -10782,6 +10804,23 @@ export function issueRoutes(
             blockerIssueIds: readiness.blockerIssueIds,
             source: "issue.blockers_restored",
             mutation: "blocked_dependency_restored",
+          });
+        }
+      }
+
+      // The issue was auto-released from `blocked` because its last blocker edge was removed;
+      // wake the assignee the same way a blocker completing would have.
+      if (releasedFromBlocked && issue.assigneeAgentId) {
+        const clearedBlockerIssueIds = (existingRelations?.blockedBy ?? []).map((relation) => relation.id);
+        const resolvedBlockerIssueId = clearedBlockerIssueIds[0] ?? null;
+        if (resolvedBlockerIssueId) {
+          await addDependencyResolvedWakeup({
+            agentId: issue.assigneeAgentId,
+            dependentIssueId: issue.id,
+            resolvedBlockerIssueId,
+            blockerIssueIds: clearedBlockerIssueIds,
+            source: "issue.blockers_cleared",
+            mutation: "blockers_cleared",
           });
         }
       }
