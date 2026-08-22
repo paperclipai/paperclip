@@ -23,6 +23,10 @@ const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
@@ -40,6 +44,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
   }));
 }
 
@@ -113,6 +120,7 @@ describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
     vi.doUnmock("../routes/approvals.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -130,6 +138,7 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueService.listReviewAttention.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
@@ -141,6 +150,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -342,7 +352,7 @@ describe("approval routes idempotent retries", () => {
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
-        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        issueIds: ["a0000000-0000-4000-8000-000000000001"],
         payload: { title: "Approve hosting spend" },
       });
 
@@ -357,7 +367,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
       "approval-1",
-      ["00000000-0000-0000-0000-000000000001"],
+      ["a0000000-0000-4000-8000-000000000001"],
       { agentId: "agent-1", userId: null },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -502,5 +512,92 @@ describe("approval routes idempotent retries", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockApprovalService.create).toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+  });
+
+  it("wakes assignees of linked issues with a different agent than the card requester on approve", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-10",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    // Two linked issues: one assigned to the requester (Engineer), one to a different agent (CEO)
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "engineer-issue", assigneeAgentId: "engineer-agent" },
+      { id: "ceo-issue", assigneeAgentId: "ceo-agent" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-10/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+
+    const wakeCalls = mockHeartbeatService.wakeup.mock.calls;
+    // Engineer woken as the card requester
+    const engineerWake = wakeCalls.find((call: any[]) => call[0] === "engineer-agent");
+    expect(engineerWake).toBeDefined();
+    // CEO woken as a linked-issue assignee with a different agent
+    const ceoWake = wakeCalls.find((call: any[]) => call[0] === "ceo-agent");
+    expect(ceoWake).toBeDefined();
+    expect(ceoWake[1]).toMatchObject({
+      reason: "approval_approved",
+      idempotencyKey: "approval-assignee:approval-10:ceo-issue:approved",
+      payload: expect.objectContaining({
+        approvalId: "approval-10",
+        approvalStatus: "approved",
+        issueId: "ceo-issue",
+      }),
+    });
+  });
+
+  it("does not create a duplicate wake for the requester agent when they also appear as a linked-issue assignee", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-11",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-11",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    // Single linked issue assigned to the same agent as the card requester
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "engineer-issue", assigneeAgentId: "engineer-agent" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-11/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+
+    const wakeCalls = mockHeartbeatService.wakeup.mock.calls;
+    const engineerWakes = wakeCalls.filter((call: any[]) => call[0] === "engineer-agent");
+    // Only one wake for the requester — not a second one from queueLinkedIssueAssigneeWakes
+    expect(engineerWakes).toHaveLength(1);
   });
 });

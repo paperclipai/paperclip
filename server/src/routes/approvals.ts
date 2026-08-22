@@ -74,6 +74,79 @@ export function approvalRoutes(
     };
   }
 
+  async function queueLinkedIssueAssigneeWakes(input: {
+    approvalId: string;
+    approvalStatus: string;
+    companyId: string;
+    linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
+    requesterAgentId: string | null | undefined;
+    requestedByUserId: string;
+  }) {
+    for (const issue of input.linkedIssues) {
+      if (!issue.assigneeAgentId) continue;
+      if (issue.assigneeAgentId === input.requesterAgentId) continue;
+
+      const wakeReason = `approval_${input.approvalStatus}`;
+      try {
+        const wakeRun = await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: wakeReason,
+          idempotencyKey: `approval-assignee:${input.approvalId}:${issue.id}:${input.approvalStatus}`,
+          payload: {
+            approvalId: input.approvalId,
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+          },
+          requestedByActorType: "user",
+          requestedByActorId: input.requestedByUserId,
+          contextSnapshot: {
+            source: `approval.${input.approvalStatus}`,
+            approvalId: input.approvalId,
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason,
+          },
+        });
+
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.requestedByUserId,
+          action: "approval.linked_assignee_wakeup_queued",
+          entityType: "approval",
+          entityId: input.approvalId,
+          details: {
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            wakeRunId: wakeRun?.id ?? null,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, approvalId: input.approvalId, issueId: issue.id, agentId: issue.assigneeAgentId },
+          "failed to queue linked assignee wakeup after approval",
+        );
+        await logActivity(db, {
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.requestedByUserId,
+          action: "approval.linked_assignee_wakeup_failed",
+          entityType: "approval",
+          entityId: input.approvalId,
+          details: {
+            approvalStatus: input.approvalStatus,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+    }
+  }
+
   async function queueAdditionalApprovalReviewPathWakes(input: {
     approvalId: string;
     approvalStatus: string;
@@ -406,6 +479,15 @@ export function approvalRoutes(
         alreadyWoken: primaryReviewPathWakeCovered && approval.requestedByAgentId && primaryIssueId
           ? { agentId: approval.requestedByAgentId, issueId: primaryIssueId }
           : null,
+        requestedByUserId: req.actor.userId ?? "board",
+      });
+
+      await queueLinkedIssueAssigneeWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        requesterAgentId: approval.requestedByAgentId,
         requestedByUserId: req.actor.userId ?? "board",
       });
     }
