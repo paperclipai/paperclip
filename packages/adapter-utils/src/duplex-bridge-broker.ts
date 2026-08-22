@@ -635,9 +635,30 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       },
       (error) => {
         if (controller.signal.aborted) {
-          // The forward budget aborted the call after the request may have
-          // committed. Return a non-retryable 504 and mark the outcome
-          // indeterminate, so a caller does not retry a committed mutation.
+          // The forward budget aborted the call. A safe method never changes
+          // host state, so a forward timeout stays retryable for it. Return a
+          // 504 with the completed outcome and no indeterminate marker, so the
+          // gateway passes it through as a retryable status.
+          if (isSafeBridgeMethod(frame.method)) {
+            respond(
+              frame.id,
+              {
+                status: 504,
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  error: errorMessage(error),
+                  retryable: true,
+                }),
+              },
+              "completed",
+              "error",
+            );
+            return;
+          }
+          // The method may mutate host state, and the forward budget aborted the
+          // call after the request may have committed. Return a non-retryable 504
+          // and mark the outcome indeterminate, so a caller does not retry a
+          // committed mutation.
           respond(
             frame.id,
             {

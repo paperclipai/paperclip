@@ -489,4 +489,74 @@ describe("duplex bridge broker request limits", () => {
       error: "fetch failed before the response headers arrived",
     });
   });
+
+  it("maps a forward-budget timeout for a safe method to a retryable response", async () => {
+    const harness = createFakeChannelHarness();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      // A tiny forward budget aborts the controller before the manual rejection.
+      budgets: { forwardTimeoutMs: 5 },
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A safe method never changes host state. A forward timeout for a GET must
+    // stay retryable: the broker returns a 504 with the completed outcome and no
+    // indeterminate marker, so the gateway does not map it to a terminal 409.
+    harness.feed(requestFrame("read-timeout-1", "GET"));
+    const forward = harness.forwards.find((entry) => entry.id === "read-timeout-1" && !entry.settled);
+    if (!forward) throw new Error("The broker did not forward the request.");
+
+    // Wait for the forward-budget timer to abort the controller, then reject the
+    // forward. The rejection handler now sees the aborted signal.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    forward.settled = true;
+    forward.reject(new Error("Duplex broker forward budget exceeded."));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(harness.responses).toHaveLength(1);
+    const response = harness.responses[0]!;
+    expect(response.status).toBe(504);
+    expect(response.outcome).toBe("completed");
+    expect(response.headers["x-paperclip-bridge-outcome"]).toBeUndefined();
+    expect(JSON.parse(response.body)).toEqual({
+      error: "Duplex broker forward budget exceeded.",
+      retryable: true,
+    });
+  });
+
+  it("maps a forward-budget timeout for a mutating method to a non-retryable indeterminate response", async () => {
+    const harness = createFakeChannelHarness();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      budgets: { forwardTimeoutMs: 5 },
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A POST may commit before the forward budget aborts the call. The broker
+    // must keep the terminal contract: a 504 with the indeterminate outcome, so
+    // the gateway maps it to a non-retryable 409 and no caller double-applies it.
+    harness.feed(requestFrame("mutate-timeout-1", "POST"));
+    const forward = harness.forwards.find((entry) => entry.id === "mutate-timeout-1" && !entry.settled);
+    if (!forward) throw new Error("The broker did not forward the request.");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    forward.settled = true;
+    forward.reject(new Error("Duplex broker forward budget exceeded."));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(harness.responses).toHaveLength(1);
+    const response = harness.responses[0]!;
+    expect(response.status).toBe(504);
+    expect(response.outcome).toBe("indeterminate");
+    expect(response.headers["x-paperclip-bridge-outcome"]).toBe("indeterminate");
+    expect(JSON.parse(response.body)).toEqual({
+      error: "Duplex broker forward budget exceeded.",
+      outcome: "indeterminate",
+      retryable: false,
+    });
+  });
 });
