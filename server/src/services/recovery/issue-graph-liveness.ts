@@ -1,4 +1,4 @@
-import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import { getAgentWorkEligibility, isAgentInvokable, isAgentInvokableForRecovery } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -146,7 +146,8 @@ function isInvokableAgent(
   agent: IssueLivenessAgentInput | null | undefined,
   agentsById: Map<string, IssueLivenessAgentInput>,
 ) {
-  return Boolean(agent && isAgentInvokable({ agent, agents: [...agentsById.values()] }));
+  if (!agent || !isAgentInvokableForRecovery(agent.status)) return false;
+  return isAgentInvokable({ agent, agents: [...agentsById.values()] });
 }
 
 function hasActiveExecutionPath(
