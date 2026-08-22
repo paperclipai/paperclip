@@ -30,6 +30,7 @@ import {
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
+  prepareManagedAcpxCodexHome,
   parseGeminiVersionParts,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
@@ -5729,5 +5730,92 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// A managed Codex home is derived state seeded by copying the host's
+// config.toml, so a host model/provider pin silently becomes the managed home's
+// — and outranks the selection Paperclip actually makes. The codex-local
+// adapter seeds its managed homes the same way and enforces the same rule; this
+// covers the ACPX engine's own copy of that path.
+describe("prepareManagedAcpxCodexHome", () => {
+  const HOSTILE_HOST_CONFIG = `model_provider = "omlx"
+model = "Qwen3.5-9B-MLX-4bit"
+personality = "pragmatic"
+
+[model_providers.omlx]
+env_key = "OMLX_API_KEY"
+`;
+
+  async function withHomes(
+    run: (input: { sourceHome: string; targetHome: string }) => Promise<void>,
+  ): Promise<void> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-codex-home-"));
+    try {
+      const sourceHome = path.join(root, "host-codex");
+      const targetHome = path.join(root, "managed-codex");
+      await fs.mkdir(sourceHome, { recursive: true });
+      await run({ sourceHome, targetHome });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("does not inherit the host's model/provider selection", async () => {
+    await withHomes(async ({ sourceHome, targetHome }) => {
+      await fs.writeFile(path.join(sourceHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+      await fs.writeFile(path.join(sourceHome, "instructions.md"), "host instructions\n", "utf8");
+
+      await prepareManagedAcpxCodexHome({
+        companyId: "company-1",
+        sourceHome,
+        targetHome,
+        onLog: async () => {},
+      });
+
+      const seeded = await fs.readFile(path.join(targetHome, "config.toml"), "utf8");
+      expect(seeded).not.toMatch(/^\s*model_provider\s*=/m);
+      expect(seeded).not.toMatch(/^\s*model\s*=/m);
+      expect(seeded).toContain(`personality = "pragmatic"`);
+      expect(seeded).toContain("[model_providers.omlx]");
+      // Everything else still seeds verbatim.
+      expect(await fs.readFile(path.join(targetHome, "instructions.md"), "utf8")).toBe(
+        "host instructions\n",
+      );
+    });
+  });
+
+  it("repairs a home that was already seeded with the pin", async () => {
+    await withHomes(async ({ sourceHome, targetHome }) => {
+      await fs.writeFile(path.join(sourceHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+      await fs.mkdir(targetHome, { recursive: true });
+      await fs.writeFile(path.join(targetHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+
+      await prepareManagedAcpxCodexHome({
+        companyId: "company-1",
+        sourceHome,
+        targetHome,
+        onLog: async () => {},
+      });
+
+      const seeded = await fs.readFile(path.join(targetHome, "config.toml"), "utf8");
+      expect(seeded).not.toMatch(/^\s*model_provider\s*=/m);
+    });
+  });
+
+  it("leaves the host config untouched", async () => {
+    await withHomes(async ({ sourceHome, targetHome }) => {
+      const hostConfig = path.join(sourceHome, "config.toml");
+      await fs.writeFile(hostConfig, HOSTILE_HOST_CONFIG, "utf8");
+
+      await prepareManagedAcpxCodexHome({
+        companyId: "company-1",
+        sourceHome,
+        targetHome,
+        onLog: async () => {},
+      });
+
+      expect(await fs.readFile(hostConfig, "utf8")).toBe(HOSTILE_HOST_CONFIG);
+    });
   });
 });

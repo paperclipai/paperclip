@@ -2,11 +2,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { seedSanitizedCodexConfigToml } from "@paperclipai/adapter-utils/codex-config-seed";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
-const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
+/**
+ * Seeded through `seedSanitizedCodexConfigToml` rather than copied verbatim, so
+ * it is part of the managed home (and the sandbox sync allowlist) but is
+ * excluded from the plain copy loop in {@link seedManagedCodexHome}.
+ */
+const SANITIZED_SHARED_FILE = "config.toml";
+const COPIED_SHARED_FILES = ["config.json", SANITIZED_SHARED_FILE, "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
@@ -673,10 +680,19 @@ export async function seedManagedCodexHome(
     }
 
     for (const name of COPIED_SHARED_FILES) {
+      if (name === SANITIZED_SHARED_FILE) continue;
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
       await ensureCopiedFile(path.join(targetHome, name), source);
     }
+
+    // config.toml is seeded (and re-checked) separately so the host's
+    // model/provider selection never becomes the managed home's.
+    await seedSanitizedCodexConfigToml({
+      sourceHome,
+      targetHome,
+      onNote: (note) => onLog("stdout", note),
+    });
 
     await onLog(
       "stdout",

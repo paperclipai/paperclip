@@ -135,7 +135,14 @@ describe("codex execute", () => {
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
-    await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    // The host pin is deliberate: a managed home is seeded from the host config,
+    // and inheriting its model/provider selection silently outranks the model
+    // Paperclip passes on the CLI. Only the non-selection key may propagate.
+    await fs.writeFile(
+      path.join(sharedCodexHome, "config.toml"),
+      'model = "codex-mini-latest"\npersonality = "pragmatic"\n',
+      "utf8",
+    );
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
@@ -196,7 +203,7 @@ describe("codex execute", () => {
       expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(managedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(managedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      expect(await fs.readFile(managedConfig, "utf8")).toBe('personality = "pragmatic"\n');
       await expect(fs.lstat(path.join(sharedCodexHome, "companies", "company-1"))).rejects.toThrow();
       expect(logs).toContainEqual(
         expect.objectContaining({
@@ -240,7 +247,7 @@ describe("codex execute", () => {
     await fs.writeFile(
       path.join(sharedCodexHome, "config.toml"),
       [
-        'model = "codex-mini-latest"',
+        'personality = "pragmatic"',
         "",
         '[mcp_servers.github]',
         'url = "https://raw.example/mcp"',
@@ -1341,7 +1348,14 @@ process.exit(1);
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
-    await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    // The host pin is deliberate: a managed home is seeded from the host config,
+    // and inheriting its model/provider selection silently outranks the model
+    // Paperclip passes on the CLI. Only the non-selection key may propagate.
+    await fs.writeFile(
+      path.join(sharedCodexHome, "config.toml"),
+      'model = "codex-mini-latest"\npersonality = "pragmatic"\n',
+      "utf8",
+    );
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
@@ -1414,7 +1428,7 @@ process.exit(1);
       expect((await fs.lstat(isolatedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(isolatedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(isolatedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(isolatedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      expect(await fs.readFile(isolatedConfig, "utf8")).toBe('personality = "pragmatic"\n');
       expect((await fs.lstat(homeSkill)).isSymbolicLink()).toBe(true);
       expect(logs).toContainEqual(
         expect.objectContaining({

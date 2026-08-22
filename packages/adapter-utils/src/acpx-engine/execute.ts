@@ -31,6 +31,7 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import { seedSanitizedCodexConfigToml } from "@paperclipai/adapter-utils/codex-config-seed";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -787,7 +788,14 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
-async function prepareManagedCodexHome(input: {
+/**
+ * Seeds the ACPX engine's Paperclip-managed Codex home from the host home.
+ * Exported for tests: the codex-local adapter has an equivalent seeding path,
+ * and both must apply the same "never inherit the host's model/provider
+ * selection" rule, so this one needs its own coverage rather than relying on
+ * the other engine's.
+ */
+export async function prepareManagedAcpxCodexHome(input: {
   companyId: string;
   sourceHome: string;
   targetHome: string;
@@ -801,10 +809,19 @@ async function prepareManagedCodexHome(input: {
   const authJson = path.join(sourceHome, "auth.json");
   if (await pathExists(authJson)) await ensureSymlink(path.join(targetHome, "auth.json"), authJson);
 
-  for (const name of ["config.json", "config.toml", "instructions.md"]) {
+  for (const name of ["config.json", "instructions.md"]) {
     const source = path.join(sourceHome, name);
     if (await pathExists(source)) await ensureCopiedFile(path.join(targetHome, name), source);
   }
+
+  // config.toml is seeded (and re-checked) separately so the host's
+  // model/provider selection never becomes the managed home's — the same
+  // never-inherit rule the codex-local adapter applies to its managed homes.
+  await seedSanitizedCodexConfigToml({
+    sourceHome,
+    targetHome,
+    onNote: (note) => onLog("stdout", note),
+  });
 
   await onLog(
     "stdout",
@@ -1040,7 +1057,7 @@ async function prepareCodexSkillRuntime(input: {
       : path.join(os.homedir(), ".codex");
   const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
   const effectiveCodexHome = configuredCodexHome ??
-    await prepareManagedCodexHome({
+    await prepareManagedAcpxCodexHome({
       companyId: input.companyId,
       sourceHome: sourceCodexHome,
       targetHome: managedCodexHome,

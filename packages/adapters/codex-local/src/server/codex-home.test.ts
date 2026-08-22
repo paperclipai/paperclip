@@ -538,6 +538,147 @@ describe("seedManagedCodexHome", () => {
   });
 });
 
+// A managed home is derived state seeded by copying the host's config.toml, so a
+// host-level model/provider pin silently becomes the managed home's pin — and
+// outranks both mechanisms Paperclip actually uses (`--model` on the CLI, and the
+// managed `model_provider` block from PAPERCLIP_CODEX_PROVIDERS). The observed
+// failure was a host pin at a local gateway whose `env_key` was unset, which made
+// every managed run die with "Missing environment variable: OMLX_API_KEY".
+describe("seedManagedCodexHome config.toml sanitization", () => {
+  const HOSTILE_HOST_CONFIG = `model_provider = "omlx"
+model = "Qwen3.5-9B-MLX-4bit"
+personality = "pragmatic"
+
+[model_providers.omlx]
+base_url = "http://127.0.0.1:8008/v1"
+env_key = "OMLX_API_KEY"
+`;
+
+  async function withHomes(
+    run: (input: { sharedCodexHome: string; agentHome: string }) => Promise<void>,
+  ): Promise<void> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-sanitize-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const agentHome = path.join(
+        root,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "agents",
+        "agent-7",
+        "codex-home",
+      );
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await run({ sharedCodexHome, agentHome });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("does not carry the host's model/provider pin into a freshly seeded home", async () => {
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const seeded = await fs.readFile(path.join(agentHome, "config.toml"), "utf8");
+      expect(seeded).not.toMatch(/^\s*model_provider\s*=/m);
+      expect(seeded).not.toMatch(/^\s*model\s*=/m);
+      // Only the *selection* is dropped; the rest of the host config survives.
+      expect(seeded).toContain(`personality = "pragmatic"`);
+      expect(seeded).toContain("[model_providers.omlx]");
+    });
+  });
+
+  it("repairs an already-seeded home that still carries the pin", async () => {
+    // The durability case: a home seeded before this fix (or re-seeded from a
+    // still-poisoned host) keeps the dead pin, and `ensureCopiedFile`'s
+    // "target exists, skip" would leave it there forever.
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+      await fs.mkdir(agentHome, { recursive: true });
+      await fs.writeFile(path.join(agentHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const seeded = await fs.readFile(path.join(agentHome, "config.toml"), "utf8");
+      expect(seeded).not.toMatch(/^\s*model_provider\s*=/m);
+      expect(seeded).toContain("[model_providers.omlx]");
+    });
+  });
+
+  it("never rewrites the host config it seeded from", async () => {
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      const hostConfig = path.join(sharedCodexHome, "config.toml");
+      await fs.writeFile(hostConfig, HOSTILE_HOST_CONFIG, "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect(await fs.readFile(hostConfig, "utf8")).toBe(HOSTILE_HOST_CONFIG);
+    });
+  });
+
+  it("leaves an already-clean managed config untouched", async () => {
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+      const managedConfig = path.join(agentHome, "config.toml");
+      const operatorEdited = `personality = "terse"\n\n[mcp_servers.local]\ncommand = "local"\n`;
+      await fs.mkdir(agentHome, { recursive: true });
+      await fs.writeFile(managedConfig, operatorEdited, "utf8");
+      const before = await fs.stat(managedConfig);
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      // Byte-identical AND not rewritten: a steady-state run must not churn the
+      // file, and must not re-copy the host config over an existing home.
+      expect(await fs.readFile(managedConfig, "utf8")).toBe(operatorEdited);
+      expect((await fs.stat(managedConfig)).mtimeMs).toBe(before.mtimeMs);
+    });
+  });
+
+  it("logs which keys it dropped", async () => {
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), HOSTILE_HOST_CONFIG, "utf8");
+      const logs: string[] = [];
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async (_s, chunk) => {
+        logs.push(chunk);
+      });
+
+      const sanitizationLog = logs.find((line) => line.includes("Dropped host Codex model"));
+      expect(sanitizationLog).toBeDefined();
+      expect(sanitizationLog).toContain("model, model_provider");
+    });
+  });
+
+  it("seeds config.toml 0600 even when the host config needs no sanitizing", async () => {
+    // config.toml carries the managed MCP `Authorization: Bearer …` header, so
+    // the managed copy must not inherit a group/world-readable host mode — and
+    // the clean-host case is exactly the one a verbatim copy would leak through.
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), `personality = "terse"\n`, {
+        encoding: "utf8",
+        mode: 0o644,
+      });
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const stat = await fs.stat(path.join(agentHome, "config.toml"));
+      expect(stat.mode & 0o777).toBe(0o600);
+    });
+  });
+
+  it("does not create a config.toml when the host has none", async () => {
+    await withHomes(async ({ sharedCodexHome, agentHome }) => {
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      await expect(fs.stat(path.join(agentHome, "config.toml"))).rejects.toThrow();
+    });
+  });
+});
+
 // Startup backfill for already-isolated managed homes.
 describe("reconcileManagedCodexHome", () => {
   async function makeFixture() {
