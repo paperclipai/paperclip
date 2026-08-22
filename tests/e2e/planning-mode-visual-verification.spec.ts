@@ -4,7 +4,8 @@ import {
   instrumentNavLog,
 } from "./helpers/onboarding-landing";
 
-const AGENT_NAME = "Chief of staff";
+/** The name the CEO role fills in — see AGENT_ROLE_LABELS. */
+const AGENT_NAME = "CEO";
 const TASK_TITLE = "Paperclip onboarding";
 
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
@@ -64,8 +65,12 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
     .fill("Capture planning mode visual evidence for the graduated task UI.");
   await page.getByRole("button", { name: /Confirm mission/ }).click();
 
-  await page.waitForSelector('input[placeholder="Chief of staff"]', { timeout: 30_000 });
-  await expect(page.locator('input[placeholder="Chief of staff"]')).toHaveValue(AGENT_NAME);
+  // The lead is no longer pre-named. Choosing a role fills the name from the
+  // role's label, which is also what gates "Next".
+  await page.waitForSelector("#onboarding-agent-role", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-role").click();
+  await page.getByRole("option", { name: "CEO", exact: true }).click();
+  await expect(page.locator("#onboarding-agent-name")).toHaveValue(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
   await page.getByRole("button", { name: /^Connect$/ }).click();
@@ -135,7 +140,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.goto(issuePath);
   await page.getByTestId("task-chat-composer-mode").click();
-  await page.getByRole("menuitem", { name: /Agent mode/ }).click();
+  await page.getByRole("menuitem", { name: /Auto mode/ }).click();
   await expect(page.getByTestId("task-chat-composer-mode")).toHaveAttribute("data-pending-work-mode", "standard");
   await page.screenshot({
     path: `${screenshotDir}/desktop-standard-toggle-${timestamp}.png`,

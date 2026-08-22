@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1.20
-FROM node:lts-trixie-slim AS base
+FROM node:24-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG DOCKER_GID=992
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 mc nano procps zstd tini net-tools libicu76 inetutils-ping lynx \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 mc nano procps zstd tini net-tools libicu76 inetutils-ping lynx sudo \
   && apt-get install -y php8.4 php8.4-pgsql php8.4-mysql php8.4-pdo php8.4-mbstring php8.4-sqlite3 php8.4-xsl composer mariadb-client node-playwright chromium-driver chromium-headless-shell postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
@@ -44,6 +44,7 @@ COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
+COPY packages/adapters/kimi-local/package.json packages/adapters/kimi-local/
 COPY packages/adapters/hermes/package.json packages/adapters/hermes/
 COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gateway/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
@@ -63,6 +64,7 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+COPY scripts/paperclip-bwrap /etc/sudoers/
 RUN pnpm --filter @paperclipai/shared build
 RUN pnpm --filter @paperclipai/db build
 RUN pnpm --filter @paperclipai/adapter-utils build
@@ -114,7 +116,7 @@ WORKDIR /app
 # (the single most expensive layer: four CLI toolchains + apt, per arch) can
 # never hit the layer cache and rebuilds on every build.
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
-  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @tobilu/qmd \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @tobilu/qmd @moonshot-ai/kimi-code@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \

@@ -13,6 +13,11 @@
 //     id; a test sets a wrong `sid` to prove the host drops a mismatched
 //     notification and counts a protocol error.
 //   - `exitCode`: when set, the fixture emits an exit notification after the data.
+//   - `dataAfterExit`: an array of `{ chunk, sid? }`, same shape as `data`. The
+//     fixture emits these as data notifications after the exit notification, so a
+//     test can script a batch where a data frame arrives after the exit in the
+//     read order — proving the host still bounds these frames on their own terms
+//     and never lets the exit crowd a data frame out of the pre-open hold.
 //   - `echoInput`: when true, the fixture echoes each `duplexChannelWrite` back as
 //     one data notification for the bound session.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
@@ -45,6 +50,14 @@ function scriptedFrameLines(directive, workerSessionId) {
       jsonrpc: "2.0",
       method: "duplexChannel.exit",
       params: { workerSessionId, exitCode: directive.exitCode },
+    })}\n`;
+  }
+  const dataAfterExit = Array.isArray(directive.dataAfterExit) ? directive.dataAfterExit : [];
+  for (const entry of dataAfterExit) {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "duplexChannel.data",
+      params: { workerSessionId: entry.sid ?? workerSessionId, chunk: entry.chunk },
     })}\n`;
   }
   return lines;

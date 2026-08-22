@@ -151,6 +151,7 @@ import {
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
@@ -278,6 +279,7 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    kimi_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -639,8 +641,8 @@ export function agentRoutes(
       };
     }
 
-    const environment = await environmentsSvc.getById(input.environmentId);
-    if (!environment) {
+    const requestedEnvironment = await environmentsSvc.getById(input.environmentId);
+    if (!requestedEnvironment) {
       return {
         executionTarget: null,
         environmentName: null,
@@ -653,6 +655,40 @@ export function agentRoutes(
         ],
         release: noopRelease,
       };
+    }
+
+    // Managed-sandbox-only policy: redirect a Test that would run on the local
+    // host onto the platform-managed sandbox, the same as a real run does
+    // (resolveExecutionWorkspaceEnvironmentId in heartbeat). Without this
+    // redirect the Test probes the local host while the run executes in the
+    // managed sandbox, so a passing Test validates the wrong execution target.
+    // With no active managed sandbox the Test fails closed — never local.
+    let environment = requestedEnvironment;
+    if (requestedEnvironment.driver === "local") {
+      const managedSandboxOnly =
+        (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+      if (managedSandboxOnly) {
+        const managedSandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(
+          input.companyId,
+        );
+        if (!managedSandboxEnvironment) {
+          return {
+            executionTarget: null,
+            environmentName: requestedEnvironment.name,
+            fallbackChecks: [
+              {
+                code: "managed_sandbox_unavailable",
+                level: "error",
+                message:
+                  "This instance runs agents only in its platform-managed sandbox, but no active managed sandbox environment exists. The test did not run.",
+                hint: "Restore the managed sandbox environment, then test again.",
+              },
+            ],
+            release: noopRelease,
+          };
+        }
+        environment = managedSandboxEnvironment;
+      }
     }
 
     if (environment.driver === "local") {
@@ -748,6 +784,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Re-check the company binding atomically at lease time. The route
+        // guard already rejected a foreign environment, but the binding could
+        // change between the guard check and the lease acquire. This closes
+        // that check-to-lease race so a foreign sandbox never gets a lease.
+        assertCompanyBinding: true,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -854,7 +895,7 @@ export function agentRoutes(
           {
             code: "environment_target_failed",
             level: "error",
-            message: `Could not resolve a sandbox execution target for "${environment.name}".`,
+            message: `Could not resolve an execution target for "${environment.name}".`,
             detail: err instanceof Error ? err.message : String(err),
           },
         ],
@@ -946,9 +987,9 @@ export function agentRoutes(
     return {
       code: "sandbox_test_identity",
       level: "info",
-      message: `Sandbox test identity for "${input.environmentName}".`,
+      message: `Environment test identity for "${input.environmentName}".`,
       detail: detailParts.join("; "),
-      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed sandbox snapshots.",
+      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed environment snapshots.",
     };
   }
 
@@ -1852,6 +1893,10 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "kimi_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_KIMI_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
@@ -2342,6 +2387,39 @@ export function agentRoutes(
     res.json(detected);
   });
 
+  // The environment drivers the adapter Test route accepts. A local, SSH, or
+  // sandbox environment can host a probe; a plugin environment cannot.
+  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
+
+  // The fail-closed tenant-binding guard for the adapter Test route. A caller
+  // may name any instance environment by id, so the route must reject an
+  // environment that binds to another company before it resolves secrets,
+  // merges env, resolves the target, leases a sandbox, or runs the adapter
+  // test. The guard checks the company binding BEFORE it validates the status
+  // or the driver, so it never reveals the status or the driver of a foreign
+  // environment. A same-company or an instance-global environment then gets the
+  // shared driver and status validation.
+  async function assertAdapterTestEnvironmentForCompany(
+    companyId: string,
+    environmentId: string,
+  ): Promise<void> {
+    const environment = await environmentsSvc.getById(environmentId);
+    if (!environment) {
+      // A missing environment leaks no tenant state. The execution-context
+      // resolver surfaces the existing environment_not_found check.
+      return;
+    }
+    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
+      throw forbidden("The selected environment belongs to another company.", {
+        code: "environment_company_mismatch",
+      });
+    }
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -2358,6 +2436,11 @@ export function agentRoutes(
         typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
           ? (req.body.environmentId as string)
           : null;
+      // Fail closed on a foreign environment before any secret resolution, env
+      // merge, target resolution, sandbox lease, or adapter test runs.
+      if (requestedEnvironmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,

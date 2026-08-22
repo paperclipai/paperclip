@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@paperclipai/shared/node-version";
 import {
   addManagedPathBlock,
   assertManagedShimWritable,
@@ -84,9 +85,8 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
 }
 
 function assertSupportedNodeVersion(): void {
-  const major = Number(process.versions.node.split(".")[0]);
-  if (!Number.isFinite(major) || major < 20) {
-    throw new Error(`Managed installs require Node.js 20 or newer (found ${process.version}).`);
+  if (!isSupportedNodeVersion(process.versions.node)) {
+    throw new Error(`Managed installs require Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version}).`);
   }
 }
 

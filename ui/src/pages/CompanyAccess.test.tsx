@@ -100,7 +100,7 @@ describe("CompanyAccess", () => {
             id: "user-1",
             email: "codexcoder@paperclip.local",
             name: "Codex Coder",
-            image: null,
+            image: "/api/assets/avatar-1/content",
           },
           grants: [],
         },
@@ -191,7 +191,7 @@ describe("CompanyAccess", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps the page human-focused and hides advanced permission controls", async () => {
+  it("renders a compact member table without redundant explanatory copy", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -207,12 +207,14 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Manage the people who can work in Paperclip");
-    expect(container.textContent).toContain("Members can collaborate across the company by default");
-    expect(container.textContent).toContain("Core keeps this page focused on membership");
-    expect(container.textContent).toContain("Humans");
+    expect(container.textContent).not.toContain("Manage the people who can work in Paperclip");
+    expect(container.textContent).not.toContain("Members can collaborate across the company by default");
+    expect(container.textContent).not.toContain("Core keeps this page focused on membership");
+    expect(container.textContent).not.toContain("Manage human company memberships and status here");
     expect(container.textContent).toContain("Pending human joins");
-    expect(container.textContent).toContain("User account");
+    expect(container.textContent).toContain("Name");
+    expect(container.textContent).toContain("Email");
+    expect(container.querySelector('[data-slot="avatar"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Grants");
     expect(container.textContent).not.toContain("explicit grants");
     expect(container.textContent).not.toContain("Assign scoped tasks");
@@ -392,12 +394,13 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Company admins cannot be removed from company access.");
+    expect(container.textContent).not.toContain("Company admins cannot be removed from company access.");
     const removeButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Remove"),
     );
     expect(removeButton).toBeTruthy();
     expect(removeButton).toHaveProperty("disabled", true);
+    expect(removeButton?.getAttribute("title")).toBe("Company admins cannot be removed from company access.");
 
     await act(async () => {
       root.unmount();

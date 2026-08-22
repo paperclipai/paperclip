@@ -397,6 +397,34 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("drains a buffered valid chunk to a listener that binds after the byte cap ends the route", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          // "€" is three bytes in UTF-8. The first chunk is 3 bytes (≤ 4), so the
+          // host counts and buffers it. The second chunk brings the total to 6
+          // bytes (> 4), so the host ends the route.
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      // Wait so both data frames arrive and the route ends on the byte cap before
+      // a listener binds. The first chunk is a valid buffered frame. The host must
+      // keep it, so the late listener drains it. This proves the host does not
+      // drop a buffered valid chunk when the route ends before a listener binds.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      expect(chunks).toEqual(["€"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("ends the active route when the lifetime timer expires", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxDurationMs: 100 },
@@ -507,6 +535,107 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route when batched pre-bind frames pass the frame count bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 2 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the three data frames with the open reply, so all
+          // three frames arrive before the route binds. No listener attaches, so
+          // the replay buffers them. The third frame passes the frame-count bound
+          // and the route ends. The pre-open hold must not drop the third frame
+          // before the buffered bound can end the route.
+          batchWithOpenReply: true,
+          data: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route on the frame count bound even when a caller raises that bound well past the module default", async () => {
+    // Regression test: the pre-open hold ceiling must track
+    // maxDuplexChannelPreBindFrames, not a fixed value. A fixed ceiling at or
+    // below this bound would drop the 13th frame in the hold before the replay
+    // ever applies the buffered bound to it, and the route would never end.
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 12 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          batchWithOpenReply: true,
+          data: Array.from({ length: 13 }, (_, i) => ({ chunk: String(i) })),
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route on the frame count bound even when an exit notification arrives before the overflow data frame", async () => {
+    // Regression test: an exit notification must never share the pre-open hold's
+    // capacity with data frames. The worker here batches exactly
+    // maxPreBindBufferedFrames valid data frames (no violation), then its exit,
+    // then one more data frame that should trip the buffered-frame bound. If the
+    // exit consumed a hold slot, that last data frame would be dropped by the
+    // hold before the replay ever applies the buffered bound to it, and the
+    // route would end normally on the exit (exitCode: 0) instead of on the
+    // bound (exitCode: null).
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedFrames: 3 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          batchWithOpenReply: true,
+          data: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+          exitCode: 0,
+          dataAfterExit: [{ chunk: "overflow" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a batched pre-bind chunk that a later listener drains before the byte cap ends the route", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxTotalDataBytes: 4 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          // The worker batches the two data frames with the open reply, so both
+          // frames arrive before the route binds and before a listener attaches.
+          // "€" is three bytes in UTF-8. The first chunk (3 bytes ≤ 4) buffers.
+          // The second chunk brings the total to 6 bytes (> 4), so the route ends.
+          // The route end must not discard the buffered first chunk. The listener
+          // attaches after the open resolves and drains the first chunk.
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          data: [{ chunk: "€" }, { chunk: "€" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["€"]);
     } finally {
       await handle.stop().catch(() => undefined);
     }

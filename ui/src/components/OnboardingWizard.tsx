@@ -1,6 +1,17 @@
 import { useEffect, useState, useMemo, useRef } from "react";
+import type { CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import { MotionConfig, motion } from "motion/react";
+import type {
+  AdapterEnvironmentTestResult,
+  AgentRole,
+  Environment,
+  InstanceSettings,
+} from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { Label } from "./ui/label";
+import { Input } from "./ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -11,6 +22,13 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { environmentsApi } from "../api/environments";
+import { instanceSettingsApi } from "../api/instanceSettings";
+import {
+  resolveAdapterTestEnvironmentId,
+  resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
+} from "../lib/adapter-test-environment";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -44,6 +62,7 @@ import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
   canGoBackFromOnboardingStep,
@@ -59,6 +78,12 @@ import {
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
+import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
+import { AgentPreview } from "./onboarding/AgentPreview";
+import { FooterNav } from "./onboarding/FooterNav";
+import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
+import { DEFAULT_AGENT_NAME, nextAgentNameForRole } from "../lib/onboarding-agent-role";
+import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -385,7 +410,12 @@ function OnboardingWizardInner({
   const [q4, setQ4] = useState((saved?.q4 as string) ?? ""); // What would success look like?
 
   // Step 2
-  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "Chief of staff");
+  // Neither is defaulted. The prototype asks for a role before it will create
+  // anything, and leaves the name optional — a pre-filled "Chief of staff" is a
+  // choice made on the customer's behalf that they then have to notice and
+  // undo. Picking a role fills the name; see nextAgentNameForRole.
+  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
+  const [agentRole, setAgentRole] = useState<AgentRole | "">((saved?.agentRole as AgentRole) ?? "");
   const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState((saved?.model as string) ?? "");
@@ -618,7 +648,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName, companyGoal, missionPath, missionConfirmed,
-      q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
+      q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -626,7 +656,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
-    q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
+    q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -658,6 +688,7 @@ function OnboardingWizardInner({
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
+    adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
@@ -717,6 +748,7 @@ function OnboardingWizardInner({
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
+    kimi_local: "kimi",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
@@ -796,7 +828,11 @@ function OnboardingWizardInner({
     setQ2("");
     setQ3("");
     setQ4("");
-    setAgentName("Chief of staff");
+    // Both cleared, matching the mount defaults: a reset that left a name
+    // behind without its role would put the walker back on a step whose CTA
+    // is disabled, next to a name nobody chose.
+    setAgentName("");
+    setAgentRole("");
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
@@ -929,6 +965,8 @@ function OnboardingWizardInner({
       model:
         adapterType === "gemini_local"
           ? model || DEFAULT_GEMINI_LOCAL_MODEL
+          : adapterType === "kimi_local"
+            ? model || DEFAULT_KIMI_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
             : adapterType === "opencode_local"
@@ -969,11 +1007,61 @@ function OnboardingWizardInner({
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
+      // Probe the environment a real run would use, so the Test matches a real
+      // run. The wizard has no agent yet, so the agent-default tier is always
+      // null; resolve the instance default and the instance local default. A
+      // settings-resolution failure surfaces an error instead of a silent host
+      // probe, which would report a false result.
+      let environmentList: Environment[];
+      let settings: InstanceSettings;
+      let managedSandboxOnly: boolean;
+      try {
+        const [list, generalSettings, experimentalSettings] = await Promise.all([
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.environments.list(createdCompanyId),
+            queryFn: () => environmentsApi.list(createdCompanyId),
+          }),
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.settings,
+            queryFn: () => instanceSettingsApi.get(),
+          }),
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.experimentalSettings,
+            queryFn: () => instanceSettingsApi.getExperimental(),
+          }),
+        ]);
+        environmentList = list;
+        settings = generalSettings;
+        managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+      } catch {
+        setAdapterEnvError(
+          "Could not load environment settings to determine which environment to test in. Retry the test.",
+        );
+        return null;
+      }
+      // Mirror the server run-time resolution, including the managed-sandbox-only
+      // redirect: when the resolution lands on the local environment and the
+      // policy is on, probe the managed sandbox the real run uses instead. The
+      // resolver throws when no managed sandbox is available, which the outer
+      // catch surfaces as a fail-closed error rather than a local host probe.
+      const environmentId = resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+        // The policy hides the local environment, so an instance default that
+        // still points at the hidden local row names no visible environment.
+        // Pass the visible ids so the resolver redirects that stale local
+        // default to the managed sandbox instead of sending the hidden local id.
+        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
+      });
       const result = await agentsApi.testEnvironment(
         createdCompanyId,
         adapterType,
         {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
+          adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          environmentId,
         }
       );
       setAdapterEnvResult(result);
@@ -1155,11 +1243,22 @@ function OnboardingWizardInner({
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
+        // Block the hire on a failed environment test. A pass or a warn may
+        // proceed; a fail means the agent cannot run as configured.
+        if (result.status === "fail") {
+          setError(
+            "The environment test failed. Fix the reported checks before you hire this agent.",
+          );
+          return;
+        }
       }
 
+      if (!agentRole) return;
       const hire = await agentsApi.hire(createdCompanyId, {
-        name: agentName.trim(),
-        role: "ceo",
+        // The name is optional; an agent that reaches here without one is
+        // named for the job it was hired to do rather than left blank.
+        name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
+        role: agentRole,
         adapterType,
         adapterConfig: buildAdapterConfig(),
         runtimeConfig: buildNewAgentRuntimeConfig()
@@ -1288,6 +1387,12 @@ function OnboardingWizardInner({
 
   if (!effectiveOnboardingOpen) return null;
 
+  // The arc strip stands in for the full-length bar only when the run began on
+  // the arc — the Cloud-first path, where the company already exists and steps
+  // 1-2 never happen. A run that started at step 1 keeps one continuous count.
+  const isAgentArcStep = agentArcStepFor(step) !== null;
+  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
+
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
@@ -1333,9 +1438,25 @@ function OnboardingWizardInner({
               step === 1 || step === 2 ? "md:w-1/2" : "md:w-full"
             )}
           >
-            <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
+            <div
+              className={cn(
+                "mx-auto my-auto shrink-0",
+                // The arc sits in the prototype's card frame; the earlier steps
+                // keep the split-panel layout they were designed for. One
+                // element styled two ways, not two wrappers, so the step
+                // content below renders exactly once.
+                isAgentArcStep
+                  ? "w-(--sz-560px) max-w-full rounded-xl border border-border bg-card px-8 py-10 sm:px-10 sm:py-11"
+                  : "w-full max-w-md px-8 py-12",
+              )}
+            >
               {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
-                  filled once step ≥ N. Completed segments jump back. */}
+                  filled once step ≥ N. Completed segments jump back.
+                  Hidden for a run that entered on the agent arc: the arc strip
+                  below counts that run's three steps, and showing both put two
+                  progress bars on the same screen. A run that started at step 1
+                  keeps this one throughout, so its count never restarts. */}
+              {!showsAgentArcStepper && (
               <div className="flex items-center gap-1.5 mb-8">
                 {([1, 2, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
@@ -1361,75 +1482,85 @@ function OnboardingWizardInner({
                   );
                 })}
               </div>
+              )}
 
-              {/* Persistent evolving capsule (steps 3–5): a single AgentCapsule
-                  held in the same tree slot so React reuses the DOM node and the
-                  morph reads as one capsule coming to life — dashed slot →
-                  solid (configured) → liquid fill + blue glow (online). */}
+              {/* The agent arc's progress strip. Numbered 1–3 over the wizard's
+                  steps 3–5, because company creation already happened in Cloud
+                  and the mission step is skipped when it did. */}
+              {showsAgentArcStepper && (
+                <Stepper
+                  step={agentArcStepFor(step)!}
+                  canJumpToStep={(target) =>
+                    canJumpToOnboardingStep({
+                      targetStep: AGENT_ARC_WIZARD_STEPS[target - 1]!,
+                      currentStep: step,
+                      entryStep,
+                    })
+                  }
+                  onJumpToStep={(target) => setStep(AGENT_ARC_WIZARD_STEPS[target - 1]! as Step)}
+                />
+              )}
+
+              {/* The hero, above the heading, as the prototype has it: one
+                  AgentCapsule held in the same tree slot across steps 3–5, so
+                  React reuses the DOM node and the morph reads as a single
+                  capsule coming to life — dashed slot → traced outline →
+                  liquid fill. Moving between steps never replays the entrance. */}
               {step >= 3 && step <= 5 && (
-                <div className="mb-6 space-y-4">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      {step === 5 ? (
-                        <Check className="h-5 w-5 text-muted-foreground" />
-                      ) : (
-                        <Bot className="h-5 w-5 text-muted-foreground" />
-                      )}
-                    </div>
-                    <div>
-                      <h3 className="font-medium">
-                        {step === 3
+                // reducedMotion="user" defers to the OS setting, so the hero
+                // arrives in place for anyone who asked for less movement. The
+                // token layer zeroes the CSS durations; this covers the JS half.
+                <MotionConfig reducedMotion="user">
+                  {/* mb-6 continues the prototype's single rhythm past this
+                      block: it groups the hero and heading, and the step's own
+                      controls sit a step below on the same spacing. */}
+                  <div className="mb-6 space-y-6">
+                    <motion.div
+                      initial={capsuleHeroMotion.initial}
+                      animate={capsuleHeroMotion.animate}
+                      transition={capsuleHeroMotion.transition}
+                      className="flex flex-col items-center gap-2"
+                    >
+                      <AgentCapsule
+                        state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
+                        gradient={5}
+                        glow="blue"
+                        size="md"
+                        // The arc is where the agent is born, so the
+                        // slot→configured morph traces the outline on.
+                        strokeDraw
+                      />
+                      <AgentPreview
+                        agentName={agentName}
+                        agentRole={agentRole ? AGENT_ROLE_LABELS[agentRole] : ""}
+                      />
+                    </motion.div>
+
+                    <OnboardingHeading
+                      center
+                      title={
+                        step === 3
                           ? "Create your first agent"
                           : step === 4
                             ? "Connect a model"
-                            : "Review"}
-                      </h3>
-                      <p className="text-xs text-muted-foreground">
-                        {step === 3 ? (
+                            : "Review"
+                      }
+                      // The agent step carries no lede, as the prototype has it:
+                      // the capsule and the heading say what this is, and a
+                      // sentence restating it only pushes the fields down.
+                      lede={
+                        step === 3 ? undefined : step === 4 ? (
                           <>
-                            They'll help drive{" "}
-                            <span className="font-medium text-foreground">{companyName}</span>{" "}
-                            toward its mission. We default to{" "}
-                            <span className="font-medium text-foreground">Chief of staff</span>.
-                            Rename it to anything you like.
+                            What model would you like your first agent to use? You can
+                            choose different models when creating additional agents.
                           </>
-                        ) : step === 4 ? (
-                          <>Pick the adapter and model your lead will run on, then check the environment.</>
                         ) : (
                           <>Your first agent is online and ready to work.</>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div
-                    className={cn(
-                      "flex flex-col items-center py-1 text-center",
-                      step === 5 ? "mt-8 gap-2.5" : "gap-1.5"
-                    )}
-                  >
-                    <AgentCapsule
-                      state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
-                      gradient={5}
-                      glow="blue"
-                      size="md"
+                        )
+                      }
                     />
-                    {step !== 3 && (
-                      <p
-                        className={cn(
-                          "text-muted-foreground",
-                          step === 5 ? "text-sm" : "text-(length:--text-micro)"
-                        )}
-                      >
-                        {step === 4 ? (
-                          "your team lead, taking shape"
-                        ) : (
-                          <span className="font-medium text-foreground">{agentName}</span>
-                        )}
-                      </p>
-                    )}
                   </div>
-                </div>
+                </MotionConfig>
               )}
 
               {/* Step content */}
@@ -1759,25 +1890,47 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 3: Create your team lead — name only (capsule above) */}
+              {/* Step 3: role, then an optional name — the prototype's field
+                  pair, in its order and its widths. */}
               {step === 3 && (
-                <div className="space-y-5">
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Chief of staff"
+                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="onboarding-agent-role">Role</Label>
+                    {/* Options come from the AgentRole enum, not the prototype's
+                        mock list: four of that list's seven entries have no
+                        equivalent here, and one ("Coder") would fail validation
+                        at hire time. */}
+                    <Select
+                      value={agentRole || undefined}
+                      onValueChange={(value) => {
+                        const nextRole = value as AgentRole;
+                        setAgentRole(nextRole);
+                        setAgentName((current) =>
+                          nextAgentNameForRole({ currentName: current, nextRole }),
+                        );
+                      }}
+                    >
+                      <SelectTrigger id="onboarding-agent-role" className="w-full">
+                        <SelectValue placeholder="Select a role…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {AGENT_ROLES.map((role) => (
+                          <SelectItem key={role} value={role}>
+                            {AGENT_ROLE_LABELS[role]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="onboarding-agent-name">
+                      Name <span className="font-normal text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Input
+                      id="onboarding-agent-name"
+                      placeholder="Name"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && agentName.trim()) {
-                          e.preventDefault();
-                          setStep(4);
-                        }
-                      }}
-                      autoFocus
                     />
                   </div>
                 </div>
@@ -1861,6 +2014,10 @@ function OnboardingWizardInner({
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "kimi_local" && !model) {
+                                setModel(DEFAULT_KIMI_LOCAL_MODEL);
                                 return;
                               }
                               if (nextType === "cursor" && !model) {
@@ -2021,9 +2178,21 @@ function OnboardingWizardInner({
 
                       {adapterEnvResult &&
                       adapterEnvResult.status === "pass" ? (
-                        <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
-                          <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Passed</span>
+                        <div className="space-y-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                          {/* Use the shared status-chip helper with the done
+                              status hue, so the pass banner derives its fill,
+                              text, and border from the design tokens in both
+                              modes instead of raw color values. */}
+                          <div
+                            className="status-chip flex items-center gap-2 rounded-md border px-2.5 py-2 text-(length:--text-micro)"
+                            style={{ "--sc": "var(--status-task-done)" } as CSSProperties}
+                          >
+                            <Check className="size-3.5 shrink-0" />
+                            <span className="font-medium">Passed</span>
+                          </div>
+                          {/* Show the checks on a pass too, so the target and the
+                              auth signals stay visible before the hire. */}
+                          <AdapterEnvironmentResult result={adapterEnvResult} />
                         </div>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
@@ -2063,6 +2232,8 @@ function OnboardingWizardInner({
                               ? `${effectiveAdapterCommand} exec --json -`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
+                              : adapterType === "kimi_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
@@ -2074,6 +2245,7 @@ function OnboardingWizardInner({
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
                           adapterType === "gemini_local" ||
+                          adapterType === "kimi_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
                               If auth fails, set{" "}
@@ -2082,6 +2254,8 @@ function OnboardingWizardInner({
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
+                                    : adapterType === "kimi_local"
+                                      ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
                                     : "OPENAI_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
@@ -2092,6 +2266,8 @@ function OnboardingWizardInner({
                                     ? "codex login"
                                     : adapterType === "gemini_local"
                                       ? "gemini auth"
+                                      : adapterType === "kimi_local"
+                                        ? "kimi login"
                                       : "opencode auth login"}
                               </span>
                               .
@@ -2169,7 +2345,37 @@ function OnboardingWizardInner({
                 </div>
               )}
 
+              {isAgentArcStep && (
+                <FooterNav
+                  onBack={
+                    canGoBackFromOnboardingStep({ currentStep: step, entryStep })
+                      ? () => setStep((step - 1) as Step)
+                      : undefined
+                  }
+                  // The prototype's cloud flow hires on this step and calls the
+                  // action "Create". Here the model step sits between, so this
+                  // one advances — which is exactly the distinction the
+                  // prototype's own local flow draws with "Next".
+                  primaryLabel={step === 3 ? "Next" : step === 4 ? "Connect" : "Get started"}
+                  loadingLabel={step === 4 ? "Connecting..." : "Launching..."}
+                  loading={step === 3 ? false : loading}
+                  primaryDisabled={
+                    step === 3
+                      ? !agentRole
+                      : step === 4
+                        ? loading || adapterEnvLoading || missionUnresolvedForHire
+                        : loading || launchStateIncomplete
+                  }
+                  onPrimary={() => {
+                    if (step === 3) setStep(4);
+                    else if (step === 4) handleGiveHeartbeat();
+                    else handleLaunchToDashboard();
+                  }}
+                />
+              )}
+
               {/* Footer navigation */}
+              {!isAgentArcStep && (
               <div className="flex items-center justify-between mt-8">
                 <div>
                   {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
@@ -2257,6 +2463,7 @@ function OnboardingWizardInner({
                   )}
                 </div>
               </div>
+              )}
             </div>
           </div>
           )}

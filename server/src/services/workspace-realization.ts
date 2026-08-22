@@ -344,6 +344,7 @@ export function buildWorkspaceRealizationRecordFromDriverInput(input: {
         worktreePath: null,
         warnings: [],
         created: false,
+        branchCreatedByRuntime: false,
       },
       workspaceConfig: null,
     });

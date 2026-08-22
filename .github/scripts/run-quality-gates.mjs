@@ -17,6 +17,7 @@ import { checkTestCoverage } from './check-pr-test-coverage.mjs';
 import { checkLockfile } from './check-pr-lockfile.mjs';
 import { checkDependencies } from './check-pr-dependencies.mjs';
 import { checkReleaseBootstrap } from './check-pr-release-bootstrap.mjs';
+import { checkCoauthors, fetchAllPullRequestCommits } from './check-pr-coauthors.mjs';
 
 const COMMENT_SIGNATURE = '— commitperclip';
 
@@ -106,6 +107,17 @@ async function main() {
     fetchAllPullRequestFiles(ghFetch, GH_REPO, prNumber, GH_TOKEN),
   ]);
 
+  // Separate, and allowed to fail. The co-author note is informational: it
+  // cannot fail a PR by design, so it must not be able to fail the workflow by
+  // accident either. Sharing the Promise.all above would let one transient
+  // 5xx on this request take down every gate, including the ones that block.
+  let commits = [];
+  try {
+    commits = await fetchAllPullRequestCommits(ghFetch, GH_REPO, prNumber, GH_TOKEN);
+  } catch (error) {
+    console.error(`co-author lookup skipped: ${error.message}`);
+  }
+
   const prBody = pr.body ?? '';
   const author = PR_AUTHOR ?? pr.user.login;
   const branch = PR_BRANCH ?? pr.head.ref;
@@ -122,6 +134,7 @@ async function main() {
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
       checkReleaseBootstrap(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
     ]);
+  const coauthorResult = checkCoauthors(commits, author);
 
   const allFailures = [
     ...templateResult.failures,
@@ -133,6 +146,7 @@ async function main() {
   const informational = [
     ...(depsResult.informational ?? []),
     ...(bootstrapResult.informational ?? []),
+    ...coauthorResult.informational,
   ];
   const allPassed = allFailures.length === 0;
 
