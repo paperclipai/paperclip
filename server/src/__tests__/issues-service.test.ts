@@ -3752,6 +3752,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -3924,6 +3925,82 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(priorityUpdate?.changes).toEqual({
       priority: { from: "medium", to: "high" },
     });
+  });
+
+  it("revalidates stale cross-assignee blocker removal under the issue row lock", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "failed",
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Stale checkout",
+        status: "in_progress",
+        priority: "critical",
+        assigneeAgentId,
+        checkoutRunId: runId,
+        executionRunId: runId,
+      },
+      {
+        id: blockerId,
+        companyId,
+        title: "Terminal blocker",
+        status: "cancelled",
+        priority: "high",
+      },
+    ]);
+    await svc.update(issueId, { blockedByIssueIds: [blockerId] });
+
+    const repaired = await svc.update(issueId, {
+      blockedByIssueIds: [],
+      staleBlockerRemovalExpectedAssigneeAgentId: assigneeAgentId,
+    });
+    expect(repaired?.blockedByIssueIds).toEqual([]);
+
+    await svc.update(issueId, { blockedByIssueIds: [blockerId] });
+    await expect(svc.update(issueId, {
+      blockedByIssueIds: [blockerId],
+      staleBlockerRemovalExpectedAssigneeAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "issue_blocker_repair_conflict" },
+    });
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+
+    await expect(svc.update(issueId, {
+      blockedByIssueIds: [],
+      staleBlockerRemovalExpectedAssigneeAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "issue_write_assignee_run_lock" },
+    });
+    expect((await svc.getRelationSummaries(issueId)).blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {

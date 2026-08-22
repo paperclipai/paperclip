@@ -291,6 +291,7 @@ function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
+  activeIssueLockRunIds: string[] = [],
 ) {
   const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
@@ -307,6 +308,7 @@ function createRunContextDb(
   const rowsForSelection = async (selection: Record<string, unknown>) => {
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
+    if (keys.includes("activeRunId")) return activeIssueLockRunIds.map((activeRunId) => ({ activeRunId }));
     if (keys.includes("contextSnapshot")) return runRows;
     if (keys.includes("agentCompanyId")) return runRows;
     if (keys.length === 0) {
@@ -1584,6 +1586,88 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", null, null],
+    ["terminal", ownerRunId, ownerRunId],
+  ])("allows a blocker-only removal when the other assignee's %s run lock is not live", async (_kind, checkoutRunId, executionRunId) => {
+    const blockerId = "88888888-8888-4888-8888-888888888888";
+    mockIssueService.getById.mockResolvedValue(makeIssue({ checkoutRunId, executionRunId }));
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: blockerId }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        blockedByIssueIds: [],
+        staleBlockerRemovalExpectedAssigneeAgentId: ownerAgentId,
+      }),
+    );
+  });
+
+  it("keeps a blocker-only removal denied while the other assignee's run lock is live", async () => {
+    const blockerId = "88888888-8888-4888-8888-888888888888";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: blockerId }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(
+      peerActor(),
+      createRunContextDb({}, peerAgentId, peerActor().runId, [ownerRunId]),
+    ))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("preserves the active-checkout management override for blocker removal", async () => {
+    const blockerId = "88888888-8888-4888-8888-888888888888";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: blockerId }],
+      blocks: [],
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
+
+    const res = await request(await createApp(
+      peerActor(),
+      createRunContextDb({}, peerAgentId, peerActor().runId, [ownerRunId]),
+    ))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ blockedByIssueIds: [] }),
+    );
+    expect(mockIssueService.update.mock.calls[0]?.[1]).not.toHaveProperty(
+      "staleBlockerRemovalExpectedAssigneeAgentId",
+    );
   });
 
   it.each([

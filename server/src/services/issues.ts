@@ -7638,6 +7638,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        staleBlockerRemovalExpectedAssigneeAgentId?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7656,6 +7657,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        staleBlockerRemovalExpectedAssigneeAgentId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -7819,6 +7821,52 @@ export function issueService(db: Db) {
             ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
             : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
         ]);
+        if (staleBlockerRemovalExpectedAssigneeAgentId) {
+          if (
+            receiptExisting.status !== "in_progress"
+            || receiptExisting.assigneeAgentId !== staleBlockerRemovalExpectedAssigneeAgentId
+          ) {
+            throw conflict("Issue ownership changed before stale lock repair", {
+              issueId: id,
+              code: "issue_blocker_repair_conflict",
+            });
+          }
+          const currentBlockerIds = (previousRelationSummaries.get(id)?.blockedBy ?? [])
+            .map((relation) => relation.id);
+          const nextBlockerIds = [...new Set(blockedByIssueIds ?? [])];
+          const remainsRemovalOnly =
+            nextBlockerIds.length < currentBlockerIds.length
+            && nextBlockerIds.every((blockerId) => currentBlockerIds.includes(blockerId));
+          if (!remainsRemovalOnly) {
+            throw conflict("Issue blockers changed before stale lock repair", {
+              issueId: id,
+              code: "issue_blocker_repair_conflict",
+            });
+          }
+
+          const runIds = [...new Set([
+            receiptExisting.checkoutRunId,
+            receiptExisting.executionRunId,
+          ].filter((runId): runId is string => !!runId))];
+          const activeRun = runIds.length === 0
+            ? null
+            : await tx
+              .select({ id: heartbeatRuns.id })
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.companyId, receiptExisting.companyId),
+                inArray(heartbeatRuns.id, runIds),
+                inArray(heartbeatRuns.status, ["queued", "running"]),
+              ))
+              .limit(1)
+              .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+          if (activeRun) {
+            throw conflict("Issue is checked out by another agent", {
+              issueId: id,
+              code: "issue_write_assignee_run_lock",
+            });
+          }
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),

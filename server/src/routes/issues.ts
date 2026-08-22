@@ -4019,6 +4019,28 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function hasLiveIssueRunLock(issue: {
+    companyId: string;
+    checkoutRunId?: string | null;
+    executionRunId?: string | null;
+  }) {
+    const runIds = [...new Set([issue.checkoutRunId, issue.executionRunId].filter((id): id is string => !!id))];
+    if (runIds.length === 0) return false;
+
+    const activeRuns = await db
+      .select({ activeRunId: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          inArray(heartbeatRuns.id, runIds),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ),
+      )
+      .limit(1);
+    return activeRuns.length > 0;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -4030,11 +4052,16 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: {
+      allowVisibleIssueWrite?: boolean;
+      allowStaleBlockerRemoval?: boolean;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -4077,6 +4104,9 @@ export function issueRoutes(
         return true;
       }
       if (issue.status === "in_progress") {
+        if (options.allowStaleBlockerRemoval && !(await hasLiveIssueRunLock(issue))) {
+          return "stale_blocker_removal" as const;
+        }
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
         return denyIssueWrite(req, res, issue, "issue_write_assignee_run_lock", {
@@ -9373,13 +9403,32 @@ export function issueRoutes(
       await denyIssueWrite(req, res, existing, "issue_write_attribution_spoof_rejected");
       return;
     }
+    const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
+      ? [...new Set(req.body.blockedByIssueIds as string[])]
+      : null;
+    const isBlockerRepairOnlyPatch =
+      requestedBlockerIds !== null
+      && Object.keys(req.body).length === 1;
+    const blockerRepairActorAgentId = req.actor.type === "agent"
+      ? req.actor.agentId ?? null
+      : null;
+    const allowStaleBlockerRemoval =
+      isBlockerRepairOnlyPatch
+      && blockerRepairActorAgentId !== null
+      && existing.status === "in_progress"
+      && existing.assigneeAgentId !== null
+      && existing.assigneeAgentId !== blockerRepairActorAgentId;
     const issueMutationAccess = await assertAgentIssueMutationAllowed(
       req,
       res,
       existing,
-      { allowVisibleIssueWrite: true },
+      {
+        allowVisibleIssueWrite: true,
+        allowStaleBlockerRemoval,
+      },
     );
     if (!issueMutationAccess) return;
+    const isStaleCrossAssigneeBlockerRemoval = issueMutationAccess === "stale_blocker_removal";
     const issueMutationAuthorizationReason = req.actor.type === "agent"
       ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
       : issueWriteAuthorizationReason(req, true);
@@ -9394,10 +9443,9 @@ export function issueRoutes(
       { actorType: req.actor.type },
     );
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
-    const existingRelations =
-      Array.isArray(req.body.blockedByIssueIds)
-        ? await svc.getRelationSummaries(existing.id)
-        : null;
+    const existingRelations = requestedBlockerIds
+      ? await svc.getRelationSummaries(existing.id)
+      : null;
     const {
       comment: commentBody,
       reviewInteractionId: requestedReviewInteractionId,
@@ -9838,6 +9886,9 @@ export function issueRoutes(
       ...updateFields,
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      ...(isStaleCrossAssigneeBlockerRemoval
+        ? { staleBlockerRemovalExpectedAssigneeAgentId: existing.assigneeAgentId! }
+        : {}),
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
