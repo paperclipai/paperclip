@@ -106,30 +106,59 @@ function repairStaleMigratedWorktreeEnvEntries(
   };
 }
 
+/**
+ * Load `.paperclip/.env` into the environment the dev runner passes to everything
+ * it spawns.
+ *
+ * A linked worktree must carry this file — without it the isolated instance is
+ * unresolvable, so its absence is fatal. A primary checkout has no such
+ * requirement, but when it does pin an environment the runner must honour it for
+ * the same reason: `resolvePaperclipInstanceRoot` and friends fall back to
+ * `os.homedir()` whenever PAPERCLIP_HOME is unset, so a child process that does
+ * not inherit it silently builds a second, empty Paperclip home somewhere else.
+ * Two homes then exist and neither is obviously authoritative. Setting the
+ * variable externally does not prevent that: on Windows `setx` only reaches
+ * processes launched from a fresh login environment, so anything spawned by an
+ * already-running editor or agent never sees it.
+ *
+ * Entries never override a variable already present in `env`, so an explicit
+ * PAPERCLIP_HOME still wins over the file.
+ */
 export function bootstrapDevRunnerWorktreeEnv(
   rootDir: string,
   env: NodeJS.ProcessEnv = process.env,
 ): WorktreeEnvBootstrapResult {
-  if (!isLinkedGitWorktreeCheckout(rootDir)) {
-    return {
-      envPath: null,
-      missingEnv: false,
-    };
-  }
-
+  const linkedWorktree = isLinkedGitWorktreeCheckout(rootDir);
   const envPath = resolveWorktreeEnvFilePath(rootDir);
+
   if (!existsSync(envPath)) {
-    return {
-      envPath,
-      missingEnv: true,
-    };
+    // A linked worktree cannot resolve its isolated instance without this file,
+    // so its absence is fatal. A primary checkout simply has nothing pinned.
+    if (linkedWorktree) {
+      return { envPath, missingEnv: true };
+    }
+    return { envPath: null, missingEnv: false };
   }
 
-  const entries = repairStaleMigratedWorktreeEnvEntries(
-    rootDir,
-    parseEnvFile(readFileSync(envPath, "utf8")),
-    env,
-  );
+  // A primary checkout's pin is honoured only when it is coherent: the config
+  // file the env file accompanies has to exist beside it. A lone .env is debris
+  // — left behind when a worktree's instance was removed, or carried along when
+  // a worktree directory was copied into a clone — and applying it would point
+  // every spawned child at an instance that no longer exists. A linked worktree
+  // is exempt because repairStaleMigratedWorktreeEnvEntries below exists to
+  // rewrite precisely that case for it; a primary checkout has no such repair,
+  // so the coherence check is what stands in for it.
+  if (!linkedWorktree && !existsSync(path.resolve(rootDir, ".paperclip", "config.json"))) {
+    return { envPath: null, missingEnv: false };
+  }
+
+  const parsedEntries = parseEnvFile(readFileSync(envPath, "utf8"));
+  // The stale-config repair rewrites paths against the worktree home layout, so
+  // it stays scoped to linked worktrees; a primary checkout's pin is used as
+  // written.
+  const entries = linkedWorktree
+    ? repairStaleMigratedWorktreeEnvEntries(rootDir, parsedEntries, env)
+    : parsedEntries;
   for (const [key, value] of Object.entries(entries)) {
     if (typeof env[key] === "string" && env[key]!.trim().length > 0) continue;
     env[key] = value;
