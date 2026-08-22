@@ -5017,7 +5017,10 @@ export function agentRoutes(
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      // Running runs must never be crowded out of a size-limited page by a
+      // backlog of newer queued ones — a caller asking for "live runs" wants
+      // to see what's actually cooking before what's merely waiting.
+      .orderBy(sql`CASE WHEN ${heartbeatRuns.status} = 'running' THEN 0 ELSE 1 END`, desc(heartbeatRuns.createdAt));
 
     const liveRuns = await liveRunsQuery.limit(limit);
     const targetRunCount = Math.min(minCount, limit);
