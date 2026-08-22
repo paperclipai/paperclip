@@ -166,6 +166,7 @@ import {
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { adoptRunSourceIssue, shouldAdoptRunSourceIssue } from "../services/run-source-issue.js";
 import {
   GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
@@ -11084,6 +11085,26 @@ export function issueRoutes(
           contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+    } else if (
+      shouldAdoptRunSourceIssue({
+        actorType: req.actor.type,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+        checkoutAgentId: req.body.agentId,
+        checkoutRunId,
+      })
+    ) {
+      // No wake is sent here because the agent is already awake and claiming
+      // the work itself. That left the run with no source issue, and since
+      // CROSS_ISSUE_INFLUENCE_ENFORCE_AT an unscoped run is refused on every
+      // issue write it attempts — including this very issue. Adopt it instead.
+      await adoptRunSourceIssue(db, {
+        runId: checkoutRunId as string,
+        agentId: req.body.agentId,
+        companyId: issue.companyId,
+        issueId: issue.id,
+      }).catch((err) =>
+        logger.warn({ err, issueId: issue.id }, "failed to adopt checked-out issue as run source issue"),
+      );
     }
 
     res.json(updated);
