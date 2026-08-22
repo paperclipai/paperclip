@@ -328,6 +328,17 @@ export function legacyIssueThreadInteractionResolverPolicyAlias(
   if (policy === "human_only") return "board_only";
   return null;
 }
+// Thread-interaction kinds that pause an issue waiting on a human (founder) decision.
+// Surfaced in the founder Inbox as "Waiting on you" so they are not silently stranded
+// in the In Review column. All current kinds are agent->human asks.
+export const AWAITING_HUMAN_INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "request_item_verdicts",
+] as const;
+export type AwaitingHumanInteractionKind = (typeof AWAITING_HUMAN_INTERACTION_KINDS)[number];
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;

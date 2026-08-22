@@ -83,6 +83,7 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
+  listAwaitingHumanForCompany: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   link: vi.fn(),
@@ -479,6 +480,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueThreadInteractionService.listAwaitingHumanForCompany.mockReset();
+    mockIssueThreadInteractionService.listAwaitingHumanForCompany.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueRecoveryActionService.listActiveForIssues.mockReset();
@@ -725,6 +728,54 @@ describe("agent issue mutation checkout ownership", () => {
       contentLength: 6,
     });
     mockStorageService.deleteObject.mockResolvedValue(undefined);
+  });
+
+  it("filters company-wide pending interactions through issue read authorization", async () => {
+    const hiddenIssueId = "88888888-8888-4888-8888-888888888888";
+    const issue = (id: string, title: string) => ({
+      id,
+      companyId,
+      projectId: null,
+      parentId: null,
+      identifier: id === issueId ? "ISS-1" : "ISS-2",
+      title,
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      assigneeUserId: null,
+    });
+    mockIssueThreadInteractionService.listAwaitingHumanForCompany.mockResolvedValue([
+      {
+        interaction: { id: "visible-interaction", payload: { prompt: "Visible prompt" } },
+        issue: issue(issueId, "Visible issue"),
+      },
+      {
+        interaction: { id: "hidden-interaction", payload: { prompt: "Secret prompt" } },
+        issue: issue(hiddenIssueId, "Hidden issue"),
+      },
+    ]);
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: { issueId?: string } }) => {
+      const allowed = input.action !== "issue:read" || input.scope?.issueId === issueId;
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test." : "Denied by test.",
+      };
+    });
+
+    const app = await createApp(peerActor());
+    const response = await request(app)
+      .get(`/api/companies/${companyId}/awaiting-human-interactions`)
+      .expect(200);
+
+    expect(response.body).toEqual([
+      expect.objectContaining({
+        interaction: expect.objectContaining({ id: "visible-interaction" }),
+        issue: expect.objectContaining({ id: issueId, title: "Visible issue" }),
+      }),
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain("Hidden issue");
+    expect(JSON.stringify(response.body)).not.toContain("Secret prompt");
   });
 
   it("denies company-wide issue list routes for task bridge keys", async () => {

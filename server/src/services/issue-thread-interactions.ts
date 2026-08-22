@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -42,6 +42,7 @@ import type {
   WithdrawIssueThreadInteraction,
 } from "@paperclipai/shared";
 import {
+  AWAITING_HUMAN_INTERACTION_KINDS,
   acceptIssueThreadInteractionSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
@@ -2002,6 +2003,33 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             }
           : row,
       ));
+    },
+
+    // Company-wide list of pending agent->human asks, joined with issue context, for the
+    // founder Inbox "Waiting on you" section. Excludes interactions on hidden/terminal issues.
+    listAwaitingHumanForCompany: async (companyId: string) => {
+      const rows = await db
+        .select({
+          interaction: issueThreadInteractions,
+          issue: issues,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.kind, [...AWAITING_HUMAN_INTERACTION_KINDS]),
+            isNull(issues.hiddenAt),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .orderBy(desc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+
+      return rows.map((row) => ({
+        interaction: hydrateInteraction(row.interaction),
+        issue: row.issue,
+      }));
     },
 
     getById: async (interactionId: string) => {
