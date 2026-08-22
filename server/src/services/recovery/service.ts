@@ -791,6 +791,11 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 }
 
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+  // The database queued-wake check is authoritative across processes. This
+  // bounded cache only covers the enqueue/mutation race in the current
+  // process; failed or deferred enqueue attempts are deliberately not cached.
+  const locallyRequeuedReviewRuns = new Set<string>();
+  const localReviewWakeCacheLimit = 1024;
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -4697,7 +4702,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
-  async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+  async function reconcileStrandedAssignedIssues(opts?: {
+    issueCreatedAtGte?: Date | null;
+    /** Test seam for exercising a stale candidate between read and CAS. */
+    beforeRepair?: (issue: typeof issues.$inferSelect) => Promise<void>;
+  }) {
     const candidates = await db
       .select()
       .from(issues)
@@ -4714,6 +4723,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
 
     const result = {
+      changesRequestedRepaired: 0,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -4732,16 +4742,102 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueIds: [] as string[],
     };
 
-    for (const issue of candidates) {
-      const executionState = issue.status === "in_review"
-        ? parseIssueExecutionState(issue.executionState)
+    for (const candidate of candidates) {
+      let issue = candidate;
+      await opts?.beforeRepair?.(issue);
+      // Subject/company-bound CAS repair. Only currentParticipant changes;
+      // decision and verdict history remain untouched.
+      const repaired = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(issues)
+          .set({
+            executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${issues.executionState}->'returnAssignee')`,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+            isNull(issues.hiddenAt),
+            sql`${issues.executionState}->>'status' = 'changes_requested'`,
+            sql`${issues.executionState}->>'lastDecisionOutcome' = 'changes_requested'`,
+            sql`${issues.executionState}->'returnAssignee'->>'type' = 'agent'`,
+            sql`EXISTS (SELECT 1 FROM ${agents} AS return_agent
+              WHERE return_agent.id::text = ${issues.executionState}->'returnAssignee'->>'agentId'
+                AND return_agent.company_id = ${issues.companyId})`,
+            sql`(${issues.executionState}->'currentParticipant'->>'agentId') IS DISTINCT FROM (${issues.executionState}->'returnAssignee'->>'agentId')`,
+          ))
+          .returning({ id: issues.id, executionState: issues.executionState });
+        if (updated.length === 0) return null;
+
+        const repairedState = updated[0].executionState;
+        // The activity record must commit with the CAS repair. Drizzle's
+        // transaction handle is structurally compatible with the activity
+        // logger at runtime, but its inferred type intentionally omits the
+        // root database client's `$client` property.
+        await logActivity(tx as unknown as Db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "recovery.changes_requested_participant_repaired",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            source: "recovery.reconcile_stranded_assigned_issues",
+            issueId: issue.id,
+            identifier: issue.identifier,
+            returnAssignee: repairedState && typeof repairedState === "object"
+              ? (repairedState as Record<string, unknown>).returnAssignee ?? null
+              : null,
+            invariant: "currentParticipant only; decision and verdict history preserved",
+          },
+        });
+        return repairedState;
+      });
+      if (repaired) result.changesRequestedRepaired += 1;
+
+      // The candidate snapshot may predate the CAS repair. Use the state
+      // returned by that transaction for the remainder of this pass so a
+      // restored review participant, rather than the original assignee, owns
+      // any follow-up wake. A concurrent restoration that wins the CAS leaves
+      // `repaired` null and the candidate is handled from its original state.
+      // Always refresh the complete subject after the CAS. A winning repair
+      // has a newer participant, while a lost CAS may have a newer status,
+      // assignee, or execution history; none may be mixed with the snapshot
+      // read before reconciliation.
+      const effectiveIssue = (await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+        .limit(1))[0] ?? issue;
+      // All recovery decisions after the CAS must use one coherent live
+      // subject snapshot. In particular, do not combine a refreshed status or
+      // assignee with the pre-CAS execution state and history.
+      issue = effectiveIssue;
+      const effectiveExecutionState = effectiveIssue.executionState;
+      const executionState = effectiveIssue.status === "in_review"
+        ? parseIssueExecutionState(effectiveExecutionState)
         : null;
-      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
+      // A participant is recoverable only while the execution gate is pending.
+      // `changes_requested` belongs to the executor until resubmission; a
+      // recovery wake must not manufacture a validator adjudication path.
+      // Recovery must continue to honor a live pending participant even when
+      // preserved historical fields are from an older/looser state shape.
+      // Do not rewrite that history merely because strict read validation
+      // cannot parse an otherwise actionable live state.
+      const rawExecutionState = parseObject(effectiveExecutionState);
+      const pendingExecutionState = executionState?.status === "pending"
+        ? executionState
+        : effectiveIssue.status === "in_review" && rawExecutionState.status === "pending"
+          ? rawExecutionState as unknown as NonNullable<typeof executionState>
+          : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
       const participantAgentId = currentParticipant?.type === "agent" ? currentParticipant.agentId : null;
-      const agentId = issue.status === "in_review" && participantAgentId
+      const agentId = effectiveIssue.status === "in_review" && participantAgentId
         ? participantAgentId
         : issue.assigneeAgentId;
       if (!agentId) {
@@ -5107,7 +5203,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         }
-
+        if (locallyRequeuedReviewRuns.has(participantLatestRun.id)) {
+          result.skipped += 1;
+          continue;
+        }
         if (await isInvocationBudgetBlocked(issue, participantAgentId)) {
           result.skipped += 1;
           continue;
@@ -5128,6 +5227,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           },
         });
         if (queued) {
+          locallyRequeuedReviewRuns.add(participantLatestRun.id);
+          if (locallyRequeuedReviewRuns.size > localReviewWakeCacheLimit) {
+            const oldest = locallyRequeuedReviewRuns.values().next().value;
+            if (oldest) locallyRequeuedReviewRuns.delete(oldest);
+          }
           result.reviewParticipantRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
