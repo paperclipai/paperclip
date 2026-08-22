@@ -162,14 +162,18 @@ export function isTextualAttachmentContentType(contentType: string | null | unde
  * encoding of "€", is also valid Windows-1252 for "â‚¬" - three unrelated
  * legacy characters). A single non-ASCII code point, however many bytes it
  * spans, is therefore never reliable evidence on its own. What makes a
- * coincidence implausible is *repetition*: each additional, independent
- * non-ASCII code point multiplies the odds against chance alignment, so we
- * require at least two of them (real UTF-8 text using accents, CJK, emoji,
- * etc. naturally has many; a legacy-encoded document coincidentally
- * producing two or more well-formed multi-byte sequences is negligible).
- * Buffers with fewer than two non-ASCII code points are treated as
- * unverified and left unlabeled, matching this module's documented
- * fallback of letting the browser sniff the encoding itself.
+ * coincidence implausible is *repetition* of *distinct* code points: each
+ * additional, independent non-ASCII code point multiplies the odds against
+ * chance alignment, so we require at least two distinct ones (real UTF-8
+ * text using accents, CJK, emoji, etc. naturally has many; a legacy-encoded
+ * document coincidentally producing two or more distinct well-formed
+ * multi-byte sequences is negligible). Counting repeats of the *same* code
+ * point is not enough evidence: a legacy document with the same digraph
+ * repeated (e.g. Windows-1252 "Â©Â©", two repeats of the same two-byte
+ * collision) would otherwise pass. Buffers with fewer than two distinct
+ * non-ASCII code points are treated as unverified and left unlabeled,
+ * matching this module's documented fallback of letting the browser sniff
+ * the encoding itself.
  */
 export function isValidUtf8Buffer(buffer: Buffer): boolean {
   let text: string;
@@ -178,13 +182,18 @@ export function isValidUtf8Buffer(buffer: Buffer): boolean {
   } catch {
     return false;
   }
-  const nonAsciiCodePoints = text.match(/[^\u0000-\u007f]/gu) ?? [];
-  if (nonAsciiCodePoints.length === 0) return true;
-  // At least one non-ASCII code point present - only trust the decode if
-  // there are two or more; a lone one can arise by chance from legacy
-  // single-byte text (see the "€" example above), but two independent
-  // coincidences in the same buffer are negligibly unlikely.
-  return nonAsciiCodePoints.length >= 2;
+  // Scan code points directly (rather than `text.match(/.../gu)`) so we can
+  // stop as soon as two distinct non-ASCII code points are found, instead of
+  // materializing every match into an array up front - important for large
+  // (up to MAX_ATTACHMENT_BYTES) buffers of non-ASCII text.
+  const distinctNonAscii = new Set<string>();
+  for (const char of text) {
+    if (char.codePointAt(0)! > 0x7f) {
+      distinctNonAscii.add(char);
+      if (distinctNonAscii.size >= 2) return true;
+    }
+  }
+  return distinctNonAscii.size === 0;
 }
 
 /**

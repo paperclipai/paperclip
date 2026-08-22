@@ -329,11 +329,20 @@ describe("isValidUtf8Buffer", () => {
     expect(isValidUtf8Buffer(euroSignBytes)).toBe(false);
   });
 
-  it("treats two independent code points beyond U+00FF as confident UTF-8", () => {
-    // Two separate multi-byte sequences coincidentally forming well-formed
-    // UTF-8 out of legacy single-byte text is negligibly unlikely, so this
-    // is trusted even though each "€" individually would not be.
-    expect(isValidUtf8Buffer(Buffer.from("€€", "utf8"))).toBe(true);
+  it("does not treat a repeated identical code point as confident UTF-8", () => {
+    // "€€" is two repeats of the *same* code point (U+20AC), which is also
+    // what a legacy Windows-1252 document with the same repeated digraph
+    // would decode to. Repetition of an identical code point isn't
+    // independent evidence, so this must not be trusted.
+    expect(isValidUtf8Buffer(Buffer.from("€€", "utf8"))).toBe(false);
+  });
+
+  it("treats two distinct code points beyond U+00FF as confident UTF-8", () => {
+    // Two distinct multi-byte sequences ("€" and "£") coincidentally forming
+    // well-formed UTF-8 out of legacy single-byte text is negligibly
+    // unlikely, so this is trusted even though each individually would not
+    // be.
+    expect(isValidUtf8Buffer(Buffer.from("€£", "utf8"))).toBe(true);
   });
 });
 
