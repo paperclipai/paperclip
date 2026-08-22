@@ -248,11 +248,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
+      // drizzle-orm (0.45+) wraps the underlying pg error on `.cause` rather
+      // than re-exposing `.code`, so a non-UUID :pluginId surfaces Postgres
+      // 22P02 (invalid_text_representation) one level down. Inspect both so the
+      // lookup falls through to getByKey instead of surfacing as a 500.
+      const record = error as
+        | { code?: unknown; cause?: { code?: unknown } }
+        | null
+        | undefined;
+      const pgCode = record?.code ?? record?.cause?.code;
+      if (pgCode !== "22P02") {
         throw error;
       }
     }
