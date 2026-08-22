@@ -63,6 +63,7 @@ export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
+  { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
