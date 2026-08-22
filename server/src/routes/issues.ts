@@ -319,6 +319,235 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
   }));
 }
 
+// AGE-628: two independent close-gates from the corrected AGE-333 post-mortem.
+// Gate A rejects an issue whose own title/headline asserts a per-day/hour/
+// month RATE claim unless the body states its observation window and either
+// (a) cites at least two non-adjacent samples, or (b) explicitly justifies a
+// single sample. Gate B rejects any monetary claim in the body/comments that
+// cites Paperclip's own internal `/costs` ledger as its source (known to
+// undercount spend ~10x per AGE-335) instead of the vendor's own billing API
+// (e.g. `gh api /orgs/{org}/settings/billing/usage`), pasted command+output.
+// Narrow, title/body regex match only -- same scope discipline as AGE-569/626,
+// not a general anomaly-detection system. Both are independent of, and do not
+// substitute for, the AGE-569 PR gate or the AGE-626 metric gate.
+const RATE_CLAIM_PATTERN =
+  /(\$\s*[\d,.]+(?:k|m)?\s*\/\s*(day|hour|hr|week|wk|month|mo)\b)|(\brun[- ]rate\b)|(\bburn[- ]rate\b)|(\bper[- ](day|hour|month)\b.{0,20}\$)/i;
+const RATE_CLAIM_WINDOW_PATTERN = /\bwindow\b|\bobservation window\b|\btrailing\b|\bover\s+\d+\s*(day|hour|week|month)s?\b/i;
+const RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN =
+  /\b(?:only|just|a )?\s*(?:one|single|1)\s+(?:sample|data ?point)\b.{0,120}?\b(?:because|since|as|given that|due to)\b|\bno other sample(?:s)? (?:exist|available)\b.{0,120}?\b(?:because|since|as|given that|due to)\b/i;
+// Two non-adjacent samples: look for two distinct calendar month+year
+// tokens (e.g. "July 2026" and "August 2026"). Dedupe on month+year, not
+// the raw matched substring, so two different *days* within the same month
+// (e.g. "Aug 1, 2026" and "Aug 15, 2026") do not falsely count as two
+// separated windows -- Greptile flagged this exact bypass.
+const CALENDAR_MONTH_YEAR_TOKEN_PATTERN =
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?,?\s+)?(\d{2,4})\b/gi;
+const DOLLAR_FIGURE_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b/i;
+
+function issueHeadlineAssertsRateClaim(title: string | null | undefined): boolean {
+  if (typeof title !== "string") return false;
+  const trimmed = title.trim();
+  if (trimmed.length === 0) return false;
+  return RATE_CLAIM_PATTERN.test(trimmed);
+}
+
+// A calendar-month mention only counts as a real sample if a dollar figure
+// sits near it (same sentence-ish window, +/-60 chars) -- otherwise an
+// incidental date reference (e.g. "founded in March 2020") next to an
+// unrelated dollar figure elsewhere in the text would falsely count as a
+// measured data point. Greptile flagged the earlier any-two-months check as
+// a bypass for exactly this reason.
+const CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS = 60;
+
+function distinctCalendarMonthYearCount(text: string): number {
+  const monthPattern = new RegExp(CALENDAR_MONTH_YEAR_TOKEN_PATTERN.source, "gi");
+  const dollarPattern = new RegExp(DOLLAR_FIGURE_PATTERN.source, "gi");
+  const dollarMatchIndexes: number[] = [];
+  let dollarMatch: RegExpExecArray | null;
+  while ((dollarMatch = dollarPattern.exec(text)) !== null) {
+    dollarMatchIndexes.push(dollarMatch.index);
+  }
+  // Each month can only be backed by a dollar figure that has not already
+  // backed a different month -- otherwise a single dollar figure sitting
+  // between two adjacent month mentions would satisfy both, letting one
+  // real data point masquerade as two separated samples. Greptile flagged
+  // this exact bypass.
+  const usedDollarIndexes = new Set<number>();
+  const monthKeys = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = monthPattern.exec(text)) !== null) {
+    const month = match[1]?.toLowerCase();
+    const year = match[2];
+    if (!month || !year) continue;
+    const windowStart = Math.max(0, match.index - CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS);
+    const windowEnd = Math.min(
+      text.length,
+      match.index + match[0].length + CALENDAR_TOKEN_DOLLAR_PROXIMITY_CHARS,
+    );
+    const backingDollarIndex = dollarMatchIndexes.find(
+      (idx) => idx >= windowStart && idx < windowEnd && !usedDollarIndexes.has(idx),
+    );
+    if (backingDollarIndex === undefined) continue;
+    usedDollarIndexes.add(backingDollarIndex);
+    monthKeys.add(`${month}-${year}`);
+  }
+  return monthKeys.size;
+}
+
+function rateClaimHasAdequateEvidence(text: string | null | undefined): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (!RATE_CLAIM_WINDOW_PATTERN.test(text)) return false;
+  if (RATE_CLAIM_SINGLE_SAMPLE_JUSTIFICATION_PATTERN.test(text)) return true;
+  return distinctCalendarMonthYearCount(text) >= 2;
+}
+
+/**
+ * Gate A (AGE-628): an issue whose own title/headline asserts a per-day/
+ * hour/month rate claim must state its observation window and either cite
+ * two non-adjacent samples or explicitly justify why only one sample
+ * exists. Modeled on the AGE-333 post-mortem: a single trailing-24h data
+ * point was reported as a sustained "$8,400/day" run rate.
+ */
+async function assertRateClaimHasAdequateEvidence(
+  db: Db,
+  issueId: string,
+  effectiveTitle: string | null,
+  effectiveDescription: string | null,
+) {
+  if (!issueHeadlineAssertsRateClaim(effectiveTitle)) return;
+  if (rateClaimHasAdequateEvidence(effectiveDescription)) return;
+  const rows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
+  for (const row of rows) {
+    if (rateClaimHasAdequateEvidence(row.body)) return;
+  }
+  throw unprocessable(
+    "Cannot mark issue done: this issue's title asserts a per-day/hour/month rate claim, but no observation window and no second, non-adjacent sample (or explicit single-sample justification) was found in the description or comments. State the window used, cite two separated samples, or explicitly justify why only one sample exists.",
+    { code: "done_transition_rate_claim_gate", reason: "missing_rate_claim_evidence" },
+  );
+}
+
+const MONETARY_CLAIM_PATTERN = /\$\s*[\d,]+(?:\.\d+)?(?:k|m)?\b|\bspend\b|\bcost(?:s)?\b|\bburn\b/i;
+const INTERNAL_COSTS_LEDGER_CITATION_PATTERN =
+  /\/costs\b|\bpaperclip(?:'s)? (?:internal )?(?:cost|costs) (?:ledger|endpoint|api)\b|\binternal (?:cost|costs) ledger\b/i;
+// A real vendor-billing citation needs the literal command shape (`gh api`
+// against a billing endpoint, or the REST path itself) -- a bare phrase like
+// "confirmed via the billing API" with no command is not a citation, it is a
+// claim about a citation. Greptile flagged the looser phrase-only match as a
+// bypass, so this requires the command AND a pasted dollar figure (the
+// stand-in for "pasted output" in this literal, regex-scoped heuristic).
+const VENDOR_BILLING_COMMAND_PATTERN =
+  /\bgh api\b[^\n]{0,80}\bbilling\b|orgs\/[\w.-]+\/settings\/billing(?:\/usage)?/i;
+// The pasted dollar figure must sit near the command mention itself (this
+// window, forward from the end of the match), not merely exist anywhere in
+// the text -- otherwise the internal-ledger's own dollar figure (elsewhere
+// in the same text) could satisfy the "pasted output" requirement without
+// any real command output ever being pasted. Greptile flagged this exact
+// bypass.
+const VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS = 200;
+// The internal-ledger's own dollar figure is also collected (from a window
+// around the ledger citation) so that a vendor-command output figure which
+// merely *restates* that same number does not count as fresh evidence --
+// Greptile flagged this exact bypass (citing the command, then repeating
+// the unverified internal amount instead of pasting a real, different
+// output value).
+const INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS = 150;
+
+function normalizeDollarFigure(raw: string): string {
+  const stripped = raw.replace(/[$,]/g, "").trim().toLowerCase();
+  const suffixMatch = stripped.match(/^([\d.]+)\s*(k|m)$/);
+  const numeric = suffixMatch
+    ? Number.parseFloat(suffixMatch[1]) * (suffixMatch[2] === "k" ? 1_000 : 1_000_000)
+    : Number.parseFloat(stripped);
+  // Compare by numeric value, not raw string, so equivalent representations
+  // of the same amount ($4,200 vs $4.2k) are recognized as the same figure
+  // instead of passing as if they were two independent data points --
+  // Greptile flagged this exact bypass.
+  if (Number.isNaN(numeric)) return stripped;
+  return numeric.toFixed(2);
+}
+
+function textCitesInternalCostsLedgerForMonetaryClaim(text: string | null | undefined): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (!MONETARY_CLAIM_PATTERN.test(text)) return false;
+  if (!INTERNAL_COSTS_LEDGER_CITATION_PATTERN.test(text)) return false;
+  return true;
+}
+
+function internalLedgerDollarAmounts(text: string | null | undefined): string[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const citationPattern = new RegExp(INTERNAL_COSTS_LEDGER_CITATION_PATTERN.source, "gi");
+  const amounts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = citationPattern.exec(text)) !== null) {
+    const windowStart = Math.max(0, match.index - INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS);
+    const windowEnd = Math.min(
+      text.length,
+      match.index + match[0].length + INTERNAL_LEDGER_AMOUNT_PROXIMITY_CHARS,
+    );
+    const window = text.slice(windowStart, windowEnd);
+    const dollarPattern = new RegExp(DOLLAR_FIGURE_PATTERN.source, "gi");
+    let dollarMatch: RegExpExecArray | null;
+    while ((dollarMatch = dollarPattern.exec(window)) !== null) {
+      amounts.push(normalizeDollarFigure(dollarMatch[0]));
+    }
+  }
+  return amounts;
+}
+
+function vendorOutputDollarAmounts(text: string | null | undefined): string[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const commandPattern = new RegExp(VENDOR_BILLING_COMMAND_PATTERN.source, "gi");
+  const amounts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = commandPattern.exec(text)) !== null) {
+    const windowStart = match.index;
+    const windowEnd = Math.min(text.length, match.index + match[0].length + VENDOR_BILLING_OUTPUT_PROXIMITY_CHARS);
+    const window = text.slice(windowStart, windowEnd);
+    const dollarPattern = new RegExp(DOLLAR_FIGURE_PATTERN.source, "gi");
+    let dollarMatch: RegExpExecArray | null;
+    while ((dollarMatch = dollarPattern.exec(window)) !== null) {
+      amounts.push(normalizeDollarFigure(dollarMatch[0]));
+    }
+  }
+  return amounts;
+}
+
+/**
+ * Gate B (AGE-628): reject a monetary/spend claim sourced from Paperclip's
+ * own internal `/costs` ledger -- independently proven to undercount actual
+ * spend ~10x per AGE-335 -- unless the description or ANY comment also
+ * cites the vendor's own billing API (command + pasted dollar figure),
+ * which is the authoritative source. Both the internal-ledger citation and
+ * the vendor-billing citation are searched across the description AND every
+ * comment -- an internal-ledger claim made only in a comment still trips
+ * this gate (Greptile flagged the earlier description-only trigger as a
+ * bypass), and a vendor citation anywhere in the thread satisfies it.
+ */
+async function assertMonetaryClaimCitesVendorBillingApi(
+  db: Db,
+  issueId: string,
+  effectiveDescription: string | null,
+) {
+  const rows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
+  const allTexts = [effectiveDescription, ...rows.map((row) => row.body)];
+  const citesInternalLedger = allTexts.some((text) => textCitesInternalCostsLedgerForMonetaryClaim(text));
+  if (!citesInternalLedger) return;
+  const internalAmounts = new Set(allTexts.flatMap((text) => internalLedgerDollarAmounts(text)));
+  const vendorAmounts = allTexts.flatMap((text) => vendorOutputDollarAmounts(text));
+  const hasGenuineVendorOutput = vendorAmounts.some((amount) => !internalAmounts.has(amount));
+  if (hasGenuineVendorOutput) return;
+  throw unprocessable(
+    "Cannot mark issue done: this issue cites Paperclip's internal /costs ledger for a monetary/spend claim, which is known to undercount actual spend (AGE-335). Cite the vendor's own billing API (e.g. `gh api /orgs/{org}/settings/billing/usage`) with the command and its pasted output before closing.",
+    { code: "done_transition_billing_source_gate", reason: "internal_costs_ledger_cited_for_monetary_claim" },
+  );
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
@@ -9688,6 +9917,28 @@ export function issueRoutes(
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
+    if (nextStatus === "done" && existing.status !== "done") {
+      const effectiveTitleForCloseGates = updateFields.title !== undefined
+        ? (updateFields.title as string | null)
+        : existing.title;
+      const effectiveDescriptionForCloseGates = updateFields.description !== undefined
+        ? (updateFields.description as string | null)
+        : existing.description;
+      // AGE-628 Gate A: single-sample rate claims.
+      await assertRateClaimHasAdequateEvidence(
+        db,
+        existing.id,
+        effectiveTitleForCloseGates,
+        effectiveDescriptionForCloseGates,
+      );
+      // AGE-628 Gate B: monetary claims must cite the vendor billing API,
+      // not Paperclip's internal /costs ledger.
+      await assertMonetaryClaimCitesVendorBillingApi(
+        db,
+        existing.id,
+        effectiveDescriptionForCloseGates,
+      );
+    }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }
