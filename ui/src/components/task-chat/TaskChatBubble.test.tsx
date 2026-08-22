@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { LONG_COMMENT_CHARACTER_LIMIT } from "@/components/FoldedCommentBody";
 import { TaskChatBubble } from "./TaskChatBubble";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
@@ -63,6 +64,19 @@ describe("TaskChatBubble attachment chips", () => {
 
     expect(container.querySelector('[data-testid="task-chat-bubble-attachments"]')).toBeNull();
     expect(container.textContent).toContain("Just words");
+  });
+
+  it("folds an extremely long comment until the operator expands it", () => {
+    renderMessage(`${"a".repeat(LONG_COMMENT_CHARACTER_LIMIT)}hidden tail`);
+
+    const expand = container.querySelector("button[aria-expanded='false']");
+    expect(expand?.textContent).toContain("Show 11 more characters");
+    expect(container.textContent).not.toContain("hidden tail");
+
+    flushSync(() => expand?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(container.textContent).toContain("hidden tail");
+    expect(container.querySelector("button[aria-expanded='true']")?.textContent).toContain("Show less");
   });
 });
 
