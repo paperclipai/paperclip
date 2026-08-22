@@ -241,6 +241,7 @@ import {
 } from "./recovery/stranded-notice.js";
 import {
   recoveryAssigneeAdapterOverrides,
+  STATUS_ONLY_RECOVERY_GUARD_CONTEXT,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
@@ -790,6 +791,18 @@ function mergeAdapterRecoveryMetadata(input: {
         }
       : {}),
   };
+}
+
+function stripAdapterRecoveryMetadata(
+  resultJson: Record<string, unknown> | null | undefined,
+) {
+  if (!resultJson) return resultJson ?? null;
+  const sanitized = { ...resultJson };
+  delete sanitized.errorFamily;
+  delete sanitized.retryNotBefore;
+  delete sanitized.transientRetryNotBefore;
+  delete sanitized.providerQuotaRetryNotBefore;
+  return sanitized;
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
@@ -2643,6 +2656,46 @@ export interface ModelProfileApplication {
   configSource: AppliedModelProfileConfigSource | null;
   fallbackReason: string | null;
   adapterConfig: Record<string, unknown> | null;
+  /**
+   * True when the requested profile is a best-effort status-only recovery hint
+   * (see {@link withRecoveryModelProfileHint}) rather than an explicit issue/user
+   * request. Such hints degrade gracefully to the base adapter config when the
+   * adapter cannot provide the profile, instead of failing the run closed.
+   */
+  bestEffortRecoveryHint: boolean;
+}
+
+export function assertRequestedModelProfileApplied(
+  modelProfile: ModelProfileApplication,
+): void {
+  if (!modelProfile.requested || modelProfile.applied) return;
+
+  const fallbackReason = modelProfile.fallbackReason ?? "requested_model_profile_unavailable";
+  // A best-effort status-only recovery hint (the cheap-model preference attached
+  // by withRecoveryModelProfileHint) must still dispatch on the base adapter
+  // config when the adapter simply cannot provide the profile. It only fails
+  // closed when the operator explicitly disabled the profile, preserving the
+  // fail-closed guarantee for explicit issue/user requests.
+  if (
+    modelProfile.bestEffortRecoveryHint &&
+    fallbackReason !== "agent_runtime_profile_disabled"
+  ) {
+    return;
+  }
+  const metadata = modelProfileRunMetadata(modelProfile);
+  throw new ConfigurationIncompleteFailure(
+    `configuration incomplete: requested model profile "${modelProfile.requested}" could not be applied ` +
+      `(${fallbackReason}); refusing to fall back to the primary adapter configuration`,
+    {
+      configurationIncomplete: {
+        reason: "requested_model_profile_unavailable",
+        requestedModelProfile: modelProfile.requested,
+        requestedBy: modelProfile.requestedBy,
+        fallbackReason,
+      },
+      ...(metadata ? { modelProfile: metadata } : {}),
+    },
+  );
 }
 
 /**
@@ -3636,6 +3689,13 @@ export function resolveModelProfileApplication(input: {
     : contextModelProfile
       ? "wake_context"
       : null;
+  // A cheap-model preference attached by a status-only recovery run is a
+  // best-effort hint, not an explicit request. An explicit issue override always
+  // wins over the context hint, so only a wake-context request can be soft.
+  const bestEffortRecoveryHint =
+    requestedBy === "wake_context" &&
+    parseObject(input.contextSnapshot).recoveryIntent ===
+      STATUS_ONLY_RECOVERY_GUARD_CONTEXT.recoveryIntent;
 
   if (!requested) {
     return {
@@ -3645,6 +3705,7 @@ export function resolveModelProfileApplication(input: {
       configSource: null,
       fallbackReason: null,
       adapterConfig: null,
+      bestEffortRecoveryHint: false,
     };
   }
 
@@ -3657,6 +3718,7 @@ export function resolveModelProfileApplication(input: {
       configSource: null,
       fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
       adapterConfig: null,
+      bestEffortRecoveryHint,
     };
   }
 
@@ -3669,6 +3731,7 @@ export function resolveModelProfileApplication(input: {
       configSource: null,
       fallbackReason: "agent_runtime_profile_disabled",
       adapterConfig: null,
+      bestEffortRecoveryHint,
     };
   }
 
@@ -3682,6 +3745,7 @@ export function resolveModelProfileApplication(input: {
       ...parseObject(adapterProfile.adapterConfig),
       ...runtimeProfile.adapterConfig,
     },
+    bestEffortRecoveryHint,
   };
 }
 
@@ -6492,6 +6556,36 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
 }
 
 type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
+
+const ADAPTER_SEMANTIC_FAILURE_STATUSES = new Set(["error", "failed", "failure", "errored"]);
+
+function readAdapterSemanticFailure(
+  resultJson: Record<string, unknown> | null | undefined,
+): { status: string; message: string | null } | null {
+  const result = parseObject(resultJson);
+  const status = readNonEmptyString(result.status)?.trim().toLowerCase() ?? null;
+  if (!status || !ADAPTER_SEMANTIC_FAILURE_STATUSES.has(status)) return null;
+
+  return {
+    status,
+    message:
+      readNonEmptyString(result.errorMessage) ??
+      readNonEmptyString(result.error) ??
+      readNonEmptyString(result.message) ??
+      null,
+  };
+}
+
+export function resolveAdapterRunOutcome(input: {
+  currentTerminalStatus?: RunSessionOutcome | null;
+  adapterResult: Pick<AdapterExecutionResult, "timedOut" | "exitCode" | "errorMessage" | "resultJson">;
+}): RunSessionOutcome {
+  if (input.currentTerminalStatus) return input.currentTerminalStatus;
+  if (input.adapterResult.timedOut) return "timed_out";
+  if (readAdapterSemanticFailure(input.adapterResult.resultJson)) return "failed";
+  if ((input.adapterResult.exitCode ?? 0) === 0 && !input.adapterResult.errorMessage) return "succeeded";
+  return "failed";
+}
 
 type SkillTestHeartbeatCompletion = {
   outcome: "failed" | "cancelled";
@@ -10129,6 +10223,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
   ) {
+    if (run.errorCode === "adapter_result_error") {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) {
@@ -14723,6 +14828,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
+    assertRequestedModelProfileApplied(modelProfileApplication);
     const mergedConfig = mergeModelProfileAdapterConfig({
       baseConfig: workspaceManagedConfig,
       modelProfile: modelProfileApplication,
@@ -16306,17 +16412,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      let outcome: RunSessionOutcome;
       const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
-        outcome = latestRun.status;
-      } else if (adapterResult.timedOut) {
-        outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
-      } else {
-        outcome = "failed";
-      }
+      const adapterSemanticFailure = readAdapterSemanticFailure(adapterResult.resultJson);
+      const outcome = resolveAdapterRunOutcome({
+        currentTerminalStatus: isHeartbeatRunTerminalStatus(latestRun?.status)
+          ? latestRun.status
+          : null,
+        adapterResult,
+      });
+      const semanticFailureOutcome = outcome === "failed" && adapterSemanticFailure !== null;
 
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
@@ -16342,7 +16446,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                adapterResult.errorMessage ??
+                  (outcome === "timed_out"
+                    ? "Timed out"
+                    : adapterSemanticFailure?.message ??
+                      (adapterSemanticFailure
+                        ? `Adapter reported ${adapterSemanticFailure.status} status`
+                        : "Adapter failed")),
                 currentUserRedactionOptions,
               );
       const recordedResponsibleUserDenialCode =
@@ -16353,7 +16463,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              ? (
+                  (semanticFailureOutcome ? "adapter_result_error" : null) ??
+                  adapterResult.errorCode ??
+                  recordedResponsibleUserDenialCode ??
+                  "adapter_failed"
+                )
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -16419,11 +16534,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: {
-                ...parseObject(adapterResult.resultJson),
+                ...(semanticFailureOutcome
+                  ? stripAdapterRecoveryMetadata(parseObject(adapterResult.resultJson))
+                  : parseObject(adapterResult.resultJson)),
                 configFreshness: configFreshnessResultMetadata,
               },
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
+              errorFamily: semanticFailureOutcome ? null : (adapterResult.errorFamily ?? null),
+              retryNotBefore: semanticFailureOutcome ? null : (adapterResult.retryNotBefore ?? null),
             }),
             modelProfileApplication,
           ),
@@ -16544,7 +16661,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: semanticFailureOutcome,
+        });
         await handleRunLivenessContinuation(livenessRun);
         await handleIssueReviewPathDisposition(livenessRun);
         await handleSuccessfulRunHandoff(
