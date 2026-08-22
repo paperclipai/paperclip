@@ -195,8 +195,17 @@
   --sz-folder-sheet-max: 80dvh;
   --sz-tweak-panel-max: 70vh; /* Task Chat Redesign dev tweak panel scroll cap. */
 
+  /* New-task dialog geometry inputs and gap tokens. The derived top/height
+     calculations live on the dialog element so runtime Visual Viewport
+     overrides participate in computed-value resolution. */
+  --new-issue-visual-viewport-height: 100dvh;
+  --new-issue-visual-viewport-offset-top: 0px;
+  --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
+  --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+
   /* ────────────────────────────────────────────────────────────────────────
-     Motion tokens — Task Chat Redesign (flag: enableTaskChatRedesign).
+     Motion tokens — chat-style task thread (default; classic legacy view sits
+     behind enableClassicTaskInterface).
 
      These are the single source of truth for the redesigned thread's motion.
      Kept in :root (NOT @theme inline) on purpose: @theme inline bakes literals
@@ -236,6 +245,7 @@
   --motion-count-tween: var(--motion-duration-slow);
   --motion-streaming-cursor-blink: 1.1s;
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
+  --motion-turn-meta: var(--motion-duration-fast); /* finished-turn hover metadata reveal */
   --motion-line-scroll: 240ms;          /* completed interstitial line sliding out of the 1lh live-line viewport */
   --motion-interstitial-dwell: 4000ms;  /* interstitial update hold: minimum before the next swaps in, and how long a finished update sits before sliding away */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
@@ -251,8 +261,11 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
-  /* Agent-comment bubble fill (v7 grammar): quiet gray card, no border. */
-  --bubble-agent: oklch(0.955 0 0);
+  /* Agent-comment comparison fill used by TaskChatLab. The chosen production
+     treatment sits directly on the page surface; this token keeps the darker
+     card available as an explicit lab alternative. */
+  --bubble-agent: oklch(0.97 0 0);
+  --bubble-agent-card-padding-inline: 0.875rem;
 
   /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
      follow + pinned composer) inside the page flow. The issue header lives
@@ -264,6 +277,13 @@
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
+
+  /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
+     safe-area inset (+20px); Layout raises it to the bottom-nav height
+     (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
+     composer's action row never hides behind the nav. Desktop and the classic
+     thread never override it and fall through to the safe-area default. */
+  --tc-composer-bottom: var(--sz-calc-8);
 }
 
 .dark {
@@ -275,7 +295,7 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --bubble-agent: oklch(0.24 0 0);
+  --bubble-agent: oklch(0.185 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -455,6 +475,13 @@
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
 }
+
+/* The task-chat shell owns its desktop scroll viewport. Release Layout's
+   otherwise-useful reserved main scrollbar gutter so that viewport can meet
+   the properties-pane border instead of stopping one scrollbar-width early. */
+#main-content:has([data-task-chat-shell]) {
+  scrollbar-gutter: auto;
+}
 /* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover {
   scrollbar-color: oklch(0.7 0 0) transparent;
@@ -548,7 +575,8 @@
 }
 
 /* ────────────────────────────────────────────────────────────────────────
-   Task Chat Redesign animation utilities (flag: enableTaskChatRedesign).
+   Chat-style task thread animation utilities (default view; classic legacy
+   view sits behind enableClassicTaskInterface).
 
    These classes are the ONLY place the redesigned thread's motion is applied;
    every duration/easing is a var(--motion-*) reference (never a literal), so
@@ -569,8 +597,8 @@
   to { opacity: 1; transform: none; }
 }
 @keyframes tc-approval-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.0); }
-  50% { box-shadow: 0 0 0 3px hsl(var(--primary) / 0.18); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 18%, transparent); }
 }
 @keyframes tc-cursor-blink {
   0%, 45% { opacity: 1; }
@@ -581,10 +609,48 @@
 .tc-enter-tool { animation: tc-fade-rise var(--motion-tool-enter) var(--motion-ease-out-expo) both; }
 .tc-enter-status { animation: tc-status-in var(--motion-status-enter) var(--motion-ease-out-expo) both; }
 .tc-enter-cot-line { animation: tc-fade-rise var(--motion-duration-fast) var(--motion-ease-standard) both; }
+.tc-notice-chevron { transition-duration: var(--motion-duration-fast); }
 .tc-reveal-diff { animation: tc-fade-in var(--motion-diff-reveal) var(--motion-ease-standard) both; }
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Agent-bubble treatment explorations (PAP-501). Scoped to the TaskChatLab
+   stage via [data-bubble-variant]; the live thread never sets that attribute,
+   so these overrides remain lab-only comparisons. Feedback: the former
+   dark-mode agent card (oklch 0.24) read too light against the near-black page
+   for the bulk of the text. The production treatment now sits directly on
+   the page background; the card alternatives remain available for comparison.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* Former production treatment, retained as a direct before/after comparison
+   for the darker default. */
+[data-bubble-variant="former"] { --bubble-agent: oklch(0.955 0 0); }
+.dark [data-bubble-variant="former"] { --bubble-agent: oklch(0.24 0 0); }
+
+/* B · Hairline flush — near-page fill + a 1px hairline for gentle definition
+   without any brightness lift. */
+[data-bubble-variant="hairline"] { --bubble-agent: var(--background); }
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border: 1px solid var(--border);
+}
+.dark [data-bubble-variant="hairline"] { --bubble-agent: oklch(0.17 0 0); }
+.dark [data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border-color: oklch(1 0 0 / 8%);
+}
+
+/* Card variants restore the shared card geometry that production no longer
+   applies to agent prose. */
+[data-bubble-variant="former"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="darker"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  background: var(--bubble-agent);
+  border-radius: var(--radius-2xl);
+  padding-left: var(--bubble-agent-card-padding-inline);
+  padding-right: var(--bubble-agent-card-padding-inline);
+  max-width: var(--pct-85);
+}
 /* Live-line viewport (PAP-361): exactly one line-height tall, clipping the
    wrapped interstitial block. On wrap, the inner block translates up whole
    line-heights (set inline as translateY(-(n−1)·1lh)) so the completed line
@@ -618,6 +684,22 @@
 .tc-turn-fold[data-folded="true"] { grid-template-rows: 0fr; opacity: 0; }
 .tc-turn-fold > * { overflow: hidden; min-height: 0; }
 
+/* Settled-turn metadata remains available on hover/focus and while expanded,
+   but its collapsed grid track consumes no width at rest. */
+.tc-turn-metrics {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transition: grid-template-columns var(--motion-turn-meta) var(--motion-ease-standard),
+    opacity var(--motion-turn-meta) var(--motion-ease-standard);
+}
+[data-testid="task-chat-turn-summary"]:hover .tc-turn-metrics,
+[data-testid="task-chat-turn-summary"]:focus-visible .tc-turn-metrics,
+.tc-turn-metrics[data-visible="true"] {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
@@ -633,12 +715,13 @@
   .tc-scroll-pill-out,
   .tc-enter-plan-entry { animation: none; }
   .tc-turn-fold,
+  .tc-turn-metrics,
   .tc-line-scroll-inner,
   .tc-pane-glide { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,
   .tc-scroll-pill-out { transform: translate(-50%, 0); }
-  .tc-approval { animation: none; box-shadow: 0 0 0 2px hsl(var(--primary) / 0.18); }
+  .tc-approval { animation: none; box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 18%, transparent); }
   .tc-cursor { animation: none; opacity: 1; }
 }
 
@@ -836,6 +919,35 @@
 @media (prefers-reduced-motion: reduce) {
   .cot-line-enter,
   .cot-line-exit {
+    animation: none;
+  }
+}
+
+/* RunTranscriptView live-tail motion (PAP-461, A3). The experimental chat-style
+   view streams its live output through RunTranscriptView; these token-driven
+   classes replace the raw Tailwind `animate-in … duration-300` / `animate-ping`
+   the tail used so its streaming affordances honor --motion-* retuning AND the
+   reduced-motion override below, exactly like the rest of the redesign. */
+@keyframes tc-stream-block-in {
+  from { opacity: 0; transform: translateY(0.25rem); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tc-stream-block-enter {
+  animation: tc-stream-block-in var(--motion-tool-enter) var(--motion-ease-standard) both;
+}
+
+@keyframes tc-live-ping {
+  75%, 100% { transform: scale(2); opacity: 0; }
+}
+
+.tc-live-ping {
+  animation: tc-live-ping var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-stream-block-enter,
+  .tc-live-ping {
     animation: none;
   }
 }
@@ -1139,6 +1251,16 @@
   color: var(--muted-foreground);
 }
 
+/* MDXEditor defaults placeholders to a single clipped line. The task-chat
+   composer uses longer, assignee-aware copy, so keep it inside the editor by
+   giving the absolutely positioned placeholder a wrapping inline size. */
+.paperclip-task-chat-composer .paperclip-mdxeditor [class*="_placeholder_"] {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .paperclip-mdxeditor-content {
   font-size: inherit;
   line-height: inherit;
@@ -1302,10 +1424,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-mdxeditor-content pre {
   margin: 0.4rem 0;
   padding: 0;
-  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
-  border-radius: calc(var(--radius) - 3px);
-  background: #1e1e2e;
-  color: #cdd6f4;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--muted);
+  color: var(--foreground);
   overflow-x: auto;
 }
 
@@ -1378,20 +1500,22 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 /* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
-   Dark theme code blocks with compact sizing.
-   Override prose CSS variables so prose-invert can't revert to defaults. */
+   Theme-aware: the block rides --muted/--foreground/--border so it follows
+   light and dark instead of pinning the old Catppuccin #1e1e2e/#cdd6f4 in
+   both modes. Override prose CSS variables so prose-invert can't revert to
+   defaults. */
 .paperclip-markdown {
-  --tw-prose-pre-bg: #1e1e2e;
-  --tw-prose-pre-code: #cdd6f4;
-  --tw-prose-invert-pre-bg: #1e1e2e;
-  --tw-prose-invert-pre-code: #cdd6f4;
+  --tw-prose-pre-bg: var(--muted);
+  --tw-prose-pre-code: var(--foreground);
+  --tw-prose-invert-pre-bg: var(--muted);
+  --tw-prose-invert-pre-code: var(--foreground);
 }
 
 .paperclip-markdown pre {
-  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent) !important;
-  border-radius: calc(var(--radius) - 3px) !important;
-  background-color: #1e1e2e !important;
-  color: #cdd6f4 !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+  background-color: var(--muted) !important;
+  color: var(--foreground) !important;
   padding: 0.5rem 0.65rem !important;
   margin: 0.4rem 0 !important;
   font-size: 1em !important;
@@ -2116,6 +2240,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --rad-24: 24px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[24px]). */
   --rad-32: 32px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[32px]). */
   --pct-90: 90%; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-w-[90%]). */
+  --pct-80: 80%; /* TaskChatThread composer width (PAP-498 follow-up). */
   --pct-50: 50%; /* Extracted from ui/src/components/ImageGalleryModal.tsx (max-w-[50%]). */
   --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
   --pct-70: 70%; /* Extracted from ui/src/components/CaseFieldsPanel.tsx (max-w-[70%]). */
@@ -2127,12 +2252,12 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --shadow-extract-4: 0 -12px 28px rgba(15,23,42,0.08); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08)]). */
   --shadow-extract-5: 0 -12px 28px rgba(0,0,0,0.28); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(0,0,0,0.28)]). */
   --shadow-extract-6: 0 0 0 1px var(--color-background); /* Extracted from ui/src/components/DocumentAnnotationLayer.tsx (shadow-[0_0_0_1px_var(--color-background)]). */
-  --shadow-extract-7: 0 -12px 28px rgba(15,23,42,0.08),0 0 0 1px hsl(var(--primary)/0.16); /* Extracted from ui/src/components/IssueChatThread.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]). */
+  --shadow-extract-7: 0 -12px 28px rgba(15,23,42,0.08),0 0 0 1px color-mix(in oklab, var(--primary) 16%, transparent); /* Extracted from ui/src/components/IssueChatThread.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-8: 0 1px 0 rgba(15,23,42,0.02); /* Extracted from ui/src/components/IssueRecoveryActionCard.tsx (shadow-[0_1px_0_rgba(15,23,42,0.02)]). */
   --shadow-extract-9: 0 18px 42px rgba(15,23,42,0.06); /* Extracted from ui/src/components/IssueThreadInteractionCard.tsx (shadow-[0_18px_42px_rgba(15,23,42,0.06)]). */
-  --shadow-extract-10: 0 1px 0 1px hsl(var(--border)); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx (shadow-[0_1px_0_1px_hsl(var(--border))]). */
+  --shadow-extract-10: 0 1px 0 1px var(--border); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-11: 0 18px 50px rgba(37,99,235,0.08); /* LiveRunWidget.tsx glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
-  --shadow-extract-12: 0 0 0 2px hsl(var(--background)); /* Extracted from ui/src/components/SidebarNavItem.tsx (shadow-[0_0_0_2px_hsl(var(--background))]). */
+  --shadow-extract-12: 0 0 0 2px var(--background); /* Extracted from ui/src/components/SidebarNavItem.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-13: 0 0 0 3px rgba(245,158,11,0.18); /* Extracted from ui/src/components/environment-variables-editor/index.tsx (shadow-[0_0_0_3px_rgba(245,158,11,0.18)]). */
   --shadow-extract-14: 0 0 12px rgba(37,99,235,0.08); /* AgentDetail.tsx live-card glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
   --shadow-extract-18: 0 18px 44px -28px rgba(0,0,0,0.45); /* Extracted from ui/src/pages/ProfileSettings.tsx (shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)]). */
@@ -2261,6 +2386,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --tp-box-shadow: box-shadow; /* Extracted from ui/src/pages/ProjectDetail.tsx (transition-[box-shadow]). */
   --tp-transform-box-shadow: transform,box-shadow; /* Extracted from ui/src/pages/ProjectDetail.tsx (transition-[transform,box-shadow]). */
   --z-2: 2; /* Extracted from ui/src/components/DocumentAnnotationLayer.tsx (z-[2]). */
+  --z-20: 20; /* Anchored document annotation popover. */
   --z-60: 60; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (z-[60]). */
   --z-1: 1; /* Extracted from ui/src/components/IssueDocumentAnnotations.tsx (z-[1]). */
   --z-200: 200; /* Extracted from ui/src/components/Layout.tsx (z-[200]). */
@@ -2280,8 +2406,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --code-highlight-bg-resolved: var(--paperclip-code-highlight-bg); /* Extracted from ui/src/components/FileViewerSheet.tsx; fallback dropped in A5 now that --paperclip-code-highlight-bg is a real token (was var(--paperclip-code-highlight-bg, rgba(250,204,21,0.12))). */
   --code-gutter-fg-resolved: var(--paperclip-code-gutter-fg, var(--muted-foreground)); /* Extracted from ui/src/components/FileViewerSheet.tsx (text-[var(--paperclip-code-gutter-fg,theme(colors.muted.foreground))]). */
   --code-highlight-border-resolved: var(--paperclip-code-highlight-border); /* Extracted from ui/src/components/FileViewerSheet.tsx; fallback dropped in A5 now that --paperclip-code-highlight-border is a real token (was var(--paperclip-code-highlight-border, rgb(234,179,8))). */
-  --gradient-extract-25: linear-gradient(135deg,hsl(var(--primary)) 0%,hsl(var(--accent)) 55%,hsl(var(--muted)) 100%); /* Extracted from ui/src/components/SidebarAccountMenu.tsx (bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_55%,hsl(var(--muted))_100%)]). */
-  --gradient-extract-26: linear-gradient(135deg,hsl(var(--primary)) 0%,hsl(var(--accent)) 58%,color-mix(in oklab,hsl(var(--background)) 76%,white 24%) 100%); /* Extracted from ui/src/pages/ProfileSettings.tsx (bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_58%,color-mix(in_oklab,hsl(var(--background))_76%,white_24%)_100%)]). */
+  --gradient-extract-25: linear-gradient(135deg,var(--primary) 0%,var(--accent) 55%,var(--muted) 100%); /* Extracted from ui/src/components/SidebarAccountMenu.tsx; corrected for full-color semantic tokens. */
+  --gradient-extract-26: linear-gradient(135deg,var(--primary) 0%,var(--accent) 58%,color-mix(in oklab,var(--background) 76%,white 24%) 100%); /* Extracted from ui/src/pages/ProfileSettings.tsx; corrected for full-color semantic tokens. */
 }
 
 /* ── ALLOWLIST (Phase 2, design/token-extraction) ──────────────────────────

@@ -40,6 +40,19 @@ function environmentRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reconciliationResult(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    environment: environmentRow(),
+    action: "added" as const,
+    stockStatus: "missing" as const,
+    updateAvailable: false,
+    stockHash: "sha256:stock",
+    ...overrides,
+  };
+}
+
 function readyDriverResolver(status = "ready") {
   return vi.fn(async () => ({
     plugin: { id: "plugin-1", pluginKey: "sandbox-providers/daytona", status },
@@ -79,13 +92,29 @@ function tick() {
 }
 
 type EnvironmentsSeam = NonNullable<ApplyManagedEnvironmentsOptions["environments"]>;
+type InstanceSettingsSeam = NonNullable<ApplyManagedEnvironmentsOptions["instanceSettings"]>;
 
 function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): EnvironmentsSeam {
   return {
     ensureManagedSandboxEnvironment:
-      overrides.ensureManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(environmentRow()),
+      overrides.ensureManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(reconciliationResult()),
     archiveManagedSandboxEnvironment:
       overrides.archiveManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
+    getById: overrides.getById ?? vi.fn().mockResolvedValue(null),
+    update: overrides.update ?? vi.fn().mockResolvedValue(environmentRow()),
+    findManagedSandboxEnvironment:
+      overrides.findManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
+  };
+}
+
+function instanceSettingsSeam(overrides: Partial<InstanceSettingsSeam> = {}): InstanceSettingsSeam {
+  return {
+    get:
+      overrides.get ??
+      (vi.fn().mockResolvedValue({ defaultEnvironmentId: null }) as InstanceSettingsSeam["get"]),
+    update:
+      overrides.update ??
+      (vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["update"]),
   };
 }
 
@@ -109,7 +138,7 @@ describe("applyManagedEnvironments", () => {
   it("ensures each declared environment through the provider-agnostic service call", async () => {
     const ensureManagedSandboxEnvironment = vi
       .fn()
-      .mockResolvedValue(environmentRow());
+      .mockResolvedValue(reconciliationResult());
     const config = parsedConfig({
       environments: [
         {
@@ -126,11 +155,13 @@ describe("applyManagedEnvironments", () => {
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
       workerManager,
+      instanceSettings: instanceSettingsSeam(),
       environments: environmentsSeam({ ensureManagedSandboxEnvironment }),
       resolveSandboxProviderDriver,
     });
 
-    expect(result).toEqual({ ensured: 1, failed: 0 });
+    expect(result).toMatchObject({ ensured: 1, failed: 0, added: 1, skipped: 0 });
+    expect(result).toMatchObject({ removed: 0, backedUp: 0 });
     expect(resolveSandboxProviderDriver).toHaveBeenCalledWith({ db: noDb, driverKey: "daytona" });
     expect(workerManager.isRunning).toHaveBeenCalledWith("plugin-1");
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
@@ -139,6 +170,7 @@ describe("applyManagedEnvironments", () => {
       description: "Managed Daytona sandbox.",
       provider: "daytona",
       config: { target: "us" },
+      stockVersion: "2026.720.0",
     });
     // The frozen parsed config must not leak into the service (the row's
     // config is mutated downstream when the provider key is forced in).
@@ -149,7 +181,7 @@ describe("applyManagedEnvironments", () => {
   it("waits for the bundled-plugin startup pass before ensuring anything", async () => {
     const ensureManagedSandboxEnvironment = vi
       .fn()
-      .mockResolvedValue(environmentRow());
+      .mockResolvedValue(reconciliationResult());
     const config = parsedConfig({
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
@@ -163,6 +195,7 @@ describe("applyManagedEnvironments", () => {
       env: {},
       pluginsReady,
       workerManager: runningWorkerManager(),
+      instanceSettings: instanceSettingsSeam(),
       environments: environmentsSeam({ ensureManagedSandboxEnvironment }),
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
@@ -172,8 +205,40 @@ describe("applyManagedEnvironments", () => {
     expect(ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
 
     releasePlugins();
-    expect(await pending).toEqual({ ensured: 1, failed: 0 });
+    expect(await pending).toMatchObject({ ensured: 1, failed: 0, added: 1 });
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports operator-modified rows as skipped with a stock update still available", async () => {
+    const environments = environmentsSeam({
+      ensureManagedSandboxEnvironment: vi.fn().mockResolvedValue(reconciliationResult({
+        action: "skipped",
+        stockStatus: "operator_modified",
+        updateAvailable: true,
+      })),
+    });
+    const result = await applyManagedEnvironments(noDb, parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    }), {
+      env: {},
+      workerManager: runningWorkerManager(),
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(result).toMatchObject({
+      ensured: 0,
+      failed: 0,
+      added: 0,
+      updated: 0,
+      unchanged: 0,
+      skipped: 1,
+      outcomes: [{
+        action: "skipped",
+        stockStatus: "operator_modified",
+        updateAvailable: true,
+      }],
+    });
   });
 
   it("skips an entry whose provider plugin is missing and archives its stale row", async () => {
@@ -191,7 +256,7 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: vi.fn(async () => null),
     });
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
     expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
       provider: "daytona",
@@ -211,7 +276,7 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: readyDriverResolver("disabled"),
     });
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
     expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
       provider: "daytona",
@@ -232,7 +297,7 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(workerManager.isRunning).toHaveBeenCalledWith("plugin-1");
     expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
     expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
@@ -263,7 +328,7 @@ describe("applyManagedEnvironments", () => {
     });
 
     // The boot pass itself stays degraded: archived, counted failed.
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
       provider: "daytona",
     });
@@ -280,6 +345,7 @@ describe("applyManagedEnvironments", () => {
       description: undefined,
       provider: "daytona",
       config: { target: "us" },
+      stockVersion: "2026.720.0",
     });
     expect(handle.off).toHaveBeenCalledTimes(1);
   });
@@ -308,7 +374,7 @@ describe("applyManagedEnvironments", () => {
     });
     await tick();
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
   });
 
@@ -325,7 +391,8 @@ describe("applyManagedEnvironments", () => {
       await applyManagedEnvironments(noDb, config, {
         env: {},
         workerManager,
-        environments: environmentsSeam(),
+        instanceSettings: instanceSettingsSeam(),
+      environments: environmentsSeam(),
         resolveSandboxProviderDriver,
       });
       expect(workerManager.getWorker).not.toHaveBeenCalled();
@@ -371,7 +438,7 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
   });
 
@@ -390,7 +457,7 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: vi.fn(async () => null),
     });
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
   });
 
@@ -409,7 +476,177 @@ describe("applyManagedEnvironments", () => {
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
 
-    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.archiveManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("points an unset instance default at the managed sandbox environment", async () => {
+    const instanceSettings = instanceSettingsSeam();
+    const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(instanceSettings.update).toHaveBeenCalledWith({ defaultEnvironmentId: "env-1" });
+  });
+
+  it("records the stamp marker on the managed row so a revert is attributable", async () => {
+    const instanceSettings = instanceSettingsSeam();
+    const environments = environmentsSeam();
+    const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings,
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(environments.update).toHaveBeenCalledWith("env-1", {
+      metadata: expect.objectContaining({ managedDefaultStamped: true }),
+    });
+  });
+
+  it("moves a local (or dangling) instance default onto the managed sandbox environment", async () => {
+    const localDefault = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-local" }) as InstanceSettingsSeam["get"],
+    });
+    const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings: localDefault,
+      environments: environmentsSeam({
+        getById: vi.fn().mockResolvedValue(environmentRow({ id: "env-local", driver: "local" })),
+      }),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(localDefault.update).toHaveBeenCalledWith({ defaultEnvironmentId: "env-1" });
+
+    // A default pointing at a deleted row is repaired the same way.
+    const danglingDefault = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-gone" }) as InstanceSettingsSeam["get"],
+    });
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings: danglingDefault,
+      environments: environmentsSeam({ getById: vi.fn().mockResolvedValue(null) }),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(danglingDefault.update).toHaveBeenCalledWith({ defaultEnvironmentId: "env-1" });
+  });
+
+  it("leaves the instance default alone while managed-sandbox-only is not declared", async () => {
+    // Without the mode, local execution is a legitimate default; provisioning
+    // the managed environment must not silently move runs into the sandbox.
+    const instanceSettings = instanceSettingsSeam();
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(instanceSettings.update).not.toHaveBeenCalled();
+  });
+
+  it("reverts a stamped managed default when managed-sandbox-only turns off", async () => {
+    // Turning the mode off must not keep routing default-following runs
+    // into the sandbox off the stale stamp — even when the document no
+    // longer declares any environments or the row was archived, which
+    // skip per-entry reconciliation entirely. Only a default pointing at
+    // the managed row AND carrying the reconciliation stamp reverts.
+    const stampedRow = environmentRow({
+      status: "archived",
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    const stamped = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["get"],
+    });
+    const stampedEnvironments = environmentsSeam({
+      findManagedSandboxEnvironment: vi.fn().mockResolvedValue(stampedRow),
+    });
+    // No environments declaration at all: the cleanup must still run.
+    const config = parsedConfig({});
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings: stamped,
+      environments: stampedEnvironments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(stampedEnvironments.findManagedSandboxEnvironment).toHaveBeenCalledWith(undefined, {
+      includeArchived: true,
+    });
+    expect(stamped.update).toHaveBeenCalledWith({ defaultEnvironmentId: null });
+    // The marker clears with the revert so a later deliberate tenant
+    // selection of the managed row is never mistaken for a stamp.
+    expect(stampedEnvironments.update).toHaveBeenCalledWith("env-1", {
+      metadata: { managedByPaperclip: true },
+    });
+
+    // The tenant's own deliberate managed-row default (no stamp marker)
+    // survives the mode turning off.
+    const tenantManagedDefault = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["get"],
+    });
+    const unmarkedEnvironments = environmentsSeam({
+      findManagedSandboxEnvironment: vi.fn().mockResolvedValue(
+        environmentRow({ metadata: { managedByPaperclip: true } }),
+      ),
+    });
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings: tenantManagedDefault,
+      environments: unmarkedEnvironments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(tenantManagedDefault.update).not.toHaveBeenCalled();
+  });
+
+  it("never overrides a tenant-chosen custom default environment", async () => {
+    const instanceSettings = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-ssh" }) as InstanceSettingsSeam["get"],
+    });
+    const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings,
+      environments: environmentsSeam({
+        getById: vi.fn().mockResolvedValue(environmentRow({ id: "env-ssh", driver: "ssh" })),
+      }),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(instanceSettings.update).not.toHaveBeenCalled();
   });
 });

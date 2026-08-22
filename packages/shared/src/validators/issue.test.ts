@@ -277,7 +277,12 @@ describe("issue validators", () => {
             rows: [
               { type: "key_value", label: "Cause", value: "successful_run_missing_state" },
               { type: "issue_link", label: "Source issue", identifier: "PAP-3440" },
-              { type: "run_link", label: "Run", runId: "11111111-1111-4111-8111-111111111111" },
+              {
+                type: "run_link",
+                label: "Run",
+                runId: "11111111-1111-4111-8111-111111111111",
+                agentId: "22222222-2222-4222-8222-222222222222",
+              },
             ],
           },
         ],
@@ -288,6 +293,10 @@ describe("issue validators", () => {
     expect(parsed.presentation?.density).toBe("compact");
     expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+    expect(parsed.metadata?.sections[0]?.rows[2]).toMatchObject({
+      type: "run_link",
+      agentId: "22222222-2222-4222-8222-222222222222",
+    });
   });
 
   it("rejects unknown issue comment presentation densities", () => {

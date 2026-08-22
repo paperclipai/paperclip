@@ -217,6 +217,10 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../lib/company-selection", () => ({
   shouldSyncCompanySelectionFromRoute: () => false,
+  // No bounce in the shared harness: these tests exercise layout chrome, not
+  // archived-company routing (covered by company-selection unit tests and the
+  // archived-company-url e2e).
+  resolveArchivedCompanyBounce: () => null,
 }));
 
 vi.mock("../lib/main-content-focus", () => ({
@@ -465,9 +469,10 @@ describe("Layout", () => {
     expect(selectorText).toContain("members");
     expect(selectorText).toContain("invites");
     expect(selectorText).toContain("secrets");
-    expect(selectorText).toContain("instance general");
-    expect(selectorText).toContain("instance environments");
-    expect(selectorText).toContain("instance plugins");
+    expect(selectorText).toContain("profile");
+    expect(selectorText).toContain("environments");
+    expect(selectorText).toContain("plugins");
+    expect(selectorText).not.toContain("instance general");
 
     await act(async () => {
       root.unmount();
@@ -502,6 +507,35 @@ describe("Layout", () => {
     });
   });
 
+  it.each(["/PAP/company/export", "/PAP/company/import"])(
+    "renders the shared settings sidebar on %s",
+    async (pathname) => {
+      currentPathname = pathname;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(container.textContent).toContain("Company settings sidebar");
+      expect(container.textContent).toContain("Main company nav");
+      expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+
+      await act(async () => {
+        root.unmount();
+      });
+    },
+  );
+
   it("keeps the app sidebar and shows the Apps sidebar in the secondary pane on legacy tools routes", async () => {
     currentPathname = "/PAP/tools/runtime";
     const root = createRoot(container);
@@ -530,7 +564,7 @@ describe("Layout", () => {
   });
 
   it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
-    currentPathname = "/PAP/apps/browse";
+    currentPathname = "/PAP/apps";
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -608,7 +642,7 @@ describe("Layout", () => {
 
   // Reserved Apps subroutes are not connection ids. They must keep the
   // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
-  it.each(["browse", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+  it.each(["browse", "connections", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
     currentPathname = `/PAP/apps/${route}`;
     const root = createRoot(container);
     const queryClient = new QueryClient({

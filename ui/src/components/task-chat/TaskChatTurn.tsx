@@ -13,6 +13,13 @@ interface TaskChatTurnProps {
    * always visible, in the slot the hover-only timestamp used to occupy.
    */
   timestampPrefix?: string;
+  /**
+   * Content rendered on the header row, leading the summary line (PAP-413: the
+   * copy/👍/👎 action cluster). It sits beside the summary button — NOT inside
+   * the expandable fold — so it stays anchored to the summary line when the
+   * tool history expands beneath it, instead of drifting to the fold's center.
+   */
+  leading?: ReactNode;
 }
 
 /** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k tokens". */
@@ -50,7 +57,7 @@ export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
  * `liveStatus` (harness fixtures) renders its children expanded with no header
  * and folds when it settles.
  */
-export function TaskChatTurn({ item, renderChild, timestampPrefix }: TaskChatTurnProps) {
+export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: TaskChatTurnProps) {
   const parentRow = !item.settled && item.liveStatus != null;
   // Parent-row live turns and settled turns start as their one-line header;
   // only the headerless legacy live turn starts expanded.
@@ -73,40 +80,60 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix }: TaskChatTur
   const folded = (item.settled || parentRow) && !open;
   const SummaryIcon = item.summary.failed ? X : Check;
 
+  const header = item.settled ? (
+    <button
+      type="button"
+      onClick={() => setOpen((o) => !o)}
+      aria-expanded={open}
+      className="group flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      data-testid="task-chat-turn-summary"
+    >
+      <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} aria-hidden />
+      {timestampPrefix ? (
+        <>
+          <span className="text-(length:--text-micro)">{timestampPrefix}</span>
+          <span aria-hidden className="text-(length:--text-micro)">·</span>
+        </>
+      ) : null}
+      <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
+      <span>{item.summary.failed ? "Stopped" : "Worked"}</span>
+      {turnSummaryMetrics(item.summary) ? (
+        // Time/tools/tokens is demoted, not deleted (PAP-502): it stays in the
+        // DOM (and the accessible tree) but fades in only on hover/focus so the
+        // settled line reads as "2:34 PM · ✓ Worked" at rest. Revealed too when
+        // the fold is open, so the metrics don't vanish while you read below.
+        <span className="tc-turn-metrics" data-visible={open ? "true" : "false"}>
+          <span className="min-w-0 overflow-hidden whitespace-nowrap font-mono text-(length:--text-micro)">
+            {turnSummaryMetrics(item.summary)}
+          </span>
+        </span>
+      ) : null}
+    </button>
+  ) : parentRow ? (
+    // The pill renders the expand button itself, wrapped around only the
+    // gerund status line — the interstitial row above stays outside the
+    // hover/click target (PAP-376). Without activity there is no
+    // chevron/button.
+    <TaskChatStatusPill
+      item={item.liveStatus!}
+      chevronOpen={expandable ? open : undefined}
+      onToggle={expandable ? () => setOpen((o) => !o) : undefined}
+    />
+  ) : null;
+
   return (
     <div data-testid="task-chat-turn" data-settled={item.settled ? "true" : "false"}>
-      {item.settled ? (
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          className="group flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-          data-testid="task-chat-turn-summary"
-        >
-          {timestampPrefix ? (
-            <>
-              <span className="text-(length:--text-micro)">{timestampPrefix}</span>
-              <span aria-hidden className="text-(length:--text-micro)">·</span>
-            </>
-          ) : null}
-          <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
-          <span>{item.summary.failed ? "Stopped" : "Worked"}</span>
-          {turnSummaryMetrics(item.summary) ? (
-            <span className="font-mono text-(length:--text-micro)">{turnSummaryMetrics(item.summary)}</span>
-          ) : null}
-          <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} />
-        </button>
-      ) : parentRow ? (
-        // The pill renders the expand button itself, wrapped around only the
-        // gerund status line — the interstitial row above stays outside the
-        // hover/click target (PAP-376). Without activity there is no
-        // chevron/button.
-        <TaskChatStatusPill
-          item={item.liveStatus!}
-          chevronOpen={expandable ? open : undefined}
-          onToggle={expandable ? () => setOpen((o) => !o) : undefined}
-        />
-      ) : null}
+      {leading ? (
+        // Actions ride the header row (items-center matches them to the summary
+        // line), and the fold below is a separate sibling — so expanding the
+        // tool history never moves the actions off the summary line (PAP-413).
+        <div className="flex items-center gap-1">
+          {leading}
+          {header}
+        </div>
+      ) : (
+        header
+      )}
       <div className="tc-turn-fold" data-folded={folded ? "true" : "false"} aria-hidden={folded}>
         <div>
           <div className="flex flex-col gap-2 pt-1">

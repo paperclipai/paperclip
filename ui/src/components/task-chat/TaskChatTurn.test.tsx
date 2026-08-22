@@ -122,12 +122,15 @@ describe("TaskChatTurn", () => {
     expect(summaryBtn()?.textContent).toContain("Worked");
     expect(summaryBtn()?.textContent).toContain("38s · 3 tools · +34 −3 · 12.3k tokens");
     expect(fold()?.getAttribute("data-folded")).toBe("true");
+    expect(summaryBtn()?.firstElementChild?.tagName).toBe("svg");
+    expect(summaryBtn()?.querySelector(".tc-turn-metrics")?.getAttribute("data-visible")).toBe("false");
   });
 
   it("toggles open on summary click", () => {
     renderTurn(SETTLED);
     flushSync(() => summaryBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("false");
+    expect(summaryBtn()?.querySelector(".tc-turn-metrics")?.getAttribute("data-visible")).toBe("true");
   });
 
   it("a headerless live turn renders expanded with no summary line", () => {
@@ -149,6 +152,7 @@ describe("TaskChatTurn", () => {
     expect(header?.textContent).toContain("Editing files…");
     expect(header?.textContent).toContain("Edit · server/src/routes/auth.ts");
     expect(header?.getAttribute("aria-expanded")).toBe("false");
+    expect(header?.firstElementChild?.firstElementChild?.tagName).toBe("svg");
     // All activity is folded behind it — no rows visible, no summary line.
     expect(fold()?.getAttribute("data-folded")).toBe("true");
     expect(summaryBtn()).toBeNull();
@@ -226,6 +230,28 @@ describe("TaskChatTurn", () => {
     expect(fold()?.getAttribute("data-folded")).toBe("false");
   });
 
+  it("rides the `leading` slot on the header row, anchored above the fold (PAP-413)", () => {
+    flushSync(() => {
+      root.render(
+        <TaskChatTurn
+          item={SETTLED}
+          leading={<div data-testid="turn-lead">actions</div>}
+          renderChild={(c) => <span>{c.id}</span>}
+        />,
+      );
+    });
+    const lead = container.querySelector('[data-testid="turn-lead"]');
+    expect(lead).not.toBeNull();
+    // It sits beside the summary button on the header row — NOT inside the
+    // expandable fold — so expanding the tool history can't drag it down.
+    expect(fold()?.contains(lead!)).toBe(false);
+    expect(summaryBtn()).not.toBeNull();
+    // Expanding still works and the leading slot stays put outside the fold.
+    flushSync(() => summaryBtn()!.click());
+    expect(fold()?.getAttribute("data-folded")).toBe("false");
+    expect(fold()?.contains(lead!)).toBe(false);
+  });
+
   it("leads the settled summary with the bubble timestamp when attached (round 9)", () => {
     flushSync(() => {
       root.render(
@@ -235,6 +261,7 @@ describe("TaskChatTurn", () => {
     // "2:34 PM · ✓ Worked · …" — timestamp first, always visible, and the
     // expand affordance still works from the same line.
     expect(summaryBtn()?.textContent).toMatch(/^2:34 PM·Worked/);
+    expect(summaryBtn()?.firstElementChild?.tagName).toBe("svg");
     flushSync(() => summaryBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("false");
   });

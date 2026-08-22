@@ -8,6 +8,7 @@
 import type { TranscriptEntry } from "@/adapters";
 import type {
   TaskChatDiff,
+  TaskChatActivityPhaseItem,
   TaskChatItem,
   TaskChatToolItem,
   TaskChatTurnChildItem,
@@ -38,7 +39,7 @@ export function isTerminalRunStatus(status: string | undefined | null): boolean 
  * in the thread outside.
  */
 export function isNestableLiveChild(item: TaskChatItem): item is TaskChatTurnChildItem {
-  return item.kind === "tool" || item.kind === "usage";
+  return item.kind === "tool" || item.kind === "usage" || item.kind === "activity_phase";
 }
 
 /**
@@ -328,18 +329,80 @@ export function transcriptToTaskChatItems(
 }
 
 /**
- * A settled run's nested children (PAP-361): exactly the tool rows (plus usage
- * readouts) in transcript order, under the "✓ Worked ·" summary — parity with
- * the summary's tool count. Messages are excluded: the final reply already
- * landed as the run's posted comment bubble, and interstitial updates are
- * ephemeral (they take the live line while streaming, then vanish). Thinking
- * is excluded too — the run log / classic transcript remain its archive.
+ * A settled run's nested children: activity phases containing chronological
+ * tool rows and their historical interstitial boundary. The final reply is
+ * excluded because its posted comment is canonical. Thinking stays in the
+ * run log / classic transcript.
  */
 export function settledRunChildren(parsed: readonly TaskChatItem[]): TaskChatTurnChildItem[] {
-  return parsed.filter(
-    (it): it is TaskChatTurnChildItem =>
-      it.kind !== "turn" && it.kind !== "message" && it.kind !== "thinking",
-  );
+  return buildActivityPhases(parsed, false);
+}
+
+function phaseSummary(items: readonly (TaskChatToolItem | { kind: "usage" })[]): string {
+  const counts = new Map<string, number>();
+  let generic = 0;
+  for (const item of items) {
+    if (item.kind !== "tool") continue;
+    if (isGenericToolName(item.rawName ?? item.name)) {
+      generic += 1;
+      continue;
+    }
+    const family = toolTaxonomy(item.rawName ?? item.name).family;
+    counts.set(family, (counts.get(family) ?? 0) + 1);
+  }
+  const phrases: string[] = [];
+  const add = (family: string, verb: string, singular: string, plural: string) => {
+    const count = counts.get(family) ?? 0;
+    if (count) phrases.push(`${verb} ${count} ${count === 1 ? singular : plural}`);
+  };
+  add("read", "Read", "file", "files");
+  add("edit", "Edited", "file", "files");
+  add("terminal", "Ran", "command", "commands");
+  const searched = (counts.get("grep") ?? 0) + (counts.get("search") ?? 0);
+  if (searched) phrases.push(`Searched ${searched} ${searched === 1 ? "time" : "times"}`);
+  const known = new Set(["read", "edit", "terminal", "grep", "search"]);
+  const other = [...counts].reduce((n, [family, count]) => n + (known.has(family) ? 0 : count), 0) + generic;
+  if (other) phrases.push(`Called ${other} ${other === 1 ? "tool" : "tools"}`);
+  return phrases.join(", ") || "No tool activity";
+}
+
+/** Segment parsed transcript rows at assistant boundaries with stable run-derived ids. */
+export function buildActivityPhases(
+  parsed: readonly TaskChatItem[],
+  running: boolean,
+): TaskChatActivityPhaseItem[] {
+  const phases: TaskChatActivityPhaseItem[] = [];
+  let current: TaskChatActivityPhaseItem | null = null;
+  const ensureOpening = (seed: string) => {
+    if (!current) {
+      current = { id: `${seed}:phase:opening`, kind: "activity_phase", items: [], summary: "", active: false };
+      phases.push(current);
+    }
+    return current;
+  };
+  const lastVisible = [...parsed].reverse().find((item) => item.kind !== "thinking");
+  for (const item of parsed) {
+    if (item.kind === "message") {
+      // A settled transcript's trailing assistant text is the posted reply.
+      // Live/settle-gap tails keep it visible until that canonical reply lands.
+      if (!running && item === lastVisible) continue;
+      current = {
+        id: `${item.id}:phase`,
+        kind: "activity_phase",
+        interstitial: item,
+        items: [],
+        summary: "",
+        active: false,
+      };
+      phases.push(current);
+    } else if (item.kind === "tool" || item.kind === "usage") {
+      ensureOpening(item.id).items.push(item);
+    }
+  }
+  for (const phase of phases) phase.summary = phaseSummary(phase.items);
+  const meaningful = phases.filter((phase) => phase.interstitial || phase.items.length > 0);
+  if (running && meaningful.length) meaningful[meaningful.length - 1].active = true;
+  return meaningful;
 }
 
 function formatDurationLabel(ms: number): string | undefined {

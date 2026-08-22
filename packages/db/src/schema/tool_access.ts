@@ -141,7 +141,6 @@ export const toolConnections = pgTable(
     index("tool_connections_company_idx").on(table.companyId),
     index("tool_connections_application_idx").on(table.applicationId),
     index("tool_connections_company_enabled_idx").on(table.companyId, table.enabled),
-    uniqueIndex("tool_connections_company_name_uq").on(table.companyId, table.name),
     uniqueIndex("tool_connections_company_uid_uq").on(table.companyId, table.uid),
     unique("tool_connections_company_id_uq").on(table.companyId, table.id),
   ],

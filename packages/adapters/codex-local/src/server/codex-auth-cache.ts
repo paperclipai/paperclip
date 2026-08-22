@@ -1,13 +1,10 @@
-import { execFile as execFileCallback } from "node:child_process";
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
-
-const execFile = promisify(execFileCallback);
+import { USE_SOURCE_EXIT, decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
+import { writeCredentialSeedOrNewer } from "./codex-auth-seed-write.js";
 
 // The identity-keyed host credential cache keeps one usable subscription
 // credential per identity (`account_id`) in a SEPARATE host store, outside the
@@ -30,19 +27,11 @@ export const CODEX_AUTH_CACHE_OFF_SWITCH_ENV = "PAPERCLIP_CODEX_AUTH_CACHE";
 const FALSY_ENV_RE = /^(0|false|no|off)$/i;
 
 // The cache reuses the same direction-agnostic decision predicate the copy-back
-// and inbound restore run. The predicate answers one question — "should the
-// caller replace `destination` with `source`?" — purely by argument order (first
-// = source, second = destination). Exit 10 = use source; exit 20 = keep
-// destination. A leading `--seed-if-dest-absent` flag adds one opt-in behaviour:
-// fill an ABSENT destination slot from a usable subscription source. The
-// predicate only reads the two files and exits with a code; it never prints
-// token bytes.
-const DECISION_SCRIPT_PATH = fileURLToPath(
-  new URL("./codex-auth-merge-decision.cjs", import.meta.url),
-);
-const SEED_IF_DEST_ABSENT_FLAG = "--seed-if-dest-absent";
-const USE_SOURCE_EXIT = 10;
-const KEEP_DESTINATION_EXIT = 20;
+// and inbound restore run, through the shared `decideCodexAuthMerge` entry point.
+// The predicate answers one question — "should the caller replace `destination`
+// with `source`?" — purely by argument order (first = source, second =
+// destination). Exit 10 = use source; exit 20 = keep destination. The opt-in seed
+// mode fills an ABSENT destination slot from a usable subscription source.
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -218,75 +207,32 @@ export function readSubscriptionAccountId(bytes: Buffer): string | null {
   return accountId;
 }
 
-async function decideExitCode(
-  sourcePath: string,
-  destinationPath: string,
-  options: { seedIfDestAbsent?: boolean } = {},
-): Promise<number> {
-  const args = options.seedIfDestAbsent
-    ? [DECISION_SCRIPT_PATH, SEED_IF_DEST_ABSENT_FLAG, sourcePath, destinationPath]
-    : [DECISION_SCRIPT_PATH, sourcePath, destinationPath];
-  try {
-    await execFile("node", args);
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (code === USE_SOURCE_EXIT || code === KEEP_DESTINATION_EXIT) {
-      return code;
-    }
-    const detail =
-      typeof code === "string"
-        ? `node could not be executed (${code})`
-        : typeof code === "number"
-        ? `unexpected predicate exit code ${code}`
-        : error instanceof Error
-        ? error.message
-        : String(error);
-    throw new Error(`codex auth cache decision predicate failed: ${detail}`);
-  }
-  throw new Error("codex auth cache decision predicate exited 0 (expected 10 or 20)");
-}
-
 export type WriteCodexAuthCacheEntryOutcome = "written" | "kept-slot";
 
 /**
  * Writes `sandboxAuthBytes` into its per-identity cache slot when the slot is
  * absent, or when the source is a strictly-newer same-identity subscription
- * credential (Phase 2 seed mode). The mutation runs under the merge lock on the
- * slot directory. Never logs token bytes or a raw `account_id`.
+ * credential (seed mode). The mutation runs under the merge lock on the slot
+ * directory, through the shared {@link writeCredentialSeedOrNewer} writer. Never
+ * logs token bytes or a raw `account_id`.
  */
 export async function writeCodexAuthCacheEntry(input: {
   sandboxAuthBytes: Buffer;
   cacheEntryPath: string;
   log: (line: string) => void | Promise<void>;
 }): Promise<WriteCodexAuthCacheEntryOutcome> {
-  const { sandboxAuthBytes, cacheEntryPath, log } = input;
-  const cacheEntryDir = path.dirname(cacheEntryPath);
-  return withDirectoryMergeLock(cacheEntryDir, async () => {
-    const stagedTempPath = path.join(
-      cacheEntryDir,
-      `.auth.json.cache-source-${process.pid}-${randomUUID()}.tmp`,
-    );
-    const handle = await open(stagedTempPath, "wx", 0o600);
-    try {
-      await handle.writeFile(sandboxAuthBytes);
-      await handle.close();
-      const decision = await decideExitCode(stagedTempPath, cacheEntryPath, {
-        seedIfDestAbsent: true,
-      });
-      if (decision === USE_SOURCE_EXIT) {
-        await rename(stagedTempPath, cacheEntryPath);
-        await log("[paperclip] Codex auth cache: wrote the per-identity cache slot at mode 0600.");
-        return "written";
-      }
-      await log(
-        "[paperclip] Codex auth cache: kept the cache slot (source is not a strictly-newer same-identity subscription credential).",
-      );
-      return "kept-slot";
-    } finally {
-      await handle.close().catch(() => undefined);
-      await rm(stagedTempPath, { force: true }).catch(() => undefined);
-    }
+  const outcome = await writeCredentialSeedOrNewer({
+    sourceBytes: input.sandboxAuthBytes,
+    destinationPath: input.cacheEntryPath,
+    seedIfDestAbsent: true,
+    log: input.log,
+    writtenLine: "[paperclip] Codex auth cache: wrote the per-identity cache slot at mode 0600.",
+    keptLine:
+      "[paperclip] Codex auth cache: kept the cache slot (source is not a strictly-newer same-identity subscription credential).",
+    tempPrefix: "auth.json.cache-source",
+    errorLabel: "codex auth cache",
   });
+  return outcome === "written" ? "written" : "kept-slot";
 }
 
 export type VendCodexAuthOutcome = "vended" | "kept-host" | "no-host-identity";
@@ -358,7 +304,9 @@ export async function selectVendCredential(
       // Default-mode predicate: install the cache copy only when it is strictly
       // newer for the SAME identity. Same-identity + strictly-newer keeps the
       // change additive and semantics-preserving.
-      const decision = await decideExitCode(stagedTempPath, sharedHomeAuthPath);
+      const decision = await decideCodexAuthMerge(stagedTempPath, sharedHomeAuthPath, {
+        errorLabel: "codex auth cache",
+      });
       if (decision === USE_SOURCE_EXIT) {
         await rename(stagedTempPath, sharedHomeAuthPath);
         await log(

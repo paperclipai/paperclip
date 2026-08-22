@@ -11,7 +11,7 @@ pause controls, and consistent audits instead of hidden daemon behavior.
 
 ## Prerequisites
 
-- Node.js 22+ and `pnpm`.
+- Node.js 24.11+ and `pnpm`.
 - A local Paperclip checkout you can run from source. Local plugin installs read source from disk, so the running server must be able to see the path you give it.
 
 ## The five steps

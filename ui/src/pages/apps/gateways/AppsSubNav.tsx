@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 type SubNavKey = "connected" | "gateways" | "activity";
 
 const ITEMS: { key: SubNavKey; label: string; href: string }[] = [
-  { key: "connected", label: "Connected", href: "/apps" },
+  { key: "connected", label: "Connected", href: "/apps/connections" },
   { key: "gateways", label: "Gateways", href: "/apps/gateways" },
   { key: "activity", label: "Activity", href: "/activity" },
 ];

@@ -1450,6 +1450,132 @@
       "when": 1785988680096,
       "tag": "0208_keen_sharon_carter",
       "breakpoints": true
+    },
+    {
+      "idx": 209,
+      "version": "7",
+      "when": 1786020026023,
+      "tag": "0209_heartbeat_context_snapshot_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1786032087897,
+      "tag": "0210_heartbeat_context_taskkey_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1786129601533,
+      "tag": "0211_bright_morg",
+      "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "7",
+      "when": 1786388759523,
+      "tag": "0212_onboarding_first_task_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 213,
+      "version": "7",
+      "when": 1786467951626,
+      "tag": "0213_complete_mystique",
+      "breakpoints": true
+    },
+    {
+      "idx": 214,
+      "version": "7",
+      "when": 1786467951627,
+      "tag": "0214_lively_lord_tyger",
+      "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "7",
+      "when": 1786467951628,
+      "tag": "0215_flat_daimon_hellstrom",
+      "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "7",
+      "when": 1786467952628,
+      "tag": "0216_company_onboarding_seeds",
+      "breakpoints": true
+    },
+    {
+      "idx": 217,
+      "version": "7",
+      "when": 1786643974972,
+      "tag": "0217_yielding_starbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 218,
+      "version": "7",
+      "when": 1786711898729,
+      "tag": "0218_mushy_jack_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1786711898730,
+      "tag": "0219_runtime_service_exposure",
+      "breakpoints": true
+    },
+    {
+      "idx": 220,
+      "version": "7",
+      "when": 1786711898731,
+      "tag": "0220_execution_workspace_runtime_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 221,
+      "version": "7",
+      "when": 1786983881320,
+      "tag": "0221_swift_justin_hammer",
+      "breakpoints": true
+    },
+    {
+      "idx": 222,
+      "version": "7",
+      "when": 1786983999395,
+      "tag": "0222_orphan_cleanup_env_reference_survives_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1787000753489,
+      "tag": "0223_robust_zaladane",
+      "breakpoints": true
+    },
+    {
+      "idx": 224,
+      "version": "7",
+      "when": 1787000754489,
+      "tag": "0224_unified_adapter_auth_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "7",
+      "when": 1787101144413,
+      "tag": "0225_drop_claude_setup_token_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "7",
+      "when": 1787261199301,
+      "tag": "0226_tan_colossus",
+      "breakpoints": true
     }
   ]
 }

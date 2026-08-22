@@ -2,15 +2,18 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionStatus,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
+import { ApiError } from "../api/client";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
@@ -18,6 +21,7 @@ import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
   Popover,
@@ -25,9 +29,15 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
-import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
+import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  resolveAdapterTestEnvironmentId,
+  resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
+} from "../lib/adapter-test-environment";
+import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -53,6 +63,7 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
@@ -84,6 +95,12 @@ type AgentConfigFormProps = {
   onTestFeedbackChange?: (feedback: {
     errorMessage: string | null;
     result: AdapterEnvironmentTestResult | null;
+    // The login panel descriptor when the current target is a sandbox with no
+    // ready authentication, otherwise null. A parent that lifts the test
+    // feedback must render `AdapterLoginPanel` from this descriptor. The inline
+    // feedback branch renders the panel itself, so this descriptor is the only
+    // way the panel reaches a parent that hides the inline branch.
+    login: AdapterLoginDescriptor | null;
   }) => void;
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
@@ -92,6 +109,8 @@ type AgentConfigFormProps = {
   hideInstructionsFile?: boolean;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
+  /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
+  content?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
 } & (
@@ -185,6 +204,15 @@ const claudeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+] as const;
+
+// Kimi exposes low/high/max (no "medium") via each model's support_efforts;
+// the kimi_local adapter maps a legacy "medium" onto "high" at runtime.
+const kimiThinkingEffortOptions = [
+  { id: "", label: "Auto" },
+  { id: "low", label: "Low" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Max" },
 ] as const;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -432,6 +460,108 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
+
+  // Create mode holds the non-secret stored-session claim after a Claude
+  // subscription login reaches the server `stored` state. The claim marks the
+  // fixed `CLAUDE_CODE_OAUTH_TOKEN` binding as present. The form sends the claim
+  // in the create request; the server binds and enforces the token
+  // independently. The claim never carries a token value.
+  const claudeStoredSessionId = isCreate ? val!.claudeStoredSessionId ?? null : null;
+
+  // After a login binds CLAUDE_CODE_OAUTH_TOKEN, the user-secret-definitions list
+  // in the cache is stale. The form reads that list once at page load, so it does
+  // not contain the definition the login just bound. The bound row then compares
+  // its key against the stale list and shows a false "no longer exists" health
+  // error. Invalidate the list so the row reads the fresh definitions and clears
+  // the error.
+  const invalidateUserSecretDefinitions = () => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.secrets.userDefinitions(selectedCompanyId),
+    });
+  };
+
+  // Add the fixed binding to the create-mode form state after the login stores.
+  // Keep every unrelated binding. Hold the claim so the create request sends it.
+  const handleClaudeLoginStored = (storedSessionId: string) => {
+    if (!isCreate || !set) return;
+    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    set({
+      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
+      claudeStoredSessionId: storedSessionId,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Edit mode: after a login stores the token, add the fixed binding to the
+  // existing agent and persist it at once. The server already stored the token;
+  // this step binds `CLAUDE_CODE_OAUTH_TOKEN` to the agent's environment through
+  // the normal agent-update patch path, so no manual bind step remains. Flush any
+  // pending editor draft first, keep every unrelated binding, and mark the merged
+  // set into the overlay so the editor and the saved patch agree.
+  //
+  // An update can never consume a fresh login's stored-session claim -- only the
+  // create and hire paths can, per `enforceClaudeOAuthBindingClaim`. So this save
+  // must set `applyStoredClaudeLogin`, the same way `handleApplyStoredClaudeLoginEdit`
+  // does, or the server rejects the patch with the fixed claim error even though
+  // the login already stored the token. Without the flag every fresh login on an
+  // existing agent's own page fails to save the binding.
+  const handleClaudeLoginStoredEdit = async () => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave({
+      ...buildAgentUpdatePatch(props.agent, nextOverlay),
+      applyStoredClaudeLogin: true,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Create mode: bind the fixed reference to an existing stored login with no new
+  // login round trip. Add the fixed binding and set the apply-existing flag. The
+  // create request sends the flag; the server binds the token only for a user
+  // actor and only when a stored value exists. Keep every unrelated binding.
+  const handleApplyStoredClaudeLogin = () => {
+    if (!isCreate || !set) return;
+    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    set({
+      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
+      claudeApplyStoredLogin: true,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Edit mode: bind the fixed reference to an existing stored login with no new
+  // login round trip, then persist it at once. Add the fixed binding to the
+  // existing agent and save the patch with the apply-existing flag. Flush any
+  // pending editor draft first and keep every unrelated binding.
+  const handleApplyStoredClaudeLoginEdit = async () => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave({
+      ...buildAgentUpdatePatch(props.agent, nextOverlay),
+      applyStoredClaudeLogin: true,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
   const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
@@ -454,6 +584,64 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
     [environments, instanceDefaultEnvironmentId],
   );
+
+  // The environment a login session runs in. It mirrors the Test resolution: the
+  // agent's own environment wins, otherwise the instance default, otherwise the
+  // local default. The login affordance shows only when this environment is a
+  // sandbox, because the canonical auth-missing check comes only from a sandbox
+  // target.
+  //
+  // The resolution passes the same managed-sandbox-only policy inputs as the
+  // adapter Test target, so both resolve to the same environment. Under the
+  // policy a resolution that lands on the local environment redirects to the
+  // managed sandbox the real run uses. Without the redirect the login target
+  // stays local while the Test and the real run use the managed sandbox, so the
+  // login affordance reads the wrong target. The resolver throws when the policy
+  // is on but no managed sandbox is available; a render must not throw, so this
+  // resolution catches that case and resolves no login environment. The Test
+  // mutation surfaces the same case as a fail-closed error.
+  const effectiveLoginEnvironmentId = useMemo(() => {
+    try {
+      return resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
+        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+        managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+        // The policy hides the local environment, so an agent default that still
+        // points at the hidden local row names no visible environment. Pass the
+        // visible ids so the resolver redirects that stale local default to the
+        // managed sandbox instead of the hidden local id.
+        visibleEnvironmentIds: environments.map((environment) => environment.id),
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    rawCurrentDefaultEnvironmentId,
+    instanceSettings?.defaultEnvironmentId,
+    environments,
+    experimentalSettings?.enableManagedSandboxOnly,
+  ]);
+  const effectiveLoginEnvironment = useMemo(
+    () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
+    [environments, effectiveLoginEnvironmentId],
+  );
+  // Load the sandbox provider capabilities. A login that runs on a real
+  // pseudo-terminal needs a provider that advertises the login pseudo-terminal
+  // capability. The login panel gate reads this to hide the panel for a provider
+  // without the capability. Enable the query from the adapter login transport,
+  // not the adapter name: only a pseudo-terminal login consults this data. The
+  // gate is advisory; the server resolves the capability again and fails closed.
+  const { data: environmentCapabilities } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.environments.capabilities(selectedCompanyId)
+      : ["environment-capabilities", "none"],
+    queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
+    enabled:
+      Boolean(selectedCompanyId) &&
+      adapterCaps.login?.sandboxTransport === "pseudo_terminal",
+  });
 
   // When the instance forces Kubernetes execution, new agents must default to the
   // managed Kubernetes sandbox environment (never the implicit local default).
@@ -490,9 +678,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     currentDefaultEnvironmentId.length > 0 ||
     runnableEnvironments.length >= 1
   );
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
-    ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
-    : "Local";
+    ? environmentDisplayLabel(instanceDefaultEnvironment)
+    : managedSandboxOnly
+      ? "Paperclip Computer"
+      : "Local";
 
   // Fetch adapter models for the effective adapter type
   const modelQueryKey = selectedCompanyId
@@ -698,21 +889,57 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
       let settings = instanceSettings;
-      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+      let environmentList = environments;
+      let managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+      if (!rawCurrentDefaultEnvironmentId) {
+        // The agent has no own environment, so the Test resolves the instance
+        // default, the local default, or the managed sandbox. Resolve the
+        // settings, the environment list, and the managed-sandbox-only policy
+        // here, because the render-time queries can be unsettled, or the
+        // environments query can be disabled under the managed-sandbox-only
+        // policy. A failure surfaces an honest error, not a silent host probe
+        // that reports a false result.
         try {
-          settings = await queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.settings,
-            queryFn: () => instanceSettingsApi.get(),
-          });
+          const [resolvedSettings, resolvedEnvironments, resolvedExperimental] =
+            await Promise.all([
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.instance.settings,
+                queryFn: () => instanceSettingsApi.get(),
+              }),
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.environments.list(selectedCompanyId),
+                queryFn: () => environmentsApi.list(selectedCompanyId),
+              }),
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.instance.experimentalSettings,
+                queryFn: () => instanceSettingsApi.getExperimental(),
+              }),
+            ]);
+          settings = resolvedSettings;
+          environmentList = resolvedEnvironments;
+          managedSandboxOnly = resolvedExperimental?.enableManagedSandboxOnly === true;
         } catch {
           throw new Error(
-            "Could not load instance settings to determine which environment to test in. Retry the test.",
+            "Could not load environment settings to determine which environment to test in. Retry the test.",
           );
         }
       }
+      // Mirror the server run-time resolution, including the managed-sandbox-only
+      // redirect: when the resolution lands on the local environment and the
+      // policy is on, probe the managed sandbox the real run uses instead. The
+      // resolver throws when no managed sandbox is available, which the mutation
+      // surfaces as a fail-closed error rather than a local host probe.
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+        // The policy hides the local environment, so an agent default that still
+        // points at the hidden local row names no visible environment. Pass the
+        // visible ids so the resolver redirects that stale local default to the
+        // managed sandbox instead of sending the hidden local id to the server.
+        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
@@ -750,6 +977,81 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
+
+  // Drop a stale Test result when the adapter type or the effective environment
+  // changes. A held result would keep the login affordance visible for a target
+  // the user no longer selected. The reset unmounts the login panel too, so its
+  // session state clears with it. Hold `reset` in a ref so the effect does not
+  // re-run on every render (the mutation object has a new identity each render).
+  const resetTestEnvironmentRef = useRef(testEnvironment.reset);
+  resetTestEnvironmentRef.current = testEnvironment.reset;
+
+  // Clear a stale Claude login claim when the adapter type or the effective
+  // environment changes. A login binds `CLAUDE_CODE_OAUTH_TOKEN` to one specific
+  // environment. After the environment changes, the held claim and the fixed
+  // binding no longer match the new target. The create request would still send
+  // the claim, and the server would reject it. So drop the claim, the
+  // apply-existing flag, and the fixed binding, and return the login panel to
+  // its initial state. Only create mode holds this form state; edit mode saves
+  // the binding at login time. Hold the clear in a ref so the effect does not
+  // re-run on every render (`set` and `val` have a new identity each render).
+  const clearClaudeLoginClaimRef = useRef<() => void>(() => {});
+  clearClaudeLoginClaimRef.current = () => {
+    if (!isCreate || !set) return;
+    const bindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    const hasClaim =
+      val!.claudeStoredSessionId != null || val!.claudeApplyStoredLogin === true;
+    const hasBinding = CLAUDE_OAUTH_TOKEN_ENV_KEY in bindings;
+    if (!hasClaim && !hasBinding) return;
+    const nextBindings = { ...bindings };
+    delete nextBindings[CLAUDE_OAUTH_TOKEN_ENV_KEY];
+    set({
+      envBindings: nextBindings,
+      claudeStoredSessionId: null,
+      claudeApplyStoredLogin: false,
+    });
+  };
+
+  useEffect(() => {
+    resetTestEnvironmentRef.current();
+    setTestActionError(null);
+    clearClaudeLoginClaimRef.current();
+  }, [adapterType, effectiveLoginEnvironmentId]);
+
+  // Show the login affordance only for a current sandbox adapter that declares a
+  // login capability, and whose most recent Test result carries the canonical
+  // auth-missing check. The form reads the projected capability, not the adapter
+  // name. The result keeps its own `adapterType`, so the form reads the
+  // capability for that result adapter; a result from an adapter with no login
+  // capability never gates the panel.
+  const adapterSupportsSandboxLogin = adapterCaps.login != null;
+  const testResult = testEnvironment.data;
+  const testResultSupportsSandboxLogin =
+    testResult != null && getCapabilities(testResult.adapterType).login != null;
+  const authMissingCheck =
+    testResult && testResultSupportsSandboxLogin
+      ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
+      : null;
+  // A login that runs on a real pseudo-terminal needs a provider that advertises
+  // the login pseudo-terminal capability. Read the capability for the effective
+  // environment provider. The form reads the adapter login transport, not the
+  // adapter name: a login with a streamed-exec transport does not gate on this
+  // capability, so the requirement applies to a pseudo-terminal login only.
+  const effectiveLoginProvider =
+    typeof effectiveLoginEnvironment?.config?.provider === "string"
+      ? effectiveLoginEnvironment.config.provider
+      : null;
+  const providerSupportsLoginPty =
+    effectiveLoginProvider != null &&
+    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
+  const loginNeedsPty = adapterCaps.login?.sandboxTransport === "pseudo_terminal";
+  const showAdapterLogin =
+    adapterSupportsSandboxLogin &&
+    effectiveLoginEnvironment?.driver === "sandbox" &&
+    Boolean(effectiveLoginEnvironmentId) &&
+    Boolean(selectedCompanyId) &&
+    Boolean(authMissingCheck) &&
+    (!loginNeedsPty || providerSupportsLoginPty);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");
@@ -816,11 +1118,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? "Environment test failed"
             : null),
       result: testEnvironment.data ?? null,
+      // `showAdapterLogin` already requires a selected company and a non-empty
+      // environment id, so both are present here.
+      login:
+        showAdapterLogin && selectedCompanyId && effectiveLoginEnvironmentId
+          ? { companyId: selectedCompanyId, adapterType, environmentId: effectiveLoginEnvironmentId }
+          : null,
     });
     return () => {
-      props.onTestFeedbackChange?.({ errorMessage: null, result: null });
+      props.onTestFeedbackChange?.({ errorMessage: null, result: null, login: null });
     };
-  }, [props.onTestFeedbackChange, testActionError, testEnvironment.data, testEnvironment.error]);
+  }, [
+    props.onTestFeedbackChange,
+    testActionError,
+    testEnvironment.data,
+    testEnvironment.error,
+    showAdapterLogin,
+    selectedCompanyId,
+    adapterType,
+    effectiveLoginEnvironmentId,
+  ]);
 
   // Current model for display
   const currentModelValue = isCreate
@@ -857,7 +1174,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? cursorModeOptions
         : adapterType === "opencode_local"
           ? openCodeThinkingEffortOptions
-          : claudeThinkingEffortOptions;
+          : adapterType === "kimi_local"
+            ? kimiThinkingEffortOptions
+            : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -978,6 +1297,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ...maxTurnContinuation,
       ...patch,
     });
+  }
+
+  if (!isCreate && props.content === "secrets") {
+    return (
+      <div className={cn("relative", cards && "space-y-6")}>
+        {isDirty && !props.hideInlineSave && (
+          <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">Unsaved changes</span>
+              <Button size="sm" onClick={handleSave} disabled={props.isSaving}>
+                {props.isSaving ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
+          }
+          <div className={cn(cards ? "space-y-3 rounded-lg border border-border p-4" : "space-y-3 px-4 pb-3")}>
+            <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
+            <AgentSecretAccessEditor
+              config={{ ...config, ...overlay.adapterConfig }}
+              secrets={availableSecrets}
+              onChange={applyAccessGrants}
+              onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
+              proposals={agentBindingProposals}
+              onApproveProposal={proposalReview.requestApprove}
+              onRejectProposal={proposalReview.requestReject}
+            />
+            {proposalReview.dialogs}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1129,7 +1485,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   <option value="">Default: {inheritedEnvironmentLabel}</option>
                   {environmentOptions.map((environment) => (
                     <option key={environment.id} value={environment.id}>
-                      {environment.name} · {environment.driver}
+                      {environmentDisplayLabel(environment)}
                     </option>
                   ))}
                 </select>
@@ -1175,6 +1531,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "kimi_local") {
+                      nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -1192,6 +1550,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         model:
                           t === "gemini_local"
                             ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "kimi_local"
+                              ? DEFAULT_KIMI_LOCAL_MODEL
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
@@ -1226,6 +1586,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
+          )}
+
+          {showInlineAdapterTestEnvironmentFeedback && showAdapterLogin && (
+            <AdapterLoginPanel
+              key={`${adapterType}:${effectiveLoginEnvironmentId}`}
+              companyId={selectedCompanyId!}
+              adapterType={adapterType}
+              environmentId={effectiveLoginEnvironmentId!}
+              onStored={isCreate ? handleClaudeLoginStored : handleClaudeLoginStoredEdit}
+              onApplyStored={
+                isCreate ? handleApplyStoredClaudeLogin : handleApplyStoredClaudeLoginEdit
+              }
+            />
           )}
 
           {/* Working directory */}
@@ -1293,6 +1666,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       claude_local: "claude",
                       codex_local: "codex",
                       gemini_local: "gemini",
+                      kimi_local: "kimi",
                       pi_local: "pi",
                       cursor: "agent",
                       opencode_local: "opencode",
@@ -1441,8 +1815,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   value={
                     isCreate
                       ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                      )
+                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
                   }
                   secrets={availableSecrets}
                   userSecretDefinitions={userSecretDefinitions}
@@ -1457,20 +1830,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 />
               </Field>
-
-              {!isCreate && (
-                <Field label="Secret access" hint={help.secretAccess}>
-                  <AgentSecretAccessEditor
-                    config={{ ...config, ...overlay.adapterConfig }}
-                    secrets={availableSecrets}
-                    onChange={applyAccessGrants}
-                    proposals={agentBindingProposals}
-                    onApproveProposal={proposalReview.requestApprove}
-                    onRejectProposal={proposalReview.requestReject}
-                  />
-                  {proposalReview.dialogs}
-                </Field>
-              )}
 
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
@@ -1629,6 +1988,827 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
 
+    </div>
+  );
+}
+
+// The public session states that end a login. The panel stops the status poll
+// and shows a terminal message when the session reaches one of these.
+const ADAPTER_LOGIN_TERMINAL_STATUSES = new Set<AdapterAuthSessionStatus>([
+  "authenticated",
+  "failed",
+  "timed_out",
+  "cancelled",
+]);
+
+// The status route poll interval while a session is active (Decision A). The
+// poll stops at a terminal state.
+const ADAPTER_LOGIN_POLL_INTERVAL_MS = 2000;
+
+// A copy-to-clipboard button. It mirrors the workspace service control bar: a
+// short "copied" flash, then it returns to the copy icon.
+function AdapterLoginCopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={label}
+      title={label}
+      className="text-muted-foreground hover:text-foreground"
+      onClick={async () => {
+        try {
+          await copyTextToClipboard(value);
+          setCopied(true);
+        } catch {
+          setCopied(false);
+        }
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+    </Button>
+  );
+}
+
+// The terminal message for a finished login. It never shows a secret. It shows
+// only the fixed, non-secret failure message the server returns.
+function AdapterLoginTerminalState({
+  status,
+  message,
+}: {
+  status: AdapterAuthSessionStatus;
+  message: string | null;
+}) {
+  if (status === "authenticated") {
+    return (
+      <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+        <Check className="size-3 shrink-0" />
+        <span>Authenticated. The environment has credentials now.</span>
+      </div>
+    );
+  }
+  const label =
+    status === "timed_out"
+      ? "Login timed out"
+      : status === "cancelled"
+        ? "Login cancelled"
+        : "Login failed";
+  return (
+    <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+      <TriangleAlert className="size-3 shrink-0" />
+      <span>
+        {label}
+        {message ? `: ${message}` : "."}
+      </span>
+    </div>
+  );
+}
+
+// The login panel for one adapter in one sandbox environment. It starts a login
+// session, polls the status route, and shows the one-time code and the
+// authentication URL with copy and open actions. It shows the terminal states.
+// It never writes the code, the URL, or any credential byte to a log line.
+//
+// The panel holds its own session state. The parent gives it a stable `key` from
+// the adapter type and the environment id, so a change to either remounts the
+// panel with a fresh session state.
+// The props that identify one login panel: one adapter in one sandbox
+// environment for one company. A parent that lifts the test feedback renders
+// the panel from this descriptor.
+export type AdapterLoginDescriptor = {
+  companyId: string;
+  adapterType: string;
+  environmentId: string;
+};
+
+// The panel props. `onStored` reports the non-secret `storedSessionId` claim from
+// a Claude login that reaches the server `stored` state. The create-mode form
+// holds that claim for the fixed binding; the callback never carries a token.
+// `onApplyStored` binds the fixed reference to an existing stored login with no
+// new login round trip. The panel shows the apply-existing affordance only when
+// the status route reports a stored value.
+export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  onStored?: (storedSessionId: string) => void;
+  onApplyStored?: () => void;
+};
+
+// The login panel dispatcher. It picks the panel from the projected panel mode,
+// not from the adapter name. The `submitted_browser_code` mode shows the
+// submitted-browser-code panel; every other mode shows the displayed-code panel.
+export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
+  const getCapabilities = useAdapterCapabilities();
+  const panelMode = getCapabilities(props.adapterType).login?.panelMode;
+  if (panelMode === "submitted_browser_code") {
+    return <SubmittedBrowserCodeLoginPanel {...props} />;
+  }
+  return <DisplayedCodeLoginPanel {...props} />;
+}
+
+function DisplayedCodeLoginPanel({
+  companyId,
+  adapterType,
+  environmentId,
+}: AdapterLoginPanelProps) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  // The server delivers the one-time prompt on the first owner read only. Latch
+  // it so a later poll that returns a null prompt does not hide the code and the
+  // URL.
+  const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
+
+  const startLogin = useMutation({
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    onSuccess: (session) => {
+      setStartError(null);
+      setLatchedPrompt(null);
+      setSessionId(session.sessionId);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+    },
+  });
+
+  const cancelLogin = useMutation({
+    mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
+    onSuccess: () => {
+      // Reset local state, so the panel returns to its idle start state and the
+      // Log in button is available again.
+      setSessionId(null);
+      setLatchedPrompt(null);
+      setStartError(null);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+    },
+  });
+
+  const statusQuery = useQuery({
+    queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
+    queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
+    enabled: Boolean(sessionId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
+        ? false
+        : ADAPTER_LOGIN_POLL_INTERVAL_MS;
+    },
+  });
+
+  // Latch the first non-null prompt for the current session. A later poll
+  // returns a null prompt after the one-time delivery, so keep the latched value.
+  useEffect(() => {
+    const next = statusQuery.data?.prompt ?? null;
+    if (next) setLatchedPrompt(next);
+  }, [statusQuery.data]);
+
+  const session = statusQuery.data ?? startLogin.data ?? null;
+  const status = session?.status ?? null;
+  const prompt = latchedPrompt;
+  const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
+  const isActive = Boolean(sessionId) && !isTerminal;
+  const startDisabled = startLogin.isPending || isActive;
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              disabled={cancelLogin.isPending}
+              onClick={() => cancelLogin.mutate()}
+            >
+              Cancel
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={startDisabled}
+            onClick={() => startLogin.mutate()}
+          >
+            Log in
+          </Button>
+        </div>
+      </div>
+
+      {startError && (
+        <div role="alert" className="text-(length:--text-micro) text-destructive">
+          {startError}
+        </div>
+      )}
+
+      {/* One live region announces the loading, prompt, and terminal states, so a
+          screen reader reports each transition without a re-navigation. */}
+      <div role="status" aria-live="polite" className="space-y-2 empty:hidden">
+        {isActive && !prompt && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Preparing the login…</span>
+          </div>
+        )}
+
+        {isActive && prompt && (
+          <div className="space-y-2">
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              Open the authentication page and enter the code.
+            </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Code
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+            </div>
+            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Authentication URL
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
+            </div>
+            <div className="flex items-center">
+              <AdapterLoginCopyButton value={prompt.url} label="Copy URL" />
+              <Button
+                asChild
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Open the authentication page"
+                title="Open the authentication page"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <a href={prompt.url} target="_blank" rel="noreferrer noopener">
+                  <ExternalLink className="size-3" />
+                </a>
+              </Button>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {isTerminal && status && (
+          <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The public session states that fail a Claude login. The panel returns to its
+// start state and shows a fixed message at one of these.
+const CLAUDE_LOGIN_FAILURE_STATUSES = new Set<AdapterAuthSessionStatus>([
+  "failed",
+  "timed_out",
+  "cancelled",
+]);
+
+// The fixed, non-secret message for a failed Claude login. The panel shows this
+// text and returns to its start state. It never shows a provider message that
+// could carry a secret.
+const CLAUDE_LOGIN_FAILED_MESSAGE = "The login did not finish. Start the login again.";
+
+// The client wall-clock cap for one active login. The panel polls the status
+// route and the prompt route every two seconds. The server can leave a session
+// short of a terminal status, and the prompt route returns 404 until the URL is
+// ready. Without a cap, the panel polls forever. When this cap passes, the panel
+// stops both polls and shows the timed-out state, so the user can start again.
+// A generous client failsafe for a live login whose server deadline has not
+// arrived yet. The server `expiresAt` is the real cutoff; the panel drives the
+// timer from it. This failsafe only bounds a stuck poll while the status route
+// has not yet returned `expiresAt`, so a login can never poll forever. The
+// value is far longer than the server budget, so it never cuts a normal login
+// short (the earlier fixed 60-second cutoff did, which drove this fix).
+const CLAUDE_LOGIN_FAILSAFE_TIMEOUT_MS = 15 * 60_000;
+
+// The fixed, non-secret message for a timed-out Claude login. The panel shows
+// this text, stops both polls, and returns to its start state.
+const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login again.";
+
+// The submitted-browser-code login panel for the Claude adapter. It starts a
+// setup-token login, polls the status route, and reads the authorization URL
+// from the guarded prompt route. The user opens the URL, reads the browser code,
+// and submits it. The panel clears the code right after submit. The panel treats
+// only the server `stored` state as success, and it never shows the OAuth token.
+function SubmittedBrowserCodeLoginPanel({
+  companyId,
+  environmentId,
+  onStored,
+  onApplyStored,
+}: AdapterLoginPanelProps) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  // The server delivers the authorization URL on the guarded prompt read only.
+  // Latch it so a later poll does not hide the URL.
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  // True when the guarded prompt read reports a non-confidential transport. The
+  // server does not block a plain-HTTP login. The panel shows a non-blocking
+  // disclaimer and the login still proceeds. Latch it beside the URL.
+  const [transportInsecure, setTransportInsecure] = useState(false);
+  // The browser code the user submits. The panel clears it right after submit, so
+  // the secret never lingers in the input.
+  const [browserCode, setBrowserCode] = useState("");
+  // The non-secret stored-session claim from a completed login. It marks the
+  // server `stored` state, the only success state.
+  const [storedSessionId, setStoredSessionId] = useState<string | null>(null);
+  // True after a completion read fails. The panel returns to its start state.
+  const [completionFailed, setCompletionFailed] = useState(false);
+  // True after the client wall-clock cap passes for the active login. The panel
+  // stops both polls and shows the timed-out state.
+  const [timedOut, setTimedOut] = useState(false);
+  // True after the status poll returns 404. The server removes the row and the
+  // in-memory session at once on any non-stored terminal state, so a status 404
+  // means the login failed and the server cleaned up. The panel stops both
+  // polls and shows a terminal failure state. It shows no credential material.
+  const [statusGone, setStatusGone] = useState(false);
+  // Guards the one completion read per session.
+  const completionStartedRef = useRef(false);
+  // True after the owner applies an existing stored login in this panel. The
+  // apply-existing path binds the fixed reference with no new login round trip,
+  // so the panel shows the applied confirmation and hides the apply affordance.
+  const [appliedStored, setAppliedStored] = useState(false);
+
+  const resetLocalState = () => {
+    setStartError(null);
+    setAuthorizationUrl(null);
+    setTransportInsecure(false);
+    setBrowserCode("");
+    setStoredSessionId(null);
+    setCompletionFailed(false);
+    setTimedOut(false);
+    setStatusGone(false);
+    completionStartedRef.current = false;
+  };
+
+  // Read the stored Claude OAuth token status when the panel mounts. A 200 body
+  // carries the secret id and the version of the owner value; a 404 means the
+  // owner has no stored value. The panel applies the stored token first: when a
+  // value exists, a replacement login rotates it under the captured version
+  // instead of a blind first write. The server rejects a stale capture, so a
+  // change by another process after the capture fails the overwrite.
+  const storedTokenQuery = useQuery({
+    queryKey: ["claude-oauth-token-status", companyId],
+    queryFn: async () => {
+      try {
+        return await agentsApi.getClaudeOAuthTokenStatus(companyId);
+      } catch (error) {
+        // A 404 means the owner has no stored value (indistinguishable from a
+        // foreign value). The panel treats it as "no stored token".
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 2;
+    },
+  });
+  const storedToken = storedTokenQuery.data ?? null;
+
+  const startLogin = useMutation({
+    mutationFn: () =>
+      agentsApi.startClaudeSetupTokenLogin(companyId, {
+        environmentId,
+        // When the owner already has a stored token, the login rotates it under
+        // the captured version, so a replacement login never conflicts with an
+        // existing value. Without a stored token the login is a first write.
+        ...(storedToken
+          ? {
+              overwrite: {
+                expectedSecretId: storedToken.secretId,
+                expectedLatestVersion: storedToken.latestVersion,
+              },
+            }
+          : {}),
+      }),
+    onSuccess: (session) => {
+      resetLocalState();
+      setSessionId(session.sessionId);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+    },
+  });
+
+  const clearActiveSession = () => {
+    // Return the panel to its idle start state. The Log in button is available
+    // again, and both polls stop because the session id is null.
+    setSessionId(null);
+    resetLocalState();
+  };
+
+  const cancelLogin = useMutation({
+    mutationFn: () => agentsApi.cancelClaudeSetupTokenLogin(companyId, sessionId!),
+    onSuccess: () => {
+      clearActiveSession();
+    },
+    onError: (error) => {
+      // The cancel is resilient. The server removes a terminal session, so a
+      // cancel of an already-terminal or unknown session can return a 404. Treat
+      // that 404 the same as a successful cancel: clear the session and stop the
+      // polls. The panel never keeps polling a session the server no longer
+      // holds. Any other error surfaces and keeps the active login.
+      if (error instanceof ApiError && error.status === 404) {
+        clearActiveSession();
+        return;
+      }
+      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+    },
+  });
+
+  // Release the server session at once, without a change to the panel state. The
+  // client-cutoff timer and the unmount path both use this. The server holds a
+  // per-owner reservation until the session reaches a terminal state, so an
+  // abandoned session locks the owner out until the server deadline. A best-
+  // effort cancel frees that reservation now, so the same owner can start a new
+  // login and does not hit the "too many active sessions" cap. The server
+  // removes a terminal session, so a 404 means the session is already gone. Treat
+  // that 404 the same as a successful cancel. This is a fire-and-forget cleanup,
+  // so it drops every error. The manual Cancel button uses the `cancelLogin`
+  // mutation instead, because that path also returns the panel to its idle start
+  // state.
+  const releaseServerSession = useCallback(
+    (id: string) => {
+      void agentsApi.cancelClaudeSetupTokenLogin(companyId, id).catch(() => {
+        // Drop the error. A 404 means the server already removed the session. A
+        // cleanup path cannot surface any other error, so it stays silent.
+      });
+    },
+    [companyId],
+  );
+
+  // Both polls run only while a session is active and the client cap has not
+  // passed. The timeout stops the polls, so the panel never polls forever. A
+  // status 404 also stops the polls: the server cleaned up the session, so the
+  // panel enters a terminal failure state instead.
+  const pollingEnabled = Boolean(sessionId) && !timedOut && !statusGone;
+
+  const statusQuery = useQuery({
+    queryKey: ["claude-setup-token-status", companyId, sessionId],
+    queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
+    enabled: pollingEnabled,
+    // A status 404 is terminal. The server removes a cleaned-up session at once,
+    // so a retry cannot recover it. Stop at once and fail loudly.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
+    refetchInterval: (query) => {
+      if (timedOut || statusGone) return false;
+      const status = query.state.data?.status;
+      return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
+        ? false
+        : ADAPTER_LOGIN_POLL_INTERVAL_MS;
+    },
+  });
+
+  // Fail loudly on a status 404. The server cleans up the reservation, the row,
+  // and the in-memory session at once on any non-stored terminal state, so the
+  // status route returns 404 when a login fails and the server cleanup wins the
+  // race against the next poll. React Query keeps the last successful data on
+  // error, so without this branch the panel would hold stale data and show
+  // nothing. Enter the terminal failure state, which stops both polls.
+  useEffect(() => {
+    const error = statusQuery.error;
+    if (error instanceof ApiError && error.status === 404) {
+      setStatusGone(true);
+    }
+  }, [statusQuery.error]);
+
+  // Poll the guarded prompt route until it returns the authorization URL. The
+  // route returns 404 until the URL is ready, so the panel treats a 404 as
+  // not-ready and keeps polling.
+  const promptQuery = useQuery({
+    queryKey: ["claude-setup-token-prompt", companyId, sessionId],
+    enabled: pollingEnabled && !authorizationUrl,
+    queryFn: async () => {
+      try {
+        return await agentsApi.getClaudeSetupTokenLoginPrompt(companyId, sessionId!);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    refetchInterval: (query) =>
+      timedOut || query.state.data?.authorizationUrl ? false : ADAPTER_LOGIN_POLL_INTERVAL_MS,
+  });
+
+  useEffect(() => {
+    const url = promptQuery.data?.authorizationUrl ?? null;
+    if (url) setAuthorizationUrl(url);
+    // The advisory rides the same guarded prompt read as the URL. Latch it, so a
+    // later poll does not clear the disclaimer.
+    if (promptQuery.data?.transportAdvisory) setTransportInsecure(true);
+  }, [promptQuery.data]);
+
+  const submitCode = useMutation({
+    mutationFn: (code: string) =>
+      agentsApi.submitClaudeSetupTokenBrowserCode(companyId, sessionId!, code),
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not submit the browser code.");
+    },
+  });
+
+  const completeLogin = useMutation({
+    mutationFn: () => agentsApi.completeClaudeSetupTokenLogin(companyId, sessionId!),
+    onSuccess: (result) => {
+      // The server reached the `stored` state. Hold the non-secret claim and
+      // report it to the parent. The response carries no token.
+      setStoredSessionId(result.storedSessionId);
+      onStored?.(result.storedSessionId);
+    },
+    onError: () => {
+      setCompletionFailed(true);
+    },
+  });
+
+  const status = statusQuery.data?.status ?? startLogin.data?.status ?? null;
+  // The server deadline for the active session (ISO string). The status route
+  // and the start response both carry it. The panel drives the client cutoff
+  // from this value, so the client and the server share one deadline.
+  const expiresAt = statusQuery.data?.expiresAt ?? startLogin.data?.expiresAt ?? null;
+
+  // Complete the login once the server authenticates the session. The completion
+  // read returns the non-secret stored-session claim. Fire it once per session.
+  const completeLoginRef = useRef(completeLogin.mutate);
+  completeLoginRef.current = completeLogin.mutate;
+  useEffect(() => {
+    if (status === "authenticated" && !completionStartedRef.current) {
+      completionStartedRef.current = true;
+      completeLoginRef.current();
+    }
+  }, [status]);
+
+  const isStored = storedSessionId !== null;
+  const isFailure =
+    completionFailed ||
+    statusGone ||
+    Boolean(status && CLAUDE_LOGIN_FAILURE_STATUSES.has(status));
+  const isCompleting = status === "authenticated" && !isStored && !completionFailed;
+  const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
+  const startDisabled = startLogin.isPending || isActive;
+
+  // Hold the active session id for the unmount cleanup. The panel updates it on
+  // every render. When the panel unmounts, or the parent removes it as the login
+  // closes, with an active, non-terminal session, the cleanup releases that
+  // session on the server. The ref is null once the session leaves the active
+  // state, so the cleanup never cancels a session the server already removed.
+  const activeSessionRef = useRef<string | null>(null);
+  activeSessionRef.current = isActive ? sessionId : null;
+
+  useEffect(() => {
+    return () => {
+      const id = activeSessionRef.current;
+      if (id) releaseServerSession(id);
+    };
+  }, [releaseServerSession]);
+
+  // Cap the active login at the server deadline. The timer arms when the login
+  // becomes active and clears when the login leaves the active state (a terminal
+  // status, a stored success, or a new login). It re-arms when `expiresAt`
+  // arrives or changes. When it fires, the panel enters the timed-out state. The
+  // `isActive` guard already excludes `timedOut`, so the timer does not re-arm
+  // after it fires.
+  //
+  // The delay comes from the server `expiresAt`, so the client cutoff matches
+  // the server session budget instead of a fixed short window. While `expiresAt`
+  // has not arrived for the live session, the panel uses a generous failsafe, so
+  // a stuck poll still stops.
+  useEffect(() => {
+    if (!isActive) return;
+    const deadlineMs = expiresAt !== null ? new Date(expiresAt).getTime() : Number.NaN;
+    const remainingMs = Number.isFinite(deadlineMs)
+      ? Math.max(0, deadlineMs - Date.now())
+      : CLAUDE_LOGIN_FAILSAFE_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      // Release the server session first, then show the timed-out state. The
+      // cancel frees the server reservation now, so an immediate retry by the
+      // same owner starts a new session instead of a lockout on the per-owner
+      // cap. The panel keeps the timed-out state, so the user sees why the login
+      // stopped.
+      if (sessionId) releaseServerSession(sessionId);
+      setTimedOut(true);
+    }, remainingMs);
+    return () => clearTimeout(timer);
+  }, [isActive, expiresAt, sessionId, releaseServerSession]);
+
+  const trimmedCode = browserCode.trim();
+  const canSubmit =
+    isActive &&
+    Boolean(authorizationUrl) &&
+    !isCompleting &&
+    isValidBrowserCode(trimmedCode) &&
+    !submitCode.isPending;
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    submitCode.mutate(trimmedCode);
+    // Clear the browser code right after submit, so the secret never lingers in
+    // the input.
+    setBrowserCode("");
+  };
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              disabled={cancelLogin.isPending}
+              onClick={() => cancelLogin.mutate()}
+            >
+              Cancel
+            </Button>
+          )}
+          {/* Apply the existing stored login with no new login round trip. The
+              affordance shows only when the status route reports a stored value
+              and no active or completed login runs in this panel. */}
+          {onApplyStored && storedToken && !isActive && !isStored && !appliedStored && (
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => {
+                onApplyStored();
+                setAppliedStored(true);
+              }}
+            >
+              Use saved login
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={startDisabled}
+            onClick={() => startLogin.mutate()}
+          >
+            {storedToken && !isActive && !isStored ? "Log in to replace" : "Log in"}
+          </Button>
+        </div>
+      </div>
+
+      {/* When the owner already has a stored Claude login, the panel applies it
+          first and does not force a fresh login. Use saved login binds the stored
+          token; a replacement login rotates it under the captured version. */}
+      {storedToken && !isActive && !isStored && !appliedStored && (
+        <div className="text-(length:--text-micro) text-muted-foreground">
+          You have a saved Claude login. Use it to bind this agent, or log in again to replace the
+          stored token.
+        </div>
+      )}
+
+      {appliedStored && (
+        <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+          <Check className="size-3 shrink-0" />
+          <span>The saved Claude login is bound to this agent now.</span>
+        </div>
+      )}
+
+      {startError && (
+        <div role="alert" className="text-(length:--text-micro) text-destructive">
+          {startError}
+        </div>
+      )}
+
+      {/* One live region announces the loading, prompt, completing, and terminal
+          states, so a screen reader reports each transition. */}
+      <div role="status" aria-live="polite" className="space-y-2 empty:hidden">
+        {isActive && !authorizationUrl && !isCompleting && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Preparing the login…</span>
+          </div>
+        )}
+
+        {isActive && authorizationUrl && !isCompleting && (
+          <div className="space-y-2">
+            {transportInsecure && (
+              <div
+                className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-(length:--text-micro) text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+              >
+                <TriangleAlert className="size-3 shrink-0 mt-0.5" />
+                <span>
+                  This connection is not encrypted. The login code travels in clear text on this
+                  network. Continue only on a network you trust.
+                </span>
+              </div>
+            )}
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              Open the authorization page, then enter the browser code it shows.
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                  Authorization URL
+                </div>
+                <span className="font-mono text-xs text-foreground break-all">{authorizationUrl}</span>
+              </div>
+              <div className="flex items-center">
+                <AdapterLoginCopyButton value={authorizationUrl} label="Copy URL" />
+                <Button
+                  asChild
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Open the authorization page"
+                  title="Open the authorization page"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <a href={authorizationUrl} target="_blank" rel="noreferrer noopener">
+                    <ExternalLink className="size-3" />
+                  </a>
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Browser code
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  aria-label="Browser code"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={browserCode}
+                  onChange={(event) => setBrowserCode(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleSubmit();
+                    }
+                  }}
+                  className="flex-1 min-w-0 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2.5 text-xs"
+                  disabled={!canSubmit}
+                  onClick={handleSubmit}
+                >
+                  Submit
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isCompleting && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Completing the login…</span>
+          </div>
+        )}
+
+        {isStored && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+            <Check className="size-3 shrink-0" />
+            <span>Authenticated. The environment has credentials now.</span>
+          </div>
+        )}
+
+        {isFailure && (
+          <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+            <TriangleAlert className="size-3 shrink-0" />
+            <span>{CLAUDE_LOGIN_FAILED_MESSAGE}</span>
+          </div>
+        )}
+
+        {timedOut && !isFailure && !isStored && (
+          <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+            <TriangleAlert className="size-3 shrink-0" />
+            <span>{CLAUDE_LOGIN_TIMED_OUT_MESSAGE}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

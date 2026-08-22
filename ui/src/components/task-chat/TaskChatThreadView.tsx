@@ -1,12 +1,17 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import type { TaskChatInteractionItem, TaskChatItem } from "./task-chat-model";
+import type {
+  TaskChatInteractionItem,
+  TaskChatItem,
+  TaskChatMessageItem,
+} from "./task-chat-model";
 import { TaskChatTurn } from "./TaskChatTurn";
 import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskMessageScroller } from "./TaskMessageScroller";
 
 interface TaskChatThreadViewProps {
@@ -30,6 +35,18 @@ interface TaskChatThreadViewProps {
    * nothing without it.
    */
   renderBrief?: () => ReactNode;
+  /**
+   * Renders the copy/👍/👎 action cluster prepended to an agent bubble's footer
+   * line (PAP-413). The live thread binds it to the feedback-vote API; harness
+   * fixtures omit it and the bubbles render actionless.
+   */
+  renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
+  /** Renders an interrupt action beside a queued human message. */
+  renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode;
+  /** Content appended inside the transcript scroller after the settled thread. */
+  tail?: ReactNode;
+  /** Optional streaming-aware key when `tail` changes without changing `items`. */
+  contentKey?: unknown;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
@@ -40,23 +57,35 @@ function renderItem(
   onApprovalDecision?: (statusItemId: string, optionId: string) => void,
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode,
   renderBrief?: () => ReactNode,
+  renderMessageActions?: (item: TaskChatMessageItem) => ReactNode,
+  renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode,
 ) {
   switch (item.kind) {
-    case "message":
+    case "message": {
+      // Compute the actions once: the bubble renders them for a runless reply
+      // (footer = actions + timestamp), while an attached turn hands them to
+      // TaskChatTurn's `leading` slot so they ride the summary line and stay
+      // put when the tool history expands (PAP-413). The two paths are mutually
+      // exclusive at runtime, so only one host ever mounts the node.
+      const actions = renderMessageActions?.(item);
       return (
         <TaskChatBubble
           item={item}
+          actions={actions}
+          queuedAction={renderQueuedAction?.(item)}
           attachedTurn={
             item.attachedTurn ? (
               <TaskChatTurn
                 item={item.attachedTurn}
                 timestampPrefix={item.timestamp}
+                leading={actions}
                 renderChild={(child) => renderItem(child, onApprovalDecision)}
               />
             ) : undefined
           }
         />
       );
+    }
     case "marker":
       return <TaskChatMarker item={item} />;
     case "thinking":
@@ -76,6 +105,8 @@ function renderItem(
       );
     case "usage":
       return <TaskChatUsageReadout item={item} />;
+    case "activity_phase":
+      return <TaskChatActivityPhase item={item} renderChild={(child) => renderItem(child, onApprovalDecision)} />;
     case "interaction":
       return renderInteraction ? renderInteraction(item) : null;
     case "brief":
@@ -107,25 +138,43 @@ export function TaskChatThreadView({
   onApprovalDecision,
   renderInteraction,
   renderBrief,
+  renderMessageActions,
+  renderQueuedAction,
+  tail,
+  contentKey,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
   const body = (
-    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4", className)}>
+    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-5 px-4 py-4", className)}>
       {header ? (
         <div className="flex flex-col gap-6 pb-2" data-testid="task-chat-thread-header">
           {header}
         </div>
       ) : null}
       {items.map((item) => (
-        <div key={item.id}>{renderItem(item, onApprovalDecision, renderInteraction, renderBrief)}</div>
+        <div key={item.id}>
+          {renderItem(
+            item,
+            onApprovalDecision,
+            renderInteraction,
+            renderBrief,
+            renderMessageActions,
+            renderQueuedAction,
+          )}
+        </div>
       ))}
+      {tail}
     </div>
   );
 
   if (!scroll) return body;
 
-  return <TaskMessageScroller contentKey={taskChatContentKey(items)}>{body}</TaskMessageScroller>;
+  return (
+    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)}>
+      {body}
+    </TaskMessageScroller>
+  );
 }
 
 // Cheap content signature so streaming growth (text lengthening without the
@@ -146,6 +195,9 @@ function signatureOf(it: TaskChatItem): number {
         (it.liveStatus.selfTalk?.length ?? 0)
       : 0;
     return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
+  }
+  if (it.kind === "activity_phase") {
+    return it.items.reduce((n, child) => n + signatureOf(child), it.summary.length + (it.interstitial?.text.length ?? 0));
   }
   return 1;
 }

@@ -4,8 +4,14 @@ import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  getSandboxCallbackBridgeServerSource,
+  getSandboxDuplexGatewayCodecSource,
+} from "./sandbox-callback-bridge.js";
 
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
@@ -15,6 +21,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  postedIssueCommentLogMarker,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -23,15 +30,64 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
-import { getActiveStepContext } from "./acpx-engine/startup-timing.js";
+import {
+  createRuntimeSpanRunner,
+  getActiveStepContext,
+  type StartupSpan,
+  type StartupTraceContext,
+  type StartupTracer,
+} from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 
 const execFileAsync = promisify(execFile);
 
+type RecordedSpan = { name: string; parentName: string | null; ended: boolean };
+
+/**
+ * A structural tracer that records each opened span's name, parent, and end
+ * state, so a test can assert the trace shape a runtime span runner produces.
+ * Mirrors the recorder used for the `pack`/`stage.sync` nesting tests.
+ */
+function createRecordingTraceContext(): {
+  traceContext: StartupTraceContext;
+  spans: RecordedSpan[];
+} {
+  const spans: RecordedSpan[] = [];
+  const byHandle = new WeakMap<StartupSpan, RecordedSpan>();
+  const tracer: StartupTracer = {
+    startSpan(name, _options, context) {
+      const parent = context as RecordedSpan | undefined;
+      const record: RecordedSpan = { name, parentName: parent?.name ?? null, ended: false };
+      spans.push(record);
+      const handle: StartupSpan = {
+        setAttribute() {},
+        setStatus() {},
+        end() {
+          record.ended = true;
+        },
+      };
+      byHandle.set(handle, record);
+      return handle;
+    },
+  };
+  const traceContext: StartupTraceContext = {
+    tracer,
+    contextWithSpan: (span) => byHandle.get(span),
+  };
+  return { traceContext, spans };
+}
+
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
+
+  it("records successful issue comment ids for attribution recovery", () => {
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, '{"id":"comment-1"}'))
+      .toBe("comment id: comment-1\n");
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 401, '{"id":"comment-1"}'))
+      .toBeNull();
+  });
 
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -106,7 +162,22 @@ describe("sandbox adapter execution targets", () => {
     throw new Error(message);
   }
 
-  async function runProxyWithInput(command: string, input: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  type ProxyRunResult = {
+    stdout: string;
+    stderr: string;
+    code: number | null;
+    /**
+     * How long the exchange took. The bridge and the proxy both run on 5s
+     * budgets, which is generous locally and tight on a CI runner sharing a
+     * box with 19 other lanes. A run that returns fast and empty is a
+     * different fault from one that nearly hit the ceiling, and the numbers
+     * are the only way to tell them apart after the fact.
+     */
+    elapsedMs: number;
+  };
+
+  async function runProxyWithInput(command: string, input: string): Promise<ProxyRunResult> {
+    const startedAt = performance.now();
     const child = spawn(command, [], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -133,7 +204,65 @@ describe("sandbox adapter execution targets", () => {
         resolve(exitCode);
       });
     });
-    return { stdout, stderr, code };
+    return { stdout, stderr, code, elapsedMs: Math.round(performance.now() - startedAt) };
+  }
+
+  /**
+   * A failure report for a proxy exchange, attached to the assertions below.
+   *
+   * `execution-target-sandbox` has failed twice in CI and never once in a few
+   * hundred local runs, so the next occurrence has to carry its own evidence -
+   * a second unreproducible failure teaches nothing. The observed signature was
+   * an empty stdout with exit code 0, meaning the child exited cleanly having
+   * produced nothing, which is what a lost stdin frame looks like from here.
+   *
+   * The runtime tree is the part that discriminates. The stdin queue files are
+   * written by the host and deleted by the wrapper once parsed, so what remains
+   * says whether the frame was never written, written and never consumed, or
+   * consumed normally and the reply lost on the way back.
+   */
+  async function describeProxyRun(result: ProxyRunResult, runtimeRootDir: string): Promise<string> {
+    const lines = [
+      `proxy exit=${result.code} elapsedMs=${result.elapsedMs}`,
+      `proxy stdout=${JSON.stringify(result.stdout)}`,
+      `proxy stderr=${JSON.stringify(result.stderr)}`,
+    ];
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      // Deep enough to reach the queue frames, which are the point. They sit
+      // at process-sessions/<id>/stdin/<seq>.json — depth 4 from the runtime
+      // root — so a cap of 3 listed the `stdin/` directory and stopped, making
+      // "the queue is empty" and "the walk never looked" print identically.
+      if (depth > 5) return;
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        lines.push(`${"  ".repeat(depth)}<unreadable ${dir}: ${(error as Error).message}>`);
+        return;
+      }
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          lines.push(`${"  ".repeat(depth)}${entry.name}/`);
+          await walk(full, depth + 1);
+          continue;
+        }
+        // Small files are the queue and event frames, and their contents are
+        // the point. Anything larger is a child script or a log; the size is
+        // enough to say it exists.
+        let detail = "";
+        try {
+          const raw = await readFile(full, "utf8");
+          detail = raw.length <= 400 ? ` ${JSON.stringify(raw)}` : ` <${raw.length}B>`;
+        } catch (error) {
+          detail = ` <unreadable: ${(error as Error).message}>`;
+        }
+        lines.push(`${"  ".repeat(depth)}${entry.name}${detail}`);
+      }
+    };
+    lines.push(`runtime tree under ${runtimeRootDir}:`);
+    await walk(runtimeRootDir, 1);
+    return lines.join("\n");
   }
 
   function combinedStream(
@@ -193,6 +322,48 @@ describe("sandbox adapter execution targets", () => {
       leaseId: "lease-1",
       remoteCwd: "/workspace",
     });
+  });
+
+  it("preserves stdin when wrapping sandbox adapter commands for run-log streaming", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-log-stdin-"));
+    cleanupDirs.push(rootDir);
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      streamRunLogs: true,
+      runner: createLocalSandboxRunner(),
+    };
+    const logsDir = path.posix.join(rootDir, ".paperclip-runtime", "bridge", "logs");
+    const runLogTail = createSandboxRunLogTailFactory({
+      runner: target.runner!,
+      remoteCwd: rootDir,
+      logsDir,
+      shellCommand: "bash",
+    }).create();
+    const events: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+
+    const result = await runAdapterExecutionTargetProcess(
+      "run-log-stdin",
+      target,
+      process.execPath,
+      ["-e", "process.stdin.setEncoding('utf8'); let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => process.stdout.write('stdin=' + s));"],
+      {
+        cwd: rootDir,
+        env: {},
+        stdin: "hello-through-wrapper",
+        timeoutSec: 5,
+        graceSec: 1,
+        runLogTail: { create: () => runLogTail },
+        onLog: async (stream, chunk) => { events.push({ stream, chunk }); },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("stdin=hello-through-wrapper");
+    expect(combinedStream(events, "stdout")).toContain("stdin=hello-through-wrapper");
   });
 
   it("creates the process session directories only in the launch exec, not in upfront makeDir execs", async () => {
@@ -481,6 +652,131 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("wraps a stdin write in a sandbox.agentSession.sendInput span", async () => {
+    // With a span runner injected, the socket handler wraps one outbound ACP
+    // message to the agent in a `sandbox.agentSession.sendInput` span. This test
+    // connects a socket, sends one stdin line, and proves the handler opens that
+    // wrapper span around the write.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-sendinput-span-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const spanNames: string[] = [];
+    let resolveSendInput: () => void = () => {};
+    const sendInputObserved = new Promise<void>((resolve) => {
+      resolveSendInput = resolve;
+    });
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-sendinput-span",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      // Record each wrapper span name, then run the wrapped work.
+      runtimeSpan: async (name, work) => {
+        spanNames.push(name);
+        if (name === "sandbox.agentSession.sendInput") resolveSendInput();
+        return work();
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+
+      // The first token-bearing message authenticates and writes the stdin file.
+      peerSocket.write(
+        `${JSON.stringify({ token, type: "stdin", data: Buffer.from("hi").toString("base64") })}\n`,
+      );
+
+      await sendInputObserved;
+      expect(spanNames).toContain("sandbox.agentSession.sendInput");
+    } finally {
+      peer?.destroy();
+      await bridge?.stop();
+    }
+  });
+
+  it("wraps each poll tick in a sandbox.agentSession.pollOutput span", async () => {
+    // With a span runner injected, the poll timer wraps each 100 ms poll tick in
+    // a `sandbox.agentSession.pollOutput` span. This test lets the first poll tick
+    // fire and proves the timer opens that wrapper span.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-span-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const spanNames: string[] = [];
+    let resolvePoll: () => void = () => {};
+    const pollObserved = new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-span",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      // Record each wrapper span name, then run the wrapped work.
+      runtimeSpan: async (name, work) => {
+        spanNames.push(name);
+        if (name === "sandbox.agentSession.pollOutput") resolvePoll();
+        return work();
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      await pollObserved;
+      expect(spanNames).toContain("sandbox.agentSession.pollOutput");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
     cleanupDirs.push(rootDir);
@@ -520,9 +816,10 @@ describe("sandbox adapter execution targets", () => {
 
     try {
       const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe("out:hello\n");
-      expect(result.stderr).toBe("err:hello\n");
+      const report = await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx"));
+      expect(result.code, report).toBe(0);
+      expect(result.stdout, report).toBe("out:hello\n");
+      expect(result.stderr, report).toBe("err:hello\n");
     } finally {
       await bridge?.stop();
     }
@@ -774,6 +1071,530 @@ describe("sandbox adapter execution targets", () => {
       }
       await bridge?.stop();
     }
+  });
+
+  describe("streamed output (streamOutputViaSession)", () => {
+    it("bridges bidirectional sessions when the wrapper streams output to stdout", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-echo-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "  process.stderr.write('err:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-echo",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        const report = await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx"));
+        expect(result.code, report).toBe(0);
+        expect(result.stdout, report).toBe("out:hello\n");
+        expect(result.stderr, report).toBe("err:hello\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("wraps the long-lived streamed launch in a sandbox.agentProcess span", async () => {
+      // The streamed launch is fire-and-forget and lives for the whole run, so
+      // its span must open under the live run root (not the ephemeral bring-up
+      // step) and stay open around the launch. Record the opened span names and
+      // prove `sandbox.agentProcess` is among them, and that a normal exchange
+      // still works through the wrap.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-span-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const spanNames: string[] = [];
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-span",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        // Record each wrapper span name, then run the wrapped work.
+        runtimeSpan: async (name, work) => {
+          spanNames.push(name);
+          return work();
+        },
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        // The launch span opens synchronously as the bridge starts, before any
+        // frame flows, so it is observable as soon as the handle resolves.
+        expect(spanNames).toContain("sandbox.agentProcess");
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        const report = await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx"));
+        expect(result.code, report).toBe(0);
+        expect(result.stdout, report).toBe("out:hello\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("parents the sandbox.agentProcess span to the live run root, not the bring-up step", async () => {
+      // The launch runs for the whole run, so its span must parent to the live
+      // run root (here a stand-in `task.run`) rather than the ephemeral
+      // `bridge.process-session` bring-up step — otherwise it dangles past its
+      // parent and overlaps `agent.turn`. Build the real run-rooted runner from a
+      // recording trace context and assert the recorded parent.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-parent-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "noop-acp-child.mjs");
+      await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const { traceContext, spans } = createRecordingTraceContext();
+      // The run root stands in for `task.run` — the parent the run-rooted runner
+      // resolves at launch time, since no turn has started yet.
+      const runRoot = traceContext.tracer.startSpan("task.run", undefined, undefined);
+      const runRootContext = traceContext.contextWithSpan(runRoot);
+      const runtimeSpan = createRuntimeSpanRunner(traceContext, () => runRootContext);
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-parent",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        runtimeSpan,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const agentProcess = spans.find((span) => span.name === "sandbox.agentProcess");
+        expect(agentProcess).toBeDefined();
+        expect(agentProcess!.parentName).toBe("task.run");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("ends the sandbox.agentProcess span at stop() even when the process lingers", async () => {
+      // The span must not outlive the run root. When the remote process lingers
+      // past bridge teardown (`execute` has no cancel), the span still has to end
+      // at `stop()`, which the caller awaits before it ends `task.run`. Use a
+      // child that ignores stdin and never exits on its own, so the launch
+      // command stays pending across `stop()`, and prove the span ends anyway.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-linger-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "linger-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', () => {});",
+          // Stay alive well past the assertions, then self-exit so the test
+          // leaves no lingering process.
+          "setTimeout(() => process.exit(0), 3000);",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      // Track when each wrapper span's work settles (i.e. when its span ends).
+      const spanRecords: Array<{ name: string; ended: boolean }> = [];
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-linger",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 10,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        runtimeSpan: (name, work) => {
+          const record = { name, ended: false };
+          spanRecords.push(record);
+          const promise = work();
+          void promise.then(
+            () => {
+              record.ended = true;
+            },
+            () => {
+              record.ended = true;
+            },
+          );
+          return promise;
+        },
+      });
+      expect(bridge).not.toBeNull();
+
+      const record = spanRecords.find((span) => span.name === "sandbox.agentProcess");
+      expect(record).toBeDefined();
+      // The launch command is still running, so the span is still open.
+      expect(record!.ended).toBe(false);
+
+      // Teardown ends the span promptly, without waiting for the lingering command.
+      await bridge!.stop();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(record!.ended).toBe(true);
+    });
+
+    it("buffers streamed output until the local proxy connects", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-buffer-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "fast-stream-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdout.write('early-out\\n');",
+          "process.stderr.write('early-err\\n');",
+          "setTimeout(() => process.exit(0), 20);",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-buffer",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const result = await runProxyWithInput(bridge!.agentCommand, "");
+        expect(result.code).toBe(0);
+        // The seq guard delivers the early output exactly once even though the
+        // live stream and the terminal result both carry it.
+        expect(result.stdout).toBe("early-out\n");
+        expect(result.stderr).toBe("early-err\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("delivers full streamed output when the sandbox child exits immediately", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-fast-exit-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "instant-stream-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdout.write('final-out\\n');",
+          "process.stderr.write('final-err\\n');",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-fast-exit",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const result = await runProxyWithInput(bridge!.agentCommand, "");
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe("final-out\n");
+        expect(result.stderr).toBe("final-err\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("streams live output before the child exits and never writes output event files", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-live-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "live-stream-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.setEncoding('utf8');",
+          "process.stdin.on('data', (chunk) => {",
+          "  if (chunk.includes('ping')) {",
+          "    process.stdout.write('delta:ping\\n');",
+          "    process.stderr.write('trace:ping\\n');",
+          "  }",
+          "  if (chunk.includes('finish')) process.exit(0);",
+          "});",
+          "process.stdin.resume();",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-live",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      const child = spawn(bridge!.agentCommand, [], { stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let exited = false;
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const exitPromise = new Promise<number | null>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error("Timed out waiting for streamed process session proxy."));
+        }, 5000);
+        child.on("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.on("exit", (exitCode) => {
+          exited = true;
+          clearTimeout(timeout);
+          resolve(exitCode);
+        });
+      });
+
+      try {
+        child.stdin.write("ping\n");
+        await waitForCondition(
+          () => stdout.includes("delta:ping\n") && stderr.includes("trace:ping\n"),
+          "Timed out waiting for live streamed process session output.",
+          3000,
+        );
+        expect(exited).toBe(false);
+
+        child.stdin.end("finish\n");
+        await expect(exitPromise).resolves.toBe(0);
+
+        // The streamed path uses the stdout wrapper, not the output-file poll, so
+        // no `events` directory is ever created under the session runtime tree.
+        const hasEventsDir = await readdir(
+          path.posix.join(rootDir, ".paperclip-runtime", "acpx", "process-sessions"),
+          { withFileTypes: true, recursive: true },
+        )
+          .then((entries) => entries.some((entry) => entry.isDirectory() && entry.name === "events"))
+          .catch(() => false);
+        expect(hasEventsDir).toBe(false);
+      } finally {
+        if (!exited) {
+          child.kill("SIGKILL");
+          await exitPromise.catch(() => undefined);
+        }
+        await bridge?.stop();
+      }
+    });
+
+    it("keeps the agent command on the persistent session and forces bridge control execs off it", async () => {
+      // Regression guard for the streamed-mode startup deadlock. The persistent
+      // session is one serialized shell. In streamed mode the agent runs as a
+      // long-lived foreground session command that holds the session for the
+      // whole run. The bridge control-plane execs (script sync, stdin delivery,
+      // teardown) must run concurrently with the agent, so each must force
+      // itself off the session. On the session they queue behind the agent
+      // command that never returns, and the first handshake write never drains.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-isolation-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const delegate = createLocalSandboxRunner();
+      const execs: Array<{ useSession?: boolean; bypassSession?: boolean; script: string }> = [];
+      const runner = {
+        execute: vi.fn(
+          async (
+            input: Parameters<typeof delegate.execute>[0] & {
+              useSession?: boolean;
+              bypassSession?: boolean;
+            },
+          ) => {
+            execs.push({
+              useSession: input.useSession,
+              bypassSession: input.bypassSession,
+              script: input.args?.[1] ?? "",
+            });
+            return delegate.execute(input);
+          },
+        ),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-isolation",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        // Round-trip one input so a stdin-delivery control exec runs and gets
+        // recorded before the assertions below.
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        expect(
+          result.stdout,
+          await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx")),
+        ).toBe("out:hello\n");
+
+        // Exactly one exec runs on the persistent session: the long-lived agent
+        // command. It streams its output through the session log stream, so it
+        // must not also bypass the session.
+        const sessionExecs = execs.filter((exec) => exec.useSession === true);
+        expect(sessionExecs).toHaveLength(1);
+        expect(sessionExecs[0]!.bypassSession).not.toBe(true);
+        expect(sessionExecs[0]!.script).toContain("node ");
+
+        // Every other exec is bridge control-plane plumbing. Each must force
+        // itself off the persistent session so it never queues behind the agent
+        // command that holds it.
+        const controlExecs = execs.filter((exec) => exec.useSession !== true);
+        expect(controlExecs.length).toBeGreaterThan(0);
+        for (const exec of controlExecs) {
+          expect(exec.bypassSession).toBe(true);
+        }
+      } finally {
+        await bridge?.stop();
+      }
+    });
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
@@ -1715,4 +2536,742 @@ describe("sandbox adapter execution targets", () => {
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
   });
+
+  it("forwards the host indeterminate-outcome header so the sandbox server maps the 504 to a non-retryable 409", async () => {
+    // The host marks a possibly-committed mutation with a 504 and the
+    // `x-paperclip-bridge-outcome: indeterminate` header. The forward must keep
+    // that header, so the in-sandbox server maps the 504 to a non-retryable 409.
+    // If the forward drops the header, the client sees a retryable 504 and a
+    // retry repeats a mutation that already committed.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-outcome-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const responseBody = JSON.stringify({ error: "Mutation outcome is indeterminate.", outcome: "indeterminate", retryable: false });
+    const apiServer = createServer((_req, res) => {
+      res.writeHead(504, {
+        "content-type": "application/json",
+        "x-paperclip-bridge-outcome": "indeterminate",
+      });
+      res.end(responseBody);
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge outcome test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-outcome",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/issues/issue-1/comments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ body: "Status update." }),
+      });
+
+      // The sandbox server maps the indeterminate 504 to a non-retryable 409.
+      expect(response.status).toBe(409);
+      // The outcome header and body still reach the client, so a caller that
+      // reads them still sees the indeterminate result.
+      expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+      await expect(response.json()).resolves.toEqual({
+        error: "Mutation outcome is indeterminate.",
+        outcome: "indeterminate",
+        retryable: false,
+      });
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("forwards bridge traffic to the local listen origin even when public API URLs are configured", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-local-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null }> = [];
+    const apiServer = createServer((req, res) => {
+      requests.push({
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization ?? null,
+        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge local-origin test API server to listen on a TCP port.");
+    }
+
+    // Simulate a deployment where a public base URL is configured: server boot
+    // exports the public origin via PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL
+    // and the local listen host/port via PAPERCLIP_LISTEN_HOST / PAPERCLIP_LISTEN_PORT.
+    // The wildcard listen host must map to the loopback address of the same
+    // family (0.0.0.0 -> 127.0.0.1), where the test API server is bound.
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "0.0.0.0");
+    vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(address.port));
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-local",
+      target,
+      runtimeRootDir,
+      adapterKey: "claude",
+      hostApiToken: "real-run-jwt",
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          accept: "application/json",
+        },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ ok: true });
+      expect(requests).toEqual([{
+        method: "GET",
+        url: "/api/agents/me",
+        auth: "Bearer real-run-jwt",
+        runId: "run-bridge-local",
+      }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("lets an explicit hostApiUrl input override the bridge forward target", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-override-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: string[] = [];
+    const apiServer = createServer((req, res) => {
+      requests.push(req.url ?? "/");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge override test API server to listen on a TCP port.");
+    }
+
+    // Neither the public URL envs nor the listen host/port should matter when
+    // the caller passes an explicit hostApiUrl.
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "203.0.113.1");
+    vi.stubEnv("PAPERCLIP_LISTEN_PORT", "9");
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-override",
+      target,
+      runtimeRootDir,
+      adapterKey: "claude",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          accept: "application/json",
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(requests).toEqual(["/api/agents/me"]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+});
+
+// One decoded stdout frame from the generated duplex gateway. The gateway writes
+// newline-delimited JSON frames to stdout, so the test parses each line.
+interface DecodedGatewayFrame {
+  version?: number;
+  type?: string;
+  id?: string;
+  method?: string;
+  path?: string;
+  query?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  address?: string;
+  __unparsed?: string;
+}
+
+// One decode result from the embedded codec. The shape mirrors the host codec:
+// a valid frame or a protocol error with a code.
+interface EmbeddedDecodeResult {
+  ok: boolean;
+  frame?: unknown;
+  error?: { code: string; message: string };
+}
+
+// The names the embedded codec source declares. A test wraps the source and
+// reads these names back.
+interface EmbeddedCodec {
+  encodeDuplexFrame: (frame: unknown) => string;
+  decodeDuplexLine: (line: string | Buffer) => EmbeddedDecodeResult;
+  DuplexFrameDecoder: new (options?: { maxFrameBytes?: number }) => {
+    push: (chunk: Buffer) => EmbeddedDecodeResult[];
+  };
+  DUPLEX_FRAME_VERSION: number;
+  DEFAULT_MAX_DUPLEX_FRAME_BYTES: number;
+}
+
+type ExpectedVectorResult = { frame: unknown } | { error: string };
+
+interface DuplexFrameVector {
+  name: string;
+  category: string;
+  bytes: string;
+  splitByteOffsets?: number[];
+  maxFrameBytes?: number;
+  roundTrip?: boolean;
+  expected: ExpectedVectorResult[];
+}
+
+interface DuplexFrameFixture {
+  frameVersion: number;
+  defaultMaxFrameBytes: number;
+  vectors: DuplexFrameVector[];
+}
+
+describe("sandbox duplex gateway", () => {
+  const duplexCleanupDirs: string[] = [];
+  const duplexChildren: Array<ReturnType<typeof spawn>> = [];
+
+  afterEach(async () => {
+    while (duplexChildren.length > 0) {
+      const child = duplexChildren.pop();
+      if (!child) continue;
+      child.kill("SIGKILL");
+    }
+    while (duplexCleanupDirs.length > 0) {
+      const dir = duplexCleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  interface DuplexGatewayHandle {
+    baseUrl: string;
+    frames: DecodedGatewayFrame[];
+    stderr: () => string;
+    waitForFrame: (
+      predicate: (frame: DecodedGatewayFrame) => boolean,
+      timeoutMs?: number,
+    ) => Promise<DecodedGatewayFrame>;
+    sendFrame: (frame: Record<string, unknown>) => void;
+    sendRaw: (text: string) => void;
+    endStdin: () => void;
+    exited: Promise<number | null>;
+    stop: () => Promise<void>;
+  }
+
+  // Start the generated gateway `.mjs` in duplex mode as a real child process.
+  // The test writes response frames to the child stdin and reads request frames
+  // from the child stdout, so it stands in for the host side of the channel.
+  async function startDuplexGateway(env: Record<string, string>): Promise<DuplexGatewayHandle> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-gateway-"));
+    duplexCleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "gateway.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+
+    const child = spawn(process.execPath, [entrypoint], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
+        PAPERCLIP_BRIDGE_HOST: "127.0.0.1",
+        PAPERCLIP_BRIDGE_PORT: "0",
+        ...env,
+      },
+    });
+    duplexChildren.push(child);
+
+    const frames: DecodedGatewayFrame[] = [];
+    const waiters: Array<{
+      predicate: (frame: DecodedGatewayFrame) => boolean;
+      resolve: (frame: DecodedGatewayFrame) => void;
+    }> = [];
+    let stdoutBuffer = "";
+    let stderrText = "";
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdoutBuffer += chunk;
+      let newlineIndex = stdoutBuffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIndex);
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        if (line.length > 0) {
+          let frame: DecodedGatewayFrame;
+          try {
+            frame = JSON.parse(line) as DecodedGatewayFrame;
+          } catch {
+            frame = { __unparsed: line };
+          }
+          frames.push(frame);
+          for (const waiter of [...waiters]) {
+            if (waiter.predicate(frame)) {
+              waiters.splice(waiters.indexOf(waiter), 1);
+              waiter.resolve(frame);
+            }
+          }
+        }
+        newlineIndex = stdoutBuffer.indexOf("\n");
+      }
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderrText += chunk;
+    });
+
+    const exited = new Promise<number | null>((resolve) => {
+      child.on("exit", (code) => resolve(code));
+    });
+
+    const waitForFrame = (
+      predicate: (frame: DecodedGatewayFrame) => boolean,
+      timeoutMs = 5000,
+    ): Promise<DecodedGatewayFrame> => {
+      const existing = frames.find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return new Promise<DecodedGatewayFrame>((resolve, reject) => {
+        const waiter = {
+          predicate,
+          resolve: (frame: DecodedGatewayFrame) => {
+            clearTimeout(timer);
+            resolve(frame);
+          },
+        };
+        const timer = setTimeout(() => {
+          const index = waiters.indexOf(waiter);
+          if (index !== -1) waiters.splice(index, 1);
+          reject(new Error(`Timed out waiting for a gateway frame. stderr: ${stderrText}`));
+        }, timeoutMs);
+        waiters.push(waiter);
+      });
+    };
+
+    const handle: DuplexGatewayHandle = {
+      baseUrl: "",
+      frames,
+      stderr: () => stderrText,
+      waitForFrame,
+      sendFrame: (frame) => {
+        child.stdin?.write(`${JSON.stringify(frame)}\n`);
+      },
+      sendRaw: (text) => {
+        child.stdin?.write(text);
+      },
+      endStdin: () => {
+        child.stdin?.end();
+      },
+      exited,
+      stop: async () => {
+        child.kill("SIGKILL");
+        await exited.catch(() => null);
+      },
+    };
+
+    const ready = await waitForFrame((frame) => frame.type === "ready");
+    handle.baseUrl = String(ready.address);
+    return handle;
+  }
+
+  it("embedded gateway codec passes every vector in the shared fixture", async () => {
+    const codecFactory = new Function(
+      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES };`,
+    ) as unknown as () => EmbeddedCodec;
+    const codec = codecFactory();
+
+    const fixturePath = fileURLToPath(new URL("./duplex-frame-vectors.json", import.meta.url));
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as DuplexFrameFixture;
+
+    expect(fixture.frameVersion).toBe(codec.DUPLEX_FRAME_VERSION);
+    expect(fixture.defaultMaxFrameBytes).toBe(codec.DEFAULT_MAX_DUPLEX_FRAME_BYTES);
+    expect(fixture.vectors.length).toBeGreaterThanOrEqual(22);
+
+    const failures: string[] = [];
+    for (const vector of fixture.vectors) {
+      const decoder = new codec.DuplexFrameDecoder(
+        vector.maxFrameBytes ? { maxFrameBytes: vector.maxFrameBytes } : undefined,
+      );
+      const buffer = Buffer.from(vector.bytes, "utf8");
+      const offsets = vector.splitByteOffsets;
+      const bounds =
+        offsets && offsets.length > 0 ? [0, ...offsets, buffer.length] : [0, buffer.length];
+      const results: EmbeddedDecodeResult[] = [];
+      for (let index = 0; index < bounds.length - 1; index += 1) {
+        results.push(...decoder.push(buffer.subarray(bounds[index], bounds[index + 1])));
+      }
+
+      if (results.length !== vector.expected.length) {
+        failures.push(`${vector.name}: got ${results.length} results, want ${vector.expected.length}`);
+        continue;
+      }
+      vector.expected.forEach((want, index) => {
+        const got = results[index];
+        if ("frame" in want) {
+          if (!got.ok) {
+            failures.push(`${vector.name}[${index}]: expected a frame, got an error`);
+            return;
+          }
+          try {
+            expect(got.frame).toEqual(want.frame);
+          } catch {
+            failures.push(`${vector.name}[${index}]: frame does not match`);
+          }
+        } else {
+          if (got.ok) {
+            failures.push(`${vector.name}[${index}]: expected an error, got a frame`);
+            return;
+          }
+          if (got.error?.code !== want.error) {
+            failures.push(`${vector.name}[${index}]: error ${got.error?.code} != ${want.error}`);
+          }
+        }
+      });
+    }
+    expect(failures).toEqual([]);
+
+    // The encode side stays wire compatible too: one line, one newline, and the
+    // same frame after a decode round trip.
+    for (const vector of fixture.vectors.filter((entry) => entry.roundTrip)) {
+      const want = vector.expected[0];
+      if (!("frame" in want)) continue;
+      const encoded = codec.encodeDuplexFrame(want.frame);
+      expect(encoded.endsWith("\n")).toBe(true);
+      expect(encoded.slice(0, -1)).not.toContain("\n");
+      const decoded = codec.decodeDuplexLine(encoded.slice(0, -1));
+      expect(decoded.ok).toBe(true);
+      expect(decoded.frame).toEqual(want.frame);
+    }
+  });
+
+  it("returns the same HTTP response as the file gateway for a forwarded request", async () => {
+    const token = "duplex-token-forward";
+    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
+
+    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me?view=compact`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/json",
+        "if-none-match": '"cache-key"',
+        "x-bridge-debug": "drop-me",
+      },
+    });
+    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
+    expect(requestFrame.method).toBe("GET");
+    expect(requestFrame.path).toBe("/api/agents/me");
+    expect(requestFrame.query).toBe("?view=compact");
+    // Only allowlisted headers forward; the bearer and the debug header drop.
+    expect(requestFrame.headers).toEqual({
+      accept: "application/json",
+      "if-none-match": '"cache-key"',
+    });
+
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: requestFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json", etag: '"rev-1"', "content-length": "999" },
+      body: JSON.stringify({ ok: true }),
+      outcome: "completed",
+    });
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("etag")).toBe('"rev-1"');
+    await expect(response.json()).resolves.toEqual({ ok: true });
+
+    // An indeterminate outcome maps to a non-retryable 409, the same contract the
+    // file gateway applies through the outcome header.
+    const indeterminatePromise = fetch(`${gateway.baseUrl}/api/issues/issue-1`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "in_progress" }),
+    });
+    const patchFrame = await gateway.waitForFrame(
+      (frame) => frame.type === "request" && frame.id !== requestFrame.id,
+    );
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: patchFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ error: "outcome_indeterminate" }),
+      outcome: "indeterminate",
+    });
+    const indeterminate = await indeterminatePromise;
+    expect(indeterminate.status).toBe(409);
+
+    await gateway.stop();
+  }, 20000);
+
+  it("enforces the bearer check, JSON-only rule, body limit, and depth limit", async () => {
+    const token = "duplex-token-contract";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH: "1",
+      PAPERCLIP_BRIDGE_MAX_BODY_BYTES: "16",
+    });
+
+    const badAuth = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: "Bearer wrong-token" },
+    });
+    expect(badAuth.status).toBe(401);
+    await expect(badAuth.json()).resolves.toEqual({ error: "Invalid bridge token." });
+
+    const nonJson = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" },
+      body: "not json",
+    });
+    expect(nonJson.status).toBe(415);
+    await expect(nonJson.json()).resolves.toEqual({
+      error: "Bridge only accepts JSON request bodies.",
+    });
+
+    const oversizeBody = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ body: "x".repeat(64) }),
+    });
+    expect(oversizeBody.status).toBe(502);
+    await expect(oversizeBody.json()).resolves.toEqual({
+      error: "Bridge request body exceeded the configured size limit.",
+    });
+
+    // No request frame forwarded so far: the guards rejected before forwarding.
+    const framesBeforeDepth = gateway.frames.filter((frame) => frame.type === "request").length;
+    expect(framesBeforeDepth).toBe(0);
+
+    // One outstanding request fills the single depth slot; the host never
+    // responds, so the slot stays used.
+    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    void outstanding.catch(() => undefined);
+    await gateway.waitForFrame((frame) => frame.type === "request");
+
+    const queueFull = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(queueFull.status).toBe(503);
+    await expect(queueFull.json()).resolves.toEqual({ error: "Bridge request queue is full." });
+
+    // Only the outstanding request forwarded a frame; the queue-full request did
+    // not.
+    const framesAfterDepth = gateway.frames.filter((frame) => frame.type === "request").length;
+    expect(framesAfterDepth).toBe(1);
+
+    await gateway.stop();
+  }, 20000);
+
+  it("answers outstanding requests 409 and new requests 503 on stdin EOF, then exits", async () => {
+    const token = "duplex-token-eof";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
+    });
+
+    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await gateway.waitForFrame((frame) => frame.type === "request");
+    gateway.endStdin();
+
+    const lossResponse = await outstanding;
+    expect(lossResponse.status).toBe(409);
+    expect(lossResponse.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
+
+    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(afterLoss.status).toBe(503);
+    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
+
+    const exitCode = await gateway.exited;
+    expect(exitCode).toBe(0);
+  }, 20000);
+
+  it("applies the same loss behavior on a heartbeat timeout", async () => {
+    const token = "duplex-token-heartbeat";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "400",
+      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
+      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "30000",
+    });
+
+    // Never send an inbound frame: inbound silence trips the heartbeat timeout.
+    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await gateway.waitForFrame((frame) => frame.type === "request");
+
+    const lossResponse = await outstanding;
+    expect(lossResponse.status).toBe(409);
+    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
+
+    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(afterLoss.status).toBe(503);
+    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
+
+    const exitCode = await gateway.exited;
+    expect(exitCode).toBe(0);
+  }, 20000);
+
+  it("keeps diagnostics off stdout; stdout carries only frames", async () => {
+    const token = "duplex-token-stdout";
+    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
+
+    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
+
+    // Feed a malformed inbound line and an unknown response id. Both force a
+    // diagnostic path; none of it may reach stdout.
+    gateway.sendRaw("this is not a frame\n");
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: "unknown-id",
+      status: 200,
+      headers: {},
+      body: "",
+      outcome: "completed",
+    });
+    gateway.sendFrame({
+      version: 1,
+      type: "response",
+      id: requestFrame.id,
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      outcome: "completed",
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+
+    // Every stdout line parsed as a frame; none was diagnostic text.
+    expect(gateway.frames.some((frame) => frame.__unparsed !== undefined)).toBe(false);
+    expect(
+      gateway.frames.every(
+        (frame) => typeof frame.version === "number" && typeof frame.type === "string",
+      ),
+    ).toBe(true);
+    const allowedTypes = new Set(["ready", "heartbeat", "request"]);
+    expect(gateway.frames.every((frame) => allowedTypes.has(String(frame.type)))).toBe(true);
+
+    // The malformed inbound line produced a stderr diagnostic, not a stdout one.
+    expect(gateway.stderr()).toContain("dropped an inbound frame");
+
+    await gateway.stop();
+  }, 20000);
+
+  it("defaults the wait budget to 35 s and honors the environment key override", async () => {
+    // The generated source carries the 35 s default.
+    expect(getSandboxCallbackBridgeServerSource()).toContain("35000");
+
+    const token = "duplex-token-budget";
+    const gateway = await startDuplexGateway({
+      PAPERCLIP_BRIDGE_TOKEN: token,
+      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "150",
+      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "30000",
+    });
+
+    const started = Date.now();
+    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: "Timed out waiting for host bridge response.",
+    });
+    expect(Date.now() - started).toBeLessThan(4000);
+
+    await gateway.stop();
+  }, 20000);
 });

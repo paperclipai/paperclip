@@ -177,6 +177,7 @@ describe("SidebarAccountMenu", () => {
 
   it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
     const root = createRoot(container);
+    const onOpenChange = vi.fn();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -194,7 +195,11 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu deploymentMode="authenticated" open />
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            open
+            onOpenChange={onOpenChange}
+          />
         </QueryClientProvider>,
       );
     });
@@ -209,7 +214,31 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+    expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
     expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps sign-out hidden outside authenticated deployment mode", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="local_trusted" open />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("Sign out");
 
     await act(async () => {
       root.unmount();

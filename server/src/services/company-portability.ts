@@ -105,6 +105,31 @@ import type {
   ImportIssueAttachmentRow,
 } from "./import-write-types.js";
 
+const EXPORT_READ_CONCURRENCY = 8;
+const EXPORT_ISSUE_READ_CONCURRENCY = 2;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+  return results;
+}
+
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
   const ROLE_LABELS: Record<string, string> = {
@@ -161,8 +186,10 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 // The bundle shape this build reads and writes. Bundles began declaring
 // their schemaVersion in the .paperclip.yaml extension at 6; undeclared
-// bundles are read as 5, the last unstamped shape.
-const BUNDLE_SCHEMA_VERSION = 6;
+// bundles are read as 5, the last unstamped shape. 7 adds preserved task
+// timestamps and parent links; 5/6 bundles still import, with those fields
+// falling back to import-time defaults.
+const BUNDLE_SCHEMA_VERSION = 7;
 const UNSTAMPED_BUNDLE_SCHEMA_VERSION = 5;
 const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
 // Blob entries are content-addressed by sha256; the store itself is
@@ -203,7 +230,7 @@ function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) 
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
-  if (mode === "board_full") return "replace" as const;
+  if (mode === "board_full") return collisionStrategy;
   return collisionStrategy === "skip" ? "skip" as const : "rename" as const;
 }
 
@@ -743,6 +770,10 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
+  kimi_local: [
+    { path: ["timeoutSec"], value: 0 },
+    { path: ["graceSec"], value: 15 },
+  ],
   opencode_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
@@ -897,6 +928,38 @@ function readPortableIssueLabelNames(value: unknown): string[] {
     names.push(name);
   }
   return names;
+}
+
+/**
+ * Read a preserved issue timestamp from the extension, validated the same way
+ * comment createdAt is (Date.parse). Invalid values are ignored with a
+ * warning — never a hard failure — so a hand-edited bundle still imports.
+ */
+function readPortableIssueTimestamp(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+  fieldLabel: string,
+): string | null {
+  if (value === undefined || value === null) return null;
+  const raw = asString(value);
+  if (raw && !Number.isNaN(Date.parse(raw))) return raw;
+  warnings.push(`${sourceLabel} ${fieldLabel} was ignored because it is not a valid timestamp.`);
+  return null;
+}
+
+/** Render a stored timestamp as a portable ISO string, or omit it when unset/invalid. */
+function toPortableTimestamp(value: Date | string | null | undefined): string | undefined {
+  if (value == null) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+/** Convert a manifest timestamp (already validated at parse time) to a Date, or null. */
+function portableManifestDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function readPortableIssueBlockedBy(value: unknown): string[] {
@@ -3353,6 +3416,12 @@ function buildManifestFromPackageFiles(
       workProducts: normalizePortableIssueWorkProducts(extension.workProducts),
       monitor: normalizePortableIssueMonitor(extension.monitor),
       attachments: normalizePortableIssueAttachments(extension.attachments, warnings, `Task ${slug}`),
+      parentSlug: asString(extension.parent),
+      createdAt: readPortableIssueTimestamp(extension.createdAt, warnings, `Task ${slug}`, "createdAt"),
+      updatedAt: readPortableIssueTimestamp(extension.updatedAt, warnings, `Task ${slug}`, "updatedAt"),
+      startedAt: readPortableIssueTimestamp(extension.startedAt, warnings, `Task ${slug}`, "startedAt"),
+      completedAt: readPortableIssueTimestamp(extension.completedAt, warnings, `Task ${slug}`, "completedAt"),
+      cancelledAt: readPortableIssueTimestamp(extension.cancelledAt, warnings, `Task ${slug}`, "cancelledAt"),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
@@ -3361,7 +3430,10 @@ function buildManifestFromPackageFiles(
   }
 
   if (bundleSchemaVersion < BUNDLE_SCHEMA_VERSION && manifest.issues.length > 0) {
-    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates label, blocker, document, work product, monitor, attachment, and embedded image transfer; that task data imports only if the bundle carries it.`);
+    const predated = bundleSchemaVersion < 6
+      ? "label, blocker, document, work product, monitor, attachment, embedded image, task timestamp, and parent link transfer"
+      : "task timestamp and parent link transfer";
+    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates ${predated}; that task data imports only if the bundle carries it.`);
   }
 
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
@@ -3695,6 +3767,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
+    options: { preview?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3740,7 +3813,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     const builtInAgentRows = liveAgentRows.filter((agent) => readBuiltInAgentMarker(agent.metadata));
     const portableAgentRows = liveAgentRows.filter((agent) => !readBuiltInAgentMarker(agent.metadata));
-    const companySkillRowsRaw = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
+    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     if (include.agents) {
@@ -4051,27 +4124,50 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       .sort((left, right) => left.key.localeCompare(right.key));
 
     const skillExportDirs = buildSkillExportDirMap(selectedSkillRows, company.issuePrefix);
+    const skillFileJobs: Array<{ filePath: string; load: () => Promise<string | null> }> = [];
     for (const skill of selectedSkillRows) {
       const packageDir = skillExportDirs.get(skill.key) ?? `skills/${normalizeSkillSlug(skill.slug) ?? "skill"}`;
       if (shouldReferenceSkillOnExport(skill, Boolean(input.expandReferencedSkills))) {
-        files[`${packageDir}/SKILL.md`] = await buildReferencedSkillMarkdown(skill);
+        skillFileJobs.push({
+          filePath: `${packageDir}/SKILL.md`,
+          load: () => buildReferencedSkillMarkdown(skill),
+        });
         continue;
       }
 
       for (const inventoryEntry of skill.fileInventory) {
-        const fileDetail = await companySkills.readFile(companyId, skill.id, inventoryEntry.path).catch(() => null);
-        if (!fileDetail) continue;
-        const filePath = `${packageDir}/${inventoryEntry.path}`;
-        files[filePath] = inventoryEntry.path === "SKILL.md"
-          ? await withSkillSourceMetadata(skill, fileDetail.content)
-          : fileDetail.content;
+        skillFileJobs.push({
+          filePath: `${packageDir}/${inventoryEntry.path}`,
+          load: async () => {
+            const fileDetail = await companySkills
+              .readFile(companyId, skill.id, inventoryEntry.path)
+              .catch(() => null);
+            if (!fileDetail) return null;
+            return inventoryEntry.path === "SKILL.md"
+              ? withSkillSourceMetadata(skill, fileDetail.content)
+              : fileDetail.content;
+          },
+        });
       }
+    }
+    const skillFileResults = await mapWithConcurrency(
+      skillFileJobs,
+      EXPORT_READ_CONCURRENCY,
+      async (job) => ({ filePath: job.filePath, content: await job.load() }),
+    );
+    for (const result of skillFileResults) {
+      if (result.content !== null) files[result.filePath] = result.content;
     }
 
     if (include.agents) {
+      const agentInstructionsById = new Map(
+        await mapWithConcurrency(agentRows, EXPORT_READ_CONCURRENCY, async (agent) => (
+          [agent.id, await instructions.exportFiles(agent)] as const
+        )),
+      );
       for (const agent of agentRows) {
         const slug = idToSlug.get(agent.id)!;
-        const exportedInstructions = await instructions.exportFiles(agent);
+        const exportedInstructions = agentInstructionsById.get(agent.id)!;
         warnings.push(...exportedInstructions.warnings);
 
         const envInputsStart = envInputs.length;
@@ -4216,9 +4312,39 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     let unexportedBlockerEdgeCount = 0;
+    let unexportedParentEdgeCount = 0;
     let unportableWorkProductRefCount = 0;
     const exportedBlobs = new Map<string, CompanyPortabilityBlobManifestEntry>();
+    // A task export needs several independent relations per task. Load a
+    // bounded number of task groups in parallel so large companies do not pay
+    // thousands of serialized database round trips, while still respecting
+    // the default database pool size.
+    const issueExportDetails = new Map(
+      await mapWithConcurrency(
+        selectedIssueRows,
+        EXPORT_ISSUE_READ_CONCURRENCY,
+        async (issue) => {
+          const [comments, relationSummaries, issueDocumentRows, workProductRows, attachmentRows] = await Promise.all([
+            issuesSvc.listComments(issue.id, { order: "asc" }),
+            issuesSvc.getRelationSummaries(issue.id),
+            documentsSvc.listIssueDocuments(issue.id, { includeSystem: true }),
+            workProductsSvc.listForIssue(issue.id),
+            issuesSvc.listAttachments(issue.id),
+          ]);
+          return [issue.id, {
+            comments,
+            relationSummaries,
+            issueDocumentRows,
+            workProductRows,
+            attachmentRows: attachmentRows
+              .slice()
+              .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()),
+          }] as const;
+        },
+      ),
+    );
     for (const issue of selectedIssueRows) {
+      const details = issueExportDetails.get(issue.id)!;
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
       // All tasks go in top-level tasks/ folder, never nested under projects/
@@ -4239,10 +4365,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
         }
       }
-      const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+      const comments = details.comments;
       // Blocker edges travel by task slug; only edges with both endpoints in
       // the export can be carried.
-      const relationSummaries = await issuesSvc.getRelationSummaries(issue.id);
+      const relationSummaries = details.relationSummaries;
       const blockedBySlugs: string[] = [];
       for (const blocker of relationSummaries.blockedBy) {
         const blockerSlug = taskSlugByIssueId.get(blocker.id);
@@ -4256,7 +4382,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       unexportedBlockerEdgeCount += relationSummaries.blocks
         .filter((blocked) => !taskSlugByIssueId.has(blocked.id))
         .length;
-      const issueDocumentRows = await documentsSvc.listIssueDocuments(issue.id, { includeSystem: true });
+      // Parent links travel by task slug like blockers; a parent outside the
+      // export selection drops the edge and is counted for one warning.
+      let parentTaskSlug: string | null = null;
+      if (issue.parentId) {
+        parentTaskSlug = taskSlugByIssueId.get(issue.parentId) ?? null;
+        if (!parentTaskSlug) unexportedParentEdgeCount += 1;
+      }
+      const issueDocumentRows = details.issueDocumentRows;
       const documentEntries = issueDocumentRows.map((document) => {
         const documentPath = `tasks/${taskSlug}/documents/${document.key}.md`;
         files[documentPath] = document.body ?? "";
@@ -4267,7 +4400,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           path: documentPath,
         };
       });
-      const workProductRows = await workProductsSvc.listForIssue(issue.id);
+      const workProductRows = details.workProductRows;
       const workProductEntries = workProductRows.map((workProduct) => {
         if (workProduct.executionWorkspaceId || workProduct.runtimeServiceId || workProduct.createdByRunId) {
           unportableWorkProductRefCount += 1;
@@ -4289,9 +4422,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       // Attachment bytes travel as content-addressed blobs/<sha256> entries,
       // deduped across the bundle; each per-task entry references its blob by
       // hash and its comment by index into the exported comments array.
-      const attachmentRows = (await issuesSvc.listAttachments(issue.id))
-        .slice()
-        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      const attachmentRows = details.attachmentRows;
       const commentIndexById = new Map(comments.map((comment, index) => [comment.id, index] as const));
       const attachmentEntries: Array<Record<string, unknown>> = [];
       if (attachmentRows.length > 0 && !storage) {
@@ -4339,6 +4470,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         identifier: issue.identifier,
         status: issue.status,
         priority: issue.priority,
+        parent: parentTaskSlug ?? undefined,
+        createdAt: toPortableTimestamp(issue.createdAt),
+        updatedAt: toPortableTimestamp(issue.updatedAt),
+        startedAt: toPortableTimestamp(issue.startedAt),
+        completedAt: toPortableTimestamp(issue.completedAt),
+        cancelledAt: toPortableTimestamp(issue.cancelledAt),
         // Labels travel by name (their natural key); the bundle-level labels
         // section carries the matching color definitions.
         labels: (issue.labelIds ?? [])
@@ -4379,6 +4516,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (unexportedBlockerEdgeCount > 0) {
       warnings.push(`${unexportedBlockerEdgeCount} blocker relation${unexportedBlockerEdgeCount === 1 ? " references a task" : "s reference tasks"} outside this export and ${unexportedBlockerEdgeCount === 1 ? "was" : "were"} not included.`);
+    }
+    if (unexportedParentEdgeCount > 0) {
+      warnings.push(`${unexportedParentEdgeCount} parent relation${unexportedParentEdgeCount === 1 ? " references a task" : "s reference tasks"} outside this export and ${unexportedParentEdgeCount === 1 ? "was" : "were"} not included.`);
     }
     if (unportableWorkProductRefCount > 0) {
       warnings.push(`${unportableWorkProductRefCount} work product${unportableWorkProductRefCount === 1 ? " references" : "s reference"} execution workspaces or runs that are not portable; those references were omitted from the export.`);
@@ -4567,7 +4707,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     resolved.warnings.unshift(...warnings);
 
     // Generate org chart PNG from manifest agents
-    if (resolved.manifest.agents.length > 0) {
+    if (!options.preview && resolved.manifest.agents.length > 0) {
       try {
         const orgNodes = buildOrgTreeFromManifest(resolved.manifest.agents);
         const pngBuffer = await renderOrgChartPng(orgNodes);
@@ -4626,7 +4766,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (previewInput.include && previewInput.include.issues === undefined) {
       previewInput.include.issues = false;
     }
-    const exported = await exportBundle(companyId, previewInput);
+    const exported = await exportBundle(companyId, previewInput, { preview: true });
     return {
       ...exported,
       fileInventory: Object.keys(exported.files)
@@ -5329,7 +5469,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         desiredSkillRefMap.set(importedSkill.originalSlug, importedSkill.skill.key);
         if (importedSkill.action === "skipped") {
           warnings.push(`Skipped skill ${importedSkill.originalSlug}; existing skill ${importedSkill.skill.slug} was kept.`);
-        } else if (importedSkill.originalKey !== importedSkill.skill.key) {
+        } else if (importedSkill.action === "renamed") {
           warnings.push(`Imported skill ${importedSkill.originalSlug} as ${importedSkill.skill.slug} to avoid overwriting an existing skill.`);
         }
       }
@@ -5721,6 +5861,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         const importedIssueIdBySlug = new Map<string, string>();
         const blockedByBySlug = new Map<string, string[]>();
+        const parentSlugBySlug = new Map<string, string>();
         let unarmedMonitorCount = 0;
         let attachmentsSkippedNoStorage = 0;
         const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
@@ -5924,6 +6065,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if ((manifestIssue.blockedBy ?? []).length > 0) {
             blockedByBySlug.set(manifestIssue.slug, manifestIssue.blockedBy ?? []);
           }
+          if (manifestIssue.parentSlug) {
+            parentSlugBySlug.set(manifestIssue.slug, manifestIssue.parentSlug);
+          }
           for (const documentEntry of manifestIssue.documents ?? []) {
             const documentBody = readPortableTextFile(plan.source.files, documentEntry.path);
             if (documentBody === null) {
@@ -6050,7 +6194,68 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             labelIds: resolvedLabelIds,
             monitorNotes,
             monitorScheduledBy,
+            parentId: null,
+            createdAt: portableManifestDate(manifestIssue.createdAt),
+            updatedAt: portableManifestDate(manifestIssue.updatedAt),
+            startedAt: portableManifestDate(manifestIssue.startedAt),
+            completedAt: portableManifestDate(manifestIssue.completedAt),
+            cancelledAt: portableManifestDate(manifestIssue.cancelledAt),
           });
+        }
+
+        // Parent links resolve against the pre-generated ids before the flush
+        // so each issue row carries its parentId on insert. Edges whose parent
+        // was not imported, self-references, and cycles (possible only in a
+        // hand-edited bundle) drop with a warning, mirroring blocker handling.
+        if (parentSlugBySlug.size > 0) {
+          const rowBySlug = new Map(issueRows.map((row) => [row.ref, row] as const));
+          const acceptedParentById = new Map<string, string>();
+          const wouldCreateParentCycle = (childId: string, parentId: string) => {
+            let current: string | undefined = parentId;
+            const visited = new Set<string>();
+            while (current) {
+              if (current === childId) return true;
+              if (visited.has(current)) return false;
+              visited.add(current);
+              current = acceptedParentById.get(current);
+            }
+            return false;
+          };
+          for (const [slug, parentSlug] of parentSlugBySlug) {
+            const row = rowBySlug.get(slug);
+            if (!row) continue;
+            const parentId = importedIssueIdBySlug.get(parentSlug);
+            if (!parentId) {
+              warnings.push(`Task ${slug} parent ${parentSlug} was skipped because that task was not imported.`);
+              continue;
+            }
+            if (parentId === row.id || wouldCreateParentCycle(row.id, parentId)) {
+              warnings.push(`Task ${slug} parent ${parentSlug} was skipped because it would create a parent cycle.`);
+              continue;
+            }
+            acceptedParentById.set(row.id, parentId);
+            row.parentId = parentId;
+          }
+          // The parent foreign key is checked per insert statement, so order
+          // rows parents-first: a child must never land in an earlier chunk
+          // than its parent.
+          if (acceptedParentById.size > 0) {
+            const rowById = new Map(issueRows.map((row) => [row.id, row] as const));
+            const orderedRows: typeof issueRows = [];
+            const emitted = new Set<string>();
+            for (const row of issueRows) {
+              const chain: typeof issueRows = [];
+              let current: (typeof issueRows)[number] | undefined = row;
+              while (current && !emitted.has(current.id)) {
+                emitted.add(current.id);
+                chain.push(current);
+                current = current.parentId ? rowById.get(current.parentId) : undefined;
+              }
+              for (const entry of chain.reverse()) orderedRows.push(entry);
+            }
+            issueRows.length = 0;
+            issueRows.push(...orderedRows);
+          }
         }
 
         // Flush the buffered rows in dependency order: issues first (parents of
@@ -6148,6 +6353,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           action: companyAction,
         },
         agents: resultAgents,
+        skills: importedSkills.map((result) => ({
+          originalKey: result.originalKey,
+          originalSlug: result.originalSlug,
+          key: result.skill.key,
+          slug: result.skill.slug,
+          id: result.skill.id,
+          action: result.action,
+          reason: result.reason,
+        })),
         projects: resultProjects,
         routines: resultRoutines,
         envInputs: sourceManifest.envInputs ?? [],

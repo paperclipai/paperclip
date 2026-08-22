@@ -1,11 +1,12 @@
 import type {
   ResolvedWorkspaceResource,
+  WorkspaceFileAvailabilityResponse,
   WorkspaceFileContent,
   WorkspaceFileListMode,
   WorkspaceFileListResponse,
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export interface FileResourceQuery {
   path: string;
@@ -49,11 +50,35 @@ export function buildFileResourceDownloadUrl(issueId: string, query: FileResourc
 }
 
 export const fileResourcesApi = {
-  list(issueId: string, query: FileResourceListQuery = {}): Promise<WorkspaceFileListResponse> {
+  list(
+    issueId: string,
+    query: FileResourceListQuery = {},
+    options?: RequestOptions,
+  ): Promise<WorkspaceFileListResponse> {
     const search = buildQuery(query);
     const suffix = search ? `?${search}` : "";
     return api.get<WorkspaceFileListResponse>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/list${suffix}`,
+      options,
+    );
+  },
+
+  /**
+   * Batch preflight for auto-detected workspace file references. Callers must
+   * deduplicate and chunk to the server's 100-query cap before calling.
+   */
+  availability(issueId: string, queries: FileResourceQuery[]): Promise<WorkspaceFileAvailabilityResponse> {
+    return api.post<WorkspaceFileAvailabilityResponse>(
+      `/issues/${encodeURIComponent(issueId)}/file-resources/availability`,
+      {
+        queries: queries.map((query) => ({
+          path: query.path,
+          ...(query.workspace && query.workspace !== "auto" ? { workspace: query.workspace } : {}),
+          ...(query.projectId && query.workspaceId
+            ? { projectId: query.projectId, workspaceId: query.workspaceId }
+            : {}),
+        })),
+      },
     );
   },
 

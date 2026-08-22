@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __inflightGetCount, api } from "./client";
+import { __inflightGetCount, api, detachInflightGet } from "./client";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -68,6 +68,30 @@ describe("in-tab GET coalescing", () => {
     c2.abort();
     await expect(p1).rejects.toMatchObject({ name: "AbortError" });
     await expect(p2).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("stops later callers joining a detached in-flight GET", async () => {
+    // A GET issued under one account's session must not answer a caller that
+    // runs after the account changed.
+    const first = deferred<Response>();
+    fetchMock.mockReturnValueOnce(first.promise);
+    const previousAccount = api.get("/detach-me");
+    expect(__inflightGetCount()).toBe(1);
+
+    detachInflightGet("/detach-me");
+    expect(__inflightGetCount()).toBe(0);
+
+    const second = deferred<Response>();
+    fetchMock.mockReturnValueOnce(second.promise);
+    const currentAccount = api.get("/detach-me");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Each caller gets its own response, not the other's.
+    first.resolve(jsonResponse({ companies: ["previous"] }));
+    second.resolve(jsonResponse({ companies: ["current"] }));
+    expect(await previousAccount).toEqual({ companies: ["previous"] });
+    expect(await currentAccount).toEqual({ companies: ["current"] });
+    expect(__inflightGetCount()).toBe(0);
   });
 
   it("never coalesces mutations", async () => {

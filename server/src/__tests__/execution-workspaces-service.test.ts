@@ -28,16 +28,22 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
+  EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY,
+  EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY,
   executionWorkspaceService,
   deriveExecutionWorkspaceDeliveryState,
   mergeExecutionWorkspaceConfig,
+  metadataHasReopenPendingConsumption,
   readExecutionWorkspaceConfig,
+  readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -253,6 +259,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
         ?? { state: "unknown", headRef: null, headSha: null }
       ),
+      // Disable the reaper cooldown for the delivery, terminal, race, and
+      // cleanup tests. They assert immediate reaping. The cooldown gets its own
+      // tests further down.
+      workspaceReaperCooldownDays: 0,
     });
   }, 20_000);
 
@@ -466,6 +476,464 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
 
+  async function seedAncestryTerminalWorkspace(overrides: { updatedAt?: Date } = {}) {
+    // Build a worktree whose HEAD equals the base ref, so HEAD is an ancestor
+    // of the base. This workspace landed by ancestry and carries no tracked
+    // pull request, so delivery derives to merged_by_ancestry.
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-ancestry-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+    const branchName = `ancestry-${randomUUID().slice(0, 8)}`;
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Ancestry delivery",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      providerType: "git_worktree",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Delivered by ancestry",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId, ...(overrides.updatedAt ? { updatedAt: overrides.updatedAt } : {}) })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    return { companyId, projectId, executionWorkspaceId, sourceIssueId, worktreePath };
+  }
+
+  it("archives a terminal workspace delivered by ancestry with no pull request", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(readiness?.deliveryState).toBe("merged_by_ancestry");
+    expect(readiness?.blockingReasons).toEqual([]);
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+    expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+  }, 20_000);
+
+  it("fails closed before archive when git status inspection is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockRejectedValue(new Error("scan queue unavailable"));
+
+    try {
+      const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      expect(readiness).toMatchObject({
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+        blockingReasons: [
+          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+        ],
+      });
+
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+      const [workspace] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      expect(workspace?.status).toBe("active");
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it("fails the final cleanup fence when a later git status scan is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const originalRun = workspaceGitOperationScheduler.run.bind(workspaceGitOperationScheduler);
+    let statusScanCount = 0;
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockImplementation(async (input) => {
+        statusScanCount += 1;
+        if (statusScanCount > 1) throw new Error("scan timed out");
+        return originalRun(input);
+      });
+
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, cleanupFailed: 1 });
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it("skips a sweep that starts while another sweep runs", async () => {
+    // The scheduler can start a second sweep before the first one finishes. The
+    // sweeps share the cursor and the boundary. A concurrent sweep must skip
+    // instead of running, so it cannot corrupt the shared rotation state.
+    const seeded = await seedAncestryTerminalWorkspace();
+
+    // Start the first sweep and do not wait. An async function runs its body up
+    // to the first await, so the in-progress flag is set before the second call
+    // starts. The second call sees the flag and returns without a scan.
+    const firstSweepPromise = svc.sweepTerminalWorkspaces();
+    const concurrentSweep = await svc.sweepTerminalWorkspaces();
+    const firstSweep = await firstSweepPromise;
+
+    // The concurrent sweep inspected no candidate and changed no state.
+    expect(concurrentSweep).toMatchObject({ checked: 0, archived: 0, eligible: 0 });
+    // The first sweep archived the eligible workspace.
+    expect(firstSweep.archived).toBe(1);
+
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(workspace?.status).toBe("archived");
+
+    // The flag resets after the first sweep, so a later sweep runs its scan.
+    const laterSweep = await svc.sweepTerminalWorkspaces();
+    expect(laterSweep).toMatchObject({ archived: 0 });
+  }, 20_000);
+
+  it("archives an eligible workspace behind a full page of skipped candidates", async () => {
+    // Seed more skipped candidates than the sweep page holds, each older than
+    // the eligible workspace. A skipped candidate keeps its updatedAt, so a
+    // sweep that always reads the oldest page never reaches the eligible
+    // workspace. The reaper must rotate its scan window across sweeps.
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Starved reaper",
+      status: "in_progress",
+    });
+    // Two open-issue workspaces that the reaper always skips. Their older
+    // updatedAt keeps them at the front of the ordered candidate set.
+    const skippedWorkspaceIds: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const workspaceId = randomUUID();
+      const openIssueId = randomUUID();
+      skippedWorkspaceIds.push(workspaceId);
+      await db.insert(executionWorkspaces).values({
+        id: workspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "local_fs",
+        name: `${issuePrefix}-skip-${index}`,
+        status: "active",
+        providerType: "local_fs",
+        updatedAt: new Date(Date.UTC(2020, 0, index + 1)),
+      });
+      await db.insert(issues).values({
+        id: openIssueId,
+        companyId,
+        projectId,
+        title: `Open ${index}`,
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId: workspaceId,
+      });
+      await db
+        .update(executionWorkspaces)
+        .set({ sourceIssueId: openIssueId, updatedAt: new Date(Date.UTC(2020, 0, index + 1)) })
+        .where(eq(executionWorkspaces.id, workspaceId));
+    }
+    // The eligible workspace is newest, so it sorts after the whole skipped page.
+    const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2020, 0, 9)) });
+
+    // A fresh service starts with an empty scan cursor, so each call inspects
+    // one row and advances. A single-row page never lands on the eligible
+    // workspace first.
+    const service = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async () => ({ state: "unknown", headRef: null, headSha: null }),
+      workspaceReaperCooldownDays: 0,
+    });
+
+    const firstSweep = await service.sweepTerminalWorkspaces(1);
+    expect(firstSweep).toMatchObject({ checked: 1, archived: 0, skippedNonTerminalTree: 1 });
+    const [afterFirst] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
+    expect(afterFirst?.status).toBe("active");
+
+    let archivedSweep: Awaited<ReturnType<typeof service.sweepTerminalWorkspaces>> | null = null;
+    for (let attempt = 0; attempt < 4 && !archivedSweep; attempt += 1) {
+      const sweep = await service.sweepTerminalWorkspaces(1);
+      if (sweep.archived > 0) archivedSweep = sweep;
+    }
+
+    expect(archivedSweep).toMatchObject({ archived: 1 });
+    const workspaces = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [eligible.executionWorkspaceId, ...skippedWorkspaceIds]));
+    const byId = new Map(workspaces.map((row) => [row.id, row.status]));
+    expect(byId.get(eligible.executionWorkspaceId)).toBe("archived");
+    for (const skippedId of skippedWorkspaceIds) {
+      expect(byId.get(skippedId)).toBe("active");
+    }
+  }, 20_000);
+
+  it("revisits an eligible workspace behind the cursor despite continuous newer churn", async () => {
+    // Reproduce the rotation-starvation case. The scan cursor advances past a
+    // workspace while it is not eligible. The workspace then becomes eligible
+    // but keeps its old updatedAt, so it stays behind the cursor. Meanwhile a
+    // steady stream of newer candidates keeps every page full. Without a frozen
+    // per-rotation upper bound, the cursor never reaches the end, never resets,
+    // and never revisits the eligible workspace. The bound makes each rotation
+    // cover a finite set, so the cursor resets and the workspace is archived.
+    let clockMs = Date.UTC(2021, 6, 1);
+    const service = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async () => ({ state: "unknown", headRef: null, headSha: null }),
+      now: () => new Date(clockMs),
+      workspaceReaperCooldownDays: 0,
+    });
+
+    // An eligible ancestry workspace with an old updatedAt. Its source issue
+    // starts non-terminal, so the first sweeps skip it and pass the cursor.
+    const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2021, 0, 2)) });
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, eligible.sourceIssueId));
+
+    // One older skipped candidate. With a single-row page it sorts before the
+    // eligible workspace, so the first sweep advances the cursor onto it.
+    const olderSkippedId = randomUUID();
+    const olderOpenIssueId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: olderSkippedId,
+      companyId: eligible.companyId,
+      projectId: eligible.projectId,
+      mode: "isolated_workspace",
+      strategyType: "local_fs",
+      name: "skip-older",
+      status: "active",
+      providerType: "local_fs",
+      updatedAt: new Date(Date.UTC(2021, 0, 1)),
+    });
+    await db.insert(issues).values({
+      id: olderOpenIssueId,
+      companyId: eligible.companyId,
+      projectId: eligible.projectId,
+      title: "Older open",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: olderSkippedId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: olderOpenIssueId, updatedAt: new Date(Date.UTC(2021, 0, 1)) })
+      .where(eq(executionWorkspaces.id, olderSkippedId));
+
+    // Sweep once per row so the cursor lands on the eligible workspace while it
+    // is still non-terminal.
+    await service.sweepTerminalWorkspaces(1); // reads olderSkipped
+    await service.sweepTerminalWorkspaces(1); // reads eligible, still non-terminal
+
+    const [afterSkip] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
+    expect(afterSkip?.status).toBe("active");
+
+    // The workspace becomes eligible now. Its updatedAt stays old, so it is
+    // behind the cursor.
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, eligible.sourceIssueId));
+
+    // Drive continuous churn. Each sweep, advance the clock and add a newer
+    // skipped candidate ahead of the cursor. Without the frozen bound the cursor
+    // would chase this churn forever and never revisit the eligible workspace.
+    let archived = false;
+    for (let attempt = 0; attempt < 8 && !archived; attempt += 1) {
+      clockMs += 24 * 60 * 60 * 1000;
+      const churnId = randomUUID();
+      const churnIssueId = randomUUID();
+      await db.insert(executionWorkspaces).values({
+        id: churnId,
+        companyId: eligible.companyId,
+        projectId: eligible.projectId,
+        mode: "isolated_workspace",
+        strategyType: "local_fs",
+        name: `churn-${attempt}`,
+        status: "active",
+        providerType: "local_fs",
+        updatedAt: new Date(clockMs),
+      });
+      await db.insert(issues).values({
+        id: churnIssueId,
+        companyId: eligible.companyId,
+        projectId: eligible.projectId,
+        title: `Churn ${attempt}`,
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId: churnId,
+      });
+      await db
+        .update(executionWorkspaces)
+        .set({ sourceIssueId: churnIssueId, updatedAt: new Date(clockMs) })
+        .where(eq(executionWorkspaces.id, churnId));
+
+      const sweep = await service.sweepTerminalWorkspaces(1);
+      if (sweep.archived > 0) archived = true;
+    }
+
+    expect(archived).toBe(true);
+    const [finalState] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
+    expect(finalState?.status).toBe("archived");
+  }, 30_000);
+
+  describe("reaper cooldown", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const nowMs = Date.UTC(2026, 5, 1);
+
+    function cooldownService(cooldownDays: number) {
+      return executionWorkspaceService(db, {
+        resolvePullRequestDetails: async (companyId, reference) =>
+          pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+          ?? { state: "unknown", headRef: null, headSha: null },
+        now: () => new Date(nowMs),
+        workspaceReaperCooldownDays: cooldownDays,
+      });
+    }
+
+    async function statusOf(executionWorkspaceId: string) {
+      const [row] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, executionWorkspaceId));
+      return row?.status ?? null;
+    }
+
+    it("skips a terminal tree that is younger than the cooldown", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      // Keep the workspace inside the sweep boundary that the fixed clock sets.
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // The issue became terminal one day ago. A cooldown of seven days is not
+      // over yet.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 0, skippedCooldown: 1 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("active");
+    }, 20_000);
+
+    it("archives a terminal tree that is older than the cooldown", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // The issue became terminal ten days ago. The seven-day cooldown is over.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs - 10 * DAY_MS) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 1, skippedCooldown: 0 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("archived");
+    }, 20_000);
+
+    it("archives immediately when the cooldown is zero", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      // The issue became terminal now. A cooldown of zero disables the wait.
+      await db
+        .update(issues)
+        .set({ completedAt: new Date(nowMs) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(0).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 1, skippedCooldown: 0 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("archived");
+    }, 20_000);
+
+    it("falls back to updatedAt when completedAt is null and gates the archive", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      // The done issue has no completedAt. The anchor falls back to updatedAt.
+      // Set updatedAt two days ago, inside the seven-day cooldown, so the sweep
+      // must skip.
+      await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date(nowMs - 2 * DAY_MS) })
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      await db
+        .update(issues)
+        .set({ completedAt: null, updatedAt: new Date(nowMs - 2 * DAY_MS) })
+        .where(eq(issues.id, seeded.sourceIssueId));
+
+      const sweep = await cooldownService(7).sweepTerminalWorkspaces();
+
+      expect(sweep).toMatchObject({ archived: 0, skippedCooldown: 1 });
+      expect(await statusOf(seeded.executionWorkspaceId)).toBe("active");
+    }, 20_000);
+  });
+
   it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
     const unrelatedIssueId = randomUUID();
@@ -602,6 +1070,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         await fs.writeFile(path.join(seeded.worktreePath, "late-work.txt"), "not delivered\n", "utf8");
       },
@@ -618,6 +1087,55 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.cleanupReason).toContain("git worktree changed after delivery was verified");
     await expect(fs.readFile(path.join(seeded.worktreePath, "late-work.txt"), "utf8"))
       .resolves.toBe("not delivered\n");
+  });
+
+  it("does not write stale cleanup-failure state onto a newer archive lifecycle", async () => {
+    // Reproduce the cleanup-failure race. The reaper archives the workspace at one
+    // generation and captures it. The cleanup then throws. Before the catch handler
+    // writes the cleanup-failed status, a reopen and a fresh archive raise the
+    // generation. The catch handler must skip its write, so the stale failure never
+    // overwrites the newer archive lifecycle.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const newerReason = "newer_archive_lifecycle_marker";
+    const racingService = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (_companyId, reference) =>
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
+      beforeTerminalWorkspaceCleanup: async (workspace) => {
+        // Stand in for a reopen and a fresh archive that ran after this sweep
+        // captured the generation. Raise the generation past the captured value,
+        // keep the row closed, then force the cleanup to throw.
+        await db
+          .update(executionWorkspaces)
+          .set({
+            status: "archived",
+            cleanupReason: newerReason,
+            metadata: { [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2 },
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+        throw new Error("forced cleanup failure");
+      },
+    });
+
+    const sweep = await racingService.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ cleanupFailed: 1 });
+    // The fenced write saw the raised generation and skipped, so the newer
+    // lifecycle state survives untouched.
+    expect(workspace?.status).toBe("archived");
+    expect(workspace?.cleanupReason).toBe(newerReason);
+    expect(
+      (workspace?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(2);
   });
 
   it("archives terminal workspaces without running configured cleanup hooks", async () => {
@@ -643,16 +1161,596 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(cleanupMarker)).rejects.toThrow();
   });
 
+  it("does not reap a reopened workspace while the source issue is still terminal", async () => {
+    // Reproduce the reverse-ordering race. A resume reopens the archived
+    // workspace and publishes it active, but the route has not yet changed the
+    // source issue out of the terminal state. The sweep must not archive and
+    // destroy the rebuilt worktree in this window.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          // A fresh timestamp marks the reopen as in flight, so the sweep skips it.
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: new Date().toISOString(),
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedReopened: 1 });
+    expect(workspace?.status).toBe("active");
+    // The reopen flag stays until the source issue leaves the terminal state.
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    // The rebuilt worktree is intact.
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("clears a stranded reopen flag whose consumer never ran, then reaps on a later sweep", async () => {
+    // A reopen published the workspace active and set the flag, but the consuming
+    // request never moved the source issue out of the terminal state, and the
+    // response-end clear never landed. The flag is older than the grace period.
+    // The first sweep clears the stranded flag; a later sweep archives the row.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const strandedSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: strandedSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const firstSweep = await svc.sweepTerminalWorkspaces();
+    const [afterClear] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The first sweep clears the stranded flag but keeps the row active, so a
+    // retried resume can still reuse the rebuilt worktree.
+    expect(firstSweep).toMatchObject({ archived: 0, clearedStaleReopenPending: 1 });
+    expect(afterClear?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(afterClear?.metadata as Record<string, unknown> | null)).toBe(false);
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+
+    // A later sweep archives the reclaimed workspace through the normal path.
+    const secondSweep = await svc.sweepTerminalWorkspaces();
+    const [afterArchive] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(secondSweep).toMatchObject({ archived: 1 });
+    expect(afterArchive?.status).toBe("archived");
+  });
+
+  it("keeps the reopen fence for a request that outruns the grace period", async () => {
+    // A reopen published the workspace active and set the flag. The consuming
+    // request still runs, but it outran the grace period, so the flag looks
+    // stale by age. A live run owns the fence, so the sweep must not clear it.
+    // If the sweep cleared it, a later sweep could archive and destroy the
+    // rebuilt worktree under the running request.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const staleSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: staleSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The live run holds the fence, so the sweep skips the workspace and keeps
+    // the flag. It clears nothing.
+    expect(sweep).toMatchObject({ archived: 0, skippedReopened: 1, clearedStaleReopenPending: 0 });
+    expect(workspace?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    // The rebuilt worktree is intact.
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("refreshes the reopen fence for an in-flight request, so a later sweep keeps it", async () => {
+    // The consuming request is an HTTP request, not a heartbeat run, so the sweep
+    // cannot see it through the active-run check. The request re-stamps the flag on
+    // an interval below the grace period. This test drives one re-stamp on a flag
+    // that already looks stale by age. After the re-stamp the flag looks fresh, so
+    // the sweep skips the workspace and clears nothing, even with no active run.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const staleSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: staleSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.refreshReopenPendingConsumption({
+      workspaceId: seeded.executionWorkspaceId,
+      expectedGeneration: 4,
+    });
+    expect(result).toEqual({ refreshed: true });
+
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const refreshedSince = readMetadataReopenPendingConsumptionSince(
+      afterRefresh?.metadata as Record<string, unknown> | null,
+    );
+    // The re-stamp moved the timestamp forward, so the flag no longer looks stale.
+    expect(refreshedSince).not.toBeNull();
+    expect(refreshedSince!.getTime()).toBeGreaterThan(new Date(staleSince).getTime());
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The fresh flag keeps the fence, so the sweep skips the workspace and clears
+    // nothing, even though no heartbeat run owns it.
+    expect(sweep).toMatchObject({ archived: 0, skippedReopened: 1, clearedStaleReopenPending: 0 });
+    expect(workspace?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("does not refresh the reopen fence when a newer generation owns it", async () => {
+    // A newer reopen or an archive raised the generation, so the flag belongs to a
+    // new owner. A stale caller must not re-stamp another owner's fence. The
+    // refresh reports refreshed=false and leaves the timestamp unchanged.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const since = new Date(Date.now() - 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 7,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: since,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.refreshReopenPendingConsumption({
+      workspaceId: seeded.executionWorkspaceId,
+      expectedGeneration: 4,
+    });
+    expect(result).toEqual({ refreshed: false });
+
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const unchangedSince = readMetadataReopenPendingConsumptionSince(
+      afterRefresh?.metadata as Record<string, unknown> | null,
+    );
+    expect(unchangedSince?.toISOString()).toBe(since);
+  });
+
+  it("does not refresh the reopen fence when the flag is already clear", async () => {
+    // The response-end clear already removed the flag. A late keepalive tick must
+    // not revive it. The refresh reports refreshed=false and adds no flag.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.refreshReopenPendingConsumption({
+      workspaceId: seeded.executionWorkspaceId,
+      expectedGeneration: 4,
+    });
+    expect(result).toEqual({ refreshed: false });
+
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(metadataHasReopenPendingConsumption(afterRefresh?.metadata as Record<string, unknown> | null)).toBe(false);
+  });
+
+  it("clears the reopen flag once the source issue leaves the terminal state", async () => {
+    // The resume transition committed, so the source issue is non-terminal. The
+    // sweep clears the stale reopen flag so a later terminal cycle can reap the
+    // workspace normally.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, seeded.sourceIssueId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
+    expect(workspace?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(false);
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("refuses to archive a reopen-pending workspace and leaves the row unchanged", async () => {
+    // Close the second destructive path. The archive route calls
+    // archiveWorkspaceUnderLifecycleLock. A reopen published this row active with
+    // the reopen-pending flag while the source issue is still terminal. The
+    // archive must not close or clear the flag, so the destruction fence never
+    // removes the rebuilt worktree during the reopen consumption window.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: new Date(),
+    });
+
+    expect(result).toEqual({ outcome: "reopen_pending" });
+
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The row stays active, keeps the flag, and keeps its generation.
+    expect(workspace?.status).toBe("active");
+    expect(workspace?.closedAt).toBeNull();
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    expect(
+      (workspace?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(4);
+    // The rebuilt worktree is intact.
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("does not overwrite a newer archive when a stale cleanup failure lands late", async () => {
+    // The archive route records a cleanup failure through the generation-fenced
+    // write after the destructive cleanup throws. Simulate a reopen and a fresh
+    // archive that raised the generation before the stale failure lands. The
+    // generation guard skips the stale write, so the newer archive keeps its own
+    // closedAt, cleanupReason, and status.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const staleClosedAt = new Date(Date.now() - 60_000);
+    // The first archive closed the row at generation 2.
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: staleClosedAt,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // A resume reopened the row and a fresh archive raised the generation to 3.
+    const newerClosedAt = new Date();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: newerClosedAt,
+        cleanupReason: "newer archive",
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 3,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The first archive's cleanup failure lands late at the captured generation 2.
+    const skipped = await svc.applyClosedWorkspaceCleanupOutcome({
+      id: seeded.executionWorkspaceId,
+      closedAt: staleClosedAt,
+      capturedGeneration: 2,
+      cleanupReason: "stale teardown boom",
+      markCleanupFailed: true,
+    });
+    expect(skipped).toBeNull();
+
+    const [row] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // The newer archive survives; the stale failure did not overwrite it.
+    expect(row?.status).toBe("archived");
+    expect(row?.cleanupReason).toBe("newer archive");
+    expect(row?.closedAt?.getTime()).toBe(newerClosedAt.getTime());
+  });
+
+  it("applies the cleanup outcome only while the row is still closed at the captured generation", async () => {
+    // The archive route records the cleanup outcome after the destruction fence
+    // returns. While the row is still closed at the captured generation, the
+    // guarded write records the warnings and the cleanup_failed status. After a
+    // resume reopened the row and raised the generation, the guard skips the write
+    // so a stale patch does not overwrite the rebuilt worktree's active state.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: new Date(),
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const closedAt = new Date();
+    const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+      id: seeded.executionWorkspaceId,
+      closedAt,
+      capturedGeneration: 2,
+      cleanupReason: "teardown warning",
+      markCleanupFailed: true,
+    });
+    expect(applied?.status).toBe("cleanup_failed");
+    expect(applied?.cleanupReason).toBe("teardown warning");
+
+    // Simulate a resume that reopened the row and raised the generation after the
+    // destruction fence returned.
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 3,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const skipped = await svc.applyClosedWorkspaceCleanupOutcome({
+      id: seeded.executionWorkspaceId,
+      closedAt: new Date(),
+      capturedGeneration: 2,
+      cleanupReason: "stale teardown warning",
+      markCleanupFailed: true,
+    });
+    expect(skipped).toBeNull();
+
+    const [row] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // The reopened active row survives; the stale cleanup patch did not land.
+    expect(row?.status).toBe("active");
+    expect(row?.cleanupReason).toBeNull();
+  });
+
+  it("routes every terminal-workspace write through one generation-fenced gateway that skips a stale generation", async () => {
+    // One gateway gates every destructive terminal-workspace write. This test
+    // raises the lifecycle generation past the value each writer captured, then
+    // drives all four refactored writers. Each writer must skip, because the one
+    // gateway sees the newer generation. This proves the single choke-point.
+
+    // Writer 1 (clearReopenPendingConsumptionUnderLock), reached through
+    // clearReopenPendingConsumptionForUnconsumedReopen. A reopen published the row
+    // active at generation 5 and set the flag. A newer reopen then raised the
+    // generation to 6. A clear that presents the stale generation 5 must skip.
+    const clearSeed = await seedTerminalWorkspace({ mergedPr: true });
+    const clearSince = new Date(Date.now() - 60_000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 6,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: clearSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, clearSeed.executionWorkspaceId));
+    const clearResult = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
+      workspaceId: clearSeed.executionWorkspaceId,
+      issue: { id: clearSeed.sourceIssueId, companyId: clearSeed.companyId },
+      actor: { agentId: null, actorType: "user" },
+      expectedGeneration: 5,
+    });
+    expect(clearResult).toEqual({ cleared: false });
+    const [afterClear] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, clearSeed.executionWorkspaceId));
+    // The newer owner keeps its flag, so the stale clear did not touch the fence.
+    expect(metadataHasReopenPendingConsumption(afterClear?.metadata as Record<string, unknown> | null)).toBe(true);
+
+    // Writer 2 (refreshReopenPendingConsumptionUnderLock), reached through
+    // refreshReopenPendingConsumption. A refresh that presents the stale
+    // generation 5 must skip and leave the timestamp unchanged.
+    const refreshResult = await svc.refreshReopenPendingConsumption({
+      workspaceId: clearSeed.executionWorkspaceId,
+      expectedGeneration: 5,
+    });
+    expect(refreshResult).toEqual({ refreshed: false });
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, clearSeed.executionWorkspaceId));
+    expect(
+      readMetadataReopenPendingConsumptionSince(afterRefresh?.metadata as Record<string, unknown> | null)?.toISOString(),
+    ).toBe(clearSince);
+
+    // Writer 3 (cleanupTerminalWorkspace) runs its destructive cleanup through the
+    // same gateway call as fenceClosedWorkspaceDestruction, with the same
+    // closed-status guard. The row is closed at generation 3, but the caller
+    // captured generation 2, so the gateway skips and never runs the destroy body.
+    const destroySeed = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: new Date(),
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 3,
+        },
+      })
+      .where(eq(executionWorkspaces.id, destroySeed.executionWorkspaceId));
+    const destroy = vi.fn(async () => "destroyed");
+    const destroyResult = await svc.fenceClosedWorkspaceDestruction({
+      workspaceId: destroySeed.executionWorkspaceId,
+      capturedGeneration: 2,
+      destroy,
+    });
+    expect(destroyResult).toEqual({ skippedReopened: true });
+    expect(destroy).not.toHaveBeenCalled();
+
+    // Writer 4 (markTerminalCleanupFailedFenced). The reaper archives the row at
+    // one generation and captures it. The cleanup then throws. Before the catch
+    // handler writes cleanup_failed, a reopen and a fresh archive raise the
+    // generation. The fenced write must skip, so the newer archive survives.
+    const failSeed = await seedTerminalWorkspace({ mergedPr: true });
+    const newerReason = "newer_archive_lifecycle_marker";
+    const racingService = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (_companyId, reference) =>
+        pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
+      beforeTerminalWorkspaceCleanup: async (workspace) => {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            status: "archived",
+            cleanupReason: newerReason,
+            metadata: { [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2 },
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+        throw new Error("forced cleanup failure");
+      },
+    });
+    const sweep = await racingService.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ cleanupFailed: 1 });
+    const [afterFail] = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, failSeed.executionWorkspaceId));
+    // The fenced write saw the raised generation and skipped, so the newer
+    // lifecycle state survives untouched.
+    expect(afterFail?.status).toBe("archived");
+    expect(afterFail?.cleanupReason).toBe(newerReason);
+    expect(
+      (afterFail?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(2);
+  });
+
   it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db.update(executionWorkspaces).set({
-      metadata: { createdByRuntime: true },
+      metadata: {
+        createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
+      },
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     let commitFailure = "";
     let refUpdateFailure = "";
     const lockingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         try {
           await runGit(seeded.worktreePath, ["commit", "--allow-empty", "-m", "Late commit"]);
@@ -3011,6 +4109,186 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   });
 
+  it("serializes the verified HTTPS URL as canonical and never falls back to the HTTP backend", async () => {
+    // PAP-17158: the UI's workspace/project/issue launch links read `url` off the
+    // serialized runtime service. Two things have to hold for a managed HTTPS
+    // runtime: once exposure is `ready` the canonical `url` is the HTTPS public
+    // URL, and while exposure is *not* ready the canonical `url` stays null even
+    // though the row still knows its loopback `backendUrl`. Serializing that
+    // backend URL would put `http://…` back into a launch link, which is exactly
+    // the fail-closed contract this feature exists to enforce.
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const readyWorkspaceId = randomUUID();
+    const provisioningWorkspaceId = randomUUID();
+    const readyServiceId = randomUUID();
+    const provisioningServiceId = randomUUID();
+    const hostname = "paperclip-dev.tail29c1aa.ts.net";
+    const httpsUrl = `https://${hostname}:42010`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "HTTPS URL serialization",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/https-url-serialization",
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime: { services: [{ name: "paperclip-dev", command: "pnpm dev" }] },
+          desiredState: "running",
+        },
+      },
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: readyWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "dedicated_worktree",
+        strategyType: "git_worktree",
+        name: "Exposed workspace",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: "/tmp/https-url-serialization/ready",
+      },
+      {
+        id: provisioningWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "dedicated_worktree",
+        strategyType: "git_worktree",
+        name: "Provisioning workspace",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: "/tmp/https-url-serialization/provisioning",
+      },
+    ]);
+    await db.insert(workspaceRuntimeServices).values([
+      {
+        id: readyServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId: readyWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: readyWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "ready-dev",
+        command: "pnpm dev",
+        cwd: "/tmp/https-url-serialization/ready",
+        port: 42_010,
+        url: httpsUrl,
+        // The loopback backend is still recorded; it must never be serialized.
+        backendUrl: "http://127.0.0.1:42010",
+        provider: "local_process",
+        healthStatus: "healthy",
+        exposure: {
+          provider: "tailscale_https",
+          state: "ready",
+          publicUrl: httpsUrl,
+          hostname,
+          listeners: [
+            { purpose: "app", publicPort: 42_010, targetPort: 42_010 },
+            { purpose: "vite_hmr", publicPort: 52_010, targetPort: 52_010 },
+          ],
+          brokerRef: "broker-ref-1",
+          lastError: null,
+          updatedAt: "2026-08-12T10:00:00.000Z",
+        },
+        updatedAt: new Date("2026-08-12T10:00:00.000Z"),
+      },
+      {
+        id: provisioningServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId: provisioningWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: provisioningWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "provisioning-dev",
+        command: "pnpm dev",
+        cwd: "/tmp/https-url-serialization/provisioning",
+        port: 42_020,
+        url: null,
+        backendUrl: "http://127.0.0.1:42020",
+        provider: "local_process",
+        healthStatus: "healthy",
+        exposure: {
+          provider: "tailscale_https",
+          state: "pending",
+          publicUrl: null,
+          hostname,
+          listeners: [],
+          brokerRef: null,
+          lastError: null,
+          updatedAt: "2026-08-12T10:00:00.000Z",
+        },
+        updatedAt: new Date("2026-08-12T10:00:00.000Z"),
+      },
+    ]);
+
+    const workspaces = await svc.list(companyId);
+    const readyService = workspaces
+      .find((workspace) => workspace.id === readyWorkspaceId)
+      ?.runtimeServices.find((service) => service.id === readyServiceId);
+    expect(readyService).toMatchObject({
+      url: httpsUrl,
+      port: 42_010,
+      exposure: { provider: "tailscale_https", state: "ready", publicUrl: httpsUrl, hostname },
+    });
+    // Lease handles are server-private and must never reach a serialized DTO.
+    expect(readyService).not.toHaveProperty("exposureHandle");
+
+    const provisioningService = workspaces
+      .find((workspace) => workspace.id === provisioningWorkspaceId)
+      ?.runtimeServices.find((service) => service.id === provisioningServiceId);
+    expect(provisioningService?.url).toBeNull();
+    expect(provisioningService?.exposure).toMatchObject({ state: "pending", publicUrl: null });
+    expect(JSON.stringify(provisioningService)).not.toContain("http://127.0.0.1:42020");
+
+    // The overview feeds the workspace list launch links.
+    const overview = await svc.listOverview(companyId, { limit: 10, offset: 0 });
+    const readyItem = overview.items.find((item) => item.workspaceId === readyWorkspaceId);
+    expect(readyItem?.primaryService).toMatchObject({
+      id: readyServiceId,
+      status: "running",
+      url: httpsUrl,
+      exposure: { state: "ready", publicUrl: httpsUrl },
+    });
+    expect(new URL(readyItem!.primaryService!.url!).protocol).toBe("https:");
+
+    const provisioningItem = overview.items.find((item) => item.workspaceId === provisioningWorkspaceId);
+    expect(provisioningItem?.primaryService).toMatchObject({
+      id: provisioningServiceId,
+      status: "running",
+      url: null,
+      exposure: { state: "pending" },
+    });
+    expect(JSON.stringify(provisioningItem)).not.toContain("http://127.0.0.1:42020");
+  }, 30_000);
+
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
@@ -3382,6 +4660,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
       metadata: {
         createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
         config: {
           cleanupCommand: "printf 'workspace cleanup\\n'",
         },
@@ -3420,5 +4699,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+
+    await db.update(executionWorkspaces).set({
+      metadata: { createdByRuntime: true },
+    }).where(eq(executionWorkspaces.id, executionWorkspaceId));
+    const legacyReadiness = await svc.getCloseReadiness(executionWorkspaceId);
+    expect(legacyReadiness?.git?.createdByRuntime).toBe(false);
+    expect(legacyReadiness?.plannedActions.map((action) => action.kind)).not.toContain("git_branch_delete");
   }, 20_000);
 });
