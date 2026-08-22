@@ -1,8 +1,12 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
+
+function isConflictError(error: unknown, message: string): boolean {
+  return error instanceof HttpError && error.status === 409 && error.message === message;
+}
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -221,6 +225,22 @@ export function documentService(db: Db) {
         try {
           return await db.transaction(async (tx) => {
           const now = new Date();
+          // Take an exclusive lock on the joined `documents` row before reading so
+          // concurrent writers (other PUTs, revision restores, system upserts)
+          // are serialized. Without this, the read→compare→write sequence
+          // performs the baseRevisionId check against a stale snapshot and a
+          // just-committed writer's revision looks "frozen" — a fresh GET shows
+          // a new latestRevisionId while the 409 still reports the old one
+          // (ETS-430/458/461). Mirrors the `for update of ${documents}`
+          // pattern in document-annotations.ts and the `FOR UPDATE` usage in
+          // issues.ts / companies.ts.
+          await tx.execute(sql`
+            select ${documents.id}
+            from ${issueDocuments}
+            inner join ${documents} on ${issueDocuments.documentId} = ${documents.id}
+            where ${and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key))}
+            for update of ${documents}
+          `);
           const existing = await tx
             .select({
               id: documents.id,
@@ -249,6 +269,32 @@ export function documentService(db: Db) {
             .then((rows) => rows[0] ?? null);
 
           if (existing) {
+            // Reconcile the revision pointer against documentRevisions.
+            // If documents.latestRevisionId is frozen (points to a stale
+            // revision while documentRevisions has a newer one), use the
+            // actual latest revision from the revisions table so a client
+            // holding the true latest revision can proceed. The upsert below
+            // atomically repairs the pointer on documents.
+            let effectiveLatestRevisionId = existing.latestRevisionId;
+            let effectiveLatestRevisionNumber = existing.latestRevisionNumber;
+            if (existing.latestRevisionId) {
+              const latestRevisionRow = (
+                await tx
+                  .select({
+                    id: documentRevisions.id,
+                    revisionNumber: documentRevisions.revisionNumber,
+                  })
+                  .from(documentRevisions)
+                  .where(eq(documentRevisions.documentId, existing.id))
+                  .orderBy(desc(documentRevisions.revisionNumber))
+                  .limit(1)
+              )[0] ?? null;
+              if (latestRevisionRow && latestRevisionRow.id !== existing.latestRevisionId) {
+                effectiveLatestRevisionId = latestRevisionRow.id;
+                effectiveLatestRevisionNumber = latestRevisionRow.revisionNumber;
+              }
+            }
+
             if (existing.lockedAt) {
               if (input.lockedDocumentStrategy === "create_new_document") {
                 const issueDocumentKeys = await tx
@@ -349,16 +395,16 @@ export function documentService(db: Db) {
 
             if (!input.baseRevisionId) {
               throw conflict("Document update requires baseRevisionId", {
-                currentRevisionId: existing.latestRevisionId,
+                currentRevisionId: effectiveLatestRevisionId,
               });
             }
-            if (input.baseRevisionId !== existing.latestRevisionId) {
+            if (input.baseRevisionId !== effectiveLatestRevisionId) {
               throw conflict("Document was updated by someone else", {
-                currentRevisionId: existing.latestRevisionId,
+                currentRevisionId: effectiveLatestRevisionId,
               });
             }
 
-            const nextRevisionNumber = existing.latestRevisionNumber + 1;
+            const nextRevisionNumber = Math.max(existing.latestRevisionNumber, effectiveLatestRevisionNumber) + 1;
             const [revision] = await tx
               .insert(documentRevisions)
               .values({

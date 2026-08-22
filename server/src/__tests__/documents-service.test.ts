@@ -8,6 +8,7 @@ import {
   issueDocuments,
   issues,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -192,5 +193,60 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: "# Agent replacement plan",
       lockedAt: null,
     }));
+  });
+
+  it("reconciles a frozen latestRevisionId pointer against documentRevisions (ETS-461)", async () => {
+    const { issueId } = await createIssueWithDocuments();
+
+    const created = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(created?.latestRevisionId).not.toBeNull();
+    const firstRevisionId = created!.latestRevisionId!;
+
+    // Simulate the corrupted state: a new revision was inserted into
+    // documentRevisions but the pointer column on `documents` was not
+    // updated (e.g. a partially-committed transaction or a lost rollback).
+    // The client observing a fresh GET sees a revision id that has a newer
+    // sibling already present, so subsequent PUTs using the "latest" id
+    // should not 409 after reconciliation.
+    const [docRow] = await db.select({ companyId: documents.companyId }).from(documents).where(eq(documents.id, created!.id));
+    const [phantomRevision] = await db
+      .insert(documentRevisions)
+      .values({
+        companyId: docRow.companyId,
+        documentId: created!.id,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan v2 (concurrent)",
+        createdAt: new Date(),
+      })
+      .returning();
+    await db
+      .update(documents)
+      .set({ latestRevisionNumber: 1 })
+      .where(eq(documents.id, created!.id));
+    expect(phantomRevision.id).not.toBe(firstRevisionId);
+
+    // The pointer on `documents` still says "firstRevisionId" (frozen), NOT
+    // the true revision (phantomRevision.id) in documentRevisions. After the
+    // fix, the service should accept baseRevisionId=phantomRevision.id and
+    // atomically repair the pointer on `documents`.
+    const put = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Plan v3",
+      baseRevisionId: phantomRevision.id,
+    });
+
+    expect(put.created).toBe(false);
+    expect(put.document.body).toBe("# Plan v3");
+
+    // The upsert repairs the pointer so that subsequent reads are consistent.
+    const after = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(after?.latestRevisionId).toBe(put.document.latestRevisionId);
+    expect(after?.latestRevisionNumber).toBe(3);
+    expect(after?.body).toBe("# Plan v3");
   });
 });
