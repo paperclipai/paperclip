@@ -21,6 +21,7 @@ import {
   writeStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
+  pullAgentLifecycleReportSchema,
   agentSkillSyncSchema,
   testAdapterEnvironmentSchema,
   // Issue
@@ -2023,6 +2024,27 @@ registry.registerPath({
   summary: "Get agent runtime state",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/lifecycle",
+  tags: ["agents"],
+  summary: "Get pull-agent lifecycle evidence and derived state",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/lifecycle-report",
+  tags: ["agents"],
+  summary: "Report a pull-agent lease without heartbeat dispatch",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(pullAgentLifecycleReportSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 registry.registerPath({

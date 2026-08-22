@@ -177,6 +177,26 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
+  it("does not invoke a heartbeat for a pull agent unless dispatch is enabled", async () => {
+    render(makeAgent({
+      status: "running",
+      runtimeConfig: { executionModel: "pull", pull: { dispatchEnabled: false } },
+    }));
+    await flushReact();
+
+    const runButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Run Heartbeat"));
+    expect(runButton).toBeTruthy();
+    expect(runButton?.hasAttribute("disabled")).toBe(true);
+    expect(runButton?.getAttribute("title")).toMatch(/Pull agents do not take adapter heartbeats/);
+
+    await act(async () => {
+      runButton?.click();
+    });
+    await flushReact();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
+  });
+
   it("calls the terminate success handler after terminating an agent", async () => {
     const onTerminateSuccess = vi.fn();
     render(makeAgent(), { onTerminateSuccess });

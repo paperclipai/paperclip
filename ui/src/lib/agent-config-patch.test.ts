@@ -192,6 +192,28 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("refuses to enable the timer heartbeat on a pull seat", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      executionModel: "pull",
+      pull: { dispatchEnabled: false },
+      heartbeat: { enabled: false, intervalSec: 300 },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        heartbeat: { enabled: true, intervalSec: 120 },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({
+      executionModel: "pull",
+      pull: { dispatchEnabled: false },
+      heartbeat: { enabled: false, intervalSec: 120 },
+    });
+  });
+
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

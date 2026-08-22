@@ -98,6 +98,16 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { pullAgentLifecycleService } from "./pull-agent-lifecycle.js";
+import {
+  applyPullHeartbeatWriteGuard,
+  resolveAgentHeartbeatDispatchPolicy,
+} from "./pull-agent-dispatch.js";
+
+export {
+  applyPullHeartbeatWriteGuard,
+  resolveAgentHeartbeatDispatchPolicy,
+};
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -120,6 +130,7 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
@@ -17788,6 +17799,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
+    const dispatchPolicy = resolveAgentHeartbeatDispatchPolicy(agent.runtimeConfig);
+    if (!dispatchPolicy.dispatchEnabled) {
+      await writeSkippedHeartbeatRequest("heartbeat.pull_dispatch_disabled", {
+        executionModel: dispatchPolicy.executionModel,
+        dispatchEnabled: false,
+      });
+      return null;
+    }
+
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
       await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
@@ -19614,11 +19634,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
       const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
+      const pullLifecycle = pullAgentLifecycleService(db);
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
       for (const agent of allAgents) {
+        const dispatchPolicy = resolveAgentHeartbeatDispatchPolicy(agent.runtimeConfig);
+        if (!dispatchPolicy.dispatchEnabled) {
+          await pullLifecycle.reconcile(agent, now);
+          continue;
+        }
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
         if (!invokability.invokable) continue;
         const policy = parseHeartbeatPolicy(agent);

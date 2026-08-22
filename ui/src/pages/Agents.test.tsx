@@ -890,6 +890,54 @@ describe("Agents", () => {
     expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 
+  it("shows derived pull lifecycle state instead of a stale agents.status", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        name: "Wren",
+        urlKey: "wren",
+        status: "running",
+        runtimeConfig: { executionModel: "pull", pull: { dispatchEnabled: false } },
+        pullLifecycle: {
+          executionModel: "pull",
+          state: "idle_queued",
+          source: "resident-seat",
+          evidence: [{ kind: "claim", id: "issue:COM-10564", active: true }],
+          observedAt: new Date("2026-08-16T15:00:00Z"),
+          expiresAt: new Date("2026-08-16T16:00:00Z"),
+          queuedIssueCount: 1,
+          blockedIssueCount: 0,
+          dispatchEnabled: false,
+        },
+      }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const listToggle = Array.from(container.querySelectorAll("button")).find(
+      (btn) => btn.querySelector("svg.lucide-list"),
+    );
+    expect(listToggle).toBeDefined();
+    await act(async () => {
+      listToggle!.click();
+    });
+    await flushReact();
+
+    const row = findAgentRow(container, "Wren");
+    expect(row?.textContent).toContain("idle queued");
+    expect(row?.textContent).not.toMatch(/\brunning\b/);
+  });
+
   it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {
     root = createRoot(container);
     await act(async () => {

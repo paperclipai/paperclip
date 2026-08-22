@@ -61,7 +61,25 @@ In agent runtime settings, configure heartbeat policy:
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups
 
-## 3.3 Working directory and execution limits
+## 3.3 Pull / resident agents
+
+Some agents (for example Wren on comcap-vps) already run as resident seats. Paperclip must **not** also dispatch heartbeat adapter runs for those agents.
+
+Set:
+
+- `runtimeConfig.executionModel`: `pull`
+- `runtimeConfig.pull.dispatchEnabled`: leave unset or `false` unless you explicitly want Paperclip to wake the adapter
+- `runtimeConfig.heartbeat.enabled`: stored `false` whenever dispatch is off. A create or PATCH that tries to set `heartbeat.enabled=true` on a pull agent without `pull.dispatchEnabled=true` is coerced back to `false`.
+
+Status and evidence then come from:
+
+- `GET /api/agents/:id` (embeds `pullLifecycle` for pull agents)
+- `GET /api/agents/:id/lifecycle`
+- `POST /api/agents/:id/lifecycle-report` or `paperclip agent lifecycle-report`
+
+A fresh lease plus live `agent_task_sessions` derive `running`, `idle`, `idle_queued`, `blocked`, or `unreachable`. Timer ticks reconcile expired leases onto `idle` and still skip adapter wakeup. Manual `/heartbeat/invoke` and `/wakeup` also skip when dispatch is off and record `heartbeat.pull_dispatch_disabled`. Host bridges should PATCH `agents.status` only while `GET /lifecycle` is 404.
+
+## 3.4 Working directory and execution limits
 
 For local adapters, set:
 
@@ -71,7 +89,7 @@ For local adapters, set:
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
 
-## 3.4 Prompt templates
+## 3.5 Prompt templates
 
 You can set:
 

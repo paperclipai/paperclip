@@ -72,6 +72,7 @@ import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadat
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
+import { pullAgentHeartbeatLocked } from "../lib/pull-agent-roster";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
@@ -1896,15 +1897,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <ToggleWithNumber
                 label="Heartbeat on interval"
-                hint={help.heartbeatInterval}
-                checked={eff("heartbeat", "enabled", heartbeat.enabled === true)}
-                onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
+                hint={
+                  !isCreate && pullAgentHeartbeatLocked(props.agent)
+                    ? "Pull / resident seats do not take adapter heartbeats unless dispatch is explicitly enabled."
+                    : help.heartbeatInterval
+                }
+                checked={
+                  !isCreate && pullAgentHeartbeatLocked(props.agent)
+                    ? false
+                    : eff("heartbeat", "enabled", heartbeat.enabled === true)
+                }
+                onCheckedChange={(v) => {
+                  if (!isCreate && pullAgentHeartbeatLocked(props.agent)) return;
+                  mark("heartbeat", "enabled", v);
+                }}
                 number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
                 onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
                 numberLabel="sec"
                 numberPrefix="Run heartbeat every"
                 numberHint={help.intervalSec}
-                showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                showNumber={
+                  !isCreate && pullAgentHeartbeatLocked(props.agent)
+                    ? false
+                    : eff("heartbeat", "enabled", heartbeat.enabled === true)
+                }
+                disabled={!isCreate && pullAgentHeartbeatLocked(props.agent)}
+                toggleTestId="agent-heartbeat-interval-toggle"
               />
             </div>
             <CollapsibleSection

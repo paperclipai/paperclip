@@ -2659,3 +2659,45 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
   });
 
 });
+
+describe("AgentConfigForm pull heartbeat lock", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({});
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    for (const root of roots) root.unmount();
+    roots = [];
+    document.body.innerHTML = "";
+  });
+
+  it("disables the interval heartbeat toggle for a pull seat", async () => {
+    const result = await renderForm([], {
+      runtimeConfig: {
+        executionModel: "pull",
+        pull: { dispatchEnabled: false },
+        heartbeat: { enabled: false, intervalSec: 300 },
+      },
+    });
+    roots.push(result.root);
+
+    const toggle = result.container.querySelector<HTMLButtonElement>(
+      '[data-testid="agent-heartbeat-interval-toggle"]',
+    );
+    expect(toggle).toBeTruthy();
+    expect(toggle?.disabled).toBe(true);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(result.container.textContent).toContain("Heartbeat on interval");
+  });
+});

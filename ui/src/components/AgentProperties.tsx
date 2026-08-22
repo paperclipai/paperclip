@@ -9,6 +9,7 @@ import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { agentRosterStatus } from "../lib/pull-agent-roster";
 
 interface AgentPropertiesProps {
   agent: Agent;
@@ -42,7 +43,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
     <div className="space-y-4">
       <div className="space-y-1">
         <PropertyRow label="Status">
-          <AgentStatusBadge status={agent.status} />
+          <AgentStatusBadge status={agentRosterStatus(agent)} />
         </PropertyRow>
         {lastErrorIsActive && agent.errorReason && (
           <PropertyRow label="Error reason">

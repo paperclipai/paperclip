@@ -48,6 +48,7 @@ import { Identity } from "../components/Identity";
 import { AuditFeed } from "./audit/AuditFeed";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
+import { PullAgentLifecycleCard } from "../components/PullAgentLifecycleCard";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
@@ -106,6 +107,7 @@ import {
   type HeartbeatRun,
   type HeartbeatRunEvent,
   type AgentRuntimeState,
+  type PullAgentLifecycle,
   type LiveEvent,
   type WorkspaceOperation,
   isResponsibleUserDenialCode,
@@ -877,6 +879,14 @@ export function AgentDetail() {
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
     enabled: Boolean(resolvedAgentId) && needsDashboardData,
   });
+  const isPullAgent = agent?.runtimeConfig?.executionModel === "pull";
+  const { data: pullLifecycle } = useQuery({
+    queryKey: queryKeys.agents.lifecycle(resolvedAgentId ?? routeAgentRef),
+    queryFn: () => agentsApi.lifecycle(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    enabled: Boolean(resolvedAgentId) && needsDashboardData && isPullAgent,
+    refetchInterval: isPullAgent ? 15_000 : false,
+    placeholderData: agent?.pullLifecycle,
+  });
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
@@ -1481,6 +1491,7 @@ export function AgentDetail() {
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
+          pullLifecycle={pullLifecycle}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
         />
@@ -1763,6 +1774,7 @@ function AgentOverview({
   runs,
   assignedIssues,
   runtimeState,
+  pullLifecycle,
   agentId,
   agentRouteId,
 }: {
@@ -1770,6 +1782,7 @@ function AgentOverview({
   runs: HeartbeatRun[];
   assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
   runtimeState?: AgentRuntimeState;
+  pullLifecycle?: PullAgentLifecycle;
   agentId: string;
   agentRouteId: string;
 }) {
@@ -1781,6 +1794,8 @@ function AgentOverview({
 
   return (
     <div className="space-y-8">
+      {pullLifecycle && <PullAgentLifecycleCard lifecycle={pullLifecycle} />}
+
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
 

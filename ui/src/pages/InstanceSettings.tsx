@@ -46,6 +46,10 @@ export function InstanceSettings() {
 
   const toggleMutation = useMutation({
     mutationFn: async (agentRow: InstanceSchedulerHeartbeatAgent) => {
+      const nextEnabled = !agentRow.heartbeatEnabled;
+      if (agentRow.executionModel === "pull" && !agentRow.pullDispatchEnabled && nextEnabled) {
+        throw new Error("Pull agents cannot enable the heartbeat scheduler without pull.dispatchEnabled");
+      }
       const agent = await agentsApi.get(agentRow.id, agentRow.companyId);
       const runtimeConfig = asRecord(agent.runtimeConfig) ?? {};
       const heartbeat = asRecord(runtimeConfig.heartbeat) ?? {};
@@ -229,7 +233,9 @@ export function InstanceSettings() {
                           variant={agent.schedulerActive ? "default" : "outline"}
                           className="shrink-0 text-(length:--text-nano) px-1.5 py-0"
                         >
-                          {agent.schedulerActive ? "On" : "Off"}
+                          {agent.executionModel === "pull" && !agent.pullDispatchEnabled
+                            ? "Pull"
+                            : agent.schedulerActive ? "On" : "Off"}
                         </Badge>
                         <Link
                           to={buildAgentHref(agent)}
@@ -263,7 +269,15 @@ export function InstanceSettings() {
                             variant="ghost"
                             size="sm"
                             className="h-6 px-2 text-xs"
-                            disabled={saving}
+                            disabled={
+                              saving
+                              || (agent.executionModel === "pull" && !agent.pullDispatchEnabled && !agent.heartbeatEnabled)
+                            }
+                            title={
+                              agent.executionModel === "pull" && !agent.pullDispatchEnabled
+                                ? "Pull agents stay off the heartbeat scheduler unless pull.dispatchEnabled is set"
+                                : undefined
+                            }
                             onClick={() => toggleMutation.mutate(agent)}
                           >
                             {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}

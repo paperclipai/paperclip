@@ -1,4 +1,5 @@
 import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
+import { pullAgentHeartbeatLocked } from "./pull-agent-roster";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;
@@ -67,7 +68,11 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
-      nextRuntimeConfig.heartbeat = { ...existingHb, ...overlay.heartbeat };
+      const nextHeartbeat = { ...existingHb, ...overlay.heartbeat };
+      if (pullAgentHeartbeatLocked(agent)) {
+        nextHeartbeat.enabled = false;
+      }
+      nextRuntimeConfig.heartbeat = nextHeartbeat;
     }
 
     if (hasModelProfileChange) {
