@@ -180,6 +180,7 @@ type StrandedRecoveryCause =
   | "process_lost"
   | "provider_quota"
   | "codex_output_inactivity_monitor"
+  | "opencode_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
@@ -211,6 +212,7 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
     case "process_lost":
       return "retries exhausted";
     case "codex_output_inactivity_monitor":
+    case "opencode_output_inactivity_monitor":
       return "output-inactivity retry exhausted";
     case "workspace_validation_failed":
       return "workspace validation failed";
@@ -284,8 +286,11 @@ function resolveStrandedRecoveryCause(
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
   if (latestRun?.errorCode === "process_lost") return "process_lost";
-  if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
-    return "codex_output_inactivity_monitor";
+  if (
+    latestRun?.errorCode === "codex_output_inactivity_monitor" ||
+    latestRun?.errorCode === "opencode_output_inactivity_monitor"
+  ) {
+    return latestRun.errorCode;
   }
   return "stranded_assigned_issue";
 }
@@ -2633,7 +2638,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
-      input.recoveryCause === "codex_output_inactivity_monitor";
+      input.recoveryCause === "codex_output_inactivity_monitor" ||
+      input.recoveryCause === "opencode_output_inactivity_monitor";
     if (input.recoveryCause === "provider_quota") {
       const retryAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
       if (!retryAgentId) {
@@ -2980,7 +2986,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? "Retry the original assignee from durable progress without redoing completed steps."
         : recoveryCause === "provider_quota"
           ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
-        : recoveryCause === "codex_output_inactivity_monitor"
+        : recoveryCause === "codex_output_inactivity_monitor" || recoveryCause === "opencode_output_inactivity_monitor"
           ? "Retry the same agent from durable progress after the output-inactivity termination."
         : recoveryCause === "workspace_validation_failed"
           ? readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_branch_incoherence"
