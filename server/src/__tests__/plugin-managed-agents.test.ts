@@ -362,4 +362,76 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
       managedResourceKey: "wiki-maintainer",
     });
   });
+
+  it("creates the hire approval when a pending managed agent declares instructions", async () => {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-managed-agent-home-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    try {
+      const pluginManifest = manifest();
+      pluginManifest.agents![0].instructions = {
+        entryFile: "AGENTS.md",
+        content: "Maintain the wiki.",
+      };
+      const { companyId, services } = await seedCompanyAndPlugin({
+        requireApproval: true,
+        manifest: pluginManifest,
+      });
+
+      const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+      expect(created.status).toBe("created");
+      expect(created.agent?.status).toBe("pending_approval");
+      expect(created.approvalId).toBeTruthy();
+
+      const [approval] = await db.select().from(approvals).where(eq(approvals.id, created.approvalId!));
+      expect(approval).toMatchObject({ type: "hire_agent", status: "pending" });
+      expect(approval?.payload).toMatchObject({ agentId: created.agentId });
+    } finally {
+      process.env.PAPERCLIP_HOME = previousHome;
+      process.env.PAPERCLIP_INSTANCE_ID = previousInstance;
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("backfills a missing hire approval for an orphaned pending managed agent", async () => {
+    const { companyId, pluginId, pluginManifest, services } = await seedCompanyAndPlugin({ requireApproval: true });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Wiki Maintainer",
+      role: "engineer",
+      status: "pending_approval",
+      adapterType: "process",
+      adapterConfig: { command: "pnpm wiki:maintain" },
+      runtimeConfig: {},
+      permissions: {},
+      metadata: {
+        paperclipManagedResource: {
+          pluginId,
+          pluginKey: pluginManifest.id,
+          resourceKind: "agent",
+          resourceKey: "wiki-maintainer",
+        },
+      },
+    });
+
+    const relinked = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    expect(relinked.status).toBe("relinked");
+    expect(relinked.agentId).toBe(agentId);
+    expect(relinked.approvalId).toBeTruthy();
+
+    const [approval] = await db.select().from(approvals).where(eq(approvals.id, relinked.approvalId!));
+    expect(approval).toMatchObject({ type: "hire_agent", status: "pending" });
+    expect(approval?.payload).toMatchObject({ agentId });
+
+    // A second reconcile must reuse the open approval, not create a duplicate.
+    const again = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    expect(again.approvalId).toBe(relinked.approvalId);
+    const rows = await db.select().from(approvals);
+    expect(rows).toHaveLength(1);
+  });
 });
