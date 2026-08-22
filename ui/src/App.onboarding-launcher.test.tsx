@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ONBOARDING_AGENT_STEP,
-  ONBOARDING_MISSION_STEP,
 } from "./lib/onboarding-route";
 
 /**
@@ -167,37 +166,29 @@ describe("the onboarding launcher's Add Agent button", () => {
     });
   });
 
-  it("still asks for the mission when the company has none", async () => {
-    mockGoalsApi.list.mockResolvedValue([]);
-    await render();
-    await settle();
+  it("goes to the agent step whatever the goals lookup says", async () => {
+    // Two tests lived here — company with no mission, and a lookup that failed —
+    // and both sent "Add Agent" to the mission step first. Onboarding no longer
+    // asks for the mission, so neither goal state can divert a button whose
+    // whole purpose is adding an agent.
+    for (const goals of [
+      () => mockGoalsApi.list.mockResolvedValue([]),
+      () => mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable")),
+    ]) {
+      dialogState.openOnboarding.mockClear();
+      goals();
+      await render();
+      await settle();
 
-    await act(async () => {
-      addAgentButton().dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+      await act(async () => {
+        addAgentButton().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
 
-    expect(dialogState.openOnboarding).toHaveBeenCalledWith({
-      initialStep: ONBOARDING_MISSION_STEP,
-      companyId: "company-1",
-    });
-  });
-
-  it("asks for the mission when the lookup fails, rather than skipping it", async () => {
-    // Same fail-open rule the other two entry points follow: an unknown
-    // mission costs the step, which the customer can answer. Confirming it now
-    // updates the company's existing goal rather than adding a second one.
-    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
-    await render();
-    await settle();
-
-    await act(async () => {
-      addAgentButton().dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(dialogState.openOnboarding).toHaveBeenCalledWith({
-      initialStep: ONBOARDING_MISSION_STEP,
-      companyId: "company-1",
-    });
+      expect(dialogState.openOnboarding).toHaveBeenCalledWith({
+        initialStep: ONBOARDING_AGENT_STEP,
+        companyId: "company-1",
+      });
+    }
   });
 
   it("opens with no company when the prefix matches none", async () => {

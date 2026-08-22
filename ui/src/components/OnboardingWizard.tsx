@@ -350,20 +350,18 @@ function OnboardingWizardInner({
           (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
         )?.id ?? null
       : null;
-  const { hasMission: routeCompanyHasMission, settled: routeMissionSettled } =
-    useCompanyMission(routeMatchedCompanyId);
-
-  // Hold the options back until the mission lookup settles, exactly as they
-  // are already held back while companies load. The step below is applied once
-  // and not revised, so the wizard must not open before the answer is in.
+  // The mission lookup used to gate this: the step was applied once and not
+  // revised, so opening before the answer arrived left the customer on the
+  // wrong step. The step no longer depends on the answer, so the wait bought
+  // nothing but a slower open. Companies still gate it — the resolver needs
+  // them to match the prefix at all.
   const routeOnboardingOptions =
-    (companyPrefix && companiesLoading) || !routeMissionSettled
+    companyPrefix && companiesLoading
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
           companyPrefix,
           companies,
-          companyHasMission: routeCompanyHasMission,
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
@@ -1190,6 +1188,51 @@ function OnboardingWizardInner({
     }
   }
 
+  // Step 1 → 3 ("Name your company"): create the company, then go straight to
+  // the first agent.
+  //
+  // This work used to live at the end of `handleConfirmMission`, because step 1
+  // led to the mission step and the company was created when that step was
+  // confirmed. Onboarding no longer asks for the mission, so step 1 has to do
+  // its own creating — routing 1 → 3 without this left the wizard on the agent
+  // step with no company to hire into, and nothing said so.
+  //
+  // No goal is written here. That is the difference from the path this was
+  // taken from, and it is deliberate: the mission is collected later, in the
+  // tenant app, so writing an empty one now would only give the company a goal
+  // it did not choose.
+  async function handleCreateCompany() {
+    if (createdCompanyId) {
+      setStep(3);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const company = await companiesApi.create({ name: companyName.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      // Nothing was in hand when this started, so "unchanged" means still
+      // nothing. A route that supplied a company while the request was open has
+      // taken over the wizard, and adopting the company just created would
+      // fight it — and would leave the customer on a company they never
+      // navigated to.
+      if (!stillTheSameCompany(null)) return;
+      setCreatedCompanyId(company.id);
+      // Keep the mirror current rather than waiting for the next render, for
+      // the same reason the mission path does: anything downstream that asks
+      // `stillTheSameCompany` in this tick would otherwise be told no.
+      createdCompanyIdRef.current = company.id;
+      setCreatedCompanyPrefix(company.issuePrefix);
+      setSelectedCompanyId(company.id);
+      setStep(3);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create company");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
   // Step 4 → 5 ("Give it a heartbeat"): hire the lead agent + seed its
   // instructions, then advance to Review. Guarded so revisiting step 4
   // doesn't hire a second agent.
@@ -1376,7 +1419,7 @@ function OnboardingWizardInner({
       // yet — two goals for one mission, two agents for one hire.
       if (loading) return;
       if (step === 0) return; // front door requires click
-      if (step === 1 && companyName.trim()) setStep(2);
+      if (step === 1 && companyName.trim()) void handleCreateCompany();
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
       else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
@@ -1450,15 +1493,19 @@ function OnboardingWizardInner({
                   : "w-full max-w-md px-8 py-12",
               )}
             >
-              {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
+              {/* Full-length progress bar (brand .wsteps/.wstep) — segment N
                   filled once step ≥ N. Completed segments jump back.
                   Hidden for a run that entered on the agent arc: the arc strip
                   below counts that run's three steps, and showing both put two
                   progress bars on the same screen. A run that started at step 1
-                  keeps this one throughout, so its count never restarts. */}
+                  keeps this one throughout, so its count never restarts.
+
+                  Step 2 is absent: onboarding no longer asks for the mission, so
+                  a segment for it would be one the run can never fill, and the
+                  count would visibly skip from 1 to 3. */}
               {!showsAgentArcStepper && (
               <div className="flex items-center gap-1.5 mb-8">
-                {([1, 2, 3, 4, 5] as const).map((s) => {
+                {([1, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
                   const canJump = canJumpToOnboardingStep({
                     targetStep: s,
@@ -2394,12 +2441,12 @@ function OnboardingWizardInner({
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim()}
-                      onClick={() => {
-                        if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                        setStep(2);
-                      }}
+                      disabled={!companyName.trim() || loading}
+                      onClick={handleCreateCompany}
                     >
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : null}
                       Next
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
