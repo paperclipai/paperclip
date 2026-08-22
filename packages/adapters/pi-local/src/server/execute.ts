@@ -714,6 +714,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
         runLogTail: paperclipBridge?.runLogTail,
+        // AGE-656: this is the run's primary CLI invocation — its output must
+        // survive a control-plane restart, so it opts into file-backed
+        // stdio. Has no effect when `runtimeExecutionTarget` is a remote
+        // (ssh/sandbox) target; only a genuinely local spawn is affected.
+        fileBackedStdio: true,
       });
 
       // Flush any remaining buffer content

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   getSandboxCallbackBridgeServerSource,
@@ -81,6 +81,24 @@ function createRecordingTraceContext(): {
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
+  // Scratch-isolate `PAPERCLIP_HOME` defensively, matching the pattern in
+  // `server-utils.test.ts`. Not required for correctness today: this file's
+  // spawns go through `createLocalSandboxRunner()`, which calls
+  // `runChildProcess()` without `fileBackedStdio: true`, so none of them
+  // write a run-log file under the Paperclip instance root (AGE-656 scoped
+  // that behavior to an explicit opt-in, set only from the local CLI-engine
+  // run's primary process in `execution-target.ts`, not from this sandbox
+  // transport). Kept anyway so a future spawn added to this file can never
+  // accidentally write into the real, shared `~/.paperclip/instances/*/runs/`
+  // tree.
+  let tempPaperclipHome: string;
+  let previousPaperclipHome: string | undefined;
+
+  beforeEach(async () => {
+    tempPaperclipHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-sandbox-home-"));
+    previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = tempPaperclipHome;
+  });
 
   it("records successful issue comment ids for attribution recovery", () => {
     expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, '{"id":"comment-1"}'))
@@ -91,6 +109,9 @@ describe("sandbox adapter execution targets", () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    await rm(tempPaperclipHome, { recursive: true, force: true }).catch(() => undefined);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
