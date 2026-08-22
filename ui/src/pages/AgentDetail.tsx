@@ -1998,7 +1998,6 @@ function AgentConfigurePage({
         onSavingChange={onSavingChange}
         updatePermissions={updatePermissions}
         companyId={companyId}
-        hidePromptTemplate
         hideInstructionsFile
       />
       <div>

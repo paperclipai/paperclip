@@ -239,6 +239,7 @@ async function renderForm(
   agentOverrides: Partial<Agent> = {},
   options: {
     showAdapterTestEnvironmentButton?: boolean;
+    hidePromptTemplate?: boolean;
     content?: "configuration" | "secrets";
   } = {},
 ) {
@@ -263,7 +264,7 @@ async function renderForm(
               mode="edit"
               agent={makeAgent(agentOverrides)}
               onSave={vi.fn()}
-              hidePromptTemplate
+              hidePromptTemplate={options.hidePromptTemplate ?? true}
               content={options.content}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
@@ -823,6 +824,21 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.querySelector('[data-testid="hermes-gateway-config-fields"]')).toBeTruthy();
     expect(result.container.textContent).toContain("Hermes Gateway fields");
+  });
+
+  it("can expose the prompt template field for non-local adapters", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "cursor_cloud",
+        adapterConfig: {},
+      },
+      { hidePromptTemplate: false },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Prompt Template");
+    expect(result.container.textContent).toContain("The prompt template controls the run framing sent to the adapter");
   });
 
   it("tests both the primary and cheap models when a cheap profile is configured", async () => {
