@@ -217,9 +217,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0]);
+      // Release must not strip the assignee from a terminal or handed-off
+      // issue: only an in_progress release re-queues to todo and unassigns.
       expect(row).toEqual({
         status,
-        assigneeAgentId: null,
+        assigneeAgentId: agentId,
         checkoutRunId: null,
         executionRunId: null,
         executionLockedAt: null,
