@@ -7171,13 +7171,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return evaluateAgentInvokabilityFromDb(db, agent);
   }
 
-  function toAgentOrgRow(agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "reportsTo" | "status">): AgentOrgRow {
+  function toAgentOrgRow(agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "reportsTo" | "status" | "adapterType">): AgentOrgRow {
     return {
       id: agent.id,
       companyId: agent.companyId,
       name: agent.name,
       reportsTo: agent.reportsTo,
       status: agent.status,
+      adapterType: agent.adapterType,
     };
   }
 
@@ -7189,6 +7190,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         name: agents.name,
         reportsTo: agents.reportsTo,
         status: agents.status,
+        adapterType: agents.adapterType,
       })
       .from(agents)
       .where(eq(agents.companyId, companyId));

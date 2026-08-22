@@ -808,6 +808,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
+    if (!agent || agent.adapterType === "human") return false;
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
   }
 
@@ -1842,23 +1843,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const candidateIds: string[] = [];
     if (input.sourceIssue?.assigneeAgentId) {
-      const sourceAssignee = await getAgent(input.sourceIssue.assigneeAgentId);
-      if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);
+      await addAgentManagementChain(input.sourceIssue.assigneeAgentId, candidateIds, input.run.companyId, false);
     }
-    if (input.runningAgent.reportsTo) candidateIds.push(input.runningAgent.reportsTo);
+    await addAgentManagementChain(input.runningAgent.id, candidateIds, input.run.companyId, false);
     const roleCandidates = await db
       .select()
       .from(agents)
       .where(and(eq(agents.companyId, input.run.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
-    candidateIds.push(...roleCandidates.map((agent) => agent.id));
+    for (const roleAgent of roleCandidates) {
+      await addAgentManagementChain(roleAgent.id, candidateIds, input.run.companyId, true);
+    }
 
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== input.run.companyId) continue;
+      if (!candidate || candidate.companyId !== input.run.companyId || candidate.adapterType === "human") continue;
       const budgetBlock = await budgets.getInvocationBlock(input.run.companyId, candidate.id, {
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
@@ -2557,20 +2559,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  async function addAgentManagementChain(
+    startAgentId: string | null | undefined,
+    candidateIds: string[],
+    companyId: string,
+    includeStart = false,
+  ) {
+    if (!startAgentId) return;
+    const chainSeen = new Set<string>();
+    let currentId: string | null | undefined = startAgentId;
+    if (!includeStart) {
+      const startAgent = await getAgent(startAgentId);
+      currentId = startAgent?.reportsTo;
+    }
+    while (currentId && !chainSeen.has(currentId)) {
+      chainSeen.add(currentId);
+      const currentAgent = await getAgent(currentId);
+      if (!currentAgent || currentAgent.companyId !== companyId) break;
+      candidateIds.push(currentAgent.id);
+      currentId = currentAgent.reportsTo;
+    }
+  }
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(
     issue: typeof issues.$inferSelect,
     preferredOwnerAgentId?: string | null,
     excludedAgentIds: ReadonlySet<string> = new Set(),
   ) {
     const candidateIds: string[] = [];
-    if (preferredOwnerAgentId) candidateIds.push(preferredOwnerAgentId);
+    if (preferredOwnerAgentId) {
+      await addAgentManagementChain(preferredOwnerAgentId, candidateIds, issue.companyId, true);
+    }
     if (issue.assigneeAgentId) {
-      const assignee = await getAgent(issue.assigneeAgentId);
-      if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
+      await addAgentManagementChain(issue.assigneeAgentId, candidateIds, issue.companyId, false);
     }
     if (issue.createdByAgentId) {
-      const creator = await getAgent(issue.createdByAgentId);
-      if (creator?.reportsTo) candidateIds.push(creator.reportsTo);
+      await addAgentManagementChain(issue.createdByAgentId, candidateIds, issue.companyId, false);
       candidateIds.push(issue.createdByAgentId);
     }
 
@@ -2579,7 +2603,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .from(agents)
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
-    candidateIds.push(...roleCandidates.map((agent) => agent.id));
+    for (const roleAgent of roleCandidates) {
+      await addAgentManagementChain(roleAgent.id, candidateIds, issue.companyId, true);
+    }
     if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
 
     const seen = new Set<string>();
@@ -2588,7 +2614,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       seen.add(agentId);
       if (excludedAgentIds.has(agentId)) continue;
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== issue.companyId) continue;
+      if (!candidate || candidate.companyId !== issue.companyId || candidate.adapterType === "human") continue;
       const budgetBlock = await budgets.getInvocationBlock(issue.companyId, candidate.id, {
         issueId: issue.id,
         projectId: issue.projectId,
@@ -5500,6 +5526,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           title: agents.title,
           status: agents.status,
           reportsTo: agents.reportsTo,
+          adapterType: agents.adapterType,
         })
         .from(agents),
       db
