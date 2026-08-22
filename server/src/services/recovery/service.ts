@@ -339,7 +339,7 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
 }
 
 
-function didAutomaticRecoveryFail(
+function isAutomaticRecoveryRun(
   latestRun: LatestIssueRun,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
 ) {
@@ -347,10 +347,17 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
-  return latestRetryReason === expectedRetryReason &&
-    UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-      latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-    );
+  return latestRetryReason === expectedRetryReason;
+}
+
+function didAutomaticRecoveryFail(
+  latestRun: LatestIssueRun,
+  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+) {
+  if (!latestRun || !isAutomaticRecoveryRun(latestRun, expectedRetryReason)) return false;
+  return UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+    latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+  );
 }
 
 function isTerminalIssueRun(latestRun: LatestIssueRun) {
@@ -990,27 +997,49 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function wasTodoHandedBackDuringOrAfterLatestRun(
+  async function wasTodoReturnedToReadyWorkDuringOrAfterLatestRun(
     issue: typeof issues.$inferSelect,
     latestRun: LatestIssueRun,
   ) {
     if (issue.status !== "todo" || latestRun?.status !== "succeeded") return false;
     const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
 
-    return db
-      .select({ id: issueRecoveryActions.id })
-      .from(issueRecoveryActions)
-      .where(
-        and(
-          eq(issueRecoveryActions.companyId, issue.companyId),
-          eq(issueRecoveryActions.sourceIssueId, issue.id),
-          eq(issueRecoveryActions.status, "resolved"),
-          eq(issueRecoveryActions.outcome, "handed_back"),
-          gte(issueRecoveryActions.resolvedAt, runBeganAt),
-        ),
-      )
-      .limit(1)
-      .then((rows) => Boolean(rows[0]));
+    const [recoveryHandBack, explicitTodoTransition] = await Promise.all([
+      db
+        .select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, issue.companyId),
+            eq(issueRecoveryActions.sourceIssueId, issue.id),
+            eq(issueRecoveryActions.status, "resolved"),
+            eq(issueRecoveryActions.outcome, "handed_back"),
+            gte(issueRecoveryActions.resolvedAt, runBeganAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => Boolean(rows[0])),
+      db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, issue.companyId),
+            eq(activityLog.runId, latestRun.id),
+            eq(activityLog.action, "issue.updated"),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issue.id),
+            sql`${activityLog.details} ->> 'status' = 'todo'`,
+            sql`${activityLog.details} -> '_previous' ->> 'status' IS NOT NULL`,
+            sql`${activityLog.details} -> '_previous' ->> 'status' <> 'todo'`,
+            gte(activityLog.createdAt, runBeganAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => Boolean(rows[0])),
+    ]);
+
+    return recoveryHandBack || explicitTodoTransition;
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
@@ -5158,22 +5187,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (
-          latestRun.status === "succeeded" &&
-          !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
-        ) {
-          result.skipped += 1;
-          continue;
-        }
-
-        if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+        // A bounded assignment recovery is the one retry. If it terminates and
+        // the issue is still ready but has no live path, surface the strand
+        // instead of allowing successful no-op retries to loop forever.
+        if (isAutomaticRecoveryRun(latestRun, "assignment_recovery") && isTerminalIssueRun(latestRun)) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
             latestRun,
             notice: {
               body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+                "Paperclip automatically retried dispatch for this assigned `todo` issue, " +
                 "but it still has no live execution path. " +
                 "Moving it to `blocked` so it is visible for intervention.",
               title: "No live execution path",
@@ -5186,6 +5210,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           } else {
             result.skipped += 1;
           }
+          continue;
+        }
+
+        if (
+          latestRun.status === "succeeded" &&
+          !(await wasTodoReturnedToReadyWorkDuringOrAfterLatestRun(issue, latestRun))
+        ) {
+          result.skipped += 1;
           continue;
         }
 

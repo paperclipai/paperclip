@@ -527,6 +527,8 @@ Recovery hand-back is covered by the same liveness guarantee:
 
 - an `issue_recovery_action_restored` wake requested while the resolving recovery run is still active is persisted as a follow-up and dispatched only after that run exits, so it cannot be coalesced into the run that requested it
 - if that follow-up is nevertheless lost, the stranded-work backstop treats an assigned `todo` issue with a resolved `handed_back` recovery action from during or after its latest successful run as stranded and queues the bounded assignment recovery wake; the successful resolving run is not, by itself, evidence that the handed-back source work is live
+- the same backstop applies when a successful run explicitly transitions its source issue from an active status back to `todo`; `todo` means ready work, so that durable transition receives one bounded assignment recovery if no wake or run survives
+- if that assignment recovery terminates and the issue remains stranded in `todo`, Paperclip surfaces the failed execution path instead of recursively dispatching assignment recovery
 
 ### 9.2 Stranded assigned `in_progress`
 
