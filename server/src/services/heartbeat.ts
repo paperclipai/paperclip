@@ -794,6 +794,7 @@ function mergeAdapterRecoveryMetadata(input: {
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  "issue_children_completed",
   "issue_recovery_action_restored",
 ]);
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
