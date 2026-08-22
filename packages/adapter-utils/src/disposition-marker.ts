@@ -225,3 +225,73 @@ export function extractPaperclipDisposition(text: string): {
     cleanedText,
   };
 }
+
+// --- PAPERCLIP_DELEGATION (2026-08-22) -------------------------------------
+// Root cause of the recurring "C-level delegation goes nowhere" disease:
+// confined ACP lanes (all codex C-levels) have NO control-plane write door —
+// zero issues created by any codex lane in 7 days against ~1,500 C-level
+// runs/day of routing narration. The Delegation Receipt Law demanded a child
+// card they were physically unable to create. This marker is their door,
+// mirrored on the PAPERCLIP_DISPOSITION contract: state the delegation in the
+// final message; the platform creates the child, assigns it, wakes the
+// assignee, and posts the receipt on the parent.
+export type ParsedDelegation = {
+  title: string;
+  description?: string;
+  assignee?: string;
+  priority?: string;
+};
+
+export const MAX_DELEGATIONS_PER_RUN = 3;
+const DELEGATION_MARKER = "PAPERCLIP_DELEGATION";
+
+export function extractPaperclipDelegations(text: string): ParsedDelegation[] {
+  const out: ParsedDelegation[] = [];
+  let searchFrom = 0;
+  while (out.length < MAX_DELEGATIONS_PER_RUN) {
+    const markerIndex = text.indexOf(DELEGATION_MARKER, searchFrom);
+    if (markerIndex === -1) break;
+    searchFrom = markerIndex + DELEGATION_MARKER.length;
+
+    let braceIndex = -1;
+    const windowEnd = Math.min(text.length, searchFrom + 12);
+    for (let i = searchFrom; i < windowEnd; i += 1) {
+      if (text[i] === "{") {
+        braceIndex = i;
+        break;
+      }
+    }
+    if (braceIndex === -1) continue;
+    const jsonText = scanBalancedJsonObject(text, braceIndex);
+    if (!jsonText) continue;
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const raw = JSON.parse(jsonText) as unknown;
+      parsed = raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : null;
+    } catch {
+      continue;
+    }
+    if (!parsed) continue;
+    const wrapped = parsed[DELEGATION_MARKER];
+    if (wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)) {
+      parsed = wrapped as Record<string, unknown>;
+    }
+    const title = typeof parsed.title === "string" ? parsed.title.trim().slice(0, 200) : "";
+    if (!title) continue;
+    out.push({
+      title,
+      ...(typeof parsed.description === "string" && parsed.description.trim()
+        ? { description: parsed.description.trim().slice(0, 4000) }
+        : {}),
+      ...(typeof parsed.assignee === "string" && parsed.assignee.trim()
+        ? { assignee: parsed.assignee.trim() }
+        : {}),
+      ...(typeof parsed.priority === "string" && parsed.priority.trim()
+        ? { priority: parsed.priority.trim().toLowerCase() }
+        : {}),
+    });
+  }
+  return out;
+}

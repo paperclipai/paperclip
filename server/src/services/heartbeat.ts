@@ -316,6 +316,7 @@ import {
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   CACHED_INPUT_BUDGET_WEIGHT,
+  extractPaperclipDelegations,
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
@@ -11322,6 +11323,118 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // --- PAPERCLIP_DELEGATION consumption (2026-08-22) ---
+    // Confined ACP lanes (every codex C-level) have no control-plane write
+    // door: zero issues created by any codex lane in 7 days against ~1,500
+    // C-level runs/day of routing narration — the recurring "delegation goes
+    // nowhere" disease was a capability wall, not a behavior problem. The
+    // marker is their door: the platform creates the child, assigns it, wakes
+    // the assignee, and posts the receipt the Delegation Receipt Law demands.
+    let landedDelegations = 0;
+    if (issue && run.status === "succeeded" && issue.companyId) {
+      try {
+        const statedDelegations = extractPaperclipDelegations(rawFinalReport ?? "");
+        const companyIsBench = await db
+          .select({ prefix: companies.issuePrefix })
+          .from(companies)
+          .where(eq(companies.id, issue.companyId))
+          .then((rows) => rows[0]?.prefix === "TSBC");
+        for (const delegation of companyIsBench ? [] : statedDelegations) {
+          // Reuse-not-mint: a looping C-level restates the same delegation
+          // every run; an open same-title card absorbs it as a receipt pointer.
+          const existing = await db
+            .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, issue.companyId),
+              eq(issues.title, delegation.title),
+              inArray(issues.status, ["todo", "in_progress", "blocked", "in_review"]),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existing) {
+            await issuesSvc.addComment(
+              issue.id,
+              `Delegation receipt: \`${delegation.title}\` already exists as ${existing.identifier} (${existing.status}) — reused, not re-minted.`,
+              { runId: run.id },
+            );
+            landedDelegations += 1;
+            continue;
+          }
+          let assigneeAgentId: string | null = null;
+          let assigneeNote = "unassigned — no lane name given";
+          if (delegation.assignee) {
+            const target = await db
+              .select({ id: agents.id, name: agents.name, status: agents.status })
+              .from(agents)
+              .where(and(
+                eq(agents.companyId, issue.companyId),
+                sql`lower(${agents.name}) = lower(${delegation.assignee})`,
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (target && !["paused", "terminated", "archived"].includes(target.status)) {
+              assigneeAgentId = target.id;
+              assigneeNote = target.name;
+            } else {
+              assigneeNote = `unassigned — requested lane \`${delegation.assignee}\` ${target ? `is ${target.status}` : "not found"}`;
+            }
+          }
+          const validPriority = ["critical", "high", "medium", "low"].includes(delegation.priority ?? "")
+            ? (delegation.priority as "critical" | "high" | "medium" | "low")
+            : "medium";
+          const child = await issuesSvc.create(issue.companyId, {
+            title: delegation.title,
+            description: `${delegation.description ?? "(no description provided — see parent)"}\n\n---\nDelegated from ${issue.identifier} by its assignee via PAPERCLIP_DELEGATION (run ${run.id}).`,
+            status: "todo",
+            priority: validPriority,
+            parentId: issue.id,
+            projectId: issue.projectId,
+            assigneeAgentId,
+            originKind: "delegation",
+            originId: issue.id,
+            originRunId: run.id,
+          });
+          landedDelegations += 1;
+          await issuesSvc.addComment(
+            issue.id,
+            `Delegation landed: **${child.identifier}** → ${assigneeNote}. (Created by the platform from this run's PAPERCLIP_DELEGATION marker — receipt per the Delegation Receipt Law.)`,
+            { runId: run.id },
+          );
+          if (assigneeAgentId) {
+            await enqueueWakeup(assigneeAgentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_assigned",
+              payload: { issueId: child.id },
+              contextSnapshot: { issueId: child.id, wakeReason: "issue_assigned", source: "stated_delegation" },
+              requestedByActorType: "system",
+              requestedByActorId: "heartbeat",
+              idempotencyKey: `stated-delegation:${run.id}:${child.id}`,
+            });
+          }
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.delegation_landed",
+            entityType: "issue",
+            entityId: child.id,
+            details: {
+              label: "Stated delegation landed",
+              parentIssueId: issue.id,
+              assigneeAgentId,
+              sourceRunId: run.id,
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, runId: run.id, issueId: issue.id }, "failed to consume stated delegations");
+      }
+    }
+
     // 2026-08-22 disposition-disease fix, part 2: recognize STATED continuation
     // before firing a corrective "choose a next step" wake. Structured
     // `disposition.status: "continuing"/"continue"/"in_progress"`, the fleet
@@ -11334,7 +11447,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       (statedStatus && ["continuing", "continue", "in_progress"].includes(statedStatus))
       || (typeof finalReport === "string"
         && /(^|\n)\s*(continuing|next step)\s*[:\-]/i.test(finalReport))
-      || readNonEmptyString(nextAction),
+      || readNonEmptyString(nextAction)
+      // A landed delegation IS the C-level lane's concrete next action.
+      || landedDelegations > 0,
     );
 
     const decision = decideSuccessfulRunHandoff({

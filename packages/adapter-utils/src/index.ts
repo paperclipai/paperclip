@@ -79,7 +79,7 @@ export type {
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 export { CACHED_INPUT_BUDGET_WEIGHT, weightedBudgetTokens } from "./token-budget.js";
-export { extractPaperclipDisposition, type ParsedDisposition } from "./disposition-marker.js";
+export { extractPaperclipDisposition, extractPaperclipDelegations, MAX_DELEGATIONS_PER_RUN, type ParsedDisposition, type ParsedDelegation } from "./disposition-marker.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {
