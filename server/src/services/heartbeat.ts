@@ -15954,6 +15954,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
+        try {
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "adapter.auth_token_missing",
+            stream: "system",
+            level: "warn",
+            message:
+              "Agent JWT secret is missing; this run has no PAPERCLIP_API_KEY, so unauthenticated API writes would be attributed to the board instead of the agent.",
+            payload: { adapterType: agent.adapterType },
+          });
+        } catch (err) {
+          // The event is purely diagnostic; a persistence failure must not
+          // prevent the adapter from launching.
+          logger.warn(
+            { runId: run.id, err },
+            "failed to persist adapter.auth_token_missing run event",
+          );
+        }
       }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const inspectFinalizeWorkspaceBranch = async () => {

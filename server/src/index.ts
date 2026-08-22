@@ -85,6 +85,7 @@ import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
+import { ensureLocalTrustedAgentJwtSecret } from "./agent-auth-jwt.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
@@ -595,6 +596,13 @@ export async function startServer(): Promise<StartedServer> {
     | undefined;
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
+    const agentJwtSecretBootstrap = ensureLocalTrustedAgentJwtSecret();
+    if (agentJwtSecretBootstrap.source !== "process_env") {
+      logger.info(
+        { source: agentJwtSecretBootstrap.source, envFilePath: agentJwtSecretBootstrap.envFilePath },
+        "Provisioned PAPERCLIP_AGENT_JWT_SECRET for local_trusted agent runs",
+      );
+    }
   }
   const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
   if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
