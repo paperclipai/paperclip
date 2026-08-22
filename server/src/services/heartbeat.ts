@@ -9417,6 +9417,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
+        originKind: issues.originKind,
         projectId: issues.projectId,
         originKind: issues.originKind,
       })

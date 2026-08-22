@@ -406,6 +406,18 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue for routine execution issues left in_progress between fires", () => {
+    // A successful orphan-check routine run left its coalesced routine_execution
+    // issue in `in_progress`, and the handoff wrongly treated that steady state
+    // as a missing disposition -> blocked + recovery loop.
+    expect(decide({
+      issue: { ...issue, originKind: "routine_execution" } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "routine execution owns its own disposition",
+    });
+  });
+
   it("does not queue for successful comment-driven wakes", () => {
     expect(decide({
       run: {
