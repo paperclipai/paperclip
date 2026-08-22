@@ -3982,6 +3982,43 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.stat(instanceRoot)).rejects.toMatchObject({ code: "ENOENT" });
     await fs.rm(worktreesDir, { recursive: true, force: true });
   });
+
+  it("skips git worktree creation when source is agent_home (interval heartbeat with no project context)", async () => {
+    const agentHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-home-"));
+
+    const result = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: agentHomeDir,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: null,
+      agent: {
+        id: "agent-1",
+        name: "Interval Agent",
+        companyId: "company-1",
+      },
+    });
+
+    expect(result.strategy).toBe("project_primary");
+    expect(result.cwd).toBe(agentHomeDir);
+    expect(result.branchName).toBeNull();
+    expect(result.worktreePath).toBeNull();
+    expect(result.created).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/No project workspace/);
+
+    await fs.rm(agentHomeDir, { recursive: true, force: true });
+  });
 });
 
 describe("ensureRuntimeServicesForRun", () => {
