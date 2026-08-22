@@ -5,6 +5,7 @@ import { companySecrets, companySecretVersions, environmentLeases } from "@paper
 import type {
   Environment,
   EnvironmentLease,
+  EnvironmentLeaseCleanupStatus,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   InstanceExperimentalSettings,
@@ -448,6 +449,13 @@ export interface EnvironmentDriverReleaseInput {
   environment: Environment;
   lease: EnvironmentLease;
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
+  /**
+   * Why the run that held this lease ended, when it ended badly. The heartbeat
+   * already computes this from the run's own error, so drivers persist it on
+   * the lease instead of letting the release drop it. Absent for a clean
+   * release; a driver must not invent one from the status alone.
+   */
+  failureReason?: string;
 }
 
 function resolvePluginSandboxRpcTimeoutMs(config: Record<string, unknown>): number | undefined {
@@ -980,7 +988,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, inProcessTeardownRelease(input));
     },
 
     async realizeWorkspace(input) {
@@ -997,6 +1005,24 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         },
       };
     },
+  };
+}
+
+/**
+ * Release options for the drivers that hold no provider-side resource (local,
+ * ssh). There is nothing to tear down, so cleanup is complete the moment the
+ * row flips — `success`, not a permanently-`pending` value that reads as
+ * unfinished work. The failure reason is whatever the heartbeat computed from
+ * the run's own error; these drivers never synthesize one, so a lease with a
+ * null reason means the caller genuinely had none.
+ */
+function inProcessTeardownRelease(input: EnvironmentDriverReleaseInput): {
+  failureReason?: string;
+  cleanupStatus: EnvironmentLeaseCleanupStatus;
+} {
+  return {
+    ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+    cleanupStatus: "success",
   };
 }
 
@@ -1040,7 +1066,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, inProcessTeardownRelease(input));
     },
 
     async realizeWorkspace(input) {
@@ -2153,7 +2179,10 @@ function createSandboxEnvironmentDriver(
         ? "retained" as const
         : input.status;
       return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
-        failureReason: input.status === "failed" ? "adapter_or_run_failure" : undefined,
+        // Prefer the caller's concrete reason; fall back to the generic class
+        // only when the run supplied nothing.
+        failureReason:
+          input.status === "failed" ? input.failureReason ?? "adapter_or_run_failure" : undefined,
         cleanupStatus,
       });
     },
@@ -2658,9 +2687,9 @@ function createSandboxEnvironmentDriver(
         : input.status;
     const failureReason =
       input.status === "failed"
-        ? "adapter_or_run_failure"
+        ? input.failureReason ?? "adapter_or_run_failure"
         : cleanupStatus === "failed"
-          ? "release_cleanup_failed"
+          ? input.failureReason ?? "release_cleanup_failed"
           : undefined;
     return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
       failureReason,
@@ -2981,7 +3010,23 @@ function createPluginEnvironmentDriver(
         providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
       });
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      // Reached only once the plugin teardown above returned, so the provider
+      // resource is gone and cleanup is genuinely complete.
+      //
+      // A throwing teardown keeps its current behavior on purpose: the error
+      // propagates to `releaseRunLeases`, which reports it through
+      // `onLeaseReleaseError` and leaves the row `active`. Do not route that
+      // case to `pending_cleanup` the way the plugin-backed *sandbox* path
+      // does -- this driver implements no `retryPendingSandboxTeardown`, so the
+      // cleanup sweep can only throw on such a row, stranding it permanently.
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+        // Prefer the caller's concrete reason; fall back to the generic class
+        // only when the run supplied nothing, matching the sibling
+        // plugin-backed sandbox release.
+        failureReason:
+          input.status === "failed" ? input.failureReason ?? "adapter_or_run_failure" : undefined,
+        cleanupStatus: "success",
+      });
     },
 
     async resumeRunLease(input) {
@@ -3242,6 +3287,7 @@ export function environmentRuntimeService(
       heartbeatRunId: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
+      failureReason?: string,
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -3275,8 +3321,11 @@ export function environmentRuntimeService(
                 environment,
                 lease: leaseSnapshot,
                 status,
+                ...(failureReason ? { failureReason } : {}),
               })
-            : await environmentsSvc.releaseLease(leaseRow.id, status);
+            : await environmentsSvc.releaseLease(leaseRow.id, status, {
+                ...(failureReason ? { failureReason } : {}),
+              });
           if (!lease) continue;
 
           released.push({

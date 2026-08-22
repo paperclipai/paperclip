@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -43,6 +44,7 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -51,11 +53,12 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed(input: { issueStatus: string; runStatus: string }) {
+  async function seed(input: { issueStatus: string; runStatus: string; wakeupStatus?: string }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -82,6 +85,15 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       priority: "high",
       assigneeAgentId: agentId,
     });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "manual",
+      status: input.wakeupStatus ?? "claimed",
+      runId,
+      claimedAt: new Date(),
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -90,6 +102,7 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       invocationSource: "manual",
       startedAt: new Date(),
       contextSnapshot: { issueId },
+      wakeupRequestId,
     });
 
     const run = await db
@@ -98,7 +111,15 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0]!);
 
-    return { companyId, agentId, issueId, runId, run };
+    return { companyId, agentId, issueId, runId, wakeupRequestId, run };
+  }
+
+  async function readWakeup(wakeupRequestId: string) {
+    return await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0]!);
   }
 
   it("forces a still-running run to succeeded when the issue already reached done", async () => {
@@ -208,5 +229,50 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       .where(eq(heartbeatRunEvents.runId, runId))
       .then((rows) => rows.length);
     expect(eventCount).toBe(0);
+  });
+
+  it("closes the claimed wakeup as completed when the run terminalizes to succeeded", async () => {
+    const { wakeupRequestId, run } = await seed({ issueStatus: "done", runStatus: "running" });
+
+    await heartbeatService(db).terminalizeRunOnLeaseRelease(run);
+
+    const wakeup = await readWakeup(wakeupRequestId);
+    expect(wakeup.status).toBe("completed");
+    expect(wakeup.finishedAt).not.toBeNull();
+    // A run that reached its goal did not error, so the wakeup must not carry
+    // one -- every other completed row in the table has a null error.
+    expect(wakeup.error).toBeNull();
+  });
+
+  it("closes the claimed wakeup as cancelled when the run is cut short", async () => {
+    const { wakeupRequestId, run } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+
+    await heartbeatService(db).terminalizeRunOnLeaseRelease(run);
+
+    const wakeup = await readWakeup(wakeupRequestId);
+    expect(wakeup.status).toBe("cancelled");
+    expect(wakeup.finishedAt).not.toBeNull();
+    expect(wakeup.error).toContain("lease release");
+  });
+
+  it("leaves a wakeup another path already closed untouched", async () => {
+    // The teardown is a safety net, not an authority. When an explicit branch
+    // already recorded the real outcome, overwriting it with the generic one
+    // would lose information.
+    const { wakeupRequestId, run } = await seed({
+      issueStatus: "in_progress",
+      runStatus: "running",
+      wakeupStatus: "failed",
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ finishedAt: new Date(), error: "adapter crashed" })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    await heartbeatService(db).terminalizeRunOnLeaseRelease(run);
+
+    const wakeup = await readWakeup(wakeupRequestId);
+    expect(wakeup.status).toBe("failed");
+    expect(wakeup.error).toBe("adapter crashed");
   });
 });
