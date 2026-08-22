@@ -506,19 +506,80 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     }
   };
 
-  const writeFrame = (frame: DuplexFrame): boolean => {
-    // Enforce the frame size bound on every broker write. A control frame and the
-    // bounded terminal responses are always small, so the guard is a no-op for
-    // them. The large-response path checks the size before it builds a frame and
-    // substitutes a bounded terminal response, so an oversized frame never reaches
-    // this guard. Drop an oversized frame here without a channel loss; a broker-
-    // built frame over the bound is a defect, not a transport failure.
+  // The result of one bounded send. `sent` means the frame went out; `too_large`
+  // means the encoded frame exceeds the bound and the broker wrote nothing;
+  // `lost` means the write failed and the broker recorded the channel loss.
+  type SendResult = "sent" | "too_large" | "lost";
+
+  const trySendFrame = (frame: DuplexFrame): SendResult => {
+    // Enforce the frame size bound on every broker write. Report a size rejection
+    // as `too_large` without a channel loss; a broker-built frame over the bound
+    // is a defect, not a transport failure. A caller decides how to answer the
+    // request, so no size rejection ever drops the channel.
     const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
-    if (!encoded.ok) {
+    if (!encoded.ok) return "too_large";
+    return writeLine(encoded.line) ? "sent" : "lost";
+  };
+
+  const writeFrame = (frame: DuplexFrame): boolean => {
+    // A control frame and the bounded terminal responses are always small, so the
+    // size guard is a no-op for them. Drop an oversized frame here without a
+    // channel loss and report the drop to the caller.
+    const result = trySendFrame(frame);
+    if (result === "too_large") {
       options.logger?.(`Duplex broker dropped an oversized ${frame.type} frame.`);
       return false;
     }
-    return writeLine(encoded.line);
+    return result === "sent";
+  };
+
+  const sendTerminalIndeterminate = (id: string): void => {
+    // Answer one request the broker cannot deliver with the real result. The
+    // request reached the host and may have changed state, so the response is
+    // non-retryable and carries the `indeterminate` outcome. The broker tries the
+    // full replacement first. When the frame bound rejects even the full
+    // replacement, the broker sends a minimal replacement that carries only the
+    // `indeterminate` outcome, so the gateway still ends the request and never
+    // waits for its full wait budget. When the bound rejects even the minimal
+    // replacement, the broker logs a clear local error and keeps the channel
+    // open; it records no channel loss.
+    const fullReplacement: DuplexResponseFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id,
+      status: 502,
+      headers: {
+        "content-type": "application/json",
+        "x-paperclip-bridge-outcome": "indeterminate",
+      },
+      body: JSON.stringify({
+        error: "upstream response too large to deliver",
+        outcome: "indeterminate",
+        retryable: false,
+      }),
+      outcome: "indeterminate",
+    };
+    if (trySendFrame(fullReplacement) !== "too_large") return;
+    // The bound rejects the full replacement. Send a minimal terminal response
+    // with empty headers and an empty body. The `indeterminate` outcome still
+    // rides the frame, so the gateway maps the request to a terminal 409.
+    const minimalReplacement: DuplexResponseFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id,
+      status: 502,
+      headers: {},
+      body: "",
+      outcome: "indeterminate",
+    };
+    if (trySendFrame(minimalReplacement) !== "too_large") return;
+    // The bound rejects even the minimal terminal response. The broker cannot
+    // deliver any frame for this request within the bound. Log a clear local
+    // error and keep the channel open for every other request. The gateway ends
+    // its own outstanding request on its wait budget.
+    options.logger?.(
+      `Duplex broker could not deliver a terminal response within the ${maxFrameBytes}-byte frame bound.`,
+    );
   };
 
   const respond = (
@@ -557,22 +618,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
         latencyMs: now() - entry.dispatchStartMs,
         outcome: "error",
       });
-      writeFrame({
-        version: DUPLEX_FRAME_VERSION,
-        type: "response",
-        id,
-        status: 502,
-        headers: {
-          "content-type": "application/json",
-          "x-paperclip-bridge-outcome": "indeterminate",
-        },
-        body: JSON.stringify({
-          error: "upstream response too large to deliver",
-          outcome: "indeterminate",
-          retryable: false,
-        }),
-        outcome: "indeterminate",
-      });
+      sendTerminalIndeterminate(id);
       return;
     }
     // Record the request span for the delivered request. The span carries the
