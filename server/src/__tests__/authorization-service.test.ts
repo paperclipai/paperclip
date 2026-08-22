@@ -7,6 +7,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRuns,
   instanceUserRoles,
   issueComments,
   issues,
@@ -20,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { authorizationService } from "../services/authorization.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -179,6 +181,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
@@ -872,6 +875,78 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       code: "RESPONSIBLE_USER_UNAUTHORIZED",
       reason: "deny_unsupported_action",
+    });
+  });
+
+  it("allows a run-scoped agent to comment on and mutate its current checked-out issue", async () => {
+    const company = await createCompany(db, "RunScopedCurrentIssueMutation");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const currentIssue = await createIssue(db, company.id, {
+      title: "Current checked-out issue",
+      assigneeAgentId: actorAgent.id,
+      status: "todo",
+    });
+    const otherAssignedIssue = await createIssue(db, company.id, {
+      title: "Other assigned issue",
+      assigneeAgentId: actorAgent.id,
+    });
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: actorAgent.id,
+      status: "running",
+      contextSnapshot: { issueId: currentIssue.id },
+    }).returning();
+    const checkedOut = await issueService(db).checkout(
+      currentIssue.id,
+      actorAgent.id,
+      ["todo"],
+      run!.id,
+    );
+    expect(checkedOut).toMatchObject({
+      id: currentIssue.id,
+      status: "in_progress",
+      assigneeAgentId: actorAgent.id,
+      checkoutRunId: run!.id,
+    });
+
+    const actor = {
+      type: "agent" as const,
+      agentId: actorAgent.id,
+      companyId: company.id,
+      runId: run!.id,
+      onBehalfOfUserId: `missing-${randomUUID()}`,
+      source: "agent_jwt" as const,
+    };
+    const currentResource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: currentIssue.id,
+      assigneeAgentId: actorAgent.id,
+    };
+
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "issue:comment",
+      resource: currentResource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_self" });
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "issue:mutate",
+      resource: currentResource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_self" });
+
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: otherAssignedIssue.id,
+        assigneeAgentId: actorAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
     });
   });
 
