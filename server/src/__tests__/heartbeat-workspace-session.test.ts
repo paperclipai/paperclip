@@ -2969,13 +2969,7 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
-    expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
-      enabled: true,
-      maxSessionRuns: 0,
-      maxRawInputTokens: 0,
-      maxSessionAgeHours: 0,
-    });
+  it("disables Paperclip-managed rotation by default for claude local", () => {
     expect(parseSessionCompactionPolicy(buildAgent("claude_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
@@ -2984,7 +2978,13 @@ describe("parseSessionCompactionPolicy", () => {
     });
   });
 
-  it("keeps conservative defaults for adapters without confirmed native compaction", () => {
+  it("keeps conservative defaults for codex_local and adapters without confirmed native compaction", () => {
+    expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
+      enabled: true,
+      maxSessionRuns: 200,
+      maxRawInputTokens: 2_000_000,
+      maxSessionAgeHours: 72,
+    });
     expect(parseSessionCompactionPolicy(buildAgent("cursor"))).toEqual({
       enabled: true,
       maxSessionRuns: 200,
@@ -3015,7 +3015,7 @@ describe("parseSessionCompactionPolicy", () => {
       enabled: true,
       maxSessionRuns: 25,
       maxRawInputTokens: 500_000,
-      maxSessionAgeHours: 0,
+      maxSessionAgeHours: 72,
     });
   });
 });
