@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -23,6 +24,31 @@ const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   "__pycache__",
   "node_modules",
   "venv",
+]);
+const EXTERNAL_ROOT_REJECTED_FILE_NAMES = new Set([
+  ".git",
+  "composer.json",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+]);
+const EXTERNAL_ROOT_REJECTED_DIRECTORY_NAMES = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".vite",
+  "build",
+  "cache",
+  "coverage",
+  "data",
+  "dist",
+  "node_modules",
+  "storage",
+  "tmp",
+  "uploads",
+  "vendor",
 ]);
 
 type BundleMode = "managed" | "external";
@@ -154,6 +180,34 @@ function resolveLegacyInstructionsPath(candidatePath: string, config: Record<str
 
 async function statIfExists(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
+}
+
+async function assertExternalInstructionsRootSafe(rootPath: string): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw unprocessable(`External instructions root is not readable: ${reason}`);
+  }
+
+  for (const entry of entries) {
+    if (EXTERNAL_ROOT_REJECTED_FILE_NAMES.has(entry.name)) {
+      throw unprocessable(
+        `External instructions root is not allowed to point at a repository or application root: found ${entry.name}`,
+      );
+    }
+    if (entry.isDirectory() && EXTERNAL_ROOT_REJECTED_DIRECTORY_NAMES.has(entry.name)) {
+      throw unprocessable(
+        `External instructions root is not allowed to include restricted runtime directory: ${entry.name}`,
+      );
+    }
+  }
+}
+
+async function assertBundleRootSafeForMode(state: BundleState): Promise<void> {
+  if (state.mode !== "external" || !state.rootPath) return;
+  await assertExternalInstructionsRootSafe(state.rootPath);
 }
 
 function shouldIgnoreInstructionsEntry(entry: { name: string; isDirectory(): boolean; isFile(): boolean }) {
@@ -462,6 +516,7 @@ export function agentInstructionsService() {
         warnings: [...state.warnings, `Instructions root does not exist: ${state.rootPath}`],
       }, []);
     }
+    await assertBundleRootSafeForMode(state);
     const files = await listFilesRecursive(state.rootPath);
     const summaries = await Promise.all(files.map((relativePath) => readFileSummary(state.rootPath!, relativePath, state.entryFile)));
     return toBundle(agent, state, summaries);
@@ -485,6 +540,7 @@ export function agentInstructionsService() {
       };
     }
     if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
+    await assertBundleRootSafeForMode(state);
     const absolutePath = resolvePathWithinRoot(state.rootPath, relativePath);
     const [content, stat] = await Promise.all([
       fs.readFile(absolutePath, "utf8").catch(() => null),
@@ -512,6 +568,7 @@ export function agentInstructionsService() {
     const derived = deriveBundleState(agent);
     const current = await recoverManagedBundleState(agent, derived);
     if (current.rootPath && current.mode) {
+      await assertBundleRootSafeForMode(current);
       const adapterConfig = buildPersistedBundleConfig(derived, current, options);
       return {
         adapterConfig,
@@ -574,6 +631,9 @@ export function agentInstructionsService() {
     }
 
     await fs.mkdir(nextRootPath, { recursive: true });
+    if (nextMode === "external") {
+      await assertExternalInstructionsRootSafe(nextRootPath);
+    }
 
     const existingFiles = await listFilesRecursive(nextRootPath);
     const exported = await exportFiles(agent);
@@ -642,6 +702,7 @@ export function agentInstructionsService() {
       throw unprocessable("Cannot delete the legacy promptTemplate pseudo-file");
     }
     if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
+    await assertBundleRootSafeForMode(state);
     const normalizedPath = normalizeRelativeFilePath(relativePath);
     if (normalizedPath === state.entryFile) {
       throw unprocessable("Cannot delete the bundle entry file");
@@ -662,6 +723,7 @@ export function agentInstructionsService() {
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);
       if (stat?.isDirectory()) {
+        await assertBundleRootSafeForMode(state);
         const relativePaths = await listFilesRecursive(state.rootPath);
         const files = Object.fromEntries(await Promise.all(relativePaths.map(async (relativePath) => {
           const absolutePath = resolvePathWithinRoot(state.rootPath!, relativePath);
