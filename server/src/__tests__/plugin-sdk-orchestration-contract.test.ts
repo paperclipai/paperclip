@@ -67,22 +67,26 @@ describe("plugin SDK orchestration contract", () => {
       issues: [issue({ id: blockerIssueId, companyId, title: "Blocker" })],
     });
 
-    const created = await harness.ctx.issues.create({
-      companyId,
-      title: "Generated issue",
-      status: "todo",
-      assigneeUserId: "board-user",
-      billingCode: "mission:alpha",
-      originId: "mission-alpha",
-      blockedByIssueIds: [blockerIssueId],
-    });
+    const created = await harness.withCompanyScope(companyId, () =>
+      harness.ctx.issues.create({
+        companyId,
+        title: "Generated issue",
+        status: "todo",
+        assigneeUserId: "board-user",
+        billingCode: "mission:alpha",
+        originId: "mission-alpha",
+        blockedByIssueIds: [blockerIssueId],
+      }),
+    );
 
     expect(created.originKind).toBe("plugin:paperclip.test-orchestration");
     expect(created.originId).toBe("mission-alpha");
     expect(created.billingCode).toBe("mission:alpha");
     expect(created.assigneeUserId).toBe("board-user");
 
-    await expect(harness.ctx.issues.relations.get(created.id, companyId)).resolves.toEqual({
+    await expect(
+      harness.withCompanyScope(companyId, () => harness.ctx.issues.relations.get(created.id, companyId)),
+    ).resolves.toEqual({
       blockedBy: [
         expect.objectContaining({
           id: blockerIssueId,
@@ -92,18 +96,28 @@ describe("plugin SDK orchestration contract", () => {
       blocks: [],
     });
 
-    await expect(harness.ctx.issues.relations.removeBlockers(created.id, [blockerIssueId], companyId)).resolves.toEqual({
+    await expect(
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.relations.removeBlockers(created.id, [blockerIssueId], companyId),
+      ),
+    ).resolves.toEqual({
       blockedBy: [],
       blocks: [],
     });
 
-    await expect(harness.ctx.issues.relations.addBlockers(created.id, [blockerIssueId], companyId)).resolves.toEqual({
+    await expect(
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.relations.addBlockers(created.id, [blockerIssueId], companyId),
+      ),
+    ).resolves.toEqual({
       blockedBy: [expect.objectContaining({ id: blockerIssueId })],
       blocks: [],
     });
 
     await expect(
-      harness.ctx.issues.getSubtree(created.id, companyId, { includeRelations: true }),
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.getSubtree(created.id, companyId, { includeRelations: true }),
+      ),
     ).resolves.toMatchObject({
       rootIssueId: created.id,
       issueIds: [created.id],
@@ -121,31 +135,39 @@ describe("plugin SDK orchestration contract", () => {
       manifest: manifest(["issues.create", "issues.update", "issues.read"]),
     });
 
-    const created = await harness.ctx.issues.create({
-      companyId,
-      title: "Generated issue",
-      originKind: "plugin:paperclip.test-orchestration:feature",
-    });
+    const created = await harness.withCompanyScope(companyId, () =>
+      harness.ctx.issues.create({
+        companyId,
+        title: "Generated issue",
+        originKind: "plugin:paperclip.test-orchestration:feature",
+      }),
+    );
 
     expect(created.originKind).toBe("plugin:paperclip.test-orchestration:feature");
     await expect(
-      harness.ctx.issues.list({
-        companyId,
-        originKind: "plugin:paperclip.test-orchestration:feature",
-      }),
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.list({
+          companyId,
+          originKind: "plugin:paperclip.test-orchestration:feature",
+        }),
+      ),
     ).resolves.toHaveLength(1);
     await expect(
-      harness.ctx.issues.create({
-        companyId,
-        title: "Spoofed issue",
-        originKind: "plugin:other.plugin:feature",
-      }),
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.create({
+          companyId,
+          title: "Spoofed issue",
+          originKind: "plugin:other.plugin:feature",
+        }),
+      ),
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.test-orchestration");
     await expect(
-      harness.ctx.issues.update(
-        created.id,
-        { originKind: "plugin:other.plugin:feature" },
-        companyId,
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.update(
+          created.id,
+          { originKind: "plugin:other.plugin:feature" },
+          companyId,
+        ),
       ),
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.test-orchestration");
   });
@@ -156,12 +178,14 @@ describe("plugin SDK orchestration contract", () => {
       manifest: manifest(["issues.create"]),
     });
 
-    const created = await harness.ctx.issues.create({
-      companyId,
-      title: "Background operation",
-      surfaceVisibility: "plugin_operation",
-      originId: "operation-1",
-    });
+    const created = await harness.withCompanyScope(companyId, () =>
+      harness.ctx.issues.create({
+        companyId,
+        title: "Background operation",
+        surfaceVisibility: "plugin_operation",
+        originId: "operation-1",
+      }),
+    );
 
     expect(created.originKind).toBe("plugin:paperclip.test-orchestration:operation");
     expect(created.originId).toBe("operation-1");
@@ -189,28 +213,34 @@ describe("plugin SDK orchestration contract", () => {
     });
 
     await expect(
-      harness.ctx.issues.assertCheckoutOwner({
-        issueId: checkedOutIssueId,
-        companyId,
-        actorAgentId: agentId,
-        actorRunId: runId,
-      }),
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.assertCheckoutOwner({
+          issueId: checkedOutIssueId,
+          companyId,
+          actorAgentId: agentId,
+          actorRunId: runId,
+        }),
+      ),
     ).resolves.toMatchObject({
       issueId: checkedOutIssueId,
       checkoutRunId: runId,
     });
 
     await expect(
-      harness.ctx.issues.requestWakeup(checkedOutIssueId, companyId, {
-        reason: "mission_advance",
-      }),
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.requestWakeup(checkedOutIssueId, companyId, {
+          reason: "mission_advance",
+        }),
+      ),
     ).resolves.toMatchObject({ queued: true });
 
     await expect(
-      harness.ctx.issues.requestWakeups([checkedOutIssueId], companyId, {
-        reason: "mission_advance",
-        idempotencyKeyPrefix: "mission:alpha",
-      }),
+      harness.withCompanyScope(companyId, () =>
+        harness.ctx.issues.requestWakeups([checkedOutIssueId], companyId, {
+          reason: "mission_advance",
+          idempotencyKeyPrefix: "mission:alpha",
+        }),
+      ),
     ).resolves.toEqual([
       expect.objectContaining({
         issueId: checkedOutIssueId,
@@ -251,7 +281,7 @@ describe("plugin SDK orchestration contract", () => {
     });
 
     await expect(
-      harness.ctx.issues.requestWakeup(blockedIssueId, companyId),
+      harness.withCompanyScope(companyId, () => harness.ctx.issues.requestWakeup(blockedIssueId, companyId)),
     ).rejects.toThrow("Issue is blocked by unresolved blockers");
   });
 });

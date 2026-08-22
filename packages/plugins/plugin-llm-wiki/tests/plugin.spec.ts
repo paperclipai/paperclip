@@ -1699,10 +1699,10 @@ Duplicate headings receive stable suffixes.
     });
 
     expect(writes).toHaveLength(0);
-    const operations = await harness.ctx.issues.list({
+    const operations = await harness.withCompanyScope(COMPANY_ID, () => harness.ctx.issues.list({
       companyId: COMPANY_ID,
       originKindPrefix: String(OPERATION_ORIGIN_KIND),
-    });
+    }));
     expect(operations).toHaveLength(0);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_sources"))).toBe(false);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(false);
@@ -1979,13 +1979,13 @@ Duplicate headings receive stable suffixes.
     });
 
     await plugin.definition.setup(harness.ctx);
-    await harness.ctx.issues.documents.upsert({
+    await harness.withCompanyScope(COMPANY_ID, () => harness.ctx.issues.documents.upsert({
       companyId: COMPANY_ID,
       issueId: child.id,
       key: "plan",
       title: "Plan",
       body: "Document evidence for the source bundle.",
-    });
+    }));
 
     const first = await harness.performAction<{
       markdown: string;
@@ -2045,13 +2045,13 @@ Duplicate headings receive stable suffixes.
     });
 
     await plugin.definition.setup(harness.ctx);
-    await harness.ctx.issues.documents.upsert({
+    await harness.withCompanyScope(COMPANY_ID, () => harness.ctx.issues.documents.upsert({
       companyId: COMPANY_ID,
       issueId: issue.id,
       key: "plan",
       title: "Plan",
       body: "OPENAI_API_KEY=sk-supersecretdocumentvalue1234567890",
-    });
+    }));
 
     const run = await harness.performAction<{
       bundle: {
@@ -2554,13 +2554,13 @@ Duplicate headings receive stable suffixes.
     };
 
     await plugin.definition.setup(harness.ctx);
-    await harness.ctx.issues.documents.upsert({
+    await harness.withCompanyScope(COMPANY_ID, () => harness.ctx.issues.documents.upsert({
       companyId: COMPANY_ID,
       issueId: issue.id,
       key: "plan",
       title: "Plan",
       body: "OPENAI_API_KEY=sk-patchsecretdocumentvalue1234567890",
-    });
+    }));
 
     const result = await harness.performAction<{
       status: string;
@@ -3144,10 +3144,10 @@ Duplicate headings receive stable suffixes.
       projectId: existingProject().id,
     })).rejects.toThrow("Paperclip ingestion policy denied queue");
 
-    const operations = await harness.ctx.issues.list({
+    const operations = await harness.withCompanyScope(COMPANY_ID, () => harness.ctx.issues.list({
       companyId: COMPANY_ID,
       originKindPrefix: String(OPERATION_ORIGIN_KIND),
-    });
+    }));
     expect(operations).toHaveLength(0);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("paperclip_distillation_work_items"))).toBe(false);
   });
@@ -3448,10 +3448,10 @@ Duplicate headings receive stable suffixes.
     expect(writes).toHaveLength(0);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_sources"))).toBe(false);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(false);
-    const operations = await harness.ctx.issues.list({
+    const operations = await harness.withCompanyScope(COMPANY_ID, () => harness.ctx.issues.list({
       companyId: COMPANY_ID,
       originKindPrefix: String(OPERATION_ORIGIN_KIND),
-    });
+    }));
     expect(operations).toHaveLength(0);
   });
 
@@ -3477,7 +3477,7 @@ Duplicate headings receive stable suffixes.
       path: "wiki/concepts/plugin-boundaries.md",
       contents: "# New Title\n",
       expectedHash: "stale",
-    });
+    }, { companyId: COMPANY_ID });
     await expect(staleWrite).rejects.toThrow("Refusing to overwrite");
 
     const result = await harness.executeTool<{ data?: { hash: string } }>("wiki_write_page", {
@@ -3485,7 +3485,7 @@ Duplicate headings receive stable suffixes.
       wikiId: "default",
       path: "wiki/concepts/plugin-boundaries.md",
       contents: "# Plugin Boundaries\n\nSee [Knowledge](wiki/areas/knowledge.md).",
-    });
+    }, { companyId: COMPANY_ID });
 
     expect(result.data?.hash).toHaveLength(64);
     expect(files.get("wiki/concepts/plugin-boundaries.md")).toContain("Plugin Boundaries");
@@ -3515,7 +3515,7 @@ Duplicate headings receive stable suffixes.
       wikiId: "default",
       path: "AGENTS.md",
       contents: "# LLM Wiki Maintainer\n\nCompromised instructions.\n",
-    })).rejects.toThrow("Refusing to overwrite protected wiki control file AGENTS.md");
+    }, { companyId: COMPANY_ID })).rejects.toThrow("Refusing to overwrite protected wiki control file AGENTS.md");
 
     const result = await harness.performAction<{ hash: string }>("write-page", {
       companyId: COMPANY_ID,
@@ -3668,7 +3668,11 @@ Duplicate headings receive stable suffixes.
   });
 
   it("starts query sessions, records run ids, and forwards session events to plugin streams", async () => {
-    const harness = createTestHarness({ manifest });
+    // A session-event callback runs outside any host invocation — the worker
+    // client dispatches `agents.sessions.event` without an invocation context —
+    // so the writes it makes are proactive and reach only the companies this
+    // plugin is configured for.
+    const harness = createTestHarness({ manifest, proactiveCompanyScopes: [COMPANY_ID] });
     harness.seed({ agents: [wikiMaintainerAgent()] });
     const streamEvents: unknown[] = [];
     harness.ctx.streams.emit = (_channel, event) => {

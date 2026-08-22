@@ -88,7 +88,10 @@ describe("createTestHarness managed routines", () => {
       },
     });
 
-    const resolved = await harness.ctx.routines.managed.reconcile("quiet-watcher", "company-1");
+    // Driven straight off `ctx`, outside any host invocation, so the test has
+    // to say which company it is acting as — the host would refuse it otherwise.
+    const resolved = await harness.withCompanyScope("company-1", () =>
+      harness.ctx.routines.managed.reconcile("quiet-watcher", "company-1"));
 
     expect(resolved.routine).toMatchObject({
       activityGatePolicy: "require_external_activity",
@@ -103,12 +106,12 @@ describe("createTestHarness issue interactions", () => {
       manifest,
       capabilities: ["issues.create", "issue.interactions.create"],
     });
-    const issue = await harness.ctx.issues.create({
+    const issue = await harness.withCompanyScope("company-1", () => harness.ctx.issues.create({
       companyId: "company-1",
       title: "Pick files",
-    });
+    }));
 
-    const interaction = await harness.ctx.issues.requestCheckboxConfirmation(
+    const interaction = await harness.withCompanyScope("company-1", () => harness.ctx.issues.requestCheckboxConfirmation(
       issue.id,
       {
         idempotencyKey: "checkbox:files",
@@ -127,7 +130,7 @@ describe("createTestHarness issue interactions", () => {
       },
       "company-1",
       { authorAgentId: "agent-1" },
-    );
+    ));
 
     expect(interaction).toMatchObject({
       issueId: issue.id,
