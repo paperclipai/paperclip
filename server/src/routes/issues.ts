@@ -1653,7 +1653,10 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update. " +
+  "To hand off to another agent, send the execution policy in this same request - no separate setup call is needed: " +
+  '{"status":"in_review","executionPolicy":{"stages":[{"type":"review","approvalsNeeded":1,"participants":[{"type":"agent","agentId":"<their-agent-id>"}]}]}} ' +
+  "- Paperclip reassigns the issue to that agent and wakes them. Do not use blocked for this; blocked is for first-class blockedByIssueIds and wakes nobody.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
