@@ -73,6 +73,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     const result = await runDatabaseBackup({
       connectionString: connection.value,
       backupDir,
+      maxBackups: 7,
       retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix,
     });
