@@ -2,6 +2,7 @@ import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { Agent, Issue, Project } from "@paperclipai/shared";
+import { formatAssigneeUserLabel } from "./assignees";
 
 export interface CompanyUserProfile {
   label: string;
@@ -41,6 +42,32 @@ export function buildCompanyUserLabelMap(members: CompanyUserRecord[] | null | u
     labels.set(member.principalId, baseMemberLabel(member));
   }
   return labels;
+}
+
+export interface CreatorUserOption {
+  id: string;
+  label: string;
+  kind: "user";
+  searchText: string;
+}
+
+/**
+ * Creator filter option for a human who created issues. Without the company
+ * directory the label degrades to the first characters of the user id, which
+ * reads as gibberish next to agent names.
+ */
+export function buildCreatorUserOption(
+  userId: string,
+  currentUserId: string | null | undefined,
+  userLabels?: ReadonlyMap<string, string> | null,
+): CreatorUserOption {
+  const directoryLabel = userLabels?.get(userId)?.trim() || null;
+  return {
+    id: `user:${userId}`,
+    label: formatAssigneeUserLabel(userId, currentUserId, userLabels) ?? fallbackUserLabel(userId),
+    kind: "user",
+    searchText: [directoryLabel, userId, "board user human"].filter(Boolean).join(" "),
+  };
 }
 
 export function buildCompanyUserProfileMap(

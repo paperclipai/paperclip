@@ -17,7 +17,7 @@ import {
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildCreatorUserOption } from "../lib/company-members";
 import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
@@ -993,12 +993,7 @@ export function IssuesList({
       if (issue.createdByUserId) {
         const id = `user:${issue.createdByUserId}`;
         if (!options.has(id)) {
-          options.set(id, {
-            id,
-            label: formatAssigneeUserLabel(issue.createdByUserId, currentUserId) ?? issue.createdByUserId.slice(0, 5),
-            kind: "user",
-            searchText: `${issue.createdByUserId} board user human`,
-          });
+          options.set(id, buildCreatorUserOption(issue.createdByUserId, currentUserId, companyUserLabelMap));
         }
       }
     }
@@ -1034,7 +1029,7 @@ export function IssuesList({
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, issues]);
+  }, [agents, companyUserLabelMap, currentUserId, issues]);
 
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
