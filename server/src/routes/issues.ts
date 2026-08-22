@@ -2097,13 +2097,20 @@ async function queueResolvedInteractionContinuationWakeup(input: {
         );
         return false;
       }));
+  const interactionResult = readConfirmationResultForWake(input.interaction.result);
+  // A rejection that carries a reason is a message, not silence — the requester needs
+  // it regardless of continuationPolicy. Policies like "none" or "wake_assignee_on_accept"
+  // exist to control noise on the accept path; they were never meant to suppress feedback
+  // the requester is actively waiting to hear. Without this, a reasoned decline silently
+  // vanishes (paperclipai/paperclip#8617, #6800).
+  const isRejectionWithReason = input.interaction.status === "rejected" && !!interactionResult?.reason;
   const continuationPolicyAllowsWake =
     input.interaction.continuationPolicy === "wake_assignee"
     || (
       input.interaction.continuationPolicy === "wake_assignee_on_accept"
       && input.interaction.status === "accepted"
     );
-  if (!continuationPolicyAllowsWake && !reviewPathLost) return;
+  if (!continuationPolicyAllowsWake && !reviewPathLost && !isRejectionWithReason) return;
   if (input.interaction.status === "expired" && !reviewPathLost) return;
   const reviewPathContext = reviewPathLost
     ? {
@@ -2116,7 +2123,6 @@ async function queueResolvedInteractionContinuationWakeup(input: {
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
   const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
-  const interactionResult = readConfirmationResultForWake(input.interaction.result);
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
   const toolAction = readToolActionContinuationContext(input.interaction);
   const secretProposal = readSecretProposalContinuationContext(input.interaction);
@@ -2155,6 +2161,10 @@ async function queueResolvedInteractionContinuationWakeup(input: {
       ...(secretProposal ? { secretProposal } : {}),
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       ...(reviewPathContext ?? {}),
+      // Surfaced at the top level (in addition to any kind-specific structure above)
+      // so the woken agent sees the actual feedback without a follow-up fetch — the
+      // entire point of overriding a silent continuationPolicy for this case.
+      ...(isRejectionWithReason ? { rejectionReason: interactionResult!.reason } : {}),
       mutation: "interaction",
     },
     idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
@@ -2174,6 +2184,7 @@ async function queueResolvedInteractionContinuationWakeup(input: {
       ...(secretProposal ? { secretProposal } : {}),
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       ...(reviewPathContext ?? {}),
+      ...(isRejectionWithReason ? { rejectionReason: interactionResult!.reason } : {}),
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
