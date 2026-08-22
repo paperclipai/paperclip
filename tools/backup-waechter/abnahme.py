@@ -28,6 +28,15 @@ import waechter
 
 # Was bei Walter liegt und sonst untergeht. Beim Abarbeiten hier streichen.
 OFFENE_PUNKTE = """\
+HAUPTPUNKT: Der Vault-Spiegel konvergiert nicht. Rund 1.870 Dateien werden \
+JEDEN Lauf neu uebertragen, weil die NAS Dateinamen in NFD listet (oe = o + \
+Trema) und der Mac in NFC — rsync haelt beide fuer verschiedene Dateien. \
+Betroffen ist alles mit Umlauten oder Emoji. Der Spiegel ist trotzdem \
+INHALTLICH KORREKT; der Schaden ist Doppelarbeit und ein wachsender \
+Auffangordner (~3.870 Dateien je Lauf). `--iconv=UTF-8-MAC,UTF-8` scheidet \
+aus: es scheitert an Emoji und wuerde 179 Dateien STILL auslassen. Am \
+22.08. bewusst vertagt (Weg 1: so lassen, hier loesen). Auffangordner beim \
+Loesen mit aufraeumen.
 31 Anhaenge in "Alte E-Mail < 2025" sind ueber SMB nicht lesbar (Metadaten da, \
 open scheitert, alle Namen mit Umlauten) — ueber DSM File Station pruefen.
 kontakt.astro liegt unter whitestag-academy-web/_gerettet-2026-08-21/ — die \
