@@ -89,7 +89,7 @@
     "@types/multer": "^2.2.0",
     "@types/node": "^24.0.0",
     "@types/sharp": "^0.32.0",
-    "@types/supertest": "^6.0.2",
+    "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.1",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",

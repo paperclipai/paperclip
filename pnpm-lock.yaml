@@ -893,8 +893,8 @@ importers:
         specifier: ^0.32.0
         version: 0.32.0(@types/node@24.13.3)
       '@types/supertest':
-        specifier: ^6.0.2
-        version: 6.0.3
+        specifier: ^7.2.1
+        version: 7.2.1
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -5482,11 +5482,11 @@ packages:
     resolution: {integrity: sha512-OOi3kL+FZDnPhVzsfD37J88FNeZh6gQsGcLc95NbeURRGvmSjeXiDcyWzF2o3yh/gQAUn2uhh/e+CPCa5nwAxw==}
     deprecated: This is a stub types definition. sharp provides its own type definitions, so you do not need this installed.
 
-  '@types/superagent@8.1.9':
-    resolution: {integrity: sha512-pTVjI73witn+9ILmoJdajHGW2jkSaOzhiFYF1Rd3EQ94kymLqB9PjD9ISg7WaALC7+dCHT0FGe9T2LktLq/3GQ==}
+  '@types/superagent@8.1.11':
+    resolution: {integrity: sha512-KA7srSW/HENDtOw9DOqaFLgWuMqN9WgjEw62lh9dpvRaZDkhdOkazASd7X7i2eMUYLHa1U37ZttnePsH5zTDHw==}
 
-  '@types/supertest@6.0.3':
-    resolution: {integrity: sha512-8WzXq62EXFhJ7QsH3Ocb/iKQ/Ty9ZVWnVzoTKc9tyyFRRF3a74Tk2+TLFgaFFw364Ere+npzHKEJ6ga2LzIL7w==}
+  '@types/supertest@7.2.1':
+    resolution: {integrity: sha512-4CbBvoYVLHL7+yhbYrZET0vsvuyXTC05aRe7dNQkwMzm56auceoy6Yu3K50uZmwfHna1os3CMSgM/3QVkUtPTw==}
 
   '@types/tough-cookie@4.0.5':
     resolution: {integrity: sha512-/Ad8+nIOV7Rl++6f1BdKxFSMgmoqEoYbHRpPcx3JEfv8VRsQe9Z4mCXeJBzxs7mbHY/XOZZuXlRNfhpVPbs6ZA==}
@@ -6789,6 +6789,10 @@ packages:
 
   form-data@4.0.5:
     resolution: {integrity: sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==}
+    engines: {node: '>= 6'}
+
+  form-data@4.0.6:
+    resolution: {integrity: sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==}
     engines: {node: '>= 6'}
 
   format@0.2.2:
@@ -13409,17 +13413,17 @@ snapshots:
     transitivePeerDependencies:
       - '@types/node'
 
-  '@types/superagent@8.1.9':
+  '@types/superagent@8.1.11':
     dependencies:
       '@types/cookiejar': 2.1.5
       '@types/methods': 1.1.4
       '@types/node': 24.13.3
-      form-data: 4.0.5
+      form-data: 4.0.6
 
-  '@types/supertest@6.0.3':
+  '@types/supertest@7.2.1':
     dependencies:
       '@types/methods': 1.1.4
-      '@types/superagent': 8.1.9
+      '@types/superagent': 8.1.11
 
   '@types/tough-cookie@4.0.5': {}
 
@@ -14801,6 +14805,14 @@ snapshots:
       combined-stream: 1.0.8
       es-set-tostringtag: 2.1.0
       hasown: 2.0.2
+      mime-types: 2.1.35
+
+  form-data@4.0.6:
+    dependencies:
+      asynckit: 0.4.0
+      combined-stream: 1.0.8
+      es-set-tostringtag: 2.1.0
+      hasown: 2.0.4
       mime-types: 2.1.35
 
   format@0.2.2: {}
