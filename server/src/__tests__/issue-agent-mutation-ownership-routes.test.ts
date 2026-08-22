@@ -896,6 +896,53 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("lets a reporting-chain manager comment, patch status and blockers, and create work products", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "issue:comment" ||
+        input.action === "issue:mutate" ||
+        input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason:
+        input.action === "issue:comment" ||
+        input.action === "issue:mutate" ||
+        input.action === "tasks:manage_active_checkouts"
+          ? "allow_manager_chain"
+          : "deny_missing_grant",
+      explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+    }));
+    const app = await createApp(peerActor());
+
+    await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Manager update" })
+      .expect(201);
+    await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [] })
+      .expect(200);
+    await request(app)
+      .post(`/api/issues/${issueId}/work-products`)
+      .send({ type: "artifact", provider: "test", title: "Manager artifact" })
+      .expect(201);
+
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Manager update",
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked", blockedByIssueIds: [] }),
+    );
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issueId,
+      companyId,
+      expect.objectContaining({ title: "Manager artifact" }),
+    );
+  });
+
   it("rejects peer agents from listing comments when issue read is outside their boundary", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: false,

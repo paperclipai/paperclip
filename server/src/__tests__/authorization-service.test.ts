@@ -1947,6 +1947,70 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("another company");
   });
 
+  it("allows reporting-chain managers to comment on and mutate subordinate-owned issues", async () => {
+    const company = await createCompany(db, "ManagerIssueMutation");
+    const managerAgent = await createAgent(db, company.id, { role: "cto" });
+    const childAgent = await createAgent(db, company.id, { reportsTo: managerAgent.id });
+    const grandchildAgent = await createAgent(db, company.id, { reportsTo: childAgent.id });
+    const peerAgent = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id, {
+      title: "Subordinate-owned issue",
+      assigneeAgentId: grandchildAgent.id,
+    });
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: grandchildAgent.id,
+      status: issue.status,
+    } as const;
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor: { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_key" },
+        action,
+        resource,
+      })).resolves.toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+
+      await expect(authorization.decide({
+        actor: { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" },
+        action,
+        resource,
+      })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    }
+  });
+
+  it("does not extend manager-chain issue mutation across company boundaries", async () => {
+    const managerCompany = await createCompany(db, "ManagerBoundarySource");
+    const targetCompany = await createCompany(db, "ManagerBoundaryTarget");
+    const managerAgent = await createAgent(db, managerCompany.id, { role: "cto" });
+    const targetAgent = await createAgent(db, targetCompany.id, { reportsTo: managerAgent.id });
+    const issue = await createIssue(db, targetCompany.id, {
+      title: "Foreign subordinate-looking issue",
+      assigneeAgentId: targetAgent.id,
+    });
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorizationService(db).decide({
+        actor: {
+          type: "agent",
+          agentId: managerAgent.id,
+          companyId: managerCompany.id,
+          source: "agent_key",
+        },
+        action,
+        resource: {
+          type: "issue",
+          companyId: targetCompany.id,
+          issueId: issue.id,
+          assigneeAgentId: targetAgent.id,
+          status: issue.status,
+        },
+      })).resolves.toMatchObject({ allowed: false, reason: "deny_company_boundary" });
+    }
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");
