@@ -87,6 +87,7 @@ import {
   updateUserSecretValueSchema,
   // Approval
   createApprovalSchema,
+  cancelApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
@@ -3292,6 +3293,18 @@ registry.registerPath({
     body: jsonBody(resolveApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/cancel",
+  tags: ["approvals"],
+  summary: "Cancel (withdraw) a pending approval",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(cancelApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
