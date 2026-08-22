@@ -543,6 +543,73 @@ export class WorkspaceValidationFailure extends Error {
   }
 }
 
+/**
+ * `WorkspaceValidationFailure` reasons (RENA-54915) where a single fresh re-resolution of the
+ * workspace-provisioning chain has a realistic chance of self-healing: the underlying data (a
+ * project's primary workspace assignment, a persisted execution-workspace row, git metadata)
+ * can flip from missing/stale to present between two DB reads a run apart -- e.g. because a
+ * project's primary workspace finished being created concurrently, or because re-running the
+ * persisted-workspace reuse path lets `reconcileReusedExecutionWorkspaceProjectWorkspaceId`
+ * backfill a projectWorkspaceId that was still null on the first pass.
+ *
+ * Deliberately narrow (see RENA-54895): `missing_project_id` and `missing_git_push_remote` are
+ * data/config gaps a re-resolve can't fix, and the remaining reasons aren't yet empirically
+ * shown to heal on retry. Widen only with evidence (Gandalf-style burst analysis on
+ * `workspaceValidationRetry` in run results), not speculatively.
+ */
+const GIT_SENSITIVE_WORKSPACE_VALIDATION_RETRY_ALLOWED_REASONS = new Set([
+  "missing_persisted_execution_workspace",
+  "persisted_workspace_missing_project_workspace_id",
+  "missing_git_metadata",
+]);
+
+export function isRetryableWorkspaceValidationReason(reason: string | null | undefined): boolean {
+  return Boolean(reason) && GIT_SENSITIVE_WORKSPACE_VALIDATION_RETRY_ALLOWED_REASONS.has(reason as string);
+}
+
+export function readWorkspaceValidationReason(error: unknown): string | null {
+  if (!(error instanceof WorkspaceValidationFailure)) return null;
+  const workspaceValidation = error.resultJson?.workspaceValidation;
+  if (!workspaceValidation || typeof workspaceValidation !== "object") return null;
+  return readNonEmptyString((workspaceValidation as Record<string, unknown>).reason);
+}
+
+/**
+ * Builds the error thrown when a single re-preflight retry (RENA-54915) also fails. Keeps the
+ * run failing exactly as it did before this feature existed (same `WorkspaceValidationFailure`
+ * shape, same `errorCode`), but folds in a `workspaceValidationRetry` block so both the
+ * original and retry reasons stay visible in the run's `resultJson`/error message instead of
+ * only the (possibly different) second-attempt reason silently replacing the first.
+ */
+export function combineWorkspaceValidationRetryFailure(
+  originalError: unknown,
+  retryError: unknown,
+  originalReason: string | null,
+  retryReason: string | null,
+): WorkspaceValidationFailure {
+  const originalMessage = originalError instanceof Error ? originalError.message : String(originalError);
+  const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
+  const originalResultJson =
+    originalError instanceof WorkspaceValidationFailure ? originalError.resultJson : {};
+  const retryWorkspaceValidation =
+    retryError instanceof WorkspaceValidationFailure
+      ? (retryError.resultJson?.workspaceValidation ?? null)
+      : null;
+  return new WorkspaceValidationFailure(
+    `${originalMessage} Re-preflight retry (RENA-54915) also failed: ${retryMessage}`,
+    {
+      ...originalResultJson,
+      workspaceValidationRetry: {
+        attempted: true,
+        healed: false,
+        originalReason,
+        retryReason,
+        retryWorkspaceValidation,
+      },
+    },
+  );
+}
+
 // Pre-dispatch gate outcome: required secret/env bindings are missing, so the
 // run must not be dispatched. Surfaced as a configuration-incomplete blocker
 // routed to a human owner instead of N opaque dispatched-then-failed runs.
@@ -14872,6 +14939,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
         ),
       );
+    // Resolves + persists resolvedWorkspace/executionWorkspace/persistedExecutionWorkspace from
+    // current DB state. Called once below, and re-called once more (RENA-54915) if the
+    // git-sensitive workspace preflight fails with a reason on the re-preflight-retry allow
+    // list, since some of those reasons (missing project workspace assignment, a stale
+    // persisted-workspace row) can resolve themselves between two DB reads a run apart.
+    const attemptResolveAndPersistExecutionWorkspace = async () => {
     const {
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
       workspace: resolvedWorkspace,
@@ -15304,6 +15377,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
+      return {
+        resolvedWorkspace,
+        hostExecutionWorkspaceConfig,
+        executionWorkspace,
+        resolvedProjectId,
+        resolvedProjectWorkspaceId,
+        persistedExecutionWorkspace,
+        workspaceOperationRecorder,
+        latestWorkspaceConfigMetadata,
+        workspaceConfigFreshness,
+        reusedExecutionWorkspace,
+        resolvedWorkspaceReusePolicy,
+      };
+    };
+    let {
+      resolvedWorkspace,
+      hostExecutionWorkspaceConfig,
+      executionWorkspace,
+      resolvedProjectId,
+      resolvedProjectWorkspaceId,
+      persistedExecutionWorkspace,
+      workspaceOperationRecorder,
+      latestWorkspaceConfigMetadata,
+      workspaceConfigFreshness,
+      reusedExecutionWorkspace,
+      resolvedWorkspaceReusePolicy,
+    } = await attemptResolveAndPersistExecutionWorkspace();
     const acquiredEnvironment = await envOrchestrator.acquireForRun({
       companyId: agent.companyId,
       selectedEnvironmentId,
@@ -15819,34 +15919,83 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
       }
-      await assertGitSensitiveAdapterWorkspaceValid({
-        adapterType: agent.adapterType,
-        agentId: agent.id,
-        issue: issueRef
-          ? {
-              id: issueRef.id,
-              identifier: issueRef.identifier,
-              projectId: issueRef.projectId,
-              projectWorkspaceId: issueRef.projectWorkspaceId,
-            }
-          : null,
-        resolvedWorkspace,
-        executionWorkspace,
-        persistedExecutionWorkspace,
-        executionTarget,
-        environmentDriver: selectedEnvironment.driver,
-        leaseMetadata: activeEnvironmentLease.lease.metadata,
-      });
-      await assertPushCapabilityCheckoutValid({
-        enabled: pushCapabilityPreflightRequired && executionTarget?.kind === "local",
-        issue: issueRef
-          ? {
-              id: issueRef.id,
-              identifier: issueRef.identifier,
-            }
-          : null,
-        cwd: executionWorkspace.cwd,
-      });
+      const runGitSensitiveWorkspacePreflight = async () => {
+        await assertGitSensitiveAdapterWorkspaceValid({
+          adapterType: agent.adapterType,
+          agentId: agent.id,
+          issue: issueRef
+            ? {
+                id: issueRef.id,
+                identifier: issueRef.identifier,
+                projectId: issueRef.projectId,
+                projectWorkspaceId: issueRef.projectWorkspaceId,
+              }
+            : null,
+          resolvedWorkspace,
+          executionWorkspace,
+          persistedExecutionWorkspace,
+          executionTarget,
+          environmentDriver: selectedEnvironment.driver,
+          leaseMetadata: activeEnvironmentLease.lease.metadata,
+        });
+        await assertPushCapabilityCheckoutValid({
+          enabled: pushCapabilityPreflightRequired && executionTarget?.kind === "local",
+          issue: issueRef
+            ? {
+                id: issueRef.id,
+                identifier: issueRef.identifier,
+              }
+            : null,
+          cwd: executionWorkspace.cwd,
+        });
+      };
+      try {
+        await runGitSensitiveWorkspacePreflight();
+      } catch (preflightError) {
+        const originalReason = readWorkspaceValidationReason(preflightError);
+        if (!originalReason || !isRetryableWorkspaceValidationReason(originalReason)) {
+          throw preflightError;
+        }
+        logger.warn(
+          { runId: run.id, issueId, agentId: agent.id, reason: originalReason },
+          "git-sensitive workspace preflight failed with a retryable reason; re-resolving the execution workspace once before failing the run",
+        );
+        await onLog(
+          "stdout",
+          `[paperclip] Workspace validation failed (${originalReason}); re-resolving the execution workspace once before failing this run.\n`,
+        );
+        ({
+          resolvedWorkspace,
+          hostExecutionWorkspaceConfig,
+          executionWorkspace,
+          resolvedProjectId,
+          resolvedProjectWorkspaceId,
+          persistedExecutionWorkspace,
+          workspaceOperationRecorder,
+          latestWorkspaceConfigMetadata,
+          workspaceConfigFreshness,
+          reusedExecutionWorkspace,
+          resolvedWorkspaceReusePolicy,
+        } = await attemptResolveAndPersistExecutionWorkspace());
+        try {
+          await runGitSensitiveWorkspacePreflight();
+          logger.info(
+            { runId: run.id, issueId, agentId: agent.id, reason: originalReason },
+            "git-sensitive workspace preflight retry healed the original failure; continuing the run",
+          );
+          await onLog(
+            "stdout",
+            `[paperclip] Workspace validation retry succeeded (original reason: ${originalReason}); continuing the run.\n`,
+          );
+        } catch (retryError) {
+          const retryReason = readWorkspaceValidationReason(retryError);
+          logger.error(
+            { runId: run.id, issueId, agentId: agent.id, originalReason, retryReason },
+            "git-sensitive workspace preflight retry failed again; failing the run",
+          );
+          throw combineWorkspaceValidationRetryFailure(preflightError, retryError, originalReason, retryReason);
+        }
+      }
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",

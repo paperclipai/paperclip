@@ -16,15 +16,18 @@ import {
   buildEffectiveRunSessionConfigMetadata,
   buildEffectiveRunWorkspaceConfigMetadata,
   buildWorkspaceConfigFreshnessOperation,
+  combineWorkspaceValidationRetryFailure,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isRetryableWorkspaceValidationReason,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
+  readWorkspaceValidationReason,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveExecutionWorkspaceBranchOwnership,
   resolveExecutionWorkspaceConfigFreshness,
@@ -3067,5 +3070,114 @@ describe("reconcileReusedExecutionWorkspaceProjectWorkspaceId", () => {
     expect(
       reconcileReusedExecutionWorkspaceProjectWorkspaceId(undefined, "resolved-workspace"),
     ).toBe("resolved-workspace");
+  });
+});
+
+// RENA-54915: single synchronous re-preflight retry for a narrow allow-list of
+// WorkspaceValidationFailure reasons that can plausibly self-heal between two DB reads
+// (a stale/missing persisted-workspace row, missing git metadata), without retrying
+// structurally-broken reasons (e.g. missing_project_id, persisted_cwd_mismatch).
+describe("isRetryableWorkspaceValidationReason", () => {
+  it("allows the three re-preflight-retry allow-listed reasons", () => {
+    expect(isRetryableWorkspaceValidationReason("missing_persisted_execution_workspace")).toBe(true);
+    expect(isRetryableWorkspaceValidationReason("persisted_workspace_missing_project_workspace_id")).toBe(true);
+    expect(isRetryableWorkspaceValidationReason("missing_git_metadata")).toBe(true);
+  });
+
+  it("rejects reasons outside the allow list, including the newly-observed git_worktree_branch_mismatch", () => {
+    expect(isRetryableWorkspaceValidationReason("missing_project_id")).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("missing_git_push_remote")).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("persisted_cwd_mismatch")).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("project_workspace_mismatch")).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("fallback_agent_home_cwd")).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("git_worktree_provider_ref_mismatch")).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("git_worktree_branch_mismatch")).toBe(false);
+  });
+
+  it("rejects null, undefined, and empty reasons", () => {
+    expect(isRetryableWorkspaceValidationReason(null)).toBe(false);
+    expect(isRetryableWorkspaceValidationReason(undefined)).toBe(false);
+    expect(isRetryableWorkspaceValidationReason("")).toBe(false);
+  });
+});
+
+describe("readWorkspaceValidationReason", () => {
+  it("extracts the reason from a real WorkspaceValidationFailure thrown for a missing persisted execution workspace", async () => {
+    const error = await assertGitSensitiveAdapterWorkspaceValid(
+      buildWorkspaceValidationInput({ persistedExecutionWorkspace: null }),
+    ).catch((caught) => caught);
+
+    expect(readWorkspaceValidationReason(error)).toBe("missing_persisted_execution_workspace");
+  });
+
+  it("extracts the reason from a real WorkspaceValidationFailure thrown for missing git metadata", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-workspace-without-git-metadata-retry-helper";
+
+    const error = await assertGitSensitiveAdapterWorkspaceValid(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+        executionWorkspace: { ...input.executionWorkspace, baseCwd: cwd, cwd },
+        persistedExecutionWorkspace: { ...input.persistedExecutionWorkspace!, cwd },
+      }),
+    ).catch((caught) => caught);
+
+    const reason = readWorkspaceValidationReason(error);
+    expect(reason).toBe("missing_git_metadata");
+    expect(isRetryableWorkspaceValidationReason(reason)).toBe(true);
+  });
+
+  it("returns null for errors that are not a WorkspaceValidationFailure", () => {
+    expect(readWorkspaceValidationReason(new Error("some other adapter crash"))).toBeNull();
+    expect(readWorkspaceValidationReason(null)).toBeNull();
+    expect(readWorkspaceValidationReason("plain string")).toBeNull();
+  });
+});
+
+describe("combineWorkspaceValidationRetryFailure", () => {
+  it("surfaces both the original and retry reasons when the retry fails again", async () => {
+    const originalError = await assertGitSensitiveAdapterWorkspaceValid(
+      buildWorkspaceValidationInput({ persistedExecutionWorkspace: null }),
+    ).catch((caught) => caught);
+    const retryError = await assertGitSensitiveAdapterWorkspaceValid(
+      buildWorkspaceValidationInput({ persistedExecutionWorkspace: null }),
+    ).catch((caught) => caught);
+
+    const originalReason = readWorkspaceValidationReason(originalError);
+    const retryReason = readWorkspaceValidationReason(retryError);
+    const combined = combineWorkspaceValidationRetryFailure(originalError, retryError, originalReason, retryReason);
+
+    expect(combined.code).toBe("workspace_validation_failed");
+    expect(combined.message).toContain("Re-preflight retry (RENA-54915) also failed");
+    expect(combined.resultJson).toMatchObject({
+      workspaceValidationRetry: {
+        attempted: true,
+        healed: false,
+        originalReason: "missing_persisted_execution_workspace",
+        retryReason: "missing_persisted_execution_workspace",
+      },
+    });
+    // The original reason must remain traceable via the pre-existing workspaceValidation field too.
+    expect(combined.resultJson.workspaceValidation).toMatchObject({ reason: "missing_persisted_execution_workspace" });
+  });
+
+  it("still labels the outcome as not healed when the retry error is not itself a WorkspaceValidationFailure", () => {
+    const originalError = new (class extends Error {
+      code = "workspace_validation_failed";
+      resultJson = { workspaceValidation: { reason: "missing_git_metadata" } };
+    })("original failure");
+    const retryError = new Error("unexpected adapter crash during retry");
+
+    const combined = combineWorkspaceValidationRetryFailure(originalError, retryError, "missing_git_metadata", null);
+
+    expect(combined.resultJson).toMatchObject({
+      workspaceValidationRetry: {
+        attempted: true,
+        healed: false,
+        originalReason: "missing_git_metadata",
+        retryReason: null,
+        retryWorkspaceValidation: null,
+      },
+    });
   });
 });
