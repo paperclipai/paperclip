@@ -538,6 +538,93 @@ describe("issue graph liveness classifier", () => {
     }
   });
 
+  it("counts a fresh agent-addressed pending interaction as review coverage, but not once it goes stale (AGE-906)", () => {
+    const reviewIssueId = "review-1";
+    const reviewIssue = issue({
+      id: reviewIssueId,
+      identifier: "PAP-2279",
+      title: "Screenshot acceptance review",
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionState: null,
+    });
+    const now = new Date("2024-06-01T12:00:00.000Z");
+    const freshCreatedAt = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+    const staleCreatedAt = new Date(now.getTime() - 5 * 60 * 60 * 1000).toISOString();
+
+    const freshFindings = classifyIssueGraphLiveness({
+      issues: [reviewIssue],
+      relations: [],
+      agents: [agent(), manager],
+      pendingInteractions: [{
+        companyId,
+        issueId: reviewIssueId,
+        status: "pending",
+        createdAt: freshCreatedAt,
+        addresseeAgentId: coderId,
+        resolverPolicy: "anyone",
+      }],
+      now,
+    });
+    expect(freshFindings).toEqual([]);
+
+    const staleFindings = classifyIssueGraphLiveness({
+      issues: [reviewIssue],
+      relations: [],
+      agents: [agent(), manager],
+      pendingInteractions: [{
+        companyId,
+        issueId: reviewIssueId,
+        status: "pending",
+        createdAt: staleCreatedAt,
+        addresseeAgentId: coderId,
+        resolverPolicy: "anyone",
+      }],
+      now,
+    });
+    expect(staleFindings).toHaveLength(1);
+    expect(staleFindings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+    });
+
+    // A stale board_only (human_only) card is exempt from the staleness gate
+    // and keeps counting as coverage indefinitely.
+    const staleHumanOnlyFindings = classifyIssueGraphLiveness({
+      issues: [reviewIssue],
+      relations: [],
+      agents: [agent(), manager],
+      pendingInteractions: [{
+        companyId,
+        issueId: reviewIssueId,
+        status: "pending",
+        createdAt: staleCreatedAt,
+        addresseeAgentId: coderId,
+        resolverPolicy: "human_only",
+      }],
+      now,
+    });
+    expect(staleHumanOnlyFindings).toEqual([]);
+
+    // A stale card with no addressee (not agent-specific) also keeps counting
+    // as coverage; the staleness gate only targets agent-addressed cards.
+    const staleUnaddressedFindings = classifyIssueGraphLiveness({
+      issues: [reviewIssue],
+      relations: [],
+      agents: [agent(), manager],
+      pendingInteractions: [{
+        companyId,
+        issueId: reviewIssueId,
+        status: "pending",
+        createdAt: staleCreatedAt,
+        addresseeAgentId: null,
+        resolverPolicy: "anyone",
+      }],
+      now,
+    });
+    expect(staleUnaddressedFindings).toEqual([]);
+  });
+
   it("does not treat a participant retained after changes are requested as an active review path", () => {
     const reviewIssueId = "review-1";
 
