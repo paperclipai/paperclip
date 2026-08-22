@@ -6,7 +6,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isValidOpenCodeModelId } from "../index.js";
+import { DEFAULT_OPENCODE_CHEAP_MODEL, isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -225,6 +225,73 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   } catch {
     return [];
   }
+}
+
+export interface OpenCodeCheapModelResolution {
+  model: string;
+  source: "adapter_default" | "discovered";
+  available: boolean;
+}
+
+/**
+ * Resolve the model id Paperclip should use for the `cheap` budget profile on
+ * this host.
+ *
+ * The static default (`DEFAULT_OPENCODE_CHEAP_MODEL`) is pinned to
+ * `DEFAULT_OPENCODE_LOCAL_MODEL` (the adapter's own default main model), so
+ * hosts that never provision the `openai/` provider are no longer left with a
+ * hardcoded deprovisioned model id. Live re-resolution against
+ * `opencode models` is intentionally NOT performed here: discovery is
+ * synchronous-free, cached, and can return stale/garbled results, and the
+ * heartbeat already gates model availability via `runPrecheck` /
+ * `ensureOpenCodeModelConfiguredAndAvailable` at run time, where a real
+ * probe with a proper timeout is available.
+ */
+export async function resolveOpenCodeCheapModel(input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: Record<string, string | undefined>;
+} = {}): Promise<OpenCodeCheapModelResolution> {
+  const inb = (typeof input.env === "object" && input.env !== null ? input.env : {}) as Record<string, string | undefined>;
+  const override =
+    typeof process === "undefined"
+      ? undefined
+      : ((inb.PAPERCLIP_OPENCODE_CHEAP_MODEL ?? process.env.PAPERCLIP_OPENCODE_CHEAP_MODEL ??
+          inb.PAPERCLIP_OPENCODE_SMALL_MODEL ?? process.env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim());
+  if (override) {
+    return { model: override, source: "discovered", available: true };
+  }
+  return { model: DEFAULT_OPENCODE_CHEAP_MODEL, source: "adapter_default", available: true };
+}
+
+/**
+ * Build the `cheap` model-profile definition for the opencode_local adapter.
+ * This is safe to call in the browser: it returns the upstream default
+ * synchronously when no live discovery is available (no `process`), and lets
+ * callers on the server pass an async resolver that probes the live model list.
+ */
+export async function buildOpenCodeModelProfilesWithDiscovery(
+  input: { command?: unknown; cwd?: unknown; env?: Record<string, unknown> } = {},
+): Promise<import("@paperclipai/adapter-utils").AdapterModelProfileDefinition[]> {
+  const envIn = (typeof input.env === "object" && input.env !== null ? input.env : {}) as Record<string, unknown>;
+  const { model, source, available } = await resolveOpenCodeCheapModel({
+    ...input,
+    env: {
+      PAPERCLIP_OPENCODE_CHEAP_MODEL: asString(envIn.PAPERCLIP_OPENCODE_CHEAP_MODEL, ""),
+      PAPERCLIP_OPENCODE_SMALL_MODEL: asString(envIn.PAPERCLIP_OPENCODE_SMALL_MODEL, ""),
+    },
+  });
+  return [
+    {
+      key: "cheap",
+      label: "Cheap",
+      description: available
+        ? "Budget lane model for recovery retries and other low-cost tasks."
+        : "Budget lane model for recovery retries (default not available locally; set PAPERCLIP_OPENCODE_CHEAP_MODEL or PAPERCLIP_OPENCODE_SMALL_MODEL).",
+      adapterConfig: { model },
+      source,
+    },
+  ];
 }
 
 export function resetOpenCodeModelsCacheForTests() {

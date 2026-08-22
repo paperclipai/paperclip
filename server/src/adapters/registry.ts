@@ -93,6 +93,7 @@ import {
   testEnvironment as openCodeTestEnvironment,
   sessionCodec as openCodeSessionCodec,
   listOpenCodeModels,
+  buildOpenCodeModelProfilesWithDiscovery,
 } from "@paperclipai/adapter-opencode-local/server";
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
@@ -393,6 +394,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   modelProfiles: openCodeModelProfiles,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
+  listModelProfiles: buildOpenCodeModelProfilesWithDiscovery,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",

@@ -258,42 +258,50 @@ describe("server adapter registry", () => {
   });
 
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
-    await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gemini-2.5-flash-lite" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+    const previousOpencodeCommand = process.env.PAPERCLIP_OPENCODE_COMMAND;
+    process.env.PAPERCLIP_OPENCODE_COMMAND = "true";
+    try {
+      await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
+        expect.objectContaining({
+          key: "cheap",
+          adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
+          source: "adapter_default",
+        }),
+      ]);
+      await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
+        expect.objectContaining({
+          key: "cheap",
+          adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+          source: "adapter_default",
+        }),
+      ]);
+      await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
+        expect.objectContaining({
+          key: "cheap",
+          adapterConfig: expect.objectContaining({ model: "gemini-2.5-flash-lite" }),
+          source: "adapter_default",
+        }),
+      ]);
+      // opencode_local uses live discovery: the returned model must be a valid
+      // provider/model id and the source must reflect whether discovery found
+      // it (adapter_default if the pinned default exists, discovered otherwise).
+      const opencodeProfiles = await listAdapterModelProfiles("opencode_local");
+      expect(opencodeProfiles).toHaveLength(1);
+      expect(opencodeProfiles[0].key).toBe("cheap");
+      expect(typeof opencodeProfiles[0].adapterConfig.model).toBe("string");
+      expect(["adapter_default", "discovered"]).toContain(opencodeProfiles[0].source);
+      await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
+        expect.objectContaining({
+          key: "cheap",
+          adapterConfig: expect.objectContaining({ model: "gpt-5.1-codex-mini" }),
+          source: "adapter_default",
+        }),
+      ]);
+      await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+    } finally {
+      if (previousOpencodeCommand === undefined) delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+      else process.env.PAPERCLIP_OPENCODE_COMMAND = previousOpencodeCommand;
+    }
   });
 
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {

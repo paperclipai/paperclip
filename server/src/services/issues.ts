@@ -4746,7 +4746,6 @@ export function issueService(db: Db) {
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
-      const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
       const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
       const rawSearch = filters?.q?.trim() ?? "";
@@ -4905,9 +4904,7 @@ export function issueService(db: Db) {
         contextUserId
           ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
-        includeBlockedBy
-          ? blockedByMapForIssues(db, companyId, issueIds)
-          : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
+        blockedByMapForIssues(db, companyId, issueIds),
         includeLiveDescendantSummary
           ? liveDescendantCountMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, number>()),
@@ -4937,7 +4934,7 @@ export function issueService(db: Db) {
           ) ?? row.updatedAt;
           return {
             ...row,
-            ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
+            blockedBy: blockedByMap.get(row.id) ?? [],
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
             ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
@@ -4961,7 +4958,7 @@ export function issueService(db: Db) {
         return {
           ...row,
           ...activeInboxArchiveFields(archiveByIssueId.get(row.id), lastActivityAt),
-          ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
+          blockedBy: blockedByMap.get(row.id) ?? [],
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
           ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),

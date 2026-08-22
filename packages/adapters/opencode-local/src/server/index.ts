@@ -68,6 +68,10 @@ export {
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   requireOpenCodeModelId,
+  resolveOpenCodeCheapModel,
+  buildOpenCodeModelProfilesWithDiscovery,
+  type OpenCodeCheapModelResolution,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+

@@ -2168,7 +2168,7 @@ function toCompactIssue(issue: any): CompactIssue {
     updatedAt: issue.updatedAt,
     ...(issue.labelIds ? { labelIds: issue.labelIds } : {}),
     ...(issue.labels ? { labels: issue.labels } : {}),
-    ...(issue.blockedBy ? { blockedBy: issue.blockedBy } : {}),
+    blockedBy: issue.blockedBy ?? [],
     ...(issue.blockerAttention ? { blockerAttention: issue.blockerAttention } : {}),
     ...(issue.blockedInboxAttention !== undefined ? { blockedInboxAttention: issue.blockedInboxAttention } : {}),
     ...(issue.productivityReview ? { productivityReview: issue.productivityReview } : {}),

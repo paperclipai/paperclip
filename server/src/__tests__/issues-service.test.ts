@@ -2269,6 +2269,66 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments[0]?.metadata).toBeNull();
   });
 
+  it("serializes blockedBy: [] on list rows even without includeBlockedBy flag", async () => {
+    const companyId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    const unblockedId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker issue",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: unblockedId,
+        companyId,
+        title: "Unblocked issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedId,
+      type: "blocks",
+    });
+
+    const result = await svc.list(companyId);
+    const byId = new Map(result.map((issue) => [issue.id, issue]));
+
+    expect(byId.get(blockedId)?.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blockerId,
+        identifier: null,
+        title: "Blocker issue",
+        status: "todo",
+        priority: "high",
+      }),
+    ]);
+    expect(byId.get(blockerId)?.blockedBy).toEqual([]);
+    expect(byId.get(unblockedId)?.blockedBy).toEqual([]);
+  });
+
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
     const companyId = randomUUID();
     const blockerId = randomUUID();
@@ -2314,7 +2374,18 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     const defaultResult = await svc.list(companyId);
-    expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
+    const defaultById = new Map(defaultResult.map((issue) => [issue.id, issue]));
+    expect(defaultById.get(blockedId)?.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blockerId,
+        identifier: null,
+        title: "Blocker issue",
+        status: "todo",
+        priority: "high",
+      }),
+    ]);
+    expect(defaultById.get(blockerId)?.blockedBy).toEqual([]);
+    expect(defaultById.get(unblockedId)?.blockedBy).toEqual([]);
 
     const result = await svc.list(companyId, { includeBlockedBy: true });
     const byId = new Map(result.map((issue) => [issue.id, issue]));
