@@ -1812,6 +1812,15 @@ async function buildRuntime(input: {
       agentCommandShell = normalized;
       agentCommand = normalized;
     }
+    // Gemini's ACP server does not implement session/set_config_option (see
+    // sessionConfigOptions below), so the model must be selected at startup via
+    // the `--model` CLI flag instead — mirroring the gemini-local adapter's own
+    // CLI-lane behavior. Skip if the command already specifies one (e.g. a
+    // user-configured agentCommand) to avoid passing --model twice.
+    if (requestedModel && !agentCommandShell.split(/\s+/).includes("--model")) {
+      agentCommandShell = `${agentCommandShell} --model ${shellQuote(requestedModel)}`;
+      agentCommand = agentCommand ? `${agentCommand} --model ${requestedModel}` : agentCommand;
+    }
   }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
@@ -2221,20 +2230,34 @@ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: strin
   // Claude and Codex runtime config is pre-set via startup env vars; skip
   // set_config_option to avoid ACP-server picker validation rejecting valid
   // backend model IDs that are not advertised by the local ACP server.
+  // Gemini's ACP server (`gemini --acp`) does not implement session/set_config_option
+  // at all — any call to it fails the whole run with a JSON-RPC "Method not found"
+  // (-32601) error, not just a value-rejection. Model is instead passed as a
+  // `--model` startup flag (see resolveBuiltInAgentCommand below); effort and
+  // fast-mode have no such fallback for gemini and are simply unsupported for now.
   if (
     prepared.requestedModel &&
     prepared.acpxAgent !== "claude" &&
-    prepared.acpxAgent !== "codex"
+    prepared.acpxAgent !== "codex" &&
+    prepared.acpxAgent !== "gemini"
   ) {
     options.push({ key: "model", value: prepared.requestedModel });
   }
-  if (prepared.requestedThinkingEffort && prepared.acpxAgent !== "codex") {
+  if (
+    prepared.requestedThinkingEffort &&
+    prepared.acpxAgent !== "codex" &&
+    prepared.acpxAgent !== "gemini"
+  ) {
     options.push({
       key: "effort",
       value: prepared.requestedThinkingEffort,
     });
   }
-  if (prepared.fastMode && prepared.acpxAgent !== "codex") {
+  if (
+    prepared.fastMode &&
+    prepared.acpxAgent !== "codex" &&
+    prepared.acpxAgent !== "gemini"
+  ) {
     options.push(
       { key: "service_tier", value: "fast" },
       { key: "features.fast_mode", value: "true" },
