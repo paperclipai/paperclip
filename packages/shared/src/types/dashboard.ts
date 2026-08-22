@@ -42,6 +42,18 @@ export interface DashboardSummary {
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
+    // Token usage for the same period. On subscription-billed deployments
+    // `costCents` is forced to 0 at write time (see normalizeBilledCostCents),
+    // so spend alone reports nothing about a fleet that may have consumed
+    // billions of tokens. These carry the signal that money cannot.
+    monthInputTokens: number;
+    monthCachedInputTokens: number;
+    monthOutputTokens: number;
+    // True when every metered run this period was `subscription_included`.
+    // A dollar figure cannot vary on such a deployment, so the UI shows token
+    // usage instead of a permanent $0.00 and avoids labelling an unenforceable
+    // cap as a deliberate "Unlimited budget" choice.
+    monthBillingIsSubscriptionOnly: boolean;
   };
   pendingApprovals: number;
   budgets: {

@@ -294,16 +294,38 @@ Invariants:
 - `issue_id` uuid fk `issues.id` null
 - `project_id` uuid fk `projects.id` null
 - `goal_id` uuid fk `goals.id` null
+- `heartbeat_run_id` uuid fk `heartbeat_runs.id` null
 - `billing_code` text null
 - `provider` text not null
+- `biller` text not null default `unknown`
+- `billing_type` text not null default `unknown`; e.g. `metered_api`, `subscription_included`
 - `model` text not null
 - `cost_status` text not null default `reported`; `unpriced` when usage exists but no price was reported
 - `input_tokens` int not null default 0
+- `cached_input_tokens` int not null default 0
 - `output_tokens` int not null default 0
 - `cost_cents` int not null
 - `occurred_at` timestamptz not null
 
 Invariant: each event must attach to agent and company; rollups are aggregation, never manually edited.
+
+### Subscription billing books zero cost
+
+`cost_cents` is forced to `0` when `billing_type` is `subscription_included`. A
+subscription run has no marginal price, so recording the metered-API equivalent
+would turn every spend view into a "what if we paid API rates" simulation.
+
+The row is still written. The write gate is `costCents > 0 || hasTokenUsage`, so
+token columns are populated in full even when the cost is zero.
+
+Two consequences follow, and any consumer of this table must handle them:
+
+- **Every sum of `cost_cents` is zero on a subscription-only deployment.** The
+  figure cannot vary, however much the fleet runs. Read the token columns to
+  describe such a deployment.
+- **Cents-denominated caps cannot fire there.** `agents.budget_monthly_cents`,
+  company budgets, and `heartbeat.maxDailyCostCents` all compare against a sum
+  that is structurally zero. They are inert rather than generous.
 
 ## 7.10 `approvals`
 
@@ -1087,7 +1109,28 @@ Dashboard payload must include:
 - active/running/paused/error agent counts
 - open/in-progress/blocked/done issue counts
 - month-to-date spend and budget utilization
+- month-to-date token usage: input, cached input, and output
+- whether every metered run in the period was `subscription_included`
 - pending approvals count
+
+The token totals and the subscription flag exist because spend alone cannot
+describe a subscription-billed deployment, where `cost_cents` is always zero
+(see 7.9). The flag is computed server-side so every consumer of the payload
+reaches the same verdict.
+
+A period with **no** metered runs reports the flag as `false`, not `true`. A
+quiet month on a metered deployment must keep its spend view rather than be
+misread as a subscription.
+
+The board app uses the flag to choose what the month tile shows:
+
+- subscription only: token usage, with the input/cached/output breakdown beneath
+- otherwise: month-to-date spend, unchanged
+
+A budget of `0` means no budget was set. It does not mean spending is unlimited
+by design, and on a subscription deployment a configured budget is not
+enforceable either (see 7.9). UI copy must not present either state as a
+deliberate, working cap.
 
 ## 10.10 Error Semantics
 
@@ -1259,6 +1302,12 @@ Board can at any time:
   - emit high-priority activity event
 
 Board may override by raising budget or explicitly resuming agent.
+
+**These rules require a non-zero `cost_cents`.** On a deployment where every run
+is `subscription_included`, the sum they read is always zero (see 7.9), so no
+threshold is ever crossed and no agent is ever paused for budget. Setting a cents
+budget there has no effect. Governing such a deployment needs a token-denominated
+limit, which is not yet implemented.
 
 ## 13.3 Cost Event Ingestion
 

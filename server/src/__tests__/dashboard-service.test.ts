@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,7 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -236,5 +237,119 @@ describeEmbeddedPostgres("dashboard service", () => {
     });
     // process_lost kills that recovered must not leak into the failed breakdown.
     expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
+  });
+
+  async function seedCompanyWithAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  function costEvent(input: {
+    companyId: string;
+    agentId: string;
+    billingType: string;
+    costCents?: number;
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    occurredAt?: Date;
+  }) {
+    return {
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: input.billingType,
+      model: "claude-sonnet-4-6",
+      inputTokens: input.inputTokens ?? 0,
+      cachedInputTokens: input.cachedInputTokens ?? 0,
+      outputTokens: input.outputTokens ?? 0,
+      costCents: input.costCents ?? 0,
+      occurredAt: input.occurredAt ?? new Date(),
+    };
+  }
+
+  it("reports token usage for subscription-billed runs whose cost is always zero", async () => {
+    const { companyId, agentId } = await seedCompanyWithAgent();
+
+    // `normalizeBilledCostCents` forces costCents to 0 for subscription runs, so
+    // spend alone cannot describe this company. Tokens carry the whole signal.
+    await db.insert(costEvents).values([
+      costEvent({ companyId, agentId, billingType: "subscription_included", inputTokens: 1_000, cachedInputTokens: 20_000, outputTokens: 300 }),
+      costEvent({ companyId, agentId, billingType: "subscription_included", inputTokens: 500, cachedInputTokens: 5_000, outputTokens: 100 }),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs).toMatchObject({
+      monthSpendCents: 0,
+      monthInputTokens: 1_500,
+      monthCachedInputTokens: 25_000,
+      monthOutputTokens: 400,
+      monthBillingIsSubscriptionOnly: true,
+    });
+  });
+
+  it("does not claim subscription-only billing when any run is metered", async () => {
+    const { companyId, agentId } = await seedCompanyWithAgent();
+
+    await db.insert(costEvents).values([
+      costEvent({ companyId, agentId, billingType: "subscription_included", inputTokens: 1_000 }),
+      costEvent({ companyId, agentId, billingType: "metered_api", inputTokens: 200, costCents: 75 }),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    // A single metered run means a dollar figure is meaningful again, so the UI
+    // must keep showing spend rather than swapping to token usage.
+    expect(summary.costs.monthBillingIsSubscriptionOnly).toBe(false);
+    expect(summary.costs.monthSpendCents).toBe(75);
+    expect(summary.costs.monthInputTokens).toBe(1_200);
+  });
+
+  it("treats a period with no metered runs as not subscription-only", async () => {
+    const { companyId } = await seedCompanyWithAgent();
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    // Vacuous truth would suppress the spend tile on a dollar-billed deployment
+    // that simply had a quiet month.
+    expect(summary.costs.monthBillingIsSubscriptionOnly).toBe(false);
+    expect(summary.costs.monthInputTokens).toBe(0);
+  });
+
+  it("scopes token totals to the company and the current UTC month", async () => {
+    const { companyId, agentId } = await seedCompanyWithAgent();
+    const other = await seedCompanyWithAgent();
+    const lastMonth = new Date(getUtcMonthStart(new Date()).getTime() - 24 * 60 * 60 * 1000);
+
+    await db.insert(costEvents).values([
+      costEvent({ companyId, agentId, billingType: "subscription_included", inputTokens: 1_000 }),
+      costEvent({ companyId, agentId, billingType: "subscription_included", inputTokens: 999, occurredAt: lastMonth }),
+      costEvent({ companyId: other.companyId, agentId: other.agentId, billingType: "subscription_included", inputTokens: 777 }),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs.monthInputTokens).toBe(1_000);
   });
 });

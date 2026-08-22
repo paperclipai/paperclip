@@ -300,6 +300,10 @@ const dashboard: DashboardSummary = {
     monthSpendCents: 900,
     monthBudgetCents: 1000,
     monthUtilizationPercent: 90,
+    monthInputTokens: 0,
+    monthCachedInputTokens: 0,
+    monthOutputTokens: 0,
+    monthBillingIsSubscriptionOnly: false,
   },
   pendingApprovals: 1,
   budgets: {

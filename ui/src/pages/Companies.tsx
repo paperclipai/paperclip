@@ -280,7 +280,10 @@ export function Companies() {
                     {formatCents(company.spentMonthlyCents)}
                     {company.budgetMonthlyCents > 0
                       ? <> / {formatCents(company.budgetMonthlyCents)} <span className="text-xs">({budgetPct}%)</span></>
-                      : <span className="text-xs ml-1">Unlimited budget</span>}
+                      // `0` means no budget was set, which is not the same as
+                      // spending being unlimited by design — and on subscription
+                      // billing a cents budget cannot be enforced at all.
+                      : <span className="text-xs ml-1">No budget set</span>}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 ml-auto">

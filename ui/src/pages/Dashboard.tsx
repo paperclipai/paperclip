@@ -26,9 +26,10 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
+import { cn, formatCents, formatTokens } from "../lib/utils";
+import { formatTokenBreakdown, weightedTokens } from "../lib/token-usage";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, Coins, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -329,19 +330,52 @@ export function Dashboard() {
                 </span>
               }
             />
-            <MetricCard
-              icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
-              description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
-                </span>
-              }
-            />
+            {/* On subscription-billed deployments `costCents` is forced to 0 at
+                write time, so a spend figure here can only ever read $0.00 while
+                the fleet burns through billions of tokens. Show the usage that
+                actually varies, and never label an unenforceable cap as a
+                deliberate "Unlimited budget" choice. */}
+            {data.costs.monthBillingIsSubscriptionOnly ? (
+              <MetricCard
+                icon={Coins}
+                value={formatTokens(
+                  weightedTokens({
+                    inputTokens: data.costs.monthInputTokens,
+                    cachedInputTokens: data.costs.monthCachedInputTokens,
+                    outputTokens: data.costs.monthOutputTokens,
+                  }),
+                )}
+                label="Month Usage"
+                to="/costs"
+                description={
+                  <span>
+                    {formatTokenBreakdown({
+                      inputTokens: data.costs.monthInputTokens,
+                      cachedInputTokens: data.costs.monthCachedInputTokens,
+                      outputTokens: data.costs.monthOutputTokens,
+                    })}
+                    {" · "}
+                    <span className="text-muted-foreground">
+                      subscription — spend not billed per run
+                    </span>
+                  </span>
+                }
+              />
+            ) : (
+              <MetricCard
+                icon={DollarSign}
+                value={formatCents(data.costs.monthSpendCents)}
+                label="Month Spend"
+                to="/costs"
+                description={
+                  <span>
+                    {data.costs.monthBudgetCents > 0
+                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                      : "Unlimited budget"}
+                  </span>
+                }
+              />
+            )}
             <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
