@@ -314,6 +314,461 @@ describe("GitHub external object provider", () => {
     expect(JSON.stringify(result)).not.toContain("ghp_secret");
   });
 
+  function checkRunsResponse(checkRuns: Array<Record<string, unknown>>) {
+    return response({ check_runs: checkRuns });
+  }
+
+  it.each([
+    [
+      "pending",
+      [{ status: "in_progress", conclusion: null }],
+      "pending",
+    ],
+    [
+      "failure",
+      [
+        { status: "completed", conclusion: "success" },
+        { status: "completed", conclusion: "failure" },
+      ],
+      "failure",
+    ],
+    [
+      "success",
+      [
+        { status: "completed", conclusion: "success" },
+        { status: "completed", conclusion: "skipped" },
+      ],
+      "success",
+    ],
+  ])("resolves an open pull request with %s checksState from check-runs", async (_name, checkRuns, expectedChecksState) => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) return checkRunsResponse(checkRuns);
+      if (url.endsWith("/status")) return response({ state: "success" });
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs?per_page=100",
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: expectedChecksState }),
+      }),
+    });
+  });
+
+  it("gates a merged PR's checksState on the merge commit, not the (green) pre-merge head SHA", async () => {
+    // Regression coverage for AGE-569 follow-up: a PR's head SHA only ever
+    // carries pre-merge CI. A merge-queue/canary gate that only runs against
+    // the merge commit on the base branch (e.g. canary-pr-control-plane) can
+    // fail on that landed commit even though the PR's own head SHA was green.
+    // The done-transition gate must not read this PR as "merged and green"
+    // in that case.
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/mergecommitsha/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "failure" }]);
+      }
+      if (url.includes("/commits/mergecommitsha/status")) return response({ state: "success" });
+      if (url.includes("/commits/deadbeef/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "success" }]);
+      }
+      if (url.includes("/commits/deadbeef/status")) return response({ state: "success" });
+      return response({
+        state: "closed",
+        draft: false,
+        merged: true,
+        merged_at: "2026-08-20T12:00:00Z",
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+        merge_commit_sha: "mergecommitsha",
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/mergecommitsha/check-runs?per_page=100",
+      expect.any(Object),
+    );
+    // The resolver also checks the pre-merge head SHA alongside the merge
+    // commit (AGE-569 fix: some CI setups never run checks against the
+    // merge commit at all, so it alone can't be trusted as "no CI signal" ==
+    // "success"). Both are consulted and the worse of the two wins -- here
+    // the merge commit's failure wins regardless.
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/deadbeef/check-runs?per_page=100",
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ merged: true, checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("gates a merged PR on the head SHA's CI when the merge commit has no CI configured at all", async () => {
+    // Regression coverage for the Greptile-flagged gap: a merge commit with
+    // zero check-runs and zero commit statuses used to be read as "nothing
+    // configured, therefore success" in isolation, hiding a failing/pending
+    // head-SHA CI run that never ran against the merge commit.
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/commits/mergecommitsha/check-runs")) return checkRunsResponse([]);
+      if (url.includes("/commits/mergecommitsha/status")) return response({ state: "pending", statuses: [] });
+      if (url.includes("/commits/deadbeef/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "failure" }]);
+      }
+      if (url.includes("/commits/deadbeef/status")) return response({ state: "success" });
+      return response({
+        state: "closed",
+        draft: false,
+        merged: true,
+        merged_at: "2026-08-20T12:00:00Z",
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+        merge_commit_sha: "mergecommitsha",
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ merged: true, checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("falls back to the combined commit status endpoint when there are no check-runs", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) return checkRunsResponse([]);
+      if (url.endsWith("/status")) {
+        return response({
+          state: "failure",
+          statuses: [{ state: "failure", context: "ci/legacy-jenkins" }],
+        });
+      }
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/acme/app/commits/deadbeef/status",
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("defaults checksState to success when neither check-runs nor commit status report anything", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) return checkRunsResponse([]);
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "success" }),
+      }),
+    });
+  });
+
+  it("does not report checksState success when both the check-runs and status lookups fail", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) return new Response("", { status: 500 });
+      if (url.endsWith("/status")) return new Response("", { status: 502 });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    // Both CI lookups genuinely failed (non-2xx). This must NOT be coerced to
+    // "success" -- a failed lookup is not a confirmed-green signal, and the
+    // done-transition gate in routes/issues.ts treats a missing checksState on
+    // a merged PR as blocking ("checks pending"), never as a pass.
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("reports the worse of check-runs and a failing legacy combined status", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "success" }]);
+      }
+      if (url.endsWith("/status")) {
+        return response({
+          state: "failure",
+          statuses: [{ state: "failure", context: "ci/legacy-jenkins" }],
+        });
+      }
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    // All GitHub Checks are green, but a separate legacy commit-status
+    // integration reports failure on the same commit. The overall checksState
+    // must reflect the worse signal so this does not silently pass the gate.
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("does not report checksState success when the check-runs lookup fails but the legacy status succeeds", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) return new Response("", { status: 502 });
+      if (url.endsWith("/status")) {
+        return response({
+          state: "success",
+          statuses: [{ state: "success", context: "ci/legacy-jenkins" }],
+        });
+      }
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    // The legacy status endpoint reports green, but the check-runs lookup
+    // itself failed (502) -- we have no idea whether there is a failing
+    // required check-run we simply could not see. Reporting "success" here
+    // would let an unverified merged PR pass the done gate.
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("treats an unreadable 2xx check-runs body the same as a failed lookup, not an empty list", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) return new Response("not json", { status: 200, headers: { "content-type": "application/json" } });
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("treats an unrecognized completed check-run conclusion as failure, not success", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        return checkRunsResponse([{ status: "completed", conclusion: "stale" }]);
+      }
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
+  it("does not report success from a paginated check-runs list when later pages are not fetched", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        // GitHub reports total_count for the full set of check-runs on this
+        // commit, but this response only contains the first page (30 by
+        // default; here trimmed to one for the test). A failing run could
+        // be sitting on a page we never fetched.
+        return response({
+          total_count: 45,
+          check_runs: [{ status: "completed", conclusion: "success" }],
+        });
+      }
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("per_page=100"),
+      expect.any(Object),
+    );
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ checksState: expect.anything() }),
+      }),
+    });
+  });
+
+  it("still reports failure from a paginated check-runs list when the visible page already has a failing run", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/check-runs")) {
+        return response({
+          total_count: 45,
+          check_runs: [{ status: "completed", conclusion: "failure" }],
+        });
+      }
+      if (url.endsWith("/status")) return response({ total_count: 0, statuses: [] });
+      return response({
+        state: "closed",
+        merged: true,
+        draft: false,
+        title: "Ship it",
+        head: { sha: "deadbeef" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ checksState: "failure" }),
+      }),
+    });
+  });
+
   it.each([
     [
       "auth-required",

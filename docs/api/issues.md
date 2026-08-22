@@ -338,3 +338,4 @@ backlog -> todo -> in_progress -> in_review -> done
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
+- `done` is refused with `422` (`details.code: "done_transition_pr_gate"`) when the issue references a GitHub pull request that is not merged, or is merged with a non-`success` check-run/status state. The error names the pull request and the reason (`open`, `unmerged`, `checks red`, `checks pending`). There is no bypass; unlink the pull-request reference to force the transition.

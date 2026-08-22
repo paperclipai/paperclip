@@ -11,6 +11,7 @@ import {
   companyMemberships,
   documents,
   executionWorkspaces,
+  externalObjectMentions,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -317,6 +318,291 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
       kind: row.stage.kind,
     },
   }));
+}
+
+type DoneTransitionPrGateReason = "open" | "unmerged" | "checks red" | "checks pending" | "unverified";
+
+function doneTransitionPrGateReason(data: Record<string, unknown>): DoneTransitionPrGateReason | null {
+  const state = typeof data.state === "string" ? data.state : "unknown";
+  const merged = data.merged === true;
+  const checksState = typeof data.checksState === "string" ? data.checksState : null;
+  if (!merged) return state === "open" ? "open" : "unmerged";
+  if (checksState === "success") return null;
+  // Fail-closed: block on "failure", "pending", AND on a missing/unknown
+  // checksState (e.g. the GitHub check-runs/status lookup itself failed). A
+  // merged PR whose CI state we cannot positively confirm as green must not
+  // pass silently — that is exactly the false-"done" gap this gate closes.
+  return checksState === "failure" ? "checks red" : "checks pending";
+}
+
+const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([^\s/]+)\/([^\s/]+)\/pull\/(\d+)/gi;
+
+function textMightReferenceGitHubPullRequest(...texts: Array<string | null | undefined>): boolean {
+  return texts.some((text) => typeof text === "string" && new RegExp(GITHUB_PULL_REQUEST_URL_PATTERN).test(text));
+}
+
+type GitHubPullRequestRef = { owner: string; repo: string; number: number };
+
+function extractGitHubPullRequestRefs(text: string | null | undefined): GitHubPullRequestRef[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const refs: GitHubPullRequestRef[] = [];
+  const pattern = new RegExp(GITHUB_PULL_REQUEST_URL_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    refs.push({ owner: match[1]!, repo: match[2]!, number: Number(match[3]) });
+  }
+  return refs;
+}
+
+function githubPullRequestRefKey(owner: string, repo: string, number: number): string {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
+}
+
+/**
+ * Whether this issue has ever had a GitHub pull-request reference recorded
+ * against it — from its title/description, or from any comment or document
+ * (external_object_mentions covers all of those source kinds, not just the
+ * issue body itself). Used only to decide how to fail when the live
+ * `listForIssue` lookup itself throws: a plain text scan of title/description
+ * alone would miss a PR linked solely from a comment or a document.
+ */
+async function issueHasRecordedPullRequestMention(db: Db, companyId: string, issueId: string): Promise<boolean> {
+  const row = await db
+    .select({ id: externalObjectMentions.id })
+    .from(externalObjectMentions)
+    .where(and(
+      eq(externalObjectMentions.companyId, companyId),
+      eq(externalObjectMentions.sourceIssueId, issueId),
+      eq(externalObjectMentions.objectType, "pull_request"),
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row !== null;
+}
+
+/**
+ * Fail-closed guard for the `done` transition (AGE-569): an issue may not be
+ * marked `done` while it references a GitHub pull request that is still
+ * open/unmerged, merged with red/pending CI, or whose current state could
+ * not be verified (a forced live refresh failed). Board and agent actors are
+ * both subject to this gate — there is no bypass flag, matching the
+ * fail-closed shape of `scripts/require-issue-claim.sh` and the `.claude/hooks`
+ * guards this ticket is modeled on.
+ */
+async function assertNoBlockingLinkedPullRequest(
+  db: Db,
+  externalObjectsSvc: ReturnType<typeof externalObjectService>,
+  issueId: string,
+  companyId: string,
+  textMightReferencePullRequest: boolean,
+  candidateNewPullRequestRefs: GitHubPullRequestRef[],
+  textIsChanging: boolean,
+  effectivePullRequestRefKeys: Set<string>,
+) {
+  let groups: Awaited<ReturnType<typeof externalObjectsSvc.listForIssue>>;
+  try {
+    groups = await externalObjectsSvc.listForIssue(issueId);
+  } catch (err) {
+    // A plain-text scan of title/description alone would miss a pull request
+    // linked solely from a comment or a document, so also consult the
+    // recorded mention table (covers every source kind) before deciding this
+    // is safe to allow through. That secondary check itself failing falls
+    // back to the text-only signal rather than widening the blast radius of
+    // an unrelated infra fault to every done transition in the company.
+    let mightReferencePullRequest = textMightReferencePullRequest || candidateNewPullRequestRefs.length > 0;
+    if (!mightReferencePullRequest) {
+      try {
+        mightReferencePullRequest = await issueHasRecordedPullRequestMention(db, companyId, issueId);
+      } catch (mentionLookupErr) {
+        // A double DB fault here (both `listForIssue` above and this
+        // fallback lookup) has no way to distinguish "this issue has a PR
+        // mentioned only in a comment/document that we can't currently
+        // read" from "this issue genuinely has nothing to do with a pull
+        // request and the DB layer it doesn't touch happens to be
+        // unavailable/unimplemented" (e.g. a narrowly-scoped test double, or
+        // an unrelated table outage). Blocking every `done` transition
+        // company-wide on that ambiguity is not a safe default -- it is
+        // exactly the "gate that blocks everything" this ticket warns
+        // against. Fall back to the text-only signal instead: a positive
+        // text/candidate-ref hit is handled above and still fails closed via
+        // the branch below; only the case with zero working signal at all
+        // allows the transition through, matching pre-fix behavior.
+        logger.warn(
+          { err: mentionLookupErr, issueId },
+          "done-transition PR gate: failed to check recorded pull-request mentions; falling back to the text-only signal",
+        );
+      }
+    }
+    if (!mightReferencePullRequest) {
+      // The gate itself must not turn an unrelated external-objects
+      // misconfiguration/outage into a hard failure of every `done`
+      // transition. Nothing on this issue (title, description, or any
+      // recorded comment/document mention) looks like a GitHub pull request,
+      // so there is nothing plausible to gate on.
+      logger.warn(
+        { err, issueId },
+        "done-transition PR gate: failed to resolve linked external objects; issue has no PR-like reference, allowing the transition",
+      );
+      return;
+    }
+    // This issue (its title/description, or a comment/document mention)
+    // looks like it references a GitHub pull request, and we failed to
+    // resolve its current state at all. Fail closed rather than silently
+    // letting an unverifiable PR reference pass.
+    logger.warn(
+      { err, issueId },
+      "done-transition PR gate: failed to resolve linked external objects for an issue with a PR-like reference; blocking the transition",
+    );
+    throw unprocessable(
+      "Cannot mark issue done: this issue references what looks like a GitHub pull request, but its state could not be resolved right now",
+      { code: "done_transition_pr_gate", reason: "unverified", pullRequest: null },
+    );
+  }
+  const linkedPullRequestObjectIds = groups
+    .filter((group) => group.object?.objectType === "pull_request")
+    .map((group) => group.object!.id);
+  // Objects whose forced refresh did not confirm a fresh resolve (auth
+  // failure, unreachable host, or the refresh call itself throwing). A
+  // cached "merged and green" snapshot for one of these must not be trusted
+  // as current -- track them so the loop below fails closed instead of
+  // silently reusing stale data.
+  const unconfirmedObjectIds = new Set<string>();
+  if (linkedPullRequestObjectIds.length > 0) {
+    // A cached snapshot can be up to GITHUB_OBJECT_TTL_SECONDS stale. The
+    // done gate must reflect the PR's *current* GitHub state, not whatever
+    // was last polled -- force a live refresh before evaluating, then re-read
+    // it. If the refresh itself fails, fall back to the last-known snapshot
+    // rather than failing the whole transition, but mark every requested
+    // object as unconfirmed so a stale "pass" cannot slip through.
+    const gateRefreshStartedAt = new Date();
+    // Bounded retry budget for the case where a *concurrent* refresh (another
+    // request, a background poller, or another server instance) holds the
+    // per-object refresh lease when this gate asks for a forced refresh.
+    // "refresh_in_progress"/"refresh_superseded" alone is not proof the
+    // returned row reflects the PR's *current* GitHub state -- a cached
+    // snapshot can be up to the full TTL window old and could predate a real
+    // state change (e.g. CI turning red) that the lease holder is racing to
+    // capture. Re-attempt the forced refresh a few times with a short delay
+    // so a routine, fast-completing concurrent refresh has a chance to land
+    // and produce a resolve timestamped at or after this gate started, which
+    // is the only thing that proves the row is not stale leftover data from
+    // before this PATCH began. If the lease is still held after the budget is
+    // exhausted, fail closed (unconfirmed) rather than trust an unconfirmed
+    // cached value.
+    const maxConfirmationAttempts = 5;
+    const retryDelayMs = 120;
+    let remainingObjectIds = [...linkedPullRequestObjectIds];
+    try {
+      for (let attempt = 0; attempt < maxConfirmationAttempts && remainingObjectIds.length > 0; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        const refreshResults = await externalObjectsSvc.refreshIssueObjects(issueId, {
+          companyId,
+          objectIds: remainingObjectIds,
+          force: true,
+        });
+        const confirmedThisAttempt = new Set(
+          refreshResults
+            .filter((result) =>
+              // Do not trust `reason === "resolved"` alone: when this call
+              // joins an already in-flight refresh promise (started by a
+              // concurrent request against the same object, in this same
+              // process), that promise can persist `lastResolvedAt` using a
+              // `now` captured by the *original* caller before this gate
+              // began, even though it settles afterwards. Only the
+              // timestamp comparison proves the row reflects state resolved
+              // at or after this gate started; require it unconditionally.
+              result.object.lastResolvedAt != null &&
+              new Date(result.object.lastResolvedAt) >= gateRefreshStartedAt)
+            .map((result) => result.object.id),
+        );
+        remainingObjectIds = remainingObjectIds.filter((id) => !confirmedThisAttempt.has(id));
+      }
+      for (const objectId of remainingObjectIds) unconfirmedObjectIds.add(objectId);
+      groups = await externalObjectsSvc.listForIssue(issueId);
+    } catch (err) {
+      logger.warn(
+        { err, issueId },
+        "done-transition PR gate: failed to refresh linked pull request state; evaluating last-known snapshot as unconfirmed",
+      );
+      for (const objectId of linkedPullRequestObjectIds) unconfirmedObjectIds.add(objectId);
+    }
+  }
+  for (const group of groups) {
+    const object = group.object;
+    if (!object || object.objectType !== "pull_request") continue;
+    const data = (object.data ?? {}) as Record<string, unknown>;
+    if (data.provider !== "github") continue;
+    if (textIsChanging) {
+      // This same PATCH is replacing the issue's title and/or description.
+      // If this PR was only ever mentioned there (never in a comment or
+      // document) and the proposed new text no longer references it, it is
+      // being removed by this very request -- not something to gate on.
+      const sourceKinds = new Set(group.mentions.map((mention) => mention.sourceKind));
+      const onlyFromIssueText = [...sourceKinds].every((kind) => kind === "title" || kind === "description");
+      if (onlyFromIssueText) {
+        const owner = typeof data.owner === "string" ? data.owner : "";
+        const repo = typeof data.repo === "string" ? data.repo : "";
+        const number = typeof data.number === "number" ? data.number : -1;
+        if (!effectivePullRequestRefKeys.has(githubPullRequestRefKey(owner, repo, number))) continue;
+      }
+    }
+    const reason = doneTransitionPrGateReason(data)
+      ?? (unconfirmedObjectIds.has(object.id) ? "unverified" : null);
+    if (!reason) continue;
+    const owner = typeof data.owner === "string" ? data.owner : "unknown";
+    const repo = typeof data.repo === "string" ? data.repo : "unknown";
+    const number = typeof data.number === "number" ? data.number : null;
+    const label = number !== null ? `${owner}/${repo}#${number}` : `${owner}/${repo}`;
+    const message = reason === "unverified"
+      ? `Cannot mark issue done: linked pull request ${label}'s merge/CI state could not be verified (GitHub lookup failed)`
+      : `Cannot mark issue done: linked pull request ${label} is ${reason}`;
+    throw unprocessable(
+      message,
+      {
+        code: "done_transition_pr_gate",
+        reason,
+        pullRequest: {
+          owner,
+          repo,
+          number,
+          state: typeof data.state === "string" ? data.state : "unknown",
+          merged: data.merged === true,
+          checksState: typeof data.checksState === "string" ? data.checksState : null,
+        },
+      },
+    );
+  }
+
+  if (candidateNewPullRequestRefs.length > 0) {
+    // This same PATCH may be introducing a brand-new PR reference in its
+    // title/description update alongside the `done` status change. listForIssue
+    // above only reflects mentions already synced from the *previously*
+    // persisted text -- a reference that only exists in this request's new
+    // text has not been resolved/verified at all yet. Block on any such
+    // reference we can't already account for among the known linked PRs.
+    const knownPullRequestKeys = new Set(
+      groups
+        .filter((group) => group.object?.objectType === "pull_request")
+        .map((group) => (group.object!.data ?? {}) as Record<string, unknown>)
+        .filter((data) => data.provider === "github")
+        .map((data) => githubPullRequestRefKey(
+          typeof data.owner === "string" ? data.owner : "",
+          typeof data.repo === "string" ? data.repo : "",
+          typeof data.number === "number" ? data.number : -1,
+        )),
+    );
+    for (const ref of candidateNewPullRequestRefs) {
+      if (knownPullRequestKeys.has(githubPullRequestRefKey(ref.owner, ref.repo, ref.number))) continue;
+      throw unprocessable(
+        `Cannot mark issue done: this update newly references pull request ${ref.owner}/${ref.repo}#${ref.number}, which has not been verified as merged and green yet`,
+        {
+          code: "done_transition_pr_gate",
+          reason: "unverified",
+          pullRequest: { owner: ref.owner, repo: ref.repo, number: ref.number, state: null, merged: null, checksState: null },
+        },
+      );
+    }
+  }
 }
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -9688,6 +9974,39 @@ export function issueRoutes(
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
+    if (nextStatus === "done" && existing.status !== "done") {
+      const mightReferencePullRequest = textMightReferenceGitHubPullRequest(
+        existing.title,
+        existing.description,
+        typeof updateFields.title === "string" ? updateFields.title : null,
+        typeof updateFields.description === "string" ? updateFields.description : null,
+      );
+      const candidateNewPullRequestRefs = [
+        ...extractGitHubPullRequestRefs(typeof updateFields.title === "string" ? updateFields.title : null),
+        ...extractGitHubPullRequestRefs(typeof updateFields.description === "string" ? updateFields.description : null),
+      ];
+      const textIsChanging = updateFields.title !== undefined || updateFields.description !== undefined;
+      const effectiveTitle = updateFields.title !== undefined
+        ? (typeof updateFields.title === "string" ? updateFields.title : null)
+        : existing.title;
+      const effectiveDescription = updateFields.description !== undefined
+        ? (typeof updateFields.description === "string" ? updateFields.description : null)
+        : existing.description;
+      const effectivePullRequestRefKeys = new Set([
+        ...extractGitHubPullRequestRefs(effectiveTitle),
+        ...extractGitHubPullRequestRefs(effectiveDescription),
+      ].map((ref) => githubPullRequestRefKey(ref.owner, ref.repo, ref.number)));
+      await assertNoBlockingLinkedPullRequest(
+        db,
+        externalObjectsSvc,
+        existing.id,
+        existing.companyId,
+        mightReferencePullRequest,
+        candidateNewPullRequestRefs,
+        textIsChanging,
+        effectivePullRequestRefKeys,
+      );
+    }
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }

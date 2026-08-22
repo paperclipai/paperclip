@@ -1,0 +1,540 @@
+import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { companies, companyMemberships, createDb, externalObjects } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import type { StorageService } from "../storage/types.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres done-transition PR gate route tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+type PrFixture = {
+  state: "open" | "closed";
+  merged: boolean;
+  draft?: boolean;
+  headSha: string;
+  checkRuns: Array<{ status: string; conclusion: string | null }>;
+};
+
+describeEmbeddedPostgres("done transition external PR gate (AGE-569)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let app!: ReturnType<typeof createApp>;
+  let companyId!: string;
+  let prFixtures: Map<string, PrFixture>;
+
+  function createStorage(): StorageService {
+    return {
+      provider: "local_disk",
+      putFile: vi.fn(async () => {
+        throw new Error("Unexpected storage.putFile call in done-transition PR gate route test");
+      }),
+      getObject: vi.fn(async () => {
+        throw new Error("Unexpected storage.getObject call in done-transition PR gate route test");
+      }),
+      headObject: vi.fn(async () => ({ exists: false })),
+      deleteObject: vi.fn(async () => undefined),
+    };
+  }
+
+  function createApp(companyId: string) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        userId: "cloud-user-1",
+        companyIds: [companyId],
+        memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+        source: "cloud_tenant",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", issueRoutes(db, createStorage()));
+    app.use(errorHandler);
+    return app;
+  }
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-done-pr-gate-");
+    db = createDb(tempDb.connectionString);
+    companyId = randomUUID();
+    app = createApp(companyId);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PR gate tenant",
+      issuePrefix: "PRG",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "cloud-user-1",
+      status: "active",
+      membershipRole: "owner",
+      updatedAt: new Date(),
+    });
+    await instanceSettingsService(db).updateExperimental({ enableExternalObjects: true });
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubGitHubFetch() {
+    prFixtures = new Map();
+    const fetchStub = vi.fn(async (input: string | URL, _init?: RequestInit) => {
+      const url = String(input);
+      const prMatch = /\/repos\/acme\/app\/pulls\/(\d+)$/.exec(url);
+      if (prMatch) {
+        const fixture = prFixtures.get(prMatch[1]!);
+        if (!fixture) return new Response("", { status: 404 });
+        return new Response(
+          JSON.stringify({
+            state: fixture.state,
+            merged: fixture.merged,
+            draft: fixture.draft ?? false,
+            title: `PR ${prMatch[1]}`,
+            updated_at: "2026-04-24T01:02:03Z",
+            head: { sha: fixture.headSha, ref: "feature" },
+            base: { ref: "main" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      const checkRunsMatch = /\/repos\/acme\/app\/commits\/([^/]+)\/check-runs(?:\?.*)?$/.exec(url);
+      if (checkRunsMatch) {
+        const sha = checkRunsMatch[1]!;
+        const fixture = [...prFixtures.values()].find((f) => f.headSha === sha);
+        return new Response(JSON.stringify({ check_runs: fixture?.checkRuns ?? [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const statusMatch = /\/repos\/acme\/app\/commits\/([^/]+)\/status$/.exec(url);
+      if (statusMatch) {
+        return new Response(JSON.stringify({ state: "success", statuses: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch in done-transition PR gate test: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  }
+
+  async function createIssueWithPr(prNumber: number, fixture: PrFixture) {
+    prFixtures.set(String(prNumber), fixture);
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: `Ship PR ${prNumber}`,
+        description: `Implements https://github.com/acme/app/pull/${prNumber}`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "cloud-user-1",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    const issueId = createRes.body.id as string;
+
+    const refreshRes = await request(app)
+      .post(`/api/issues/${issueId}/external-objects/refresh`)
+      .send({});
+    expect(refreshRes.status, JSON.stringify(refreshRes.body)).toBe(200);
+
+    return issueId;
+  }
+
+  it("refuses to mark done an issue linked to an open pull request", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(101, {
+      state: "open",
+      merged: false,
+      headSha: "sha-open-101",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#101");
+    expect(res.body.error).toContain("open");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "open",
+      pullRequest: expect.objectContaining({ owner: "acme", repo: "app", number: 101 }),
+    });
+  });
+
+  it("refuses to mark done an issue linked to a merged pull request with red CI", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(102, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-red-102",
+      checkRuns: [
+        { status: "completed", conclusion: "success" },
+        { status: "completed", conclusion: "failure" },
+      ],
+    });
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#102");
+    expect(res.body.error).toContain("checks red");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "checks red",
+      pullRequest: expect.objectContaining({ owner: "acme", repo: "app", number: 102, checksState: "failure" }),
+    });
+  });
+
+  it("refuses to mark done an issue linked to a merged pull request with pending CI", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(103, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-pending-103",
+      checkRuns: [{ status: "in_progress", conclusion: null }],
+    });
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#103");
+    expect(res.body.error).toContain("checks pending");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "checks pending",
+    });
+  });
+
+  it("allows marking done an issue linked to a merged pull request with green CI", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(104, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-green-104",
+      checkRuns: [
+        { status: "completed", conclusion: "success" },
+        { status: "completed", conclusion: "success" },
+      ],
+    });
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+    // Let terminal-status post-commit side effects (e.g. pending interaction
+    // expiry) settle before the embedded Postgres pool tears down.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  it("refuses done when the cached PR snapshot is stale and CI has since gone red", async () => {
+    stubGitHubFetch();
+    // The issue's linked PR was resolved once (via the refresh call inside
+    // createIssueWithPr) while CI was green -- that snapshot is now cached.
+    // Flip the fixture to a failing check-run *after* that initial resolve,
+    // simulating CI going red between the cached poll and the done request.
+    // The gate must force a fresh lookup rather than trusting the cache.
+    const issueId = await createIssueWithPr(105, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-stale-105",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+    prFixtures.set("105", {
+      state: "closed",
+      merged: true,
+      headSha: "sha-stale-105",
+      checkRuns: [{ status: "completed", conclusion: "failure" }],
+    });
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#105");
+    expect(res.body.error).toContain("checks red");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "checks red",
+      pullRequest: expect.objectContaining({ checksState: "failure" }),
+    });
+  });
+
+  it("refuses done when the forced refresh of a cached merged+green PR cannot reach GitHub", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(106, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-unreachable-106",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Simulate GitHub becoming unreachable for the forced refresh triggered
+    // by the done PATCH. The cached snapshot still says merged+green, but
+    // that state can no longer be confirmed -- the gate must not trust it.
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("getaddrinfo ENOTFOUND api.github.com");
+    }));
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#106");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "unverified",
+    });
+  });
+
+  it("allows done for a merged+green PR when a concurrent refresher stamps a fresh resolve while still holding the lease (AGE-626 Greptile finding)", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(107, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-concurrent-107",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Simulate a concurrent refresh in flight (another request, a background
+    // poller, or another server instance) that holds the lease for this
+    // object through the entire done PATCH: every one of this gate's own
+    // force-refresh attempts sees `refresh_in_progress`/`refresh_superseded`,
+    // never `resolved`. But the concurrent holder has *already* stamped a
+    // fresh `lastResolvedAt` at/after this gate's own start -- i.e. it
+    // already captured the PR's current (still merged+green) state during
+    // this very request, it just hasn't released the lease yet. The gate
+    // must trust that timestamp rather than requiring `reason === "resolved"`
+    // from its own attempt, which is what the prior fix incorrectly required
+    // implicitly by trusting any TTL-"fresh" row regardless of *when* it was
+    // last resolved. Deterministic: no real-time race, no flaky timer.
+    await db
+      .update(externalObjects)
+      .set({ refreshStartedAt: new Date() })
+      .where(eq(externalObjects.companyId, companyId));
+    // Set the recorded resolve timestamp comfortably ahead of "now" so it is
+    // guaranteed to be at/after the moment the PATCH handler captures its own
+    // gate-start timestamp a few milliseconds from now, without depending on
+    // real wall-clock race timing (no flaky timer needed).
+    await db
+      .update(externalObjects)
+      .set({ lastResolvedAt: new Date(Date.now() + 60_000) })
+      .where(eq(externalObjects.companyId, companyId));
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+  });
+
+  it("refuses done as unverified when the cached resolve predates this gate's own start, even while the lease is held (AGE-626 Greptile follow-up)", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(1070, {
+      state: "closed",
+      merged: true,
+      headSha: "sha-concurrent-1070",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Simulate another instance holding the refresh lease for this object's
+    // entire done-transition gate, and its only recorded resolve is the one
+    // from `createIssueWithPr` -- strictly *before* this gate starts. Merely
+    // being within the object's TTL ("liveness === fresh") must not be enough
+    // to pass here: that cached merged+green snapshot could predate a real
+    // state change (e.g. CI turning red) the lease holder is still in the
+    // middle of capturing, so the gate must fail closed as "unverified"
+    // rather than trust a snapshot it cannot prove is current as of this
+    // request.
+    await db
+      .update(externalObjects)
+      .set({ refreshStartedAt: new Date() })
+      .where(eq(externalObjects.companyId, companyId));
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#1070");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "unverified",
+    });
+  });
+
+  it("gates done when the pull request is referenced only from a comment, not the description", async () => {
+    stubGitHubFetch();
+    prFixtures.set("108", {
+      state: "open",
+      merged: false,
+      headSha: "sha-comment-only-108",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Ship PR 108",
+        // Deliberately no PR URL in the description -- it is only ever
+        // mentioned in a follow-up comment below.
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "cloud-user-1",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    const issueId = createRes.body.id as string;
+
+    const commentRes = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Implements https://github.com/acme/app/pull/108" });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    const objectsRes = await request(app).get(`/api/issues/${issueId}/external-objects`);
+    expect(objectsRes.status, JSON.stringify(objectsRes.body)).toBe(200);
+
+    const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+
+    // The gate's main loop iterates every linked external object regardless
+    // of which source (title, description, comment, document) produced the
+    // mention -- a PR referenced only in a comment must be gated exactly
+    // like one referenced in the description.
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#108");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "open",
+      pullRequest: expect.objectContaining({ number: 108 }),
+    });
+  });
+
+  it("refuses done when the same PATCH newly adds a pull-request reference to the description", async () => {
+    stubGitHubFetch();
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Ship PR 109",
+        // No PR reference at creation time -- listForIssue has nothing to
+        // find yet, and this test never calls /external-objects/refresh.
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "cloud-user-1",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    const issueId = createRes.body.id as string;
+
+    // A single PATCH both introduces the PR reference (in the description)
+    // and requests `done` in the same request. The reference has never been
+    // synced or resolved, so it must not slip through unverified just
+    // because listForIssue (which only reflects previously-persisted text)
+    // doesn't know about it yet.
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        description: "Implements https://github.com/acme/app/pull/109",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#109");
+    expect(res.body.details).toMatchObject({
+      code: "done_transition_pr_gate",
+      reason: "unverified",
+      pullRequest: expect.objectContaining({ owner: "acme", repo: "app", number: 109 }),
+    });
+
+    // Confirm the issue was in fact NOT persisted as done.
+    const getRes = await request(app).get(`/api/issues/${issueId}`);
+    expect(getRes.body.status).toBe("in_progress");
+  });
+
+  it("allows done when the same PATCH removes the issue's only (bad) pull-request reference", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(110, {
+      state: "open",
+      merged: false,
+      headSha: "sha-open-110",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+
+    // Sanity check: with the description untouched, the open PR still gates.
+    const stillGatedRes = await request(app).patch(`/api/issues/${issueId}`).send({ status: "done" });
+    expect(stillGatedRes.status, JSON.stringify(stillGatedRes.body)).toBe(422);
+
+    // The same request that requests `done` also rewrites the description to
+    // drop the PR #110 reference entirely (e.g. the user decided this issue
+    // no longer depends on that PR). listForIssue still reflects the *old*
+    // persisted description mentioning #110, but the PR is being removed by
+    // this very request, so it must not block the transition.
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", description: "No longer needs a PR." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  it("still gates done when a removed pull-request reference is also linked from a comment", async () => {
+    stubGitHubFetch();
+    const issueId = await createIssueWithPr(111, {
+      state: "open",
+      merged: false,
+      headSha: "sha-open-111",
+      checkRuns: [{ status: "completed", conclusion: "success" }],
+    });
+    const commentRes = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Also see https://github.com/acme/app/pull/111" });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    // The description no longer mentions PR #111, but it is still linked via
+    // the comment above -- removing it from the description alone must not
+    // bypass the gate.
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", description: "No longer in the description, but still commented." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("acme/app#111");
+  });
+
+  it("does not gate issues with no linked pull request", async () => {
+    stubGitHubFetch();
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "No linked PR",
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "cloud-user-1",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+
+    const res = await request(app).patch(`/api/issues/${createRes.body.id}`).send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+});

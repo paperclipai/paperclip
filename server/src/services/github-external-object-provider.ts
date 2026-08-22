@@ -188,7 +188,12 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
   };
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  checksState: ChecksState | null,
+): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -256,6 +261,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
+      ...(checksState ? { checksState } : {}),
     },
   };
 }
@@ -305,6 +311,198 @@ async function safeJson(response: Response) {
   } catch {
     return null;
   }
+}
+
+type ChecksState = "success" | "failure" | "pending";
+
+// Allow-list, not a block-list: GitHub's check-run `conclusion` values keep
+// growing (stale, skipped, neutral, ...), and a gate that only recognizes a
+// fixed set of *failing* conclusions silently treats any conclusion it
+// doesn't recognize as green. Only these conclusions count as confirmed-not-
+// blocking; anything else on a completed run (including an unrecognized
+// future value) is treated as failure.
+const PASSING_CHECK_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+
+function checksStateFromCheckRuns(checkRuns: Array<Record<string, unknown>>): ChecksState | null {
+  if (checkRuns.length === 0) return null;
+  let sawIncomplete = false;
+  let sawFailure = false;
+  for (const run of checkRuns) {
+    const status = asString(run.status);
+    if (status !== "completed") {
+      sawIncomplete = true;
+      continue;
+    }
+    const conclusion = asString(run.conclusion);
+    if (!conclusion || !PASSING_CHECK_CONCLUSIONS.has(conclusion)) sawFailure = true;
+  }
+  if (sawFailure) return "failure";
+  if (sawIncomplete) return "pending";
+  return "success";
+}
+
+function checksStateFromCombinedStatus(body: Record<string, unknown> | null): ChecksState | null {
+  if (!body) return null;
+  // GitHub's combined-status endpoint reports `state: "pending"` even when no
+  // legacy commit status has ever been posted for this commit (empty
+  // `statuses`). That is "no signal", not a real pending check — only trust
+  // `state` once at least one status exists.
+  const statuses = Array.isArray(body.statuses) ? body.statuses : [];
+  if (statuses.length === 0) return null;
+  const state = asString(body.state);
+  if (state === "success" || state === "failure" || state === "pending") return state;
+  // The combined-status endpoint also documents an "error" state distinct
+  // from "failure" (e.g. a status reporter itself errored). Treat it the same
+  // as "failure": it is not a confirmed-green signal.
+  if (state === "error") return "failure";
+  return null;
+}
+
+const CHECKS_STATE_SEVERITY: Record<ChecksState, number> = { success: 0, pending: 1, failure: 2 };
+
+function worstChecksState(states: Array<ChecksState | null>): ChecksState | null {
+  let worst: ChecksState | null = null;
+  for (const state of states) {
+    if (!state) continue;
+    if (!worst || CHECKS_STATE_SEVERITY[state] > CHECKS_STATE_SEVERITY[worst]) worst = state;
+  }
+  return worst;
+}
+
+async function fetchChecksStateForSha(input: {
+  fetchImpl: FetchLike;
+  headers: Record<string, string>;
+  host: string;
+  owner: string;
+  repo: string;
+  sha: string | null;
+}): Promise<{ state: ChecksState | null; hadSignal: boolean; fetchFailed: boolean }> {
+  const { fetchImpl, headers, host, owner, repo, sha: headSha } = input;
+  if (!headSha) return { state: null, hadSignal: false, fetchFailed: false };
+  const base = `${gitHubApiBase(host)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+
+  let checkRunsState: ChecksState | null = null;
+  let checkRunsFetchFailed = false;
+  try {
+    // GitHub paginates check-runs (default page size 30). Request the
+    // maximum page size so a repo with a realistic number of checks is
+    // covered by one request, and detect when `total_count` says there is
+    // more data than this single page returned.
+    const checkRunsResponse = await fetchImpl(
+      `${base}/commits/${encodeURIComponent(headSha)}/check-runs?per_page=100`,
+      { headers },
+    );
+    if (checkRunsResponse.ok) {
+      const body = await safeJson(checkRunsResponse);
+      if (body === null) {
+        // 2xx but an unreadable/non-JSON body: we cannot tell whether there
+        // were check-runs or not. Do not treat this the same as a
+        // confirmed-empty check-runs list.
+        checkRunsFetchFailed = true;
+      } else {
+        const checkRuns = Array.isArray(body.check_runs) ? (body.check_runs as Array<Record<string, unknown>>) : [];
+        const totalCount = typeof body.total_count === "number" ? body.total_count : checkRuns.length;
+        const fromVisiblePage = checksStateFromCheckRuns(checkRuns);
+        if (fromVisiblePage === "success" && totalCount > checkRuns.length) {
+          // The visible page looks all-green, but `total_count` says there
+          // are more check-runs we did not fetch. A failing/pending run on
+          // a later page would otherwise be invisible to this gate -- treat
+          // an incomplete "success" read as unknown rather than confirmed.
+          checkRunsFetchFailed = true;
+        } else {
+          checkRunsState = fromVisiblePage;
+        }
+      }
+    } else {
+      checkRunsFetchFailed = true;
+    }
+  } catch {
+    checkRunsFetchFailed = true;
+  }
+
+  let statusState: ChecksState | null = null;
+  let statusFetchFailed = false;
+  try {
+    const statusResponse = await fetchImpl(`${base}/commits/${encodeURIComponent(headSha)}/status`, { headers });
+    if (statusResponse.ok) {
+      const body = await safeJson(statusResponse);
+      if (body === null) {
+        statusFetchFailed = true;
+      } else {
+        statusState = checksStateFromCombinedStatus(body);
+      }
+    } else {
+      statusFetchFailed = true;
+    }
+  } catch {
+    statusFetchFailed = true;
+  }
+
+  // Combine both signals rather than trusting check-runs alone: a commit can
+  // have all-green GitHub Checks and a failing/pending legacy commit status
+  // (posted by a non-Checks-API CI integration) at the same time. The worse
+  // of the two known signals wins, and an explicit "failure" from either
+  // source is trusted even if the other lookup could not be completed.
+  const combined = worstChecksState([checkRunsState, statusState]);
+  if (combined === "failure") return { state: "failure", hadSignal: true, fetchFailed: false };
+
+  // One of the two lookups did not actually complete (network error, non-2xx,
+  // unreadable body). We only have a partial picture of this commit's CI
+  // state, so we must not report "pending" or "success" as if we had
+  // confirmed both signals -- report unknown and let the caller fail closed.
+  if (checkRunsFetchFailed || statusFetchFailed) return { state: null, hadSignal: combined != null, fetchFailed: true };
+
+  if (combined) return { state: combined, hadSignal: true, fetchFailed: false };
+
+  // Both endpoints were reached successfully and reported nothing for this
+  // specific commit: there is genuinely no CI configured against it. Callers
+  // that check more than one SHA (e.g. a merged PR's head SHA and its merge
+  // commit) must not treat this in isolation as "nothing to gate on" --
+  // `hadSignal: false` lets them keep looking at the other SHA before
+  // concluding there is no CI at all.
+  return { state: null, hadSignal: false, fetchFailed: false };
+}
+
+// A merged pull request's `merge_commit_sha` is the commit actually reachable
+// from the base branch, so it takes priority once a PR is merged (see the
+// caller's comment). But some CI setups only ever run checks against the PR's
+// pre-merge `head` SHA (e.g. a `pull_request`-triggered workflow) and never
+// against the merge commit at all -- in that case `fetchChecksStateForSha` on
+// the merge commit alone reports "nothing found", which would wrongly read as
+// "success" and hide a red/pending head-SHA CI run. Check every candidate SHA
+// (merge commit first, then head, when they differ) and combine: an explicit
+// failure/pending signal from either wins, and "success" is only reported
+// once at least one of the SHAs actually had CI configured, or once every SHA
+// was reached and confirmed to have none.
+async function fetchChecksState(input: {
+  fetchImpl: FetchLike;
+  headers: Record<string, string>;
+  host: string;
+  owner: string;
+  repo: string;
+  shas: ReadonlyArray<string | null>;
+}): Promise<ChecksState | null> {
+  const { fetchImpl, headers, host, owner, repo, shas } = input;
+  const uniqueShas = [...new Set(shas.filter((sha): sha is string => Boolean(sha)))];
+  if (uniqueShas.length === 0) return null;
+
+  const results = await Promise.all(
+    uniqueShas.map((sha) => fetchChecksStateForSha({ fetchImpl, headers, host, owner, repo, sha })),
+  );
+
+  const worst = worstChecksState(results.map((result) => result.state));
+  if (worst === "failure") return "failure";
+
+  // Any SHA whose lookup did not actually complete leaves this gate with only
+  // a partial picture -- do not report "pending"/"success" as if every SHA
+  // had been confirmed.
+  if (results.some((result) => result.fetchFailed)) return null;
+
+  if (worst) return worst;
+
+  // Every SHA was reached successfully. If none of them had any CI signal at
+  // all, there is genuinely nothing configured to gate on.
+  return "success";
 }
 
 async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
@@ -430,11 +628,37 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
+        if (objectType !== "pull_request") {
+          return { ok: true, snapshot: issueSnapshot(identity, body, etag) };
+        }
+
+        const headSha = asNestedString(body, "head", "sha");
+        // A merged PR's own head SHA only carries the pre-merge CI result. GitHub
+        // (and any merge-queue/canary gate layered on top of it, e.g. a
+        // post-merge-only check against `main`) can report green on that head
+        // SHA while the actual merge commit that landed on the base branch was
+        // never checked at all, or was checked and failed. Once a PR is
+        // reported merged, gate on its `merge_commit_sha` first -- the commit
+        // that is actually reachable from the base branch. But some CI setups
+        // never run checks against the merge commit at all (only against the
+        // pre-merge head SHA), so also check the head SHA and combine: an
+        // explicit failure/pending signal from either wins over an absent
+        // signal on the other (see fetchChecksState).
+        const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
+        const mergeCommitSha = asString(body.merge_commit_sha);
+        const checksShas = merged ? [mergeCommitSha, headSha] : [headSha];
+        const checksState = await fetchChecksState({
+          fetchImpl,
+          headers,
+          host: identity.host,
+          owner: identity.owner,
+          repo: identity.repo,
+          shas: checksShas,
+        });
+
         return {
           ok: true,
-          snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
-            : issueSnapshot(identity, body, etag),
+          snapshot: pullRequestSnapshot(identity, body, etag, checksState),
         };
       },
     };
