@@ -2221,6 +2221,8 @@ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: strin
   // Claude and Codex runtime config is pre-set via startup env vars; skip
   // set_config_option to avoid ACP-server picker validation rejecting valid
   // backend model IDs that are not advertised by the local ACP server.
+  // Claude lane model and effort are both startup-env concerns (effort has no
+  // ACP env equivalent today — applySessionConfigOptions also capability-gates).
   if (
     prepared.requestedModel &&
     prepared.acpxAgent !== "claude" &&
@@ -2228,13 +2230,21 @@ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: strin
   ) {
     options.push({ key: "model", value: prepared.requestedModel });
   }
-  if (prepared.requestedThinkingEffort && prepared.acpxAgent !== "codex") {
+  if (
+    prepared.requestedThinkingEffort &&
+    prepared.acpxAgent !== "claude" &&
+    prepared.acpxAgent !== "codex"
+  ) {
     options.push({
       key: "effort",
       value: prepared.requestedThinkingEffort,
     });
   }
-  if (prepared.fastMode && prepared.acpxAgent !== "codex") {
+  if (
+    prepared.fastMode &&
+    prepared.acpxAgent !== "claude" &&
+    prepared.acpxAgent !== "codex"
+  ) {
     options.push(
       { key: "service_tier", value: "fast" },
       { key: "features.fast_mode", value: "true" },
@@ -2251,13 +2261,34 @@ async function applySessionConfigOptions(input: {
 }) {
   const options = sessionConfigOptions(input.prepared);
   if (options.length === 0) return;
+
+  let optionsToApply = options;
+  const capabilities = await input.runtime.getCapabilities?.({ handle: input.handle });
+  if (capabilities?.configOptionKeys) {
+    const advertised = new Set(capabilities.configOptionKeys);
+    const filtered: Array<{ key: string; value: string }> = [];
+    for (const option of options) {
+      if (advertised.has(option.key)) {
+        filtered.push(option);
+      } else {
+        await input.onLog(
+          "stderr",
+          `[paperclip] ACPX ${input.prepared.acpxAgent} does not advertise config option "${option.key}"; omitting ${option.key}=${option.value}.\n`,
+        );
+      }
+    }
+    optionsToApply = filtered;
+  }
+
+  if (optionsToApply.length === 0) return;
+
   if (!input.runtime.setConfigOption) {
     const message =
       "ACPX runtime does not expose session config controls; upgrade ACPX or remove configured model, effort, and fast mode overrides.";
     await input.onLog("stderr", `[paperclip] ${message}\n`);
     throw new Error(message);
   }
-  for (const option of options) {
+  for (const option of optionsToApply) {
     await input.runtime.setConfigOption({
       handle: input.handle,
       key: option.key,

@@ -503,7 +503,12 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 
   it("keeps Claude startup model handling and Gemini session config handling unchanged", async () => {
-    const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
+    const claude = await runExecutor({
+      agent: "claude",
+      model: "claude-opus-4-7",
+      thinkingEffort: "high",
+      fastMode: true,
+    });
     expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
       "claude-opus-4-7",
     );
@@ -518,6 +523,60 @@ describe("shared ACPX engine runtime behavior", () => {
       { key: "model", value: "gemini-2.5-pro" },
       { key: "effort", value: "high" },
     ]);
+  });
+
+  it("omits session config options the runtime does not advertise", async () => {
+    const configOptions: Array<{ key: string; value: string }> = [];
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          startTurn: () => ({
+            events: (async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          getCapabilities: () => ({
+            controls: [],
+            configOptionKeys: ["mode", "model"],
+          }),
+          setConfigOption: async (input: { key: string; value: string }) => {
+            configOptions.push({ key: input.key, value: input.value });
+          },
+          close: async () => {},
+        }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "gemini",
+        model: "gemini-2.5-pro",
+        thinkingEffort: "high",
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(configOptions).toEqual([{ key: "model", value: "gemini-2.5-pro" }]);
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: '[paperclip] ACPX gemini does not advertise config option "effort"; omitting effort=high.\n',
+    });
   });
 
   it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
