@@ -585,6 +585,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!existing) return;
+    if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing.companyId))) return;
 
     // Only the requesting agent or a board member may cancel.
     if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
