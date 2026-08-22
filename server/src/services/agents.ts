@@ -32,6 +32,7 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
+import { publishLiveEvent } from "./live-events.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -904,6 +905,15 @@ export function agentService(db: Db) {
       if (!updated) {
         throw conflict("Only agents in error status can have their error cleared");
       }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          outcome: "error_cleared",
+        },
+      });
       return getById(updated.id);
     },
 

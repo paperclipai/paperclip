@@ -427,6 +427,19 @@ export interface IssueBlockerAttention {
   terminalBlocker?: IssueBlockerAttentionIssueSummary | null;
 }
 
+/**
+ * Present on active issues whose assigned agent cannot make progress until an
+ * operator acts (currently only agent `error` status). Additive signal only:
+ * it never changes issue workflow state.
+ */
+export interface IssueAssigneeAttention {
+  state: "agent_error";
+  agentId: string;
+  agentName: string | null;
+  /** Sanitized, length-capped excerpt of the agent's error reason. Never raw run logs. */
+  errorReasonExcerpt: string | null;
+}
+
 export type IssueReviewAttentionState = "none" | "covered" | "stalled";
 
 export type IssueReviewAttentionPathKind =
@@ -839,6 +852,7 @@ export interface Issue {
   blockerAttention?: IssueBlockerAttention;
   reviewAttention?: IssueReviewAttention;
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
+  assigneeAttention?: IssueAssigneeAttention;
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
@@ -912,6 +926,7 @@ export type CompactIssue = Pick<
   blockerAttention?: IssueBlockerAttention;
   reviewAttention?: IssueReviewAttention;
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
+  assigneeAttention?: IssueAssigneeAttention;
   productivityReview?: IssueProductivityReview | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;

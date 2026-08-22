@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+const { publishLiveEventMock } = vi.hoisted(() => ({ publishLiveEventMock: vi.fn() }));
+vi.mock("../services/live-events.js", () => ({ publishLiveEvent: publishLiveEventMock }));
 import { eq } from "drizzle-orm";
 import {
   agents,
@@ -118,6 +121,16 @@ describeEmbeddedPostgres("agent service clearError", () => {
       pauseReason: null,
       pausedAt: null,
       errorReason: null,
+    });
+
+    expect(publishLiveEventMock).toHaveBeenCalledWith({
+      companyId,
+      type: "agent.status",
+      payload: {
+        agentId,
+        status: "idle",
+        outcome: "error_cleared",
+      },
     });
 
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));

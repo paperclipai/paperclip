@@ -43,6 +43,7 @@ import type {
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
+  IssueAssigneeAttention,
   IssueBlockerAttention,
   IssueReviewAttention,
   IssueReviewAttentionPath,
@@ -2330,6 +2331,82 @@ async function listIssueProductivityReviewMap(
   }
 
   return map;
+}
+
+// Issue statuses on which an error-status assignee is an execution blocker worth
+// surfacing. Terminal and parked issues are excluded on purpose: nothing is
+// waiting on the agent there.
+const ASSIGNEE_ATTENTION_ISSUE_STATUSES = new Set(["todo", "in_progress", "in_review", "blocked"]);
+const ASSIGNEE_ATTENTION_REASON_MAX_LENGTH = 160;
+
+type IssueAssigneeAttentionInputRow = {
+  id: string;
+  companyId: string;
+  status: string;
+  assigneeAgentId: string | null;
+};
+
+// Mirrors the board-safe excerpt used by attention feed items (agent_error_alert):
+// markdown stripped, whitespace collapsed, hard length cap. Keeps run-log details
+// out of issue payloads.
+function assigneeAttentionReasonExcerpt(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[>*_~#-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= ASSIGNEE_ATTENTION_REASON_MAX_LENGTH) return cleaned;
+  return `${cleaned.slice(0, Math.max(0, ASSIGNEE_ATTENTION_REASON_MAX_LENGTH - 1)).trimEnd()}...`;
+}
+
+async function listIssueAssigneeAttentionMap(
+  dbOrTx: any,
+  companyId: string,
+  issueRows: IssueAssigneeAttentionInputRow[],
+): Promise<Map<string, IssueAssigneeAttention>> {
+  const attentionMap = new Map<string, IssueAssigneeAttention>();
+  const candidates = issueRows.filter((row) =>
+    row.companyId === companyId
+    && Boolean(row.assigneeAgentId)
+    && ASSIGNEE_ATTENTION_ISSUE_STATUSES.has(row.status));
+  if (candidates.length === 0) return attentionMap;
+
+  const agentIds = [...new Set(candidates.map((row) => row.assigneeAgentId as string))];
+  const agentRows: Array<{ id: string; companyId: string; name: string | null; status: string; errorReason: string | null }> =
+    await dbOrTx
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        errorReason: agents.errorReason,
+      })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, companyId),
+        eq(agents.status, "error"),
+        inArray(agents.id, agentIds),
+      ));
+  if (agentRows.length === 0) return attentionMap;
+  const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+
+  for (const row of candidates) {
+    const agent = agentsById.get(row.assigneeAgentId as string);
+    if (!agent || agent.companyId !== companyId || agent.status !== "error") continue;
+    attentionMap.set(row.id, {
+      state: "agent_error",
+      agentId: agent.id,
+      agentName: agent.name ?? null,
+      errorReasonExcerpt: assigneeAttentionReasonExcerpt(agent.errorReason),
+    });
+  }
+  return attentionMap;
 }
 
 async function listIssueBlockerAttentionMap(
@@ -5753,11 +5830,13 @@ export function issueService(db: Db) {
       const [
         blockerAttentionByIssueId,
         reviewAttentionByIssueId,
+        assigneeAttentionByIssueId,
         productivityReviewByIssueId,
         blockedInboxAttentionByIssueId,
       ] = await Promise.all([
         listIssueBlockerAttentionMap(db, companyId, withRuns),
         listIssueReviewAttentionMap(db, companyId, withRuns),
+        listIssueAssigneeAttentionMap(db, companyId, withRuns),
         listIssueProductivityReviewMap(db, companyId, issueIds),
         includeBlockedInboxAttention
           ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
@@ -5777,6 +5856,7 @@ export function issueService(db: Db) {
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
+            ...(assigneeAttentionByIssueId.has(row.id) ? { assigneeAttention: assigneeAttentionByIssueId.get(row.id) } : {}),
             reviewAttention: reviewAttentionByIssueId.get(row.id) ?? reviewAttentionNone(),
             ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
             ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
@@ -5802,6 +5882,7 @@ export function issueService(db: Db) {
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
+          ...(assigneeAttentionByIssueId.has(row.id) ? { assigneeAttention: assigneeAttentionByIssueId.get(row.id) } : {}),
           reviewAttention: reviewAttentionByIssueId.get(row.id) ?? reviewAttentionNone(),
           ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
           ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
@@ -6548,6 +6629,14 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       return listIssueReviewAttentionMap(dbOrTx, companyId, issueRows);
+    },
+
+    listAssigneeAttention: async (
+      companyId: string,
+      issueRows: IssueAssigneeAttentionInputRow[],
+      dbOrTx: any = db,
+    ) => {
+      return listIssueAssigneeAttentionMap(dbOrTx, companyId, issueRows);
     },
 
     listProductivityReviews: async (

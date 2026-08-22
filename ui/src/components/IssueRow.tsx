@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Eye, Flag } from "lucide-react";
+import { AlertTriangle, Archive, Eye, Flag } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -201,6 +201,22 @@ export function IssueRow({
       Blocked by parked work
     </Badge>
   ) : null;
+  const assigneeAttention = issue.assigneeAttention ?? null;
+  const assigneeErrorIndicator = assigneeAttention?.state === "agent_error" ? (
+    <Badge variant="outline"
+      data-testid="issue-row-assignee-error"
+      role="status"
+      aria-label={`${assigneeAttention.agentName ?? "Assigned agent"} is in error status and cannot work on this issue`}
+      className={cn(
+        "ml-1.5 gap-0.5 border-destructive/60 bg-destructive/10 text-(length:--text-nano) text-destructive",
+        selected ? "!border-muted-foreground !text-muted-foreground" : null,
+      )}
+      title={`${assigneeAttention.agentName ?? "The assigned agent"} is in error status and will not be woken to work on this issue${assigneeAttention.errorReasonExcerpt ? ` — ${assigneeAttention.errorReasonExcerpt}` : ""}. Use Clear error on the agent, or reassign the issue.`}
+    >
+      <AlertTriangle aria-hidden />
+      Agent error
+    </Badge>
+  ) : null;
 
   return (
     <div
@@ -243,6 +259,7 @@ export function IssueRow({
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
+        {assigneeErrorIndicator}
         {recoveryIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
@@ -317,6 +334,7 @@ export function IssueRow({
                 {identifier}
               </span>
               {parkedBlockerIndicator}
+              {assigneeErrorIndicator}
               {recoveryIndicator}
             </>
           )}

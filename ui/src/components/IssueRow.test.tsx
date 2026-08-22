@@ -638,3 +638,48 @@ describe("IssueRow", () => {
     });
   });
 });
+
+describe("IssueRow assignee error indicator", () => {
+  function renderRow(issue: Issue) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+    const badge = container.querySelector('[data-testid="issue-row-assignee-error"]');
+    const snapshot = badge
+      ? {
+        text: badge.textContent ?? "",
+        title: badge.getAttribute("title") ?? "",
+        ariaLabel: badge.getAttribute("aria-label") ?? "",
+      }
+      : null;
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    return snapshot;
+  }
+
+  it("renders a blocking badge when the assigned agent is in error status", () => {
+    const badge = renderRow(createIssue({
+      assigneeAgentId: "agent-err",
+      assigneeAttention: {
+        state: "agent_error",
+        agentId: "agent-err",
+        agentName: "CodexCoder",
+        errorReasonExcerpt: "Adapter crashed on startup",
+      },
+    }));
+    expect(badge).not.toBeNull();
+    expect(badge?.text).toContain("Agent error");
+    expect(badge?.ariaLabel).toContain("CodexCoder");
+    expect(badge?.title).toContain("Adapter crashed on startup");
+    expect(badge?.title).toContain("Clear error");
+  });
+
+  it("renders no badge when the issue carries no assignee attention", () => {
+    expect(renderRow(createIssue({ assigneeAgentId: "agent-idle" }))).toBeNull();
+  });
+});
