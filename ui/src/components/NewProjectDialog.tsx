@@ -211,11 +211,11 @@ export function NewProjectDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
+        className={cn("max-h-(--sz-calc-16) p-0 gap-0 overflow-hidden flex flex-col", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
               <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
@@ -245,6 +245,8 @@ export function NewProjectDialog() {
           </div>
         </div>
 
+        {/* Scrollable middle: name, description, workspace, chips */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
         {/* Name */}
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
@@ -425,8 +427,10 @@ export function NewProjectDialog() {
           </div>
         </div>
 
+        </div>
+
         {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
           {createProject.isError ? (
             <p className="text-xs text-destructive">Failed to create project.</p>
           ) : (
