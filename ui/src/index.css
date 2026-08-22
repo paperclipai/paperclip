@@ -1181,9 +1181,21 @@
   }
 }
 
-/* MDXEditor theme integration */
-.paperclip-mdxeditor-scope,
-.paperclip-mdxeditor {
+/* MDXEditor theme integration.
+ *
+ * The `:root` prefix is load-bearing, not decoration. @mdxeditor/editor defines
+ * this same set of variables on its own root class — `._editorRoot_… {
+ * --baseTextContrast: var(--slate-12); … }` — from its LIGHT palette; its dark
+ * values are gated behind a `.dark-theme` class we never apply. That class and
+ * `.paperclip-mdxeditor` are both specificity 0,1,0 and land on the SAME
+ * element, so without the prefix the winner is decided purely by stylesheet
+ * order. When the package's sheet lands later, `--baseTextContrast` resolves to
+ * near-black and every editor body — task descriptions, comment composers —
+ * renders dark-on-dark in dark mode. `:root` takes these to 0,2,0 so the
+ * outcome no longer depends on bundling order.
+ */
+:root .paperclip-mdxeditor-scope,
+:root .paperclip-mdxeditor {
   --baseBase: var(--background);
   --baseBg: transparent;
   --baseBgSubtle: color-mix(in oklab, var(--accent) 35%, transparent);
