@@ -160,7 +160,7 @@ export function createLocalAgentJwt(
   return `${signingInput}.${signature}`;
 }
 
-export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+export function inspectLocalAgentJwt(token: string): { claims: LocalAgentJwtClaims; expired: boolean } | null {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
@@ -222,7 +222,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const companyId = claimedCompanyId;
 
   const now = Math.floor(Date.now() / 1000);
-  if (exp < now) return null;
+  const expired = exp < now;
 
   const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
   const audience = typeof claims.aud === "string" ? claims.aud : undefined;
@@ -239,17 +239,25 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (instanceClaim && instanceClaim !== config.instanceId) return null;
 
   return {
-    sub,
-    company_id: companyId,
-    adapter_type: adapterType,
-    run_id: runId,
-    ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
-    ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
-    iat,
-    exp,
-    ...(issuer ? { iss: issuer } : {}),
-    ...(audience ? { aud: audience } : {}),
-    ...(instanceClaim ? { instance_id: instanceClaim } : {}),
-    jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    claims: {
+      sub,
+      company_id: companyId,
+      adapter_type: adapterType,
+      run_id: runId,
+      ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
+      ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
+      iat,
+      exp,
+      ...(issuer ? { iss: issuer } : {}),
+      ...(audience ? { aud: audience } : {}),
+      ...(instanceClaim ? { instance_id: instanceClaim } : {}),
+      jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    },
+    expired,
   };
+}
+
+export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+  const inspection = inspectLocalAgentJwt(token);
+  return inspection && !inspection.expired ? inspection.claims : null;
 }

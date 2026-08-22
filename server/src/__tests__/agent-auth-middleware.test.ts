@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentApiKeys,
@@ -164,6 +164,7 @@ describe("agent auth middleware", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
     if (originalTtl === undefined) delete process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS;
@@ -282,6 +283,38 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-claim",
       source: "agent_jwt",
     });
+  });
+
+  it("returns an expired_run_token error for an expired local agent JWT on every protected route", async () => {
+    process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = "1";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "user-claim" },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+
+    const app = createApp(db);
+    const readRes = await request(app)
+      .get(`/companies/${companyId}/issues/${issueId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+    const writeRes = await request(app)
+      .patch(`/companies/${companyId}/issues/${issueId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ title: "must not reach the route" });
+
+    for (const response of [readRes, writeRes]) {
+      expect(response.status).toBe(401);
+      expect(response.body).toMatchObject({ code: "expired_run_token" });
+    }
   });
 
   it("preserves signed skill_test JWT scope on the request actor", async () => {
