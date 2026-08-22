@@ -822,6 +822,27 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+// Adapter types whose execution always goes through the piped local spawn
+// path (`runAdapterExecutionTargetProcess` -> `runChildProcess`, always
+// `stdio: [..., "pipe", "pipe"]`) with no "cli" (detached, one-shot) engine
+// alternative. Used by `isServerStdioBoundHotRestartRun` below to decide
+// whether a `running` run can safely be adopted across a hot restart or must
+// take the graceful-drain-and-retry path instead. `claude_local`/`codex_local`/
+// `gemini_local` are deliberately excluded here — they have their own
+// engine-based branch above this set's use. `cursor_local` is kept as a
+// defensive alias in case a future refactor renames the shipped `cursor`
+// adapter type. `process` is the generic builtin adapter
+// (`server/src/adapters/process/execute.ts`) and spawns through the same
+// `runChildProcess` path as the named local adapters.
+const ALWAYS_SERVER_STDIO_BOUND_LOCAL_ADAPTER_TYPES = new Set([
+  "cursor",
+  "cursor_local",
+  "grok_local",
+  "hermes_local",
+  "opencode_local",
+  "pi_local",
+  "process",
+]);
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
@@ -10402,10 +10423,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (context.processTopology === "detached" || context.executionEngine === "cli") {
       return false;
     }
-    if (!["claude_local", "codex_local", "gemini_local"].includes(input.adapterType)) {
-      return false;
+    if (["claude_local", "codex_local", "gemini_local"].includes(input.adapterType)) {
+      // These three adapters expose an explicit engine toggle between a
+      // one-shot "cli" invocation (safe to hot-restart adopt) and a
+      // persistent "acp" session (server-stdio bound). Absent an explicit
+      // engine, fall back to the adapter's configured default.
+      return readNonEmptyString(parseObject(input.adapterConfig).engine) !== "cli";
     }
-    return readNonEmptyString(parseObject(input.adapterConfig).engine) !== "cli";
+    // Every other local adapter (pi_local, opencode_local, grok_local,
+    // cursor, hermes_local, process, ...) reaches the piped local spawn path
+    // (`runAdapterExecutionTargetProcess` -> `runChildProcess`, which always
+    // spawns with `stdio: [..., "pipe", "pipe"]`) and has no "cli" engine
+    // escape hatch. Their stdout/stderr pipes are owned by this server
+    // process for the run's full lifetime, so — absent an explicit
+    // `processTopology` override above — they must be treated as
+    // server-stdio bound rather than silently defaulting to `false` and
+    // being written off as `process_lost` on restart. This allowlist must be
+    // kept in sync with any new local adapter added to
+    // `BUILTIN_ADAPTER_TYPES`.
+    return ALWAYS_SERVER_STDIO_BOUND_LOCAL_ADAPTER_TYPES.has(input.adapterType);
   }
 
   async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
