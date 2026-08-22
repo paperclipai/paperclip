@@ -4076,11 +4076,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      terminalStatusRestored: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
 
     for (const issue of candidates) {
+      const restoreStatus = issue.completedAt
+        ? "done"
+        : issue.cancelledAt
+          ? "cancelled"
+          : null;
+      if (restoreStatus && issue.status !== "done" && issue.status !== "cancelled") {
+        const restored = await issuesSvc.update(issue.id, { status: restoreStatus });
+        if (restored) {
+          result.terminalStatusRestored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
         : null;

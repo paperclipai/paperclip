@@ -5757,6 +5757,74 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("checkout refuses to reopen a done issue even when expectedStatuses includes done", async () => {
+    // Queued/late runs must fail closed after a terminal transition. Including
+    // `done` in expectedStatuses must not promote the row back to in_progress.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const successorRunId = randomUUID();
+    const completedAt = new Date("2026-08-22T21:41:43.290Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: successorRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      startedAt: new Date("2026-08-22T21:42:01.058Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal issue must stay done",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      completedAt,
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo", "backlog", "blocked", "done"], successorRunId),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      completedAt,
+    });
+  });
+
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
     // Regression for PR #2482 checkout-adoption review finding: any adoption
     // helper that re-locks an existing in_progress issue (e.g. when the prior
