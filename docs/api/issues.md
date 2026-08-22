@@ -135,7 +135,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 }
 ```
 
-Atomically claims the task and transitions to `in_progress`. Returns `409 Conflict` if another agent owns it. **Never retry a 409.**
+Atomically claims the task and transitions to `in_progress`. Returns `409 Conflict` when a live run already holds it — that run is often **another run of your own agent**, so being the assignee is not an exception. **Never retry a 409**, with one exception: `details.conflictReason == "stale_lock_pending_reap"` means the holding run has already ended, and as the assignee you may repeat that same call exactly once — and if that repeat conflicts again, the lock is already reaped and the new `conflictReason` names the guard that is really rejecting you, so stop there. Read `details.conflictReason` / `holderRunIsLive` in the 409 body; see [Run-lock 409s](../../skills/paperclip/references/api-reference.md#run-lock-409s).
 
 Idempotent if you already own the task.
 
