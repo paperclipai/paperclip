@@ -153,7 +153,7 @@ import {
   readManagedWorktreeInstanceOwnership,
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
-import { issueService } from "./issues.js";
+import { issueService, NON_HUMAN_SENTINEL_AUTHOR_USER_IDS } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
@@ -17201,12 +17201,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
-        // Suppress reopen only when every referenced comment came from this run;
+        // The MCP bridge closes+comments without a run id, attributing the
+        // comment to the `local-board` non-human sentinel (or directly to the
+        // issue's own agent) — so keying self-authorship on run id alone misses
+        // it and the close comment reopens the just-closed issue in a loop.
+        // Treat a comment as self-authored when it came from this run, from the
+        // issue's own agent, or from a non-human sentinel user; only a genuine
+        // third-party (real human or a different agent) follow-up should reopen.
+        // Suppress reopen only when EVERY referenced comment is self-authored;
         // mixed batches must still reopen because they contain a real follow-up.
         let deferredCommentWakeIsSelfAuthored = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
-            .select({ createdByRunId: issueComments.createdByRunId })
+            .select({
+              createdByRunId: issueComments.createdByRunId,
+              authorType: issueComments.authorType,
+              authorUserId: issueComments.authorUserId,
+              authorAgentId: issueComments.authorAgentId,
+            })
             .from(issueComments)
             .where(
               and(
@@ -17216,9 +17228,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
             )
             .then((rows) => rows);
+          const isSelfAuthoredComment = (comment: {
+            createdByRunId: string | null;
+            authorType: string | null;
+            authorUserId: string | null;
+            authorAgentId: string | null;
+          }) =>
+            comment.createdByRunId === run.id ||
+            (comment.authorAgentId != null && comment.authorAgentId === deferred.agentId) ||
+            (comment.authorType === "user" &&
+              comment.authorUserId != null &&
+              NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(comment.authorUserId));
           deferredCommentWakeIsSelfAuthored =
-            deferredComments.length > 0 &&
-            deferredComments.every((comment) => comment.createdByRunId === run.id);
+            deferredComments.length > 0 && deferredComments.every(isSelfAuthoredComment);
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
