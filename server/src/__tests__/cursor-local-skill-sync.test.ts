@@ -48,7 +48,7 @@ describe("cursor local skill sync", () => {
     const before = await listCursorSkills(ctx);
     expect(before.mode).toBe("persistent");
     expect(before.desiredSkills).toContain(paperclipKey);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("missing");
+    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("shared_unlinked");
 
     const after = await syncCursorSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
@@ -93,12 +93,11 @@ describe("cursor local skill sync", () => {
     const before = await listCursorSkills(ctx);
     expect(before.warnings).toEqual([]);
     expect(before.desiredSkills).toEqual(["ascii-heart"]);
-    expect(before.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("missing");
+    expect(before.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("shared_unlinked");
 
     const after = await syncCursorSkills(ctx, ["ascii-heart"]);
     expect(after.warnings).toEqual([]);
     expect(after.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".cursor", "skills", "ascii-heart"))).isSymbolicLink()).toBe(true);
   });
-
 });

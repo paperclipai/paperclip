@@ -239,6 +239,7 @@ export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  required?: boolean;
   versionId?: string | null;
   currentVersionId?: string | null;
   sourceStatus?: "available" | "missing";
@@ -2770,7 +2771,10 @@ export function buildPersistentSkillSnapshot(
       state = "external";
       detail = desired ? externalConflictDetail : externalDetail;
     } else if (desired) {
-      state = "missing";
+      // Company-managed skills with a resolvable source are merely unlinked from the
+      // shared home (another agent's sync cleared it). Use shared_unlinked so fleet
+      // sweeps can distinguish them from true orphans (required skills with no source).
+      state = !available.required ? "shared_unlinked" : "missing";
       detail = missingDetail;
     }
 
@@ -2854,6 +2858,7 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
       key,
       runtimeName,
       source,
+      required: entry.required === true,
       versionId:
         typeof entry.versionId === "string" && entry.versionId.trim().length > 0
           ? entry.versionId.trim()
