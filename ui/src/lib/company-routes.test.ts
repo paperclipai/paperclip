@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
   isBoardPathWithoutPrefix,
+  registerPluginRouteRoots,
+  resetPluginRouteRoots,
   toCompanyRelativePath,
 } from "./company-routes";
 
 describe("company routes", () => {
+  afterEach(() => {
+    resetPluginRouteRoots();
+  });
+
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);
@@ -141,5 +147,43 @@ describe("company routes", () => {
     );
     // Already-prefixed paths are returned untouched.
     expect(applyCompanyPrefix("/PAP/artifacts", "PAP")).toBe("/PAP/artifacts");
+  });
+
+  // Regression for #11670: a plugin page route root (e.g. the bundled LLM Wiki
+  // plugin's "/wiki") is not in the build-time BOARD_ROUTE_ROOTS set, so
+  // `toCompanyRelativePath("/PAP/wiki")` used to leave the company prefix in place.
+  // Per-company page memory then stored "/PAP/wiki" and, on company switch, re-applied
+  // the prefix, navigating to "/PAP/PAP/wiki". Registering the route at runtime makes
+  // it strip like any board route.
+  it("strips a registered plugin route root when normalizing to a company-relative path", () => {
+    registerPluginRouteRoots(["wiki"]);
+    expect(toCompanyRelativePath("/PAP/wiki")).toBe("/wiki");
+    expect(toCompanyRelativePath("/PAP/wiki/spaces")).toBe("/wiki/spaces");
+    expect(toCompanyRelativePath("/PAP/wiki?tab=all#top")).toBe("/wiki?tab=all#top");
+  });
+
+  it("does not strip an unregistered second segment", () => {
+    // Over-broadening guard: only registered plugin roots (and board roots) strip.
+    expect(toCompanyRelativePath("/PAP/definitely-not-a-route")).toBe(
+      "/PAP/definitely-not-a-route",
+    );
+  });
+
+  it("normalizes registered roots (leading slash, case, nested segment)", () => {
+    registerPluginRouteRoots(["/Wiki/spaces", "  DEMO-PLUGIN  "]);
+    expect(toCompanyRelativePath("/PAP/wiki")).toBe("/wiki");
+    expect(toCompanyRelativePath("/PAP/demo-plugin")).toBe("/demo-plugin");
+  });
+
+  // Registering a plugin route root must NOT change company-prefix classification, so
+  // a cross-company absolute link whose destination prefix collides with a registered
+  // plugin root is left intact (not re-prefixed under the active company).
+  it("preserves a cross-company link whose prefix collides with a registered plugin root", () => {
+    registerPluginRouteRoots(["wiki"]);
+    // "WIKI" here is another company's prefix, not the "wiki" plugin route.
+    expect(extractCompanyPrefixFromPath("/WIKI/inbox")).toBe("WIKI");
+    expect(applyCompanyPrefix("/WIKI/inbox", "PAP")).toBe("/WIKI/inbox");
+    // A company-relative board route still gets the active prefix (unchanged behavior).
+    expect(applyCompanyPrefix("/inbox", "PAP")).toBe("/PAP/inbox");
   });
 });

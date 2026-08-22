@@ -33,6 +33,36 @@ const BOARD_ROUTE_ROOTS = new Set([
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
 
+// Plugin page route roots discovered at runtime (e.g. the bundled LLM Wiki
+// plugin's "wiki"). Plugin pages mount at /{PREFIX}/{routePath} (see App.tsx's
+// ":pluginRoutePath/*" route), but their slugs are only known once plugin slots
+// load, so they cannot live in the build-time BOARD_ROUTE_ROOTS set above.
+// Populated by registerPluginRouteRoots(); consulted by isKnownBoardRoot().
+const pluginRouteRoots = new Set<string>();
+
+/**
+ * Register plugin page route roots so path normalization recognizes them as
+ * routes: `toCompanyRelativePath` then strips the company prefix from
+ * `/{PREFIX}/{routePath}`. Idempotent; call again on plugin load/refresh. Values
+ * are normalized to their first, lowercase path segment.
+ */
+export function registerPluginRouteRoots(roots: Iterable<string>): void {
+  for (const root of roots) {
+    const normalized = root.trim().toLowerCase().replace(/^\/+/, "").split("/")[0] ?? "";
+    if (normalized) pluginRouteRoots.add(normalized);
+  }
+}
+
+/** Clear all registered plugin route roots (plugin reload / test isolation). */
+export function resetPluginRouteRoots(): void {
+  pluginRouteRoots.clear();
+}
+
+function isKnownBoardRoot(root: string): boolean {
+  const lower = root.toLowerCase();
+  return BOARD_ROUTE_ROOTS.has(lower) || pluginRouteRoots.has(lower);
+}
+
 export function normalizeCompanyPrefix(prefix: string): string {
   return prefix.trim().toUpperCase();
 }
@@ -114,7 +144,7 @@ export function toCompanyRelativePath(path: string): string {
 
   if (segments.length >= 2) {
     const second = segments[1]!.toLowerCase();
-    if (!GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase()) && BOARD_ROUTE_ROOTS.has(second)) {
+    if (!GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase()) && isKnownBoardRoot(second)) {
       return `/${segments.slice(1).join("/")}${search}${hash}`;
     }
   }
