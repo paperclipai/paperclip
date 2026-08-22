@@ -42,3 +42,12 @@ export const releaseIssueTreeHoldSchema = z
   .strict();
 
 export type ReleaseIssueTreeHold = z.infer<typeof releaseIssueTreeHoldSchema>;
+
+export const overrideReleaseIssueTreeHoldSchema = z
+  .object({
+    reason: z.string().trim().min(1).max(1000).optional().nullable(),
+    metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  })
+  .strict();
+
+export type OverrideReleaseIssueTreeHold = z.infer<typeof overrideReleaseIssueTreeHoldSchema>;
