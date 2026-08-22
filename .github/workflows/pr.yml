@@ -60,6 +60,12 @@ jobs:
       - name: Test PR quality-gate scripts
         run: node --test '.github/scripts/tests/*.test.mjs'
 
+      - name: Reject adapter-type literals in shared code
+        run: node ./scripts/check-adapter-type-literals.mjs
+
+      - name: Test adapter-literal check
+        run: node --test ./scripts/check-adapter-type-literals.test.mjs
+
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
