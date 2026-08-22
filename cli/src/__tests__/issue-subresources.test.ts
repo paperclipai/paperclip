@@ -255,6 +255,25 @@ describe("issue subresource commands", () => {
     const file = (init.body as FormData).get("file") as File;
     expect(file.type).toBe("text/html");
   });
+
+  it("forwards --stale-hours as a saved-query staleHours filter on issue list", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run([
+      "issue", "list",
+      "--company-id", COMPANY_ID,
+      "--status", "todo,in_progress,in_review,blocked",
+      "--stale-hours", "100",
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe(`/api/companies/${COMPANY_ID}/issues`);
+    expect(parsed.searchParams.get("staleHours")).toBe("100");
+    expect(parsed.searchParams.get("status")).toBe("todo,in_progress,in_review,blocked");
+  });
 });
 
 function jsonResponse(body: unknown = { ok: true }, init: ResponseInit = { status: 200 }): Response {
