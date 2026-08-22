@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
-import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
+import {
+  isBedrockModelUsableInConfiguredRegion,
+  resetClaudeModelsCacheForTests,
+} from "@paperclipai/adapter-claude-local/server";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
@@ -23,6 +26,8 @@ describe("adapter model listing", () => {
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
@@ -71,6 +76,176 @@ describe("adapter model listing", () => {
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("offers us-prefixed Bedrock inference profiles in a us region", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.every((model) => model.id.startsWith("us.anthropic."))).toBe(true);
+  });
+
+  it("offers eu-prefixed Bedrock inference profiles in an eu region", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.length).toBeGreaterThan(0);
+    // Every offered profile must exist in the configured region, so none may be us-prefixed.
+    expect(models.some((model) => model.id.startsWith("us.anthropic."))).toBe(false);
+    expect(models.every((model) => model.id.startsWith("eu.anthropic."))).toBe(true);
+    expect(models.some((model) => model.id === "eu.anthropic.claude-sonnet-5")).toBe(true);
+    // Version suffixes diverge between families: Sonnet 4.5 is -v1:0 in eu, -v2:0 in us,
+    // so a prefix rewrite of the us catalogue would produce an invalid id here.
+    expect(models.some((model) => model.id === "eu.anthropic.claude-sonnet-4-5-20250929-v1:0")).toBe(true);
+  });
+
+  it("falls back to the us Bedrock catalogue when no region is configured", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.every((model) => model.id.startsWith("us.anthropic."))).toBe(true);
+  });
+
+  it("offers residency-specific profiles in regions that publish their own family", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "ap-southeast-2";
+
+    const sydney = await listAdapterModels("claude_local");
+
+    expect(sydney.length).toBeGreaterThan(0);
+    expect(sydney.every((model) => model.id.startsWith("au.anthropic."))).toBe(true);
+
+    process.env.AWS_REGION = "ap-northeast-1";
+    resetClaudeModelsCacheForTests();
+    const tokyo = await listAdapterModels("claude_local");
+
+    expect(tokyo.length).toBeGreaterThan(0);
+    expect(tokyo.every((model) => model.id.startsWith("jp.anthropic."))).toBe(true);
+  });
+
+  it("falls back to global profiles in a configured region with no verified family", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    // Singapore publishes no current residency-specific family: `apac.` carries only Claude 3.x
+    // profiles, and us-prefixed profiles do not exist there at all.
+    process.env.AWS_REGION = "ap-southeast-1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.some((model) => model.id.startsWith("us.anthropic."))).toBe(false);
+    expect(models.every((model) => model.id.startsWith("global.anthropic."))).toBe(true);
+    // The bundled Summarizer default must be resolvable here, or onboarding still fails.
+    expect(models.some((model) => model.id.includes("claude-haiku-4-5"))).toBe(true);
+  });
+
+  describe("Bedrock profile region check", () => {
+    it("rejects a profile from a family the configured region does not publish", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(false);
+      expect(isBedrockModelUsableInConfiguredRegion("au.anthropic.claude-sonnet-5")).toBe(false);
+      expect(isBedrockModelUsableInConfiguredRegion("jp.anthropic.claude-opus-4-8")).toBe(false);
+    });
+
+    it("accepts a profile from the configured region's own family", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "eu-west-1";
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+
+      process.env.AWS_REGION = "ap-southeast-2";
+      expect(isBedrockModelUsableInConfiguredRegion("au.anthropic.claude-sonnet-5")).toBe(true);
+      // Sydney also publishes the older `apac.` profiles.
+      expect(isBedrockModelUsableInConfiguredRegion("apac.anthropic.claude-sonnet-4-20250514-v1:0")).toBe(true);
+    });
+
+    it("accepts global profiles in any region", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // `global.` profiles are published in every region checked.
+      expect(isBedrockModelUsableInConfiguredRegion("global.anthropic.claude-sonnet-5")).toBe(true);
+    });
+
+    it("compares an ARN's own region against the configured one", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // Bedrock resolves a profile against the endpoint of the configured region, so an ARN from
+      // another region does not resolve however fully the operator wrote it out.
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(false);
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(true);
+      // Case in an ARN is not significant to this comparison.
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock:US-EAST-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(true);
+      // An ARN with no region names no region to disagree with.
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock::123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(true);
+    });
+
+    it("accepts any profile when this process has no region evidence", () => {
+      // No Bedrock env: this server may be storing setup for a worker whose region is unknown here.
+      process.env.AWS_REGION = "us-east-1";
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+
+      // Bedrock env, but no configured region to compare against.
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      delete process.env.AWS_REGION;
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+    });
+
+    it("accepts an unrecognised family and rejects a non-Bedrock id", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // A family this build does not know about cannot be shown to be wrong.
+      expect(isBedrockModelUsableInConfiguredRegion("mx.anthropic.claude-sonnet-5")).toBe(true);
+      expect(isBedrockModelUsableInConfiguredRegion("claude-sonnet-5")).toBe(false);
+    });
+
+    it("judges an explicit env instead of process.env", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // An agent's adapterConfig.env overlays process.env at execution, so the caller passes the
+      // environment the model will run under.
+      const agentEnv = { ...process.env, AWS_REGION: "eu-west-1" };
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5", agentEnv)).toBe(true);
+      expect(isBedrockModelUsableInConfiguredRegion("us.anthropic.claude-opus-4-6-v1", agentEnv)).toBe(false);
+
+      // An env that turns Bedrock off carries no region evidence at all.
+      expect(
+        isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5", { AWS_REGION: "us-east-1" }),
+      ).toBe(true);
+    });
+
+    it("reads AWS_DEFAULT_REGION when AWS_REGION is unset", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_DEFAULT_REGION = "eu-west-1";
+
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+      expect(isBedrockModelUsableInConfiguredRegion("us.anthropic.claude-haiku-4-5-20251001-v1:0")).toBe(false);
+    });
   });
 
   it("loads claude models dynamically and merges fallback options", async () => {
