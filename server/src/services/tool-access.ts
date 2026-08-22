@@ -118,6 +118,7 @@ import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
+import { ComposioApiError, createComposioClient, type ComposioClient } from "./composio.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -169,6 +170,8 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+  /** Test seam for Composio without live vendor traffic. */
+  composioClientFactory?: (apiKey: string) => ComposioClient;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -388,6 +391,7 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
 };
 
 const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";
+const COMPOSIO_GALLERY_KEY = "composio";
 const GOOGLE_SHEETS_TEMPLATE_ID = "paperclip.google-sheets";
 const GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV = "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS";
 const CONNECTION_TOKEN_MINT_TOOL_NAME = "connection_token.mint";
@@ -1297,6 +1301,13 @@ function descriptorHash(tool: McpToolDescriptor, riskLevel: ToolRiskLevel): stri
 }
 
 function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStatus; message: string; code: string } {
+  if (error instanceof ComposioApiError) {
+    return {
+      status: "error",
+      message: error.message,
+      code: error.status === 401 || error.status === 403 ? "composio_api_key_rejected" : "composio_request_failed",
+    };
+  }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
     if (code === "oauth_challenge") {
@@ -2931,8 +2942,26 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }));
   }
 
+  function isComposioConnection(connection: typeof toolConnections.$inferSelect): boolean {
+    return asRecord(connection.config).sourceTemplateKey === COMPOSIO_GALLERY_KEY;
+  }
+
+  async function validateComposioConnection(connection: typeof toolConnections.$inferSelect) {
+    const headers = await resolveCredentialHeaders(connection);
+    const apiKey = Object.entries(headers).find(([name]) => name.toLowerCase() === "x-api-key")?.[1];
+    if (!apiKey) {
+      throw unprocessable("The Composio API key secret is missing.", { code: "secret_missing" });
+    }
+    const client = options.composioClientFactory?.(apiKey) ?? createComposioClient({ apiKey });
+    await client.validateApiKey();
+  }
+
   async function discoverTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     if (connection.transport === "mcp_remote") return remoteTools(connection);
+    if (isComposioConnection(connection)) {
+      await validateComposioConnection(connection);
+      return [];
+    }
     await resolveCredentialHeaders(connection);
     return localTools(connection);
   }
@@ -2969,13 +2998,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     try {
       if (connection.transport === "mcp_remote") {
         await remoteTools(connection);
+      } else if (isComposioConnection(connection)) {
+        await validateComposioConnection(connection);
       } else {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
       }
-      const updated = await updateConnectionHealth(connection, "ok", connection.transport === "local_stdio"
-        ? "Approved stdio template is ready."
-        : "Remote MCP server responded to tools/list.");
+      const updated = await updateConnectionHealth(
+        connection,
+        "ok",
+        isComposioConnection(connection)
+          ? "Composio accepted the API key and returned its toolkits."
+          : connection.transport === "local_stdio"
+            ? "Approved stdio template is ready."
+            : "Remote MCP server responded to tools/list.",
+      );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
         companyId: connection.companyId,
@@ -2999,13 +3036,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         actor,
         details: { status: failure.status, transport: connection.transport },
       });
-      throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, {
-        code: failure.code,
-        connection: toConnection(updated),
-        runtimeSlot,
-        setupUrl: connectionSetupUrl(connection),
-        reconnectUrl: connectionReconnectUrl(connection),
-      });
+      throw new HttpError(
+        failure.status === "missing_secret" || failure.code === "composio_api_key_rejected" ? 422 : 502,
+        failure.message,
+        {
+          code: failure.code,
+          connection: toConnection(updated),
+          runtimeSlot,
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        },
+      );
     }
   }
 
@@ -4997,8 +5038,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         };
       }
 
+      let health: ToolConnectionHealthCheckResult;
       try {
-        await checkConnectionHealth(connectionRow.id, actor);
+        health = await checkConnectionHealth(connectionRow.id, actor);
       } catch (error) {
         if (!galleryEntry && error instanceof HttpError && asRecord(error.details).code === "oauth_challenge") {
           const [oauthConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionRow.id));
@@ -5018,6 +5060,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           };
         }
         throw error;
+      }
+      if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY) {
+        const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
+        return {
+          connectionId: health.connection.id,
+          application: toApplication(application),
+          connection: health.connection,
+          catalog: [],
+          actions: { readOnly: [], canMakeChanges: [] },
+          suggestedDefaults: recommendedDefaultsForApp(galleryEntry),
+        };
       }
       const refresh = await refreshCatalog(connectionRow.id, actor);
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));

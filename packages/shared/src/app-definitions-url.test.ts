@@ -22,6 +22,13 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://mcp.google.com/drive")).toBeNull();
   });
 
+  it("lists Composio as a connectable API-key app", () => {
+    const composio = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "composio");
+    expect(composio?.methods).toEqual([
+      expect.objectContaining({ key: "api-key", transport: "rest_api", auth: "api_key" }),
+    ]);
+  });
+
   it("keeps every gallery entry reachable through at least one pattern", () => {
     for (const app of CONNECTABLE_APP_DEFINITIONS) {
       const example = app.urlPatterns[0]?.replace("*", "example");

@@ -29,6 +29,7 @@ function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
   if (slug === "notion") return NOTION_CONNECT_HREF;
   if (slug === "zapier") return ZAPIER_CONNECT_HREF;
+  if (slug === "composio") return "/apps/connect?byo=1&appKey=composio&stage=setup";
   return null;
 }
 

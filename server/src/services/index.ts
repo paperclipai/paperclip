@@ -91,6 +91,7 @@ export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 export { createSecretProposalsService } from "./secret-proposals.js";
 export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
