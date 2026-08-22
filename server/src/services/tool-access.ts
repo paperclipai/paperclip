@@ -100,6 +100,7 @@ import type {
   ToolRuntimeSlot,
   ToolStdioCommandTemplate,
   ReviewToolProfileNewTools,
+  SecretProjectionClass,
   UpdateToolApplication,
   UpdateToolConnection,
   PutToolConnectionInstalls,
@@ -169,6 +170,15 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+};
+
+type CredentialBindingRow = {
+  secretId: string;
+  configPath: string;
+  projectionClass: SecretProjectionClass;
+  projectionAllowlistKey: string | null;
+  /** `header` rows come from `credentialRefs`, `declared` rows from `credentialSecretRefs`. */
+  source: "header" | "declared";
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1365,6 +1375,95 @@ function readStdioTemplateId(config: Record<string, unknown>): string {
     throw badRequest("Local stdio MCP connections must use an approved templateId");
   }
   return templateId.trim();
+}
+
+/**
+ * `credentialRefs` and `credentialSecretRefs` can legitimately describe the
+ * same credential: the first places the header, the second declares how the
+ * secret projects. Both derive a `company_secret_bindings` row keyed by config
+ * path, so an unmerged pair collided on
+ * `company_secret_bindings_target_path_uq` inside a single multi-row insert
+ * and surfaced as a bare 500.
+ *
+ * A `header` row always carries the default projection, so a `declared` row
+ * owns the projection when the two merge. Two rows of the same kind must
+ * already agree; the merge never picks a winner between two declarations,
+ * which keeps the stored policy independent of array order.
+ */
+function mergeCredentialBindingRows(rows: CredentialBindingRow[]): CredentialBindingRow[] {
+  const byConfigPath = new Map<string, CredentialBindingRow>();
+  for (const row of rows) {
+    const existing = byConfigPath.get(row.configPath);
+    if (!existing) {
+      byConfigPath.set(row.configPath, row);
+      continue;
+    }
+    if (existing.secretId !== row.secretId) {
+      throw badRequest(
+        `Config path "${row.configPath}" is bound to two different secrets. Bind it once in credentialRefs or credentialSecretRefs.`,
+        { code: "duplicate_credential_binding", configPath: row.configPath },
+      );
+    }
+    if (existing.source === row.source) {
+      if (
+        existing.projectionClass !== row.projectionClass
+        || existing.projectionAllowlistKey !== row.projectionAllowlistKey
+      ) {
+        throw badRequest(
+          `Config path "${row.configPath}" declares two different projections. Declare it once.`,
+          { code: "conflicting_credential_projection", configPath: row.configPath },
+        );
+      }
+      continue;
+    }
+    byConfigPath.set(row.configPath, existing.source === "declared" ? existing : row);
+  }
+  return [...byConfigPath.values()];
+}
+
+/**
+ * Derives the binding rows a connection persists, and rejects a pair that
+ * cannot be merged. Call this before a connection row is written, so a
+ * rejected payload never leaves stored arrays and stored bindings out of step.
+ */
+function credentialBindingRowsFor(
+  credentialRefs: ReadonlyArray<{ name: string; secretId: string }>,
+  credentialSecretRefs: ReadonlyArray<{
+    secretId: string;
+    configPath: string;
+    projectionClass?: SecretProjectionClass | null;
+    projectionAllowlistKey?: string | null;
+  }>,
+): CredentialBindingRow[] {
+  return mergeCredentialBindingRows([
+    ...credentialRefs.map((ref): CredentialBindingRow => ({
+      secretId: ref.secretId,
+      configPath: `credentials.${ref.name}`,
+      projectionClass: "unclassified",
+      projectionAllowlistKey: null,
+      source: "header",
+    })),
+    ...credentialSecretRefs.map((ref): CredentialBindingRow => ({
+      secretId: ref.secretId,
+      configPath: ref.configPath,
+      projectionClass: ref.projectionClass ?? "unclassified",
+      projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
+      source: "declared",
+    })),
+  ]);
+}
+
+/** Throws when the two credential arrays cannot merge into one binding set. */
+function assertCredentialBindingsMergeable(
+  credentialRefs: ReadonlyArray<{ name: string; secretId: string }>,
+  credentialSecretRefs: ReadonlyArray<{
+    secretId: string;
+    configPath: string;
+    projectionClass?: SecretProjectionClass | null;
+    projectionAllowlistKey?: string | null;
+  }>,
+): void {
+  credentialBindingRowsFor(credentialRefs, credentialSecretRefs);
 }
 
 export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}) {
@@ -2732,6 +2831,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function syncCredentialBindings(connection: typeof toolConnections.$inferSelect) {
+    // Merge before the delete. A rejected payload must not leave the
+    // connection with its bindings removed and nothing written back.
+    const bindings = credentialBindingRowsFor(connection.credentialRefs, connection.credentialSecretRefs);
     await db
       .delete(companySecretBindings)
       .where(
@@ -2741,20 +2843,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(companySecretBindings.targetId, connection.id),
         ),
       );
-    const bindings = [
-      ...connection.credentialRefs.map((ref) => ({
-        secretId: ref.secretId,
-        configPath: `credentials.${ref.name}`,
-        projectionClass: "unclassified",
-        projectionAllowlistKey: null,
-      })),
-      ...connection.credentialSecretRefs.map((ref) => ({
-        secretId: ref.secretId,
-        configPath: ref.configPath,
-        projectionClass: ref.projectionClass ?? "unclassified",
-        projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
-      })),
-    ];
     if (bindings.length === 0) return;
     await db.insert(companySecretBindings).values(bindings.map((ref) => ({
       companyId: connection.companyId,
@@ -6334,6 +6422,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         applicationId = app.id;
       }
       await assertSecretRefs(companyId, [...(input.credentialRefs ?? []), ...(input.credentialSecretRefs ?? [])]);
+      assertCredentialBindingsMergeable(input.credentialRefs ?? [], input.credentialSecretRefs ?? []);
       const connectionId = randomUUID();
       const [row] = await db.insert(toolConnections).values({
         id: connectionId,
@@ -6553,6 +6642,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
       await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, { excludeConnectionId: existing.id });
       await assertSecretRefs(existing.companyId, [...(input.credentialRefs ?? existing.credentialRefs), ...(input.credentialSecretRefs ?? existing.credentialSecretRefs)]);
+      assertCredentialBindingsMergeable(
+        input.credentialRefs ?? existing.credentialRefs,
+        input.credentialSecretRefs ?? existing.credentialSecretRefs,
+      );
       const [row] = await db
         .update(toolConnections)
         .set({
