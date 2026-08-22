@@ -199,6 +199,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+  TERMINAL_HEARTBEAT_RUN_STATUSES,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -4017,7 +4018,7 @@ export function issueRoutes(
    * context-less run id reached durable state, and checkout could bootstrap its
    * own authority by writing the target issue into the run it was authenticating
    * with. Both routes act on one canonical target, so this guard requires the
-   * run to exist, be `running`, match the actor agent, match the issue's
+   * run to exist, be non-terminal, match the actor agent, match the issue's
    * company, and already name *this* issue in the context Paperclip wrote when
    * it started the run. Nothing here ever *writes* run context: authority is
    * only read, never minted by the request that wants to use it.
@@ -4036,16 +4037,21 @@ export function issueRoutes(
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
 
-    const run = await db
-      .select({
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    // A forged header can be any string. Reject malformed ids here rather than
+    // letting Postgres turn an untrusted value into a uuid cast error, so the
+    // denial stays a clean audited 403 instead of a 500.
+    const run = !isUuidLike(runId)
+      ? null
+      : await db
+        .select({
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
     const context = run?.contextSnapshot && typeof run.contextSnapshot === "object"
       && !Array.isArray(run.contextSnapshot)
       ? run.contextSnapshot as Record<string, unknown>
@@ -4056,7 +4062,9 @@ export function issueRoutes(
       !run
       || run.companyId !== issue.companyId
       || run.agentId !== req.actor.agentId
-      || run.status !== "running"
+      // A finished run is a spent credential; a queued one is the run the agent
+      // is about to execute, which is still live authority.
+      || TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)
       || contextIssueId !== issue.id
     ) {
       const actor = getActorInfo(req);
@@ -4314,7 +4322,7 @@ export function issueRoutes(
   ) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (!req.actor.agentId || !runId) {
+    if (!req.actor.agentId || !runId || !isUuidLike(runId)) {
       return denyIssueThreadInteractionResolution(res, {
         status: 422,
         code: "interaction_run_attribution_required",
@@ -4935,7 +4943,9 @@ export function issueRoutes(
   async function loadActorRunContext(req: Request, companyId: string) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (!runId) return null;
+    // A forged header need not be a uuid; treat it as "no run" rather than
+    // letting it become a uuid cast error (FAI-9983).
+    if (!runId || !isUuidLike(runId)) return null;
     const run = await db
       .select({
         id: heartbeatRuns.id,
@@ -5065,6 +5075,9 @@ export function issueRoutes(
   }
 
   async function loadWorkProductRunAttribution(runId: string) {
+    // Both callers treat a missing row as a denial, so a malformed run id has to
+    // resolve to null instead of raising a uuid cast error (FAI-9983).
+    if (!isUuidLike(runId)) return null;
     return await db
       .select({
         id: heartbeatRuns.id,

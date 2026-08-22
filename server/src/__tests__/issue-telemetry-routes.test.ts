@@ -23,6 +23,8 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
         id: "22222222-2222-4222-8222-222222222222",
         companyId: "company-1",
         agentId: "agent-1",
+        // Real rows carry a status, and only a live run may write.
+        status: "running",
         contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
         permissions: null,
       }]).then(onFulfilled, onRejected),
@@ -32,6 +34,8 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
       id: "22222222-2222-4222-8222-222222222222",
       companyId: "company-1",
       agentId: "agent-1",
+      // Real rows carry a status, and only a live run may write.
+      status: "running",
       contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
       permissions: null,
     }]).then(onFulfilled, onRejected),
@@ -174,6 +178,8 @@ describe("issue telemetry routes", () => {
             id: "22222222-2222-4222-8222-222222222222",
             companyId: "company-1",
             agentId: "agent-1",
+            // Real rows carry a status, and only a live run may write.
+            status: "running",
             contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
             permissions: null,
           }]).then(onFulfilled, onRejected),
@@ -183,6 +189,8 @@ describe("issue telemetry routes", () => {
           id: "22222222-2222-4222-8222-222222222222",
           companyId: "company-1",
           agentId: "agent-1",
+          // Real rows carry a status, and only a live run may write.
+          status: "running",
           contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
           permissions: null,
         }]).then(onFulfilled, onRejected),

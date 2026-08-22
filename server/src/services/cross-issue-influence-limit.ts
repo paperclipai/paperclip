@@ -4,6 +4,7 @@ import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { TERMINAL_HEARTBEAT_RUN_STATUSES } from "./issues.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
@@ -107,8 +108,9 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId ||
       // A finished run is a spent credential: its heartbeat is over, so it can
-      // no longer be the thing making this write (FAI-9983).
-      run.status !== "running"
+      // no longer be the thing making this write. A queued run is still live —
+      // it is the run the agent is about to execute (FAI-9983).
+      TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)
     ) {
       throw crossIssueInfluenceRunContextError();
     }

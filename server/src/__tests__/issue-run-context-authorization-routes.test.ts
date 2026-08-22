@@ -221,6 +221,8 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
   }
 
   async function readRunContext(runId: string) {
+    // A forged run id need not be a uuid, and then there is nothing to read.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) return null;
     return db
       .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
@@ -290,6 +292,9 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
     ["unassigned/empty-context", (s: Scenario) => s.emptyContextRunId],
     ["mismatched-agent", (s: Scenario) => s.otherAgentRunId],
     ["mismatched-company", (s: Scenario) => s.otherCompanyRunId],
+    // A forged header is an arbitrary string, not necessarily a uuid: it has to
+    // deny like any other bad run id rather than surface a uuid cast error.
+    ["forged/non-uuid", () => "../../not-a-run-id"],
   ] as const;
 
   /**
@@ -383,6 +388,65 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
     expect(await readIssue(scenario.issueId)).toMatchObject({
       status: "todo",
       assigneeAgentId: scenario.agentId,
+    });
+  });
+
+  it("lets a queued run act: it is the heartbeat about to execute, not a spent one", async () => {
+    const companyId = await seedCompany("Paperclip");
+    const agentId = await seedAgent(companyId, "CodexCoder");
+    const issueId = randomUUID();
+    const runId = await seedRun({
+      companyId,
+      agentId,
+      status: "queued",
+      contextSnapshot: { issueId, taskId: issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued run target",
+      status: "todo",
+      priority: "medium",
+    });
+    const app = createApp(agentActor(companyId, agentId, runId));
+
+    const checkout = await request(app)
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["todo"] });
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(200);
+
+    const comment = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Claimed from the queued run." });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+  });
+
+  it("preserves status when an authorized run releases an issue it never checked out", async () => {
+    const companyId = await seedCompany("Paperclip");
+    const agentId = await seedAgent(companyId, "CodexCoder");
+    const issueId = randomUUID();
+    const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, taskId: issueId } });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Awaiting review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, runId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // in_progress -> todo is the only transition release is allowed to make;
+    // every other status survives the lock being dropped.
+    expect(await readIssue(issueId)).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
     });
   });
 

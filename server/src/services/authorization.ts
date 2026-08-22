@@ -20,7 +20,7 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, isUuidLike, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -749,8 +749,12 @@ export function authorizationService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // `runId` comes from a caller-controlled header, so it is not necessarily a
+  // uuid. A malformed value has to read as "no run" here; letting it reach the
+  // lookup raises a uuid cast error, which turns a fail-closed 403 further down
+  // the route into a 500 (FAI-9983).
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
-    if (!runId) return null;
+    if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         id: heartbeatRuns.id,
@@ -769,7 +773,7 @@ export function authorizationService(db: Db) {
   }
 
   async function loadRunIssueId(runId: string | null | undefined, companyId: string, agentId: string) {
-    if (!runId) return null;
+    if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         companyId: heartbeatRuns.companyId,
