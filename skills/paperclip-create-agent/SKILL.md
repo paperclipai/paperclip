@@ -88,6 +88,44 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - instruction text such as `AGENTS.md` built from step 4; for local managed-bundle adapters, send this as top-level `instructionsBundle.files["AGENTS.md"]`. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
 
+### 6b. Apply local-adapter governance gates (opt-in)
+
+**This step is opt-in** and applies only when your Paperclip company maintains a governance directory with a deny-baseline policy. If your company does not have one, skip to Step 7.
+
+For any new agent whose adapter is `claude_local`, `opencode_local`, or `codex_local`, two governance files should accompany the hire payload bundle when your company's hire-flow gates policy requires them. Both are blocking gates — do not submit if either is missing. The spec lives in your company's governance directory (typically a hostops or governance folder in your project root).
+
+#### 6b.1 `claude-config/settings.json` — Gate 5a (locked deny baseline)
+
+The bundle's `claude-config/settings.json` must contain a JSON object whose `permissions.deny` array is a **superset** of the company's approved baseline. Two acceptable paths:
+
+- **(a) Apply baseline as-is** — copy the baseline JSON block from your company's `<governance-dir>/claude-permissions-baseline.md` verbatim. The hire-request comment must state `settings.json: applies baseline as-is`.
+- **(b) Board-approved baseline override** — the bundle additionally contains `claude-config/baseline-override.md` naming the approval ID, the deviating entries, and the justification. The hire-request comment must reference the approval ID and quote the override clause.
+
+Block the hire if neither (a) nor (b) is present.
+
+#### 6b.2 `claude-config/justification.md` — Gate 5b (dangerouslySkipPermissions)
+
+If `adapterConfig.dangerouslySkipPermissions` is `true` (the adapter default for `claude_local`), the bundle must include `claude-config/justification.md` covering:
+
+1. **Why** the flag is in use for this agent.
+2. **Which roles / workflows** depend on it.
+3. **Compensating controls** that protect the agent (deny baseline entries, restricted skills, narrow allows).
+
+Block the hire if `dangerouslySkipPermissions: true` and `claude-config/justification.md` is missing or does not cover all three required points. Setting `dangerouslySkipPermissions: false` removes Gate 5b; the hire-request comment should note that choice explicitly.
+
+#### 6b.3 Pre-submit validation (mandatory when gates are active)
+
+Before sending `POST /api/companies/:companyId/agent-hires`:
+
+1. Confirm `claude-config/settings.json` exists in the payload bundle for any local-adapter hire.
+2. Confirm its `permissions.deny` is a superset of the company baseline (paste-compare with your governance baseline doc).
+3. Confirm exactly one of (a) "applies baseline as-is" or (b) baseline-override reference is named in the hire-request comment.
+4. If `dangerouslySkipPermissions: true`, confirm `claude-config/justification.md` exists and covers Why / Which / Compensating-controls.
+
+If any check fails, **do not submit**. Fix the payload, re-run the checklist.
+
+**To enable these gates for your company:** create `<governance-dir>/hire-flow-gates.md` and `<governance-dir>/claude-permissions-baseline.md` in your project's governance directory, then reference them from your agents' AGENTS.md files so the gates are enforced on every local-adapter hire.
+
 ### 7. Review the draft against the quality checklist
 
 Before submitting, walk the draft-review checklist end-to-end and fix any item that does not pass:
@@ -161,3 +199,5 @@ For each linked issue, either:
 - Generic baseline role guide (no-template fallback): `skills/paperclip-create-agent/references/baseline-role-guide.md`
 - Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
 - Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`
+- Local-adapter hire governance gates (opt-in): `<governance-dir>/hire-flow-gates.md` in your company's governance directory
+- Deny-baseline source-of-truth (Gate 5a): `<governance-dir>/claude-permissions-baseline.md`
