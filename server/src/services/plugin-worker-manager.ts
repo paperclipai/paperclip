@@ -176,6 +176,23 @@ const MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS = 8 * 1024 * 1024;
  */
 const MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES = 10_000;
 /**
+ * The margin the pre-bind hold ceiling keeps above the pre-bind buffered-frame
+ * bound (`maxDuplexChannelPreBindFrames`). A worker can batch data and exit
+ * frames with the open reply, so the host reads them before the route binds and
+ * before it can apply the per-frame bounds. The host holds these frames and
+ * replays them after the bind. The hold ceiling bounds that hold, so a worker
+ * that floods frames before the open reply cannot make the host hold an
+ * unbounded number of frames.
+ *
+ * The hold ceiling derives from the buffered bound, not a fixed constant. A
+ * fixed ceiling at or below a caller-configured buffered bound would drop the
+ * frame that must instead trip the buffered bound during replay, so the route
+ * would never end. One frame of margin is enough. It lets the frame that
+ * exceeds the buffered bound reach the hold, so the replay's buffered-bound
+ * check, not the hold, ends the route.
+ */
+const DUPLEX_CHANNEL_PRE_BIND_HOLD_MARGIN_FRAMES = 1;
+/**
  * The default maximum number of in-flight host→worker requests for one duplex
  * channel route. A worker that never replies cannot make the host hold an
  * unbounded number of pending requests.
@@ -858,6 +875,11 @@ export function createPluginWorkerHandle(
   const maxDuplexChannelPreBindFrames =
     options.duplexChannelLimits?.maxPreBindBufferedFrames ??
     MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES;
+  // The pre-bind hold ceiling stays one frame above the buffered bound, so the
+  // replay, not the hold, ends the route on the buffered bound. See
+  // DUPLEX_CHANNEL_PRE_BIND_HOLD_MARGIN_FRAMES for why the margin must hold.
+  const maxDuplexChannelPreBindHoldFrames =
+    maxDuplexChannelPreBindFrames + DUPLEX_CHANNEL_PRE_BIND_HOLD_MARGIN_FRAMES;
   const maxDuplexChannelPendingRequests =
     options.duplexChannelLimits?.maxPendingRequests ??
     MAX_DUPLEX_CHANNEL_PENDING_REQUESTS;
@@ -1536,11 +1558,18 @@ export function createPluginWorkerHandle(
     lifetimeTimer: ReturnType<typeof setTimeout> | null;
     terminalized: boolean;
     settleWait: (value: { exitCode: number | null }) => void;
-    // The frames that arrived before the bind, held in order. The bind replays
-    // them through the exact-pair routing, so an early frame is never lost and a
-    // frame whose pair does not match the bound pair still fails closed.
+    // The data frames that arrived before the bind, held in order. The bind
+    // replays them through the exact-pair routing, so an early frame is never
+    // lost and a frame whose pair does not match the bound pair still fails
+    // closed. The hold ceiling is `maxDuplexChannelPreBindHoldFrames`, one frame
+    // above the buffered bound, so the replay's buffered-bound check ends the
+    // route, not the hold.
     preBind: JsonRpcNotification[];
-    preBindChars: number;
+    // The single exit frame that arrived before the bind. An exit never consumes
+    // a data hold slot, so a worker that batches an exit among enough data frames
+    // to fill the hold cannot crowd out a data frame. The bind replays the held
+    // data frames first, then this exit last.
+    preBindExit: JsonRpcNotification | null;
   }
   // The live duplex routes on this worker, keyed by the exact
   // `{ hostRouteId, workerSessionId }` pair. The host binds one pair once, at
@@ -1663,10 +1692,15 @@ export function createPluginWorkerHandle(
     route.terminalized = true;
     route.state = "closed";
     route.listener = null;
-    route.buffered = [];
-    route.bufferedChars = 0;
+    // Keep the buffered chunks the host accepted before the route ended, so a
+    // listener that attaches after the end still drains them. A frame can end the
+    // route during the pre-bind replay, before a listener attaches, and the
+    // chunks the host accepted before that frame are valid data the listener must
+    // still receive. The buffered bytes stay bounded by the pre-bind buffered
+    // bound, and `onData` clears them once it drains them. Drop the held pre-bind
+    // frames, which never bound to a listener.
     route.preBind = [];
-    route.preBindChars = 0;
+    route.preBindExit = null;
     clearDuplexChannelLifetimeTimer(route);
     // Remove the live binding and install the tombstone in one synchronous step,
     // before the worker close and before any reuse. A reserved route that never
@@ -1839,9 +1873,13 @@ export function createPluginWorkerHandle(
   }
 
   // Hold one frame that arrived before its route bound, in order. The bind replays
-  // the held frames through the exact-pair routing. The pre-bind hold obeys the
-  // same frame-count and character bounds as the post-bind buffer, so an early
-  // flood ends the route instead of growing without limit.
+  // the held frames through the exact-pair routing. An exit frame never consumes a
+  // data hold slot; the host holds it in the single `preBindExit` slot instead, so
+  // a worker that batches an exit among enough data frames to fill the hold cannot
+  // crowd out a data frame. The data hold ceiling stays one frame above the
+  // buffered bound, so the replay's buffered-bound check, not the hold, ends the
+  // route. The host counts one protocol error for each data frame past the ceiling,
+  // so an early flood bounds the hold instead of growing without limit.
   function bufferPreBindDuplexFrame(
     hostRouteId: string | null,
     notification: JsonRpcNotification,
@@ -1849,32 +1887,35 @@ export function createPluginWorkerHandle(
     if (!hostRouteId) return;
     const route = openingDuplexRoutes.get(hostRouteId);
     if (!route) return;
-    const params = isRecord(notification.params) ? notification.params : {};
-    const chunk = typeof params.chunk === "string" ? params.chunk : "";
-    if (
-      route.preBind.length + 1 > maxDuplexChannelPreBindFrames ||
-      route.preBindChars + chunk.length > maxDuplexChannelPreBindChars
-    ) {
-      void terminalizeDuplexChannelRoute(route);
+    if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
+      route.preBindExit = notification;
+      return;
+    }
+    if (route.preBind.length >= maxDuplexChannelPreBindHoldFrames) {
+      recordDuplexChannelProtocolError(route);
       return;
     }
     route.preBind.push(notification);
-    route.preBindChars += chunk.length;
   }
 
   // Replay the frames a route held before it bound. The route is live now, so the
   // exact-pair routing delivers each held frame or fails closed on a mismatch.
+  // Replay the held data frames first, in order, then the held exit last, so the
+  // data delivers before the exit resolves the wait, which matches a real worker's
+  // order. A frame that ends the route terminalizes it, and every later frame in
+  // the replay is a no-op, because the routing functions drop a frame for a route
+  // that is not `open`.
   function replayPreBindDuplexFrames(route: DuplexChannelRoute): void {
     const held = route.preBind;
     route.preBind = [];
-    route.preBindChars = 0;
     for (const notification of held) {
       if (route.terminalized) break;
-      if (notification.method === DUPLEX_CHANNEL_DATA_NOTIFICATION) {
-        routeDuplexChannelData(notification);
-      } else if (notification.method === DUPLEX_CHANNEL_EXIT_NOTIFICATION) {
-        routeDuplexChannelExit(notification);
-      }
+      routeDuplexChannelData(notification);
+    }
+    const heldExit = route.preBindExit;
+    route.preBindExit = null;
+    if (heldExit && !route.terminalized) {
+      routeDuplexChannelExit(heldExit);
     }
   }
 
@@ -1897,7 +1938,7 @@ export function createPluginWorkerHandle(
       route.buffered = [];
       route.bufferedChars = 0;
       route.preBind = [];
-      route.preBindChars = 0;
+      route.preBindExit = null;
       clearDuplexChannelLifetimeTimer(route);
       releaseDuplexRouteSlot(route);
       settleRouteWait(route, { exitCode: null });
@@ -1930,7 +1971,7 @@ export function createPluginWorkerHandle(
       terminalized: false,
       settleWait,
       preBind: [],
-      preBindChars: 0,
+      preBindExit: null,
     };
     // Reserve one aggregate route slot before any work. When the process-scoped
     // ceiling is full, reject with the fixed route-busy error and open nothing, so

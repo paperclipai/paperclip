@@ -71,7 +71,7 @@ test.describe("Onboarding wizard", () => {
     // "Confirm mission" creates the company + a company-level goal, then
     // advances to the team-lead naming step of the capsule wizard.
     await page.getByRole("button", { name: /Confirm mission/ }).click();
-    await page.waitForSelector('input[placeholder="Chief of staff"]', {
+    await page.waitForSelector("#onboarding-agent-role", {
       timeout: 30_000,
     });
 

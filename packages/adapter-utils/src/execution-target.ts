@@ -732,7 +732,7 @@ export async function runAdapterExecutionTargetProcess(
     const env = sanitizeRemoteExecutionEnv(options.env);
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
-      message: "Starting adapter in sandbox",
+      message: "Starting adapter in environment",
     });
     const runLogTail = options.runLogTail?.create() ?? null;
     let execCommand = command;

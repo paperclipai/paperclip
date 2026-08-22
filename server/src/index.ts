@@ -11,6 +11,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
+import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
@@ -143,6 +144,8 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
+
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;

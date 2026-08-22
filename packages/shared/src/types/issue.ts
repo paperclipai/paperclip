@@ -220,6 +220,7 @@ export interface IssueRelationIssueSummary {
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
+  scheduledRetry?: IssueScheduledRetry | null;
 }
 
 export type IssueBlockerDiagnosticFlag =

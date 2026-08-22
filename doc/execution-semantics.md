@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-07-23
+Date: 2026-08-18
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -151,6 +151,8 @@ Pre-dispatch configuration validation is a distinct gate that runs after ownersh
 > Before a run is dispatched, required secret/env bindings are validated; missing bindings produce a surfaced configuration-incomplete blocker, not a dispatched run.
 
 A configuration-incomplete result is a gate outcome, not a runtime failure. It is one of the active gates that a checkout-time or dispatch-time check can surface instead of starting a run, and it leaves the issue in an explicit waiting state that names the missing binding. Surfacing the blocker keeps the issue healthy under the liveness contract while preventing a run that is guaranteed to fail once it cannot resolve its required secret/env bindings. A dispatched-then-failed run is the wrong shape for missing configuration: the missing binding is a known pre-dispatch condition, so the control plane must surface it as a configuration-incomplete blocker rather than letting the run start and then fail.
+
+An unresolved workspace base ref is another configuration-incomplete condition. A `git_worktree` workspace bases a fresh worktree on a configured base ref. Paperclip first fetches a remote-only ref before dispatch: it maps an unqualified name (for example `fix/foo`) or a remote-tracking name (for example `origin/fix/foo`) to `origin/<branch>`, runs the authenticated fetch, and re-checks the commit. A ref that resolves lets work continue on the resolved commit. A ref that is still unresolvable after the fetch produces a configuration-incomplete blocker that names the requested ref, rather than a dispatched-then-failed run. Because the adapter never started, Paperclip queues no missing-comment retry. The recovery action dedupes by the canonical remote ref (`origin/<branch>`), not the operator spelling. Two equivalent spellings of one remote branch, for example `fix/foo` and `origin/fix/foo`, share one recovery identity, so a repeated failure reuses the active action and does not reset the attempt count or post a second notice. A different remote branch is a distinct blocker. Paperclip resolves the prior recovery action, creates a new action for the new ref, and notifies the operator with the new ref instead of overwriting the active action of the prior ref.
 
 ## 6. Parent/Sub-Issue vs Blockers
 
@@ -389,6 +391,8 @@ A valid recovery action must name:
 
 A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: move the source issue back to `todo` so it can be retried, clarify disposition, re-establish a monitor, record a false positive, or delegate real follow-up work from the source issue.
 
+Recovery-action ownership and source-task ownership are separate contracts. Assigning a manager or board owner to a recovery action authorizes that owner to repair or route the recovery action; it does not write that owner into the source issue's `assigneeAgentId`. Automatic retry and escalation preserve the source assignee. Reassignment requires an explicit source-task decision or a policy-defined serious-failure path, with the normal company, authorization, budget, checkout, active-run-lock, governed-action, and activity-log checks.
+
 Use an issue-backed recovery action only when the recovery is genuinely independent work or when source-scoped handling would be unsafe or unclear. Examples include:
 
 - long or cross-agent repair work with its own assignee, subtasks, or blockers
@@ -549,7 +553,13 @@ A continuation that the staleness gate cancelled with `issue_continuation_waitin
 Recovery rule for a parked-for-review continuation:
 
 - if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
-- if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §9.2 escalation, preserving stranded detection
+- if the issue has no current typed waiting target and the original owner is invokable, Paperclip classifies it as `deliberate_wait_without_target` and gives that owner five normal-model disposition-repair attempts: immediate, then after 60, 120, 240, and 480 seconds, with up to 10 percent jitter on delayed attempts
+- before every attempt, Paperclip revalidates unresolved blockers and children, interactions, linked approvals, monitors, execution stages, queued wakes, active runs, work products, owner invokability, and budget or governance gates. Any real live or waiting path suppresses the retry
+- the retry bound is keyed by an idempotent durable source-state fingerprint. Comments, repeated parked summaries, and equivalent prose do not reset it. Durable changes such as source status or assignee changes, dependency or interaction changes, approval or execution-policy changes, monitor changes, or work-product changes may create a new fingerprint
+- on upgrade, consecutive historical `issue_continuation_waiting_on_review` cancellations for the same accepted interaction and still-unchanged durable source state seed this same counter. Five applicable pre-upgrade parks therefore exhaust the ceiling immediately; the absence of a historical `deliberate_wait_without_target` recovery-action row does not grant five new attempts
+- the action persists the unchanged fingerprint, source-attempt count, due time, source owner, and return owner. Startup and periodic reconciliation reuse that state, fold the action when a current typed wait appears, and reschedule or escalate an expired attempt that has no live scheduled run. Idempotency keys prevent a restart from creating duplicate wakes or scheduled runs
+- after five attempts with the same fingerprint, Paperclip opens one separate source-scoped manager recovery action. The manager owns only path repair; the source assignee remains unchanged. The manager gets five separate attempts on the same immediate, 60, 120, 240, and 480 second bounded-delay schedule before exhaustion escalates visibly to the board
+- a recovery action is a healthy wait only while its owner has a live run, queued wake, scheduled retry, typed wait, or explicit board escalation. Source liveness and every blocker-chain projection use that same nested result
 
 An accepted interaction supersedes a continuation park recorded before that acceptance. A queued continuation carrying a parseable `interactionResolvedAt` must not be cancelled solely because an older continuation summary says to wait for review or approval. Interaction-continuation recovery is bounded: after three consecutive continuation wakes are cancelled without a run starting, recovery converts a real dependency wait when one exists or escalates the missing execution path visibly instead of requeueing forever.
 
@@ -780,6 +790,8 @@ Examples:
 
 The recovery action stays source-scoped by default. The source issue should show the recovery owner, cause, evidence, next action, and wake or monitor policy in its own thread/detail surface.
 
+The recovery owner owns the repair action, not the source deliverable. Manager escalation must preserve the source issue assignee unless an operator makes an explicit reassignment decision or an applicable serious-failure policy authorizes transfer.
+
 Create an issue-backed recovery action only when a separate issue is the right execution object. In that fallback form, the source issue remains visible and is blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, delegate real follow-up work, or record the reason the signal is a false positive.
 
 Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery actions automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.
@@ -809,7 +821,7 @@ Paperclip still does not:
 The recovery model is intentionally conservative:
 
 - preserve ownership
-- retry once when the control plane lost execution continuity
+- use the cause-specific bound when the control plane lost execution continuity; deliberate waits without a target use five fingerprinted original-owner disposition repairs
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 

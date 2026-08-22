@@ -14,15 +14,64 @@
 //     `sid` or `rid` to prove the host drops a mismatched-pair notification and
 //     counts a protocol error.
 //   - `exitCode`: when set, the fixture emits an exit notification after the data.
+//   - `dataAfterExit`: an array of `{ chunk, sid? }`, same shape as `data`. The
+//     fixture emits these as data notifications after the exit notification, so a
+//     test can script a batch where a data frame arrives after the exit in the
+//     read order — proving the host still bounds these frames on their own terms
+//     and never lets the exit crowd a data frame out of the pre-open hold.
 //   - `echoInput`: when true, the fixture echoes each `duplexChannelWrite` back as
 //     one data notification for the bound session.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
+//   - `batchWithOpenReply`: when true, the fixture writes the open reply and the
+//     scripted data and exit in one stdout write. The host then reads the open
+//     reply and the notifications in one batch, so a test proves the host holds
+//     and replays a frame that arrives before the route binds.
 const readline = require("node:readline");
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+// Serialize the scripted data and exit frames as newline-delimited lines. The
+// batch mode writes these together with the open reply in one stdout write. Each
+// frame carries the exact pair, so the host binds and routes by the pair. A test
+// sets a wrong `sid` or `rid` to force a mismatch.
+function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
+  const data = Array.isArray(directive.data) ? directive.data : [];
+  let lines = "";
+  for (const entry of data) {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "duplexChannel.data",
+      params: {
+        hostRouteId: entry.rid ?? hostRouteId,
+        workerSessionId: entry.sid ?? workerSessionId,
+        chunk: entry.chunk,
+      },
+    })}\n`;
+  }
+  if (typeof directive.exitCode === "number") {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "duplexChannel.exit",
+      params: { hostRouteId, workerSessionId, exitCode: directive.exitCode },
+    })}\n`;
+  }
+  const dataAfterExit = Array.isArray(directive.dataAfterExit) ? directive.dataAfterExit : [];
+  for (const entry of dataAfterExit) {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "duplexChannel.data",
+      params: {
+        hostRouteId: entry.rid ?? hostRouteId,
+        workerSessionId: entry.sid ?? workerSessionId,
+        chunk: entry.chunk,
+      },
+    })}\n`;
+  }
+  return lines;
 }
 
 // The registered channels, keyed by the host route id. Each entry records the
@@ -90,8 +139,21 @@ rl.on("line", (line) => {
     }
 
     // Echo the host route id on the reply, so the host binds the exact pair.
-    const reply = () =>
-      send({ jsonrpc: "2.0", id: message.id, result: { hostRouteId, workerSessionId } });
+    const openReplyLine = `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { hostRouteId, workerSessionId },
+    })}\n`;
+
+    if (directive.batchWithOpenReply === true) {
+      // Write the open reply and the scripted frames in one stdout write. The
+      // host reads them in one batch, so a data or exit frame arrives before the
+      // route binds. The host must hold and replay the frame after the bind.
+      process.stdout.write(openReplyLine + scriptedFrameLines(directive, hostRouteId, workerSessionId));
+      return;
+    }
+
+    const reply = () => process.stdout.write(openReplyLine);
     reply();
     if (mode === "duplicate-open-reply") {
       // Send a second open reply for the same request id. The host drops it.
@@ -102,25 +164,7 @@ rl.on("line", (line) => {
     // binds the route first. Each frame echoes the exact pair; a test overrides
     // `sid` or `rid` to force a mismatch.
     setImmediate(() => {
-      const data = Array.isArray(directive.data) ? directive.data : [];
-      for (const entry of data) {
-        send({
-          jsonrpc: "2.0",
-          method: "duplexChannel.data",
-          params: {
-            hostRouteId: entry.rid ?? hostRouteId,
-            workerSessionId: entry.sid ?? workerSessionId,
-            chunk: entry.chunk,
-          },
-        });
-      }
-      if (typeof directive.exitCode === "number") {
-        send({
-          jsonrpc: "2.0",
-          method: "duplexChannel.exit",
-          params: { hostRouteId, workerSessionId, exitCode: directive.exitCode },
-        });
-      }
+      process.stdout.write(scriptedFrameLines(directive, hostRouteId, workerSessionId));
     });
     return;
   }

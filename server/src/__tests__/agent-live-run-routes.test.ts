@@ -323,7 +323,7 @@ describe("agent live run routes", () => {
   it("includes ephemeral current status fields on active run polling", async () => {
     mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
       ...run,
-      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusMessage: "Syncing workspace to environment",
       currentStatusUpdatedAt: new Date("2026-04-10T09:30:05.000Z"),
       currentToolName: "bash",
       lastAssistantSnippet: "Inspecting files",
@@ -341,7 +341,7 @@ describe("agent live run routes", () => {
       { companyId: "company-1", issueId: "issue-1" },
     );
     expect(res.body).toMatchObject({
-      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusMessage: "Syncing workspace to environment",
       currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
       currentToolName: "bash",
       lastAssistantSnippet: "Inspecting files",

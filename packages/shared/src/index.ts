@@ -85,6 +85,19 @@ export {
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
+  ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX,
+  MARKDOWN_ATTACHMENT_CONTENT_TYPES,
+  MARKDOWN_REVIEW_DOCUMENT_MAX_BYTES,
+  artifactReviewDocumentKey,
+  getAttachmentArtifactWorkProductMetadata,
+  getMarkdownWorkProductAttachmentMetadata,
+  isArtifactReviewDocumentKey,
+  isMarkdownArtifactWorkProduct,
+  isMarkdownAttachmentContent,
+  workProductIdFromArtifactReviewDocumentKey,
+  type AttachmentArtifactWorkProductLike,
+} from "./markdown-work-products.js";
+export {
   ISSUE_WRITE_DENIAL_CODES,
   describeIssueWriteDenial,
   isIssueWriteDenialCode,
@@ -301,6 +314,7 @@ export {
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   ISSUE_SURFACE_VISIBILITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
+  ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_RECOVERY_ACTION_OWNER_TYPES,
   ISSUE_RECOVERY_ACTION_OUTCOMES,
@@ -2471,6 +2485,23 @@ export {
   type FeatureTier,
   type InstanceFeatureKey,
 } from "./feature-catalog.js";
+export {
+  HIDEABLE_GENERAL_SECTIONS,
+  HIDEABLE_INSTANCE_PAGES,
+  HIDEABLE_SETTING_KEYS,
+  SETTINGS_OPERATOR_MANAGED_ERROR_CODE,
+  UI_ONLY_GENERAL_SECTIONS,
+  experimentalSettingKey,
+  hidesExperimentalSetting,
+  hidesGeneralSection,
+  hidesInstancePage,
+  parseHiddenSettingsList,
+  type HideableExperimentalSetting,
+  type HideableGeneralSection,
+  type HideableInstancePage,
+  type HideableSettingKey,
+  type ParsedHiddenSettings,
+} from "./settings-visibility.js";
 
 // --- Runtime exposure (opt-in Tailscale HTTPS for managed branch runtimes) ---
 // PAP-17049 plan, PAP-17050 threat-model verdict. Contract shared across DB,
