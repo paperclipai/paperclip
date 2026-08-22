@@ -88,6 +88,8 @@ import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
@@ -98,11 +100,23 @@ import type {
   PluginEnvironmentCaptureTemplateParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentDeleteTemplateParams,
+  PluginSetupTokenPtyOpenParams,
+  PluginSetupTokenPtyInputParams,
+  PluginSetupTokenPtyStopParams,
+  PluginSetupTokenPtyCloseParams,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
 import {
+  SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
+  SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
@@ -199,6 +213,32 @@ function realpathOrResolvedPath(filePath: string): string {
   }
 }
 
+/**
+ * Order-independent structural equality for two plugin config objects.
+ *
+ * Config arrives as parsed JSON, so plain `JSON.stringify` comparison is
+ * sensitive to key ordering across independent saves. Canonicalizing with
+ * recursively sorted object keys makes an idempotent replay of the same config
+ * compare equal regardless of serialization order.
+ */
+function configsEqual(a: unknown, b: unknown): boolean {
+  return canonicalize(a) === canonicalize(b);
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, v]) => `${JSON.stringify(key)}:${canonicalize(v)}`);
+  return `{${entries.join(",")}}`;
+}
+
 export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
   const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
   const entryPath = realpathOrResolvedPath(entry);
@@ -292,6 +332,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let initialized = false;
   let manifest: PaperclipPluginManifestV1 | null = null;
   let currentConfig: Record<string, unknown> = {};
+  // The company whose config was last applied via configChanged. Used to fail
+  // closed when a single-tenant plugin would be collapsed onto a second,
+  // distinct company's config. `null` until the first company-scoped delivery.
+  let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
 
@@ -862,8 +906,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.listComments", { issueId, companyId });
         },
 
-        async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {
-          return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
+        async createComment(
+          issueId: string,
+          body: string,
+          companyId: string,
+          options?: { authorAgentId?: string; actorUserId?: string },
+        ) {
+          return callHost("issues.createComment", {
+            issueId,
+            body,
+            companyId,
+            authorAgentId: options?.authorAgentId,
+            actorUserId: options?.actorUserId,
+          });
         },
 
         async createInteraction(issueId: string, interaction, companyId: string, options?: { authorAgentId?: string }) {
@@ -943,6 +998,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           }) as Promise<RequestCheckboxConfirmationInteraction>;
         },
 
+        async listInteractions(issueId: string, companyId: string) {
+          return callHost("issues.listInteractions", { issueId, companyId });
+        },
+
+        async respondInteraction(
+          issueId: string,
+          interactionId: string,
+          input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+          companyId: string,
+        ) {
+          return callHost("issues.respondInteraction", {
+            issueId,
+            interactionId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            reason: input.reason,
+          });
+        },
+
+        async listAttachments(issueId: string, companyId: string) {
+          return callHost("issues.listAttachments", { issueId, companyId });
+        },
+
+        async getAttachmentContent(
+          attachmentId: string,
+          companyId: string,
+          options?: { maxBytes?: number | null },
+        ) {
+          return callHost("issues.getAttachmentContent", {
+            attachmentId,
+            companyId,
+            maxBytes: options?.maxBytes ?? null,
+          });
+        },
+
         documents: {
           async list(issueId: string, companyId: string) {
             return callHost("issues.documents.list", { issueId, companyId });
@@ -1012,6 +1103,33 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async getOrchestration(input) {
             return callHost("issues.summaries.getOrchestration", input);
           },
+        },
+      },
+
+      approvals: {
+        async list(input: { companyId: string; status?: string | null }) {
+          return callHost("approvals.list", {
+            companyId: input.companyId,
+            status: input.status,
+          });
+        },
+
+        async get(approvalId: string, companyId: string) {
+          return callHost("approvals.get", { approvalId, companyId });
+        },
+
+        async decide(
+          approvalId: string,
+          input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+          companyId: string,
+        ) {
+          return callHost("approvals.decide", {
+            approvalId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            decisionNote: input.decisionNote,
+          });
         },
       },
 
@@ -1247,6 +1365,67 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
       })(),
 
+      execution: {
+        log(stream: "stdout" | "stderr", chunk: string): void {
+          // Emit one incremental output chunk of the active execute call.
+          // `notifyHost` stamps the active invocation id from the invocation
+          // context, so the host correlates the chunk to the host-owned execute
+          // route for that call. The notification carries no company id; the
+          // host binds the company from its own execute route. A chunk sent with
+          // no active invocation carries no id and the host drops it.
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost("execute.log", { stream, chunk });
+        },
+      },
+
+      setupTokenPty: {
+        output(workerSessionId: string, chunk: string): void {
+          // Forward one raw output chunk of a live login pseudo-terminal. The
+          // notification carries the worker session identifier, so the host binds
+          // the chunk to the open route by that identifier while the route is
+          // open. The host drops an unknown or a mismatched identifier and never
+          // logs the raw bytes. This notification carries no invocation id,
+          // because it fires after the open reply returns.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost(SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION, { workerSessionId, chunk });
+        },
+        exit(workerSessionId: string, exitCode: number | null): void {
+          // Forward the child exit of a live login pseudo-terminal. The host
+          // resolves the open route's wait promise by the worker session
+          // identifier while the route is open.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(SETUP_TOKEN_PTY_EXIT_NOTIFICATION, {
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+          });
+        },
+      },
+
+      duplexChannel: {
+        data(workerSessionId: string, chunk: string): void {
+          // Forward one raw data chunk of a persistent duplex channel. The
+          // notification carries the worker session identifier, so the host binds
+          // the chunk to the open route by that identifier while the route is
+          // open. The host drops an unknown or a mismatched identifier and never
+          // logs the raw bytes. This notification carries no invocation id,
+          // because it fires after the open reply returns.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, { workerSessionId, chunk });
+        },
+        exit(workerSessionId: string, exitCode: number | null): void {
+          // Forward the child exit of a persistent duplex channel. The host
+          // resolves the open route's wait promise by the worker session
+          // identifier while the route is open.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(DUPLEX_CHANNEL_EXIT_NOTIFICATION, {
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+          });
+        },
+      },
+
       tools: {
         register(
           name: string,
@@ -1284,6 +1463,54 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
         debug(message: string, meta?: Record<string, unknown>): void {
           notifyHost("log", { level: "debug", message, meta });
+        },
+      },
+
+      tracer: {
+        startSpan(
+          name: string,
+          options?: { attributes?: Record<string, string | number | boolean> },
+        ) {
+          // Read the active host trace context from the per-call invocation
+          // channel. A `traceparent` means a host span is active, so this span
+          // may record. No `traceparent` means tracing is off: the span is a
+          // no-op, so a lifecycle hook can always wrap work in a span.
+          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          const attributes: Record<string, string | number | boolean> = {
+            ...(options?.attributes ?? {}),
+          };
+          // Capture the real start time once when the span opens. The host uses
+          // it as the span start time, so the span shows its true native width.
+          const startTimeMs = Date.now();
+          let status: { code: number; message?: string } | undefined;
+          let ended = false;
+          return {
+            setAttribute(key: string, value: string | number | boolean): void {
+              attributes[key] = value;
+            },
+            setStatus(next: { code: number; message?: string }): void {
+              status = next;
+            },
+            end(): void {
+              if (ended) return;
+              ended = true;
+              if (!hasTraceContext) return;
+              // Capture the real end time once at the first end call. The host
+              // uses the pair to record the span with its true wall-clock width.
+              const endTimeMs = Date.now();
+              // Send the finished span to the host once. The host re-clamps the
+              // name and the attributes, mints the parentage from its own
+              // invocation record, and records the span through the real tracer.
+              // Fire-and-forget: a span must never block or fail plugin work.
+              void callHost("span.record", {
+                name,
+                attributes,
+                ...(status ? { status } : {}),
+                startTimeMs,
+                endTimeMs,
+              }).catch(() => undefined);
+            },
+          };
         },
       },
     };
@@ -1394,6 +1621,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentSyncIn":
+        return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
+
+      case "environmentSyncOut":
+        return handleEnvironmentSyncOut(params as PluginEnvironmentSyncOutParams);
+
       case "environmentStartInteractiveSetup":
         return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
 
@@ -1408,6 +1641,30 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentDeleteTemplate":
         return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
+
+      case "setupTokenPtyOpen":
+        return handleSetupTokenPtyOpen(params as PluginSetupTokenPtyOpenParams);
+
+      case "setupTokenPtyInput":
+        return handleSetupTokenPtyInput(params as PluginSetupTokenPtyInputParams);
+
+      case "setupTokenPtyStop":
+        return handleSetupTokenPtyStop(params as PluginSetupTokenPtyStopParams);
+
+      case "setupTokenPtyClose":
+        return handleSetupTokenPtyClose(params as PluginSetupTokenPtyCloseParams);
+
+      case "duplexChannelOpen":
+        return handleDuplexChannelOpen(params as PluginDuplexChannelOpenParams);
+
+      case "duplexChannelWrite":
+        return handleDuplexChannelWrite(params as PluginDuplexChannelWriteParams);
+
+      case "duplexChannelStop":
+        return handleDuplexChannelStop(params as PluginDuplexChannelStopParams);
+
+      case "duplexChannelClose":
+        return handleDuplexChannelClose(params as PluginDuplexChannelCloseParams);
 
       default:
         throw Object.assign(
@@ -1453,11 +1710,21 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
+    if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
     if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
     if (plugin.definition.onEnvironmentGetInteractiveSetup) supportedMethods.push("environmentGetInteractiveSetup");
     if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
     if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
+    if (plugin.definition.onSetupTokenPtyOpen) supportedMethods.push("setupTokenPtyOpen");
+    if (plugin.definition.onSetupTokenPtyInput) supportedMethods.push("setupTokenPtyInput");
+    if (plugin.definition.onSetupTokenPtyStop) supportedMethods.push("setupTokenPtyStop");
+    if (plugin.definition.onSetupTokenPtyClose) supportedMethods.push("setupTokenPtyClose");
+    if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
+    if (plugin.definition.onDuplexChannelWrite) supportedMethods.push("duplexChannelWrite");
+    if (plugin.definition.onDuplexChannelStop) supportedMethods.push("duplexChannelStop");
+    if (plugin.definition.onDuplexChannelClose) supportedMethods.push("duplexChannelClose");
 
     return { ok: true, supportedMethods };
   }
@@ -1500,10 +1767,52 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   }
 
   async function handleConfigChanged(params: ConfigChangedParams): Promise<void> {
+    const incomingCompanyId = params.companyId ?? null;
+
+    // Fail-closed cross-tenant guard.
+    //
+    // A worker is spawned once per plugin (not per company), so a proactive
+    // plugin that keeps a single worker-global config would silently collapse
+    // onto whichever company's config was delivered last if configChanged is
+    // called for more than one distinct company — for example the startup
+    // config replay fanning out every stored company's config, or two operators
+    // saving configs for different companies. That is a cross-tenant identity /
+    // secret confusion bug (one company's bot token applied to another's work).
+    //
+    // Reject the second, distinct company unless the plugin explicitly declares
+    // it handles multiple companies in one worker (multiCompanyConfig). An
+    // idempotent replay of the *same* config for a different company id is
+    // harmless (single-tenant plugins commonly have duplicate scope rows that
+    // all embed the same config), so it is allowed.
+    if (
+      !plugin.definition.multiCompanyConfig &&
+      incomingCompanyId !== null &&
+      configCompanyId !== null &&
+      configCompanyId !== incomingCompanyId &&
+      !configsEqual(params.config, currentConfig)
+    ) {
+      throw Object.assign(
+        new Error(
+          `configChanged: refusing to overwrite configuration for company ` +
+            `"${configCompanyId}" with a different configuration for company ` +
+            `"${incomingCompanyId}". This plugin is single-tenant and cannot ` +
+            `safely serve multiple companies from one worker. If multi-company ` +
+            `support is intended, set multiCompanyConfig: true on the plugin ` +
+            `definition and key per-company state on context.companyId.`,
+        ),
+        { code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG },
+      );
+    }
+
     currentConfig = params.config;
+    if (incomingCompanyId !== null) {
+      configCompanyId = incomingCompanyId;
+    }
 
     if (plugin.definition.onConfigChanged) {
-      await plugin.definition.onConfigChanged(params.config);
+      await plugin.definition.onConfigChanged(params.config, {
+        companyId: incomingCompanyId,
+      });
     }
   }
 
@@ -1715,6 +2024,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return plugin.definition.onEnvironmentExecute(params);
   }
 
+  async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {
+    if (!plugin.definition.onEnvironmentSyncIn) {
+      throw methodNotImplemented("environmentSyncIn");
+    }
+    return plugin.definition.onEnvironmentSyncIn(params);
+  }
+
+  async function handleEnvironmentSyncOut(params: PluginEnvironmentSyncOutParams) {
+    if (!plugin.definition.onEnvironmentSyncOut) {
+      throw methodNotImplemented("environmentSyncOut");
+    }
+    return plugin.definition.onEnvironmentSyncOut(params);
+  }
+
   async function handleEnvironmentStartInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams) {
     if (!plugin.definition.onEnvironmentStartInteractiveSetup) {
       throw methodNotImplemented("environmentStartInteractiveSetup");
@@ -1748,6 +2071,62 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentDeleteTemplate");
     }
     return plugin.definition.onEnvironmentDeleteTemplate(params);
+  }
+
+  async function handleSetupTokenPtyOpen(params: PluginSetupTokenPtyOpenParams) {
+    if (!plugin.definition.onSetupTokenPtyOpen) {
+      throw methodNotImplemented("setupTokenPtyOpen");
+    }
+    return plugin.definition.onSetupTokenPtyOpen(params);
+  }
+
+  async function handleSetupTokenPtyInput(params: PluginSetupTokenPtyInputParams) {
+    if (!plugin.definition.onSetupTokenPtyInput) {
+      throw methodNotImplemented("setupTokenPtyInput");
+    }
+    return plugin.definition.onSetupTokenPtyInput(params);
+  }
+
+  async function handleSetupTokenPtyStop(params: PluginSetupTokenPtyStopParams) {
+    if (!plugin.definition.onSetupTokenPtyStop) {
+      throw methodNotImplemented("setupTokenPtyStop");
+    }
+    return plugin.definition.onSetupTokenPtyStop(params);
+  }
+
+  async function handleSetupTokenPtyClose(params: PluginSetupTokenPtyCloseParams) {
+    if (!plugin.definition.onSetupTokenPtyClose) {
+      throw methodNotImplemented("setupTokenPtyClose");
+    }
+    return plugin.definition.onSetupTokenPtyClose(params);
+  }
+
+  async function handleDuplexChannelOpen(params: PluginDuplexChannelOpenParams) {
+    if (!plugin.definition.onDuplexChannelOpen) {
+      throw methodNotImplemented("duplexChannelOpen");
+    }
+    return plugin.definition.onDuplexChannelOpen(params);
+  }
+
+  async function handleDuplexChannelWrite(params: PluginDuplexChannelWriteParams) {
+    if (!plugin.definition.onDuplexChannelWrite) {
+      throw methodNotImplemented("duplexChannelWrite");
+    }
+    return plugin.definition.onDuplexChannelWrite(params);
+  }
+
+  async function handleDuplexChannelStop(params: PluginDuplexChannelStopParams) {
+    if (!plugin.definition.onDuplexChannelStop) {
+      throw methodNotImplemented("duplexChannelStop");
+    }
+    return plugin.definition.onDuplexChannelStop(params);
+  }
+
+  async function handleDuplexChannelClose(params: PluginDuplexChannelCloseParams) {
+    if (!plugin.definition.onDuplexChannelClose) {
+      throw methodNotImplemented("duplexChannelClose");
+    }
+    return plugin.definition.onDuplexChannelClose(params);
   }
 
   // -----------------------------------------------------------------------

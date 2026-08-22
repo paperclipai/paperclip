@@ -182,6 +182,14 @@ export interface HostServices {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
   };
 
+  /** Provides `span.record`. The context carries the host-minted `traceparent`. */
+  tracer: {
+    record(
+      params: WorkerToHostMethods["span.record"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<void>;
+  };
+
   /** Provides `companies.list`, `companies.get`. */
   companies: {
     list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
@@ -239,6 +247,17 @@ export interface HostServices {
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
+    listInteractions(params: WorkerToHostMethods["issues.listInteractions"][0]): Promise<WorkerToHostMethods["issues.listInteractions"][1]>;
+    respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
+    listAttachments(params: WorkerToHostMethods["issues.listAttachments"][0]): Promise<WorkerToHostMethods["issues.listAttachments"][1]>;
+    getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
+  };
+
+  /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
+  approvals: {
+    list(params: WorkerToHostMethods["approvals.list"][0]): Promise<WorkerToHostMethods["approvals.list"][1]>;
+    get(params: WorkerToHostMethods["approvals.get"][0]): Promise<WorkerToHostMethods["approvals.get"][1]>;
+    decide(params: WorkerToHostMethods["approvals.decide"][0]): Promise<WorkerToHostMethods["approvals.decide"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -405,6 +424,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Logger — always allowed
   "log": null,
 
+  // Provider span sink — only a plugin that registers environment drivers may
+  // emit a provider span. The gate rejects a span from any other plugin.
+  "span.record": "environment.drivers.register",
+
   // Companies
   "companies.list": "companies.read",
   "companies.get": "companies.read",
@@ -445,6 +468,15 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+  "issues.listInteractions": "issue.interactions.read",
+  "issues.respondInteraction": "issue.interactions.respond",
+  "issues.listAttachments": "issue.attachments.read",
+  "issues.getAttachmentContent": "issue.attachments.read",
+
+  // Approvals
+  "approvals.list": "approvals.read",
+  "approvals.get": "approvals.read",
+  "approvals.decide": "approvals.respond",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -768,6 +800,11 @@ export function createHostClientHandlers(
       return services.logger.log(params);
     }),
 
+    // Provider span sink. The context carries the host-minted `traceparent`.
+    "span.record": gated("span.record", async (params, context) => {
+      return services.tracer.record(params, context);
+    }),
+
     // Companies
     "companies.list": gated("companies.list", async (params, context) => {
       const rows = await services.companies.list(params);
@@ -882,10 +919,40 @@ export function createHostClientHandlers(
       return services.issues.listComments(params);
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
+      if (params.actorUserId && !capabilitySet.has("issue.comments.create_human_attributed")) {
+        throw new CapabilityDeniedError(
+          pluginId,
+          "issues.createComment",
+          "issue.comments.create_human_attributed",
+        );
+      }
       return services.issues.createComment(params);
     }),
     "issues.createInteraction": gated("issues.createInteraction", async (params) => {
       return services.issues.createInteraction(params);
+    }),
+    "issues.listInteractions": gated("issues.listInteractions", async (params) => {
+      return services.issues.listInteractions(params);
+    }),
+    "issues.respondInteraction": gated("issues.respondInteraction", async (params) => {
+      return services.issues.respondInteraction(params);
+    }),
+    "issues.listAttachments": gated("issues.listAttachments", async (params) => {
+      return services.issues.listAttachments(params);
+    }),
+    "issues.getAttachmentContent": gated("issues.getAttachmentContent", async (params) => {
+      return services.issues.getAttachmentContent(params);
+    }),
+
+    // Approvals
+    "approvals.list": gated("approvals.list", async (params) => {
+      return services.approvals.list(params);
+    }),
+    "approvals.get": gated("approvals.get", async (params) => {
+      return services.approvals.get(params);
+    }),
+    "approvals.decide": gated("approvals.decide", async (params) => {
+      return services.approvals.decide(params);
     }),
 
     // Issue Documents

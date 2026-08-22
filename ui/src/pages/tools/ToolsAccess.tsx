@@ -75,7 +75,7 @@ export function ToolsAccess() {
     params.tab === "overview" ||
     params.tab === "examples"
   ) {
-    return <Navigate to="/apps" replace />;
+    return <Navigate to="/apps/connections" replace />;
   }
 
   if (advanced) {

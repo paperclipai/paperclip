@@ -9,6 +9,11 @@ review gates for a provider before writing a connector ticket or playbook entry.
 Source: harvested from [PAP-2432](/PAP/issues/PAP-2432) and made canonical for
 the [PAP-13211](/PAP/issues/PAP-13211) Apps v2 unification program.
 
+> Every provider here is a **plane P2** connection: a resource token in the
+> instance vault, acquired via the connect broker — never a sign-in method. See
+> [Identity vs. connections](./README.md#identity-vs-connections) for the P1/P2/P3
+> boundary and the D7 standing rule.
+
 ## Batch Recommendation
 
 First implementation batch after the proof providers:

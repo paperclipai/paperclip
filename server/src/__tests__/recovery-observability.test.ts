@@ -85,6 +85,12 @@ describe("classifyRecoveryHandoff", () => {
     ).toBe("owner_completed");
   });
 
+  it("does not treat in-review work as a completed owner handoff", () => {
+    expect(
+      classifyRecoveryHandoff({ ...base, finalAssigneeAgentId: "manager", finalIssueStatus: "in_review" }),
+    ).toBe("other");
+  });
+
   it("marks work returned to the original assignee as handed_back", () => {
     expect(classifyRecoveryHandoff({ ...base, finalAssigneeAgentId: "coder" })).toBe("handed_back");
   });

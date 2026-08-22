@@ -6,9 +6,19 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
+  buildReferencedProjectRunObservability,
+  buildRunWorkspaceHints,
   extractMentionedSkillIdsFromSources,
+  resolveAdditionalProjectWorkspace,
+  resolveAdditionalRunWorkspaces,
   resolveExecutionRunAdapterConfig,
+  type ResolveAdditionalProjectWorkspaceDeps,
+  type ResolveAdditionalRunWorkspacesOptions,
+  type ResolvedAdditionalWorkspace,
+  type RunReferencedProject,
 } from "../services/heartbeat.ts";
+import type { AuthorizationActor, AuthorizationDecision } from "../services/authorization.ts";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 
 describe("resolveExecutionRunAdapterConfig", () => {
   it("overlays environment, project, and routine env on top of agent env and unions secret keys", async () => {
@@ -135,7 +145,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
-  it("drops Paperclip runtime-owned env before resolving environment, agent, project, and routine overlays", async () => {
+  it("drops PAPERCLIP_API_KEY bindings but forwards other PAPERCLIP_-named env to resolution", async () => {
     const resolveAdapterConfigForRuntime = vi.fn(async (_companyId, config: Record<string, unknown>) => ({
       config: {
         ...config,
@@ -158,24 +168,24 @@ describe("resolveExecutionRunAdapterConfig", () => {
       environmentId: "environment-1",
       environmentEnv: {
         PAPERCLIP_API_KEY: "environment-api-key",
-        PAPERCLIP_AGENT_ID: "environment-agent",
+        PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
         ENV_ONLY: "environment-only",
       },
       executionRunConfig: {
         env: {
           PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "secret-api-key", version: "latest" },
-          PAPERCLIP_AGENT_ID: "spoofed-agent",
+          PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
           AGENT_ONLY: "agent-only",
         },
       },
       projectEnv: {
         PAPERCLIP_API_KEY: "project-api-key",
-        PAPERCLIP_COMPANY_ID: "spoofed-company",
+        PAPERCLIP_CLOUD_PROVIDER_TOKEN_PROJECT: "project-cloud",
         PROJECT_ONLY: "project-only",
       },
       routineEnv: {
         PAPERCLIP_API_KEY: "routine-api-key",
-        PAPERCLIP_RUN_ID: "spoofed-run",
+        PAPERCLIP_CLOUD_PROVIDER_TOKEN_ROUTINE: "routine-cloud",
         ROUTINE_ONLY: "routine-only",
       },
       routineId: "routine-1",
@@ -186,26 +196,34 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
 
     expect(resolveEnvBindings.mock.calls[0]?.[1]).toEqual({
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
       ENV_ONLY: "environment-only",
     });
     expect(resolveAdapterConfigForRuntime.mock.calls[0]?.[1]).toEqual({
       env: {
+        PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
         AGENT_ONLY: "agent-only",
       },
     });
     expect(resolveEnvBindings.mock.calls[1]?.[1]).toEqual({
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_PROJECT: "project-cloud",
       PROJECT_ONLY: "project-only",
     });
     expect(resolveEnvBindings.mock.calls[2]?.[1]).toEqual({
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_ROUTINE: "routine-cloud",
       ROUTINE_ONLY: "routine-only",
     });
     expect(result.resolvedConfig.env).toEqual({
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
       ENV_ONLY: "environment-only",
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
       AGENT_ONLY: "agent-only",
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_PROJECT: "project-cloud",
       PROJECT_ONLY: "project-only",
+      PAPERCLIP_CLOUD_PROVIDER_TOKEN_ROUTINE: "routine-cloud",
       ROUTINE_ONLY: "routine-only",
     });
-    expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_");
+    expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_API_KEY");
   });
 
   it("skips project env resolution when the project has no bindings", async () => {
@@ -501,6 +519,35 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
     return { root, managedAgentHome };
   }
 
+  it("does not gate sandbox-destined runs on host credentials — the sandbox image may carry its own login", async () => {
+    const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    await expect(
+      resolveExecutionRunAdapterConfig({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+        responsibleUserId: "user-1",
+        environmentDriver: "sandbox",
+        executionRunConfig: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+        projectEnv: null,
+        secretsSvc: {
+          resolveAdapterConfigForRuntime,
+          resolveEnvBindings: vi.fn(),
+          collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+        } as any,
+      }),
+    ).resolves.toMatchObject({
+      resolvedConfig: expect.objectContaining({ command: "codex" }),
+    });
+  });
+
   it("surfaces a configuration-incomplete blocker when a managed home has no auth and OPENAI_API_KEY is empty", async () => {
     const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
@@ -710,5 +757,492 @@ describe("applyRunScopedMentionedSkillKeys", () => {
         ],
       },
     });
+  });
+});
+
+describe("resolveAdditionalRunWorkspaces", () => {
+  const companyId = "company-1";
+  const issueId = "issue-1";
+
+  const allowDecision: AuthorizationDecision = {
+    allowed: true,
+    action: "project:read",
+    reason: "allow_company_agent",
+    explanation: "test allow",
+  };
+
+  // Build injectable dependencies. Every mentioned project is available and authorized by default.
+  function buildOptions(
+    overrides: Partial<ResolveAdditionalRunWorkspacesOptions> & { mentionedIds?: string[] },
+  ): ResolveAdditionalRunWorkspacesOptions {
+    const mentionedIds = overrides.mentionedIds ?? [];
+    const actor: AuthorizationActor = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId,
+      source: "agent_key",
+    };
+    const issues: ResolveAdditionalRunWorkspacesOptions["issues"] = {
+      findMentionedProjectIds: async () => mentionedIds,
+    };
+    const projects: ResolveAdditionalRunWorkspacesOptions["projects"] = {
+      listByIds: async (_companyId, ids) =>
+        ids.map((id) => ({ id })) as unknown as Awaited<
+          ReturnType<ResolveAdditionalRunWorkspacesOptions["projects"]["listByIds"]>
+        >,
+    };
+    const access: ResolveAdditionalRunWorkspacesOptions["access"] = {
+      decide: async () => allowDecision,
+    };
+    const resolveProjectWorkspace = async (
+      project: RunReferencedProject,
+    ): Promise<ResolvedAdditionalWorkspace> => ({
+      cwd: `/managed/${project.projectId}`,
+      projectId: project.projectId,
+      workspaceId: `${project.projectId}-ws`,
+      repoUrl: null,
+      repoRef: null,
+    });
+    return {
+      enabled: true,
+      companyId,
+      actor,
+      issues,
+      projects,
+      access,
+      resolveProjectWorkspace,
+      ...overrides,
+    };
+  }
+
+  it("resolves additionalWorkspaces for each mentioned project when the sync flag is ON", async () => {
+    const options = buildOptions({ mentionedIds: ["project-a", "project-b"] });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces).toEqual([
+      {
+        cwd: "/managed/project-a",
+        projectId: "project-a",
+        workspaceId: "project-a-ws",
+        repoUrl: null,
+        repoRef: null,
+      },
+      {
+        cwd: "/managed/project-b",
+        projectId: "project-b",
+        workspaceId: "project-b-ws",
+        repoUrl: null,
+        repoRef: null,
+      },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("returns empty additionalWorkspaces when the sync flag is OFF (anchor-only, unchanged)", async () => {
+    let mentionLookups = 0;
+    let workspaceResolves = 0;
+    const options = buildOptions({
+      enabled: false,
+      mentionedIds: ["project-a", "project-b"],
+      issues: {
+        findMentionedProjectIds: async () => {
+          mentionLookups += 1;
+          return ["project-a", "project-b"];
+        },
+      },
+      resolveProjectWorkspace: async (project) => {
+        workspaceResolves += 1;
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result).toEqual({ additionalWorkspaces: [], warnings: [], failures: [] });
+    // The flag-off path must be inert: no mention lookup and no workspace resolution run.
+    expect(mentionLookups).toBe(0);
+    expect(workspaceResolves).toBe(0);
+  });
+
+  it("isolates a failing mentioned-project clone with a warning, run still resolves", async () => {
+    const options = buildOptions({
+      mentionedIds: ["project-a", "project-b"],
+      resolveProjectWorkspace: async (project) => {
+        if (project.projectId === "project-a") {
+          throw new Error("clone exploded");
+        }
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces).toEqual([
+      {
+        cwd: "/managed/project-b",
+        projectId: "project-b",
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    ]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("project-a");
+    expect(result.warnings[0]).toContain("clone exploded");
+    expect(result.failures).toEqual([{ projectId: "project-a", reason: "resolution" }]);
+  });
+
+  it("aggregates per-layer warnings onto the run's surfaced warnings", async () => {
+    // Two valid projects sync; one is dropped by authorization and one fails to resolve. The run
+    // still resolves, and both dropped projects are named in the surfaced warnings, one per layer.
+    const options = buildOptions({
+      mentionedIds: ["project-a", "project-b", "denied-project", "broken-project"],
+      access: {
+        decide: async (input) =>
+          input.scope?.projectId === "denied-project"
+            ? { allowed: false, action: "project:read", reason: "deny_no_grant", explanation: "denied" }
+            : allowDecision,
+      },
+      resolveProjectWorkspace: async (project) => {
+        if (project.projectId === "broken-project") {
+          throw new Error("clone exploded");
+        }
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces.map((workspace) => workspace.projectId)).toEqual([
+      "project-a",
+      "project-b",
+    ]);
+    // Each dropped project is named in a surfaced warning, across both layers.
+    expect(result.warnings.some((warning) => warning.includes("denied-project"))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes("broken-project"))).toBe(true);
+    // The structured failures carry the layer that dropped each project.
+    expect(result.failures).toEqual([
+      { projectId: "denied-project", reason: "authorization" },
+      { projectId: "broken-project", reason: "resolution" },
+    ]);
+  });
+
+  it("skips referenced-project work on a remote target and warns when the issue mentions a project", async () => {
+    let mentionLookups = 0;
+    let workspaceResolves = 0;
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: ["project-a", "project-b"],
+      issues: {
+        findMentionedProjectIds: async () => {
+          mentionLookups += 1;
+          return ["project-a", "project-b"];
+        },
+      },
+      resolveProjectWorkspace: async (project) => {
+        workspaceResolves += 1;
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("local execution target");
+    // The remote path drops every referenced project at the staging layer. Each dropped project
+    // keeps a structured failure so the requested-vs-synced accounting counts the whole set and the
+    // run still emits its structured sync log.
+    expect(result.failures).toEqual([
+      { projectId: "project-a", reason: "staging" },
+      { projectId: "project-b", reason: "staging" },
+    ]);
+    // The remote path must skip the per-project clone work whose result the target cannot receive.
+    expect(mentionLookups).toBe(1);
+    expect(workspaceResolves).toBe(0);
+  });
+
+  it("drops a duplicate remote referenced mention to a single staging failure and ignores the anchor", async () => {
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: ["anchor-project", "project-a", "project-a"],
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, "anchor-project", options);
+
+    // The anchor is not a referenced drop, and a repeated mention counts once.
+    expect(result.failures).toEqual([{ projectId: "project-a", reason: "staging" }]);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it("stays silent on a remote target when the issue mentions no referenced project", async () => {
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: [],
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result).toEqual({ additionalWorkspaces: [], warnings: [], failures: [] });
+  });
+});
+
+describe("buildReferencedProjectRunObservability", () => {
+  it("emits referenced_projects_requested vs referenced_projects_synced with failure reason", () => {
+    const observability = buildReferencedProjectRunObservability({
+      syncedProjectIds: ["project-a"],
+      failures: [
+        { projectId: "project-b", reason: "authorization" },
+        { projectId: "project-c", reason: "resolution" },
+        { projectId: "project-d", reason: "staging", error: "extract failed: boom" },
+      ],
+    });
+
+    // Requested is the synced count plus every dropped project, so the counts reconcile.
+    expect(observability.referenced_projects_requested).toBe(4);
+    expect(observability.referenced_projects_synced).toBe(1);
+    // A staging failure carries its error message; a failure without one omits the field.
+    expect(observability.referenced_project_failures).toEqual([
+      { project_id: "project-b", reason: "authorization" },
+      { project_id: "project-c", reason: "resolution" },
+      { project_id: "project-d", reason: "staging", error: "extract failed: boom" },
+    ]);
+  });
+
+  it("emits zero counts and no failures when no project is referenced", () => {
+    const observability = buildReferencedProjectRunObservability({
+      syncedProjectIds: [],
+      failures: [],
+    });
+
+    expect(observability.referenced_projects_requested).toBe(0);
+    expect(observability.referenced_projects_synced).toBe(0);
+    expect(observability.referenced_project_failures).toEqual([]);
+  });
+});
+
+describe("buildRunWorkspaceHints", () => {
+  const anchorHints = [
+    { workspaceId: "anchor-ws", cwd: "/anchor", repoUrl: "https://example.test/anchor.git", repoRef: "main" },
+  ];
+
+  it("returns only the anchor hints when no referenced project resolves (flag OFF, inert)", () => {
+    const hints = buildRunWorkspaceHints({ workspaceHints: anchorHints, additionalWorkspaces: [] });
+
+    expect(hints).toEqual(anchorHints);
+  });
+
+  it("appends each referenced project workspace so the agent sees its path", () => {
+    const hints = buildRunWorkspaceHints({
+      workspaceHints: anchorHints,
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "project-b-ws",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "main",
+        },
+        // The hint builder passes each field through unchanged, including a null workspaceId.
+        { cwd: "/managed/project-c", projectId: "project-c", workspaceId: null, repoUrl: null, repoRef: null },
+      ],
+    });
+
+    expect(hints).toEqual([
+      { workspaceId: "anchor-ws", cwd: "/anchor", repoUrl: "https://example.test/anchor.git", repoRef: "main" },
+      {
+        workspaceId: "project-b-ws",
+        cwd: "/managed/project-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "main",
+        projectId: "project-b",
+      },
+      { workspaceId: null, cwd: "/managed/project-c", repoUrl: null, repoRef: null, projectId: "project-c" },
+    ]);
+  });
+});
+
+describe("resolveAdditionalProjectWorkspace", () => {
+  const companyId = "company-1";
+
+  function referencedProject(projectId: string): RunReferencedProject {
+    return { projectId, project: { id: projectId } as RunReferencedProject["project"] };
+  }
+
+  type WorkspaceRow = Awaited<ReturnType<ResolveAdditionalProjectWorkspaceDeps["loadProjectWorkspaceRows"]>>[number];
+
+  function workspaceRow(overrides: Partial<WorkspaceRow>): WorkspaceRow {
+    return { id: "workspace-x", cwd: null, repoUrl: null, repoRef: null, ...overrides } as WorkspaceRow;
+  }
+
+  // Build deps whose managed and configured resolvers are pure, so no database or filesystem runs.
+  function buildDeps(
+    overrides: Partial<ResolveAdditionalProjectWorkspaceDeps>,
+  ): ResolveAdditionalProjectWorkspaceDeps {
+    return {
+      loadProjectWorkspaceRows: async () => [],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      ensureManagedProjectWorkspace: async (input) => ({
+        cwd: `/managed/${input.projectId}`,
+        warning: null,
+      }),
+      directoryHasContents: async () => true,
+      ...overrides,
+    };
+  }
+
+  it("throws instead of creating an empty managed directory when the project has no workspace rows", async () => {
+    let ensureCalls = 0;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [],
+      ensureManagedProjectWorkspace: async (input) => {
+        ensureCalls += 1;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    await expect(
+      resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-b") }, deps),
+    ).rejects.toThrow(/project-b/);
+    // The fallback must not fabricate an empty managed directory for a project with no real source.
+    expect(ensureCalls).toBe(0);
+  });
+
+  it("throws when a workspace row supplies neither a checkout directory nor a repository URL", async () => {
+    let ensureCalls = 0;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [workspaceRow({ id: "ws-empty", cwd: null, repoUrl: null })],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      // directoryHasContents returns true for any path; the row must still be skipped before this runs.
+      directoryHasContents: async () => true,
+      ensureManagedProjectWorkspace: async (input) => {
+        ensureCalls += 1;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    await expect(
+      resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-c") }, deps),
+    ).rejects.toThrow(/project-c/);
+    // The row without a real source neither resolves a checkout nor triggers a managed fallback.
+    expect(ensureCalls).toBe(0);
+  });
+
+  it("throws when a configured checkout directory exists but has no content", async () => {
+    let ensureCalls = 0;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [
+        workspaceRow({ id: "ws-empty-dir", cwd: "/checkout/empty", repoUrl: null }),
+      ],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      // The configured directory exists but holds no content, so it is not a realized workspace.
+      directoryHasContents: async () => false,
+      ensureManagedProjectWorkspace: async (input) => {
+        ensureCalls += 1;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    await expect(
+      resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-d") }, deps),
+    ).rejects.toThrow(/project-d/);
+    // An empty configured directory must not mask a missing workspace, and the row has no
+    // repository URL, so the managed fallback never runs.
+    expect(ensureCalls).toBe(0);
+  });
+
+  it("returns the first workspace row whose directory has content", async () => {
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [
+        workspaceRow({ id: "ws-1", cwd: "/checkout/a", repoUrl: "https://example.test/a.git", repoRef: "main" }),
+      ],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      directoryHasContents: async (cwd) => cwd === "/checkout/a",
+    });
+
+    const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-a") }, deps);
+
+    expect(result).toEqual({
+      cwd: "/checkout/a",
+      projectId: "project-a",
+      workspaceId: "ws-1",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "main",
+    });
+  });
+
+  it("clones into the managed directory when configured rows point at missing paths", async () => {
+    let ensuredRepoUrl: string | null | undefined;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [
+        workspaceRow({ id: "ws-1", cwd: "/checkout/missing", repoUrl: "https://example.test/a.git", repoRef: "release" }),
+      ],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      directoryHasContents: async () => false,
+      ensureManagedProjectWorkspace: async (input) => {
+        ensuredRepoUrl = input.repoUrl;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-a") }, deps);
+
+    expect(result).toEqual({
+      cwd: "/managed/project-a",
+      projectId: "project-a",
+      workspaceId: "ws-1",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "release",
+    });
+    // The fallback clone reuses the repository URL from the first configured workspace row.
+    expect(ensuredRepoUrl).toBe("https://example.test/a.git");
+  });
+});
+
+describe("resolveManagedProjectWorkspaceDir isolation", () => {
+  it("resolves distinct, non-nested managed dirs for two projects", () => {
+    const companyId = "company-1";
+    const dirA = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project-a", repoName: null });
+    const dirB = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project-b", repoName: null });
+
+    expect(dirA).not.toBe(dirB);
+    // Neither directory is a path prefix of the other: append a separator so a shared leading
+    // string (for example "project-a" vs "project-ab") never reads as nesting.
+    expect(`${dirB}${path.sep}`.startsWith(`${dirA}${path.sep}`)).toBe(false);
+    expect(`${dirA}${path.sep}`.startsWith(`${dirB}${path.sep}`)).toBe(false);
+  });
+
+  it("keeps a project id that prefixes another project id in a sibling, non-nested dir", () => {
+    const companyId = "company-1";
+    const dir = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project", repoName: null });
+    const dirLonger = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project-extra", repoName: null });
+
+    expect(`${dirLonger}${path.sep}`.startsWith(`${dir}${path.sep}`)).toBe(false);
+    expect(`${dir}${path.sep}`.startsWith(`${dirLonger}${path.sep}`)).toBe(false);
   });
 });

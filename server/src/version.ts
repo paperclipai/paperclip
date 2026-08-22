@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
+import { parseBuildVersion, readBuildVersion } from "./build-version.js";
 
 type PackageJson = {
   version?: string;
@@ -149,6 +150,7 @@ export function parseGitDescribeVersion(output: string): string | null {
 export function resolveServerVersion(
   opts: {
     buildCommit?: string | null;
+    buildVersion?: string | null;
     gitDescribeCommand?: GitDescribeCommand;
     packageVersion?: string;
     debugLog?: DebugLog;
@@ -189,6 +191,23 @@ export function resolveServerVersion(
       { err: summarizeError(err), reason: "git_describe_unavailable" },
       "falling back to package version for server version",
     );
+  }
+
+  // Prefer a version stamped into the build. A Docker image has no `.git`, so
+  // the git describe above cannot run; CI computes the version on the build
+  // runner and bakes it in, carrying the real CalVer instead of the source
+  // placeholder. Parsed with the same rules as a live checkout, so both report
+  // the same string. Falls through to the coarser build-commit stamp when unset.
+  const buildVersion =
+    opts.buildVersion === undefined
+      ? readBuildVersion()
+      : parseBuildVersion(opts.buildVersion);
+  if (buildVersion) {
+    debugLog(
+      { reason: "build_version" },
+      "using stamped build version for server version",
+    );
+    return parseGitDescribeVersion(buildVersion) ?? buildVersion;
   }
 
   const buildCommit =

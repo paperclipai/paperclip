@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   documentRevisions,
   documents,
+  executionWorkspaces,
   issues,
   projectWorkspaces,
   projects,
@@ -123,7 +124,9 @@ function scopeLabel(scopeKind: SummarySlotScopeKind): string {
     case "project":
       return "project";
     case "project_workspace":
-      return "workspace";
+      return "project workspace";
+    case "execution_workspace":
+      return "execution workspace";
     case "workspaces_overview":
       return "workspaces overview";
     default:
@@ -173,6 +176,15 @@ export function summarySlotService(db: Db) {
         .select({ id: projectWorkspaces.id })
         .from(projectWorkspaces)
         .where(and(eq(projectWorkspaces.id, sel.scopeId), eq(projectWorkspaces.companyId, sel.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Summary target not found");
+      return;
+    }
+    if (sel.scopeKind === "execution_workspace") {
+      const row = await db
+        .select({ id: executionWorkspaces.id })
+        .from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.id, sel.scopeId), eq(executionWorkspaces.companyId, sel.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Summary target not found");
     }
@@ -299,9 +311,10 @@ export function summarySlotService(db: Db) {
   async function resolveGenerationTargetProject(sel: ResolvedSelector): Promise<{
     projectId: string | null;
     projectWorkspaceId: string | null;
+    executionWorkspaceId: string | null;
   }> {
     if (sel.scopeKind === "project") {
-      return { projectId: sel.scopeId, projectWorkspaceId: null };
+      return { projectId: sel.scopeId, projectWorkspaceId: null, executionWorkspaceId: null };
     }
     if (sel.scopeKind === "project_workspace" && sel.scopeId) {
       const row = await db
@@ -309,14 +322,34 @@ export function summarySlotService(db: Db) {
         .from(projectWorkspaces)
         .where(and(eq(projectWorkspaces.id, sel.scopeId), eq(projectWorkspaces.companyId, sel.companyId)))
         .then((rows) => rows[0] ?? null);
-      return { projectId: row?.projectId ?? null, projectWorkspaceId: sel.scopeId };
+      return {
+        projectId: row?.projectId ?? null,
+        projectWorkspaceId: sel.scopeId,
+        executionWorkspaceId: null,
+      };
     }
-    return { projectId: null, projectWorkspaceId: null };
+    if (sel.scopeKind === "execution_workspace" && sel.scopeId) {
+      const row = await db
+        .select({
+          projectId: executionWorkspaces.projectId,
+          projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+        })
+        .from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.id, sel.scopeId), eq(executionWorkspaces.companyId, sel.companyId)))
+        .then((rows) => rows[0] ?? null);
+      return {
+        projectId: row?.projectId ?? null,
+        projectWorkspaceId: row?.projectWorkspaceId ?? null,
+        executionWorkspaceId: sel.scopeId,
+      };
+    }
+    return { projectId: null, projectWorkspaceId: null, executionWorkspaceId: null };
   }
 
   function scopeIssueConditions(sel: ResolvedSelector) {
     if (sel.scopeKind === "project") return [eq(issues.projectId, sel.scopeId!)];
     if (sel.scopeKind === "project_workspace") return [eq(issues.projectWorkspaceId, sel.scopeId!)];
+    if (sel.scopeKind === "execution_workspace") return [eq(issues.executionWorkspaceId, sel.scopeId!)];
     return [];
   }
 
@@ -419,8 +452,8 @@ export function summarySlotService(db: Db) {
       ),
       "```",
       "",
-      "Write one short, colloquial Markdown summary that opens with a `**Decide:**` block: at most two bullets, each giving the decision's context, a link, and an `**I suggest:**` recommendation, then one or two plain-prose paragraphs on the (max two) things that matter most. If nothing needs a decision, open with one `**Nothing to decide right now.**` line followed by a `**Review:**` block (at most two bullets) that triages what is waiting on review — what the reader can approve on a skim vs what needs their eyes — each with a link and an `**I suggest:**` recommendation; if nothing is in review either, one clause naming the next event worth watching. End the summary with a `**Recent work:**` block: at most two bullets, one line each, naming a recent piece of work and where it stands in plain language. Reference at most three or four issues inline; never a trailing list of issue links or any link dump. Not a task list.",
-      "The current-slot response includes the latest document body and `latestRevisionId`; do not call the revisions or issues-list endpoints.",
+      "Write one short, colloquial Markdown summary that opens with the 1–3 specific, concrete, actionable items the reader should do right now to unblock this work — each saying what to do and why it's the thing holding up progress, with an inline link — followed by a brief plain-prose status of where things stand. Use your judgment: read whatever issues you need to understand the state, then focus on what's most important. Write for a reader who has not memorized issue ids or threads. If genuinely nothing needs the reader, say so plainly in one line and name the next thing worth watching. Never a trailing list of issue links or any link dump. Not a task list.",
+      "The current-slot response includes the latest document body and `latestRevisionId`; use those directly.",
       "Follow the skill's streaming protocol: emit the first plain-text `STATUS:` line immediately — named from the first task in the snapshot, before any analysis — keep emitting `STATUS:` lines as you think, and emit the sentinel-wrapped summary draft before the authoritative summary-slot write.",
       "Pass the `generationIssueId` from the payload, the previous revision id when present, and the model actually used to the summary-slot write API.",
       "",
@@ -464,7 +497,7 @@ export function summarySlotService(db: Db) {
       }
     }
 
-    const { projectId, projectWorkspaceId } = await resolveGenerationTargetProject(sel);
+    const { projectId, projectWorkspaceId, executionWorkspaceId } = await resolveGenerationTargetProject(sel);
     const scopeSnapshot = await buildScopeSnapshot(sel, existing?.lastGeneratedAt ?? null);
     const createdAt = new Date();
     const generationVersion = existing?.generatingIssueId ?? existing?.updatedAt.toISOString() ?? "initial";
@@ -472,6 +505,7 @@ export function summarySlotService(db: Db) {
     const created = await issuesSvc.create(sel.companyId, {
       projectId,
       projectWorkspaceId,
+      executionWorkspaceId,
       title: generationIssueTitle(sel, createdAt),
       description: generationIssueDescription(sel, scopeSnapshot),
       status: "todo",

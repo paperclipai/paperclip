@@ -312,8 +312,8 @@ function useLookupData(companyId: string) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projects = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
   });
   const routines = useQuery({
     queryKey: queryKeys.routines.list(companyId),
@@ -702,7 +702,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
   const applicationOptions = lookups.applications.data?.applications ?? [];
   const connectionOptions = lookups.connections.data?.connections ?? [];
   const agentOptions = lookups.agents.data ?? [];
-  const projectOptions = lookups.projects.data ?? [];
+  const projectOptions = (lookups.projects.data ?? []).filter((project) => !project.archivedAt);
   const routineOptions = lookups.routines.data ?? [];
 
   const invalidateProfiles = () => {

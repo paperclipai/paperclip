@@ -124,24 +124,34 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
     },
   );
 
+  // The remote availability probe is a best-effort pre-flight guard, not a gate.
+  // If `opencode models` itself cannot run on the target — timeout, transient CLI
+  // error, provider hiccup — do NOT abort the run. The real invocation is
+  // authoritative, so a probe that can't execute must never be fatal. (Previously
+  // these threw and crashed runs mid-flight, losing the agent's work + disposition.)
   if (probe.timedOut) {
-    throw new Error(`\`opencode models\` timed out on the remote execution target after ${probeTimeoutSec}s.`);
+    console.warn(
+      `[opencode-local] Remote model availability probe for "${model}" timed out after ${probeTimeoutSec}s; proceeding with the configured model.`,
+    );
+    return;
   }
 
   if ((probe.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(probe.stderr) || firstNonEmptyLine(probe.stdout);
-    throw new Error(
-      detail
-        ? `\`opencode models\` failed on the remote execution target: ${detail}`
-        : "`opencode models` failed on the remote execution target.",
+    console.warn(
+      `[opencode-local] Remote \`opencode models\` could not run for "${model}"${
+        detail ? ` (${detail})` : ""
+      }; proceeding with the configured model.`,
     );
+    return;
   }
 
   const models = parseOpenCodeModelsOutput(probe.stdout);
   if (models.length === 0) {
-    throw new Error(
-      "OpenCode returned no models on the remote execution target. Run `opencode models` there and verify provider auth.",
+    console.warn(
+      `[opencode-local] Remote \`opencode models\` returned no models; proceeding with the configured model "${model}".`,
     );
+    return;
   }
 
   if (!models.some((entry) => entry.id === model)) {
@@ -252,8 +262,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
@@ -307,7 +315,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });

@@ -208,7 +208,7 @@ is missing, the cloned app does not have the expected companies/issues/agents,
 or the user explicitly asks for the normal isolated-workspace database.
 
 ```sh
-pnpm paperclipai worktree reseed --from-instance default --seed-mode full --yes
+npx paperclipai worktree reseed --from-instance default --seed-mode full --yes
 ```
 
 After reseed, restart through the managed runtime path. A reseed can copy

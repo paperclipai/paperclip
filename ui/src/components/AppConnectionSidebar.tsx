@@ -1,7 +1,7 @@
 import { ChevronLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { humanizeConnectionDisplayName } from "@paperclipai/shared";
-import type { AppGalleryEntry, ToolApplication, ToolConnection } from "@paperclipai/shared";
+import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { useCompany } from "@/context/CompanyContext";
@@ -15,6 +15,12 @@ import {
   type AppTabKey,
 } from "@/pages/apps/app-tabs";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import {
+  appDefinitionLogoUrl,
+  appDefinitionName,
+  appDefinitionSlug,
+  type AppGalleryDisplayEntry,
+} from "@/pages/apps/app-definition-display";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 type AppDetailSidebarProps =
@@ -61,19 +67,24 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     : [];
   const previousConnection = latestArchivedConnection(appConnections);
   const appName = connection ? humanizeConnectionDisplayName(connection) : application?.name ?? "App";
-  const logoEntry = galleryEntryFor(galleryQuery.data?.apps ?? [], connection, application ?? undefined);
+  const logoEntry = galleryEntryFor(
+    (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[],
+    connection,
+    application ?? undefined,
+  );
   const reviewConnectionId = connection?.id ?? previousConnection?.id ?? null;
   const attentionItem = reviewConnectionId
     ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
     : null;
   const reviewCount =
-    (attentionItem?.pendingActionRequestCount ?? 0) + (attentionItem?.quarantinedCatalogEntryCount ?? 0);
+    (attentionItem?.pendingActionRequestCount ?? 0) +
+    ((attentionItem?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
 
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">
       <div className="flex shrink-0 flex-col gap-3 px-3 py-3">
         <Link
-          to="/apps"
+          to="/apps/connections"
           onClick={() => {
             if (isMobile) setSidebarOpen(false);
           }}
@@ -83,7 +94,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
           <span className="truncate">All apps</span>
         </Link>
         <div className="flex min-w-0 items-center gap-2 px-2 py-1">
-          <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={28} />
+          <AppLogo name={appName} logoUrl={appDefinitionLogoUrl(logoEntry)} size={28} />
           <span className="flex-1 truncate text-sm font-bold text-foreground">{appName}</span>
         </div>
       </div>
@@ -117,17 +128,19 @@ function tabHref(props: AppDetailSidebarProps, tab: AppTabKey): string {
 }
 
 function galleryEntryFor(
-  apps: AppGalleryEntry[],
+  apps: AppGalleryDisplayEntry[],
   connection: ToolConnection | undefined,
   application: ToolApplication | undefined,
-): AppGalleryEntry | null {
+): AppGalleryDisplayEntry | null {
   if (application?.applicationKey) {
-    const keyed = apps.find((app) => app.key === application.applicationKey);
+    const keyed = apps.find((app) => appDefinitionSlug(app) === application.applicationKey);
     if (keyed) return keyed;
   }
   const name = (connection?.name ?? application?.name)?.toLowerCase();
   if (!name) return null;
-  return apps.find((app) => app.name.toLowerCase() === name) ?? apps.find((app) => app.key === name) ?? null;
+  return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
+    apps.find((app) => appDefinitionSlug(app) === name) ??
+    null;
 }
 
 function latestArchivedConnection(connections: ToolConnection[]): ToolConnection | null {

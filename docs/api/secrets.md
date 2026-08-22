@@ -3,7 +3,120 @@ title: Secrets
 summary: Secrets CRUD
 ---
 
-Manage encrypted secrets that agents reference in their environment configuration.
+Manage encrypted secrets that agents receive through environment bindings or fetch on demand.
+
+## Agent List and Fetch
+
+These routes require the current run-bound agent JWT. They are not available to
+long-lived agent keys, low-trust review agents, task-bridge keys, or skill-test
+tokens.
+
+List the secrets accessible to the current run without materializing values:
+
+```
+GET /api/agents/me/secrets
+```
+
+```json
+{
+  "secrets": [
+    {
+      "key": "github_token",
+      "secretRef": "11111111-1111-4111-8111-111111111111",
+      "name": "GitHub token",
+      "description": null,
+      "delivery": "env",
+      "projectionClass": "unclassified",
+      "latestVersion": 2,
+      "versionSelector": "latest",
+      "resolvedVersion": 2
+    }
+  ]
+}
+```
+
+`delivery` is `env`, `api`, or `both`. `secretRef` is a stable opaque handle,
+not secret material or a capability; every consuming route re-authorizes it.
+The list never returns values, the internal `secretId` field, binding IDs, or
+config paths. An `env.*` binding implies read access through this API; an
+`access.*` binding grants API access without environment injection.
+
+Fetch a value only when it is needed. The request has no body and the response
+uses `Cache-Control: no-store`:
+
+```
+POST /api/agents/me/secrets/github_token/value
+```
+
+```json
+{
+  "key": "github_token",
+  "value": "decrypted-secret-value",
+  "version": 2
+}
+```
+
+Prefer env injection when the adapter or its child processes need the value on
+every run. Prefer on-demand fetch for values used only on some runs, large or
+structured values, or skills and tools that do not inherit adapter env. Every
+successful or failed value fetch is audited in both `secret_access_events` and
+`activity_log`; agents must not log or paste fetched values into issues,
+comments, or documents.
+
+## Agent Secret Proposals
+
+These routes use the same current run-bound agent JWT as the list and fetch
+routes:
+
+```
+POST /api/agents/me/secret-proposals
+GET /api/agents/me/secret-proposals
+DELETE /api/agents/me/secret-proposals/{proposalId}
+```
+
+An agent can ask Paperclip to bind an existing secret under a new path without
+knowing a secret ID. Set `kind` to `binding` and identify the source by the
+agent's own existing `env.*` or `access.*` config path:
+
+```json
+POST /api/agents/me/secret-proposals
+{
+  "kind": "binding",
+  "sourceConfigPath": "access.openai_api_key",
+  "configPath": "access.evals_openai_api_key",
+  "justification": "Use the existing OpenAI credential under the eval-specific alias"
+}
+```
+
+`sourceConfigPath` must resolve from the proposing agent's own binding. An
+unknown path or another agent's path returns `404`. A binding request must
+provide exactly one of `sourceConfigPath`, `secretId`, or `secretProposalId`.
+Omit `targetAgentId` to target the proposing agent; under the default policy a
+manager may instead target one of its reports. `configPath` accepts
+`env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access.
+
+For a run with a checked-out origin issue, a successful proposal automatically
+creates a human-only **Confirm secret binding** card in that issue. API clients
+must not create a second interaction. The card contains only non-secret
+metadata: the source label, target agent, new config path, justification, and
+expiry.
+
+Selecting **Create binding** accepts the card and then triggers a separate,
+freshly authorized binding write. Card acceptance is not execution. Read
+`result.secretProposal.status` for the actual outcome:
+
+- `executed` means the binding write completed.
+- `failed` means the card was accepted but execution failed. The card renders
+  **FAILED**, exposes a non-secret `errorCode`, and Paperclip posts a **Secret
+  binding execution failed** comment with `Binding created: no`.
+- `rejected`, `withdrawn`, or `expired` means no binding was created.
+
+The card wakes the issue assignee after resolution. The wake payload includes
+`secretProposal.configPath`, `decision`, `executionStatus`, and instructions.
+After any secret card, call `GET /api/agents/me/secrets` again and confirm the
+expected secret metadata and delivery before using the new binding. Acceptance
+is not execution; a failed wake or missing metadata means the alias must be
+treated as unavailable until a fresh proposal executes successfully.
 
 ## List Secrets
 
@@ -59,7 +172,7 @@ credentials must not be stored in Paperclip `company_secrets`.
 The equivalent CLI check is:
 
 ```sh
-pnpm paperclipai secrets doctor --company-id {companyId}
+npx paperclipai secrets doctor --company-id {companyId}
 ```
 
 ## Provider Vaults
@@ -430,7 +543,7 @@ as declarations in the package manifest. Exports omit secret values, secret IDs,
 provider references, and encrypted provider material. Use:
 
 ```sh
-pnpm paperclipai secrets declarations --company-id {companyId}
+npx paperclipai secrets declarations --company-id {companyId}
 ```
 
 to inspect the declarations that an export would emit before moving a package.

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "slug": "github",
+  "name": "GitHub",
+  "description": "Read code and pull requests, and coordinate repository work.",
+  "categories": [
+    "developer"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=github.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://api.githubcopilot.com/mcp/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://api.githubcopilot.com/mcp/"
+      },
+      "guidanceMd": "Create a fine-grained token limited to the repositories agents should use.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "GitHub token",
+          "type": "password",
+          "required": true,
+          "placeholder": "github_pat_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "requiredResourceFilters": [
+        "organization",
+        "repository"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -145,5 +145,51 @@ describe("instance database backup routes", () => {
 
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ error: "Database backup already in progress" });
+  });
+
+  describe("cloud-managed floor", () => {
+    beforeEach(() => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    it("floors the manual trigger off for every instance admin on a cloud-managed instance", async () => {
+      const service = createBackupService();
+      const app = createApp(
+        {
+          type: "board",
+          userId: "admin-1",
+          source: "session",
+          isInstanceAdmin: true,
+        },
+        service,
+      );
+
+      const res = await request(app).post("/api/instance/database-backups").send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "database_backups_platform_managed" });
+      expect(service.runManualBackup).not.toHaveBeenCalled();
+    });
+
+    it("floors the manual trigger off for a computed cloud_tenant owner-admin", async () => {
+      const service = createBackupService();
+      const app = createApp(
+        {
+          type: "board",
+          userId: "owner-1",
+          source: "cloud_tenant",
+          isInstanceAdmin: true,
+          companyIds: ["company-1"],
+        },
+        service,
+      );
+
+      await request(app).post("/api/instance/database-backups").send({}).expect(403);
+
+      expect(service.runManualBackup).not.toHaveBeenCalled();
+    });
   });
 });

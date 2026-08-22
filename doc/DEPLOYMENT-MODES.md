@@ -87,8 +87,8 @@ Examples:
 
 ```sh
 pnpm paperclipai onboard --yes
-pnpm paperclipai onboard --yes --bind lan
-pnpm paperclipai run --bind tailnet
+npx paperclipai onboard --yes --bind lan
+npx paperclipai run --bind tailnet
 ```
 
 `configure --section server` follows the same interactive behavior.

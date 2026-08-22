@@ -39,9 +39,6 @@ describe("company routes", () => {
   it("rewrites company package paths with the active prefix", () => {
     expect(applyCompanyPrefix("/company/export", "NEU")).toBe("/NEU/company/export");
     expect(applyCompanyPrefix("/company/import", "NEU")).toBe("/NEU/company/import");
-    expect(applyCompanyPrefix("/company/settings/cloud-upstream", "NEU")).toBe(
-      "/NEU/company/settings/cloud-upstream",
-    );
     expect(applyCompanyPrefix("/org", "NEU")).toBe("/NEU/org");
   });
 
@@ -89,6 +86,13 @@ describe("company routes", () => {
     expect(extractCompanyPrefixFromPath("/artifacts")).toBeNull();
     expect(applyCompanyPrefix("/artifacts", "PAP")).toBe("/PAP/artifacts");
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
+  });
+
+  it("treats /audit as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/audit")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/audit")).toBeNull();
+    expect(applyCompanyPrefix("/audit", "PAP")).toBe("/PAP/audit");
+    expect(toCompanyRelativePath("/PAP/audit")).toBe("/audit");
   });
 
   it("treats /tools routes as board routes that need a company prefix", () => {

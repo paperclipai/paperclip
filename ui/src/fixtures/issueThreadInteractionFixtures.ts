@@ -1,3 +1,4 @@
+import { legacyIssueThreadInteractionResolverPolicyAlias } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import type {
   IssueChatComment,
@@ -6,8 +7,10 @@ import type {
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import type {
   AskUserQuestionsInteraction,
+  IssueThreadInteractionBase,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestConfirmationSecretProposalPayload,
   RequestConfirmationToolActionPayload,
   RequestItemVerdictsInteraction,
   SuggestTasksInteraction,
@@ -19,6 +22,42 @@ export const issueThreadInteractionFixtureMeta = {
   issueId: "issue-thread-interactions",
   currentUserId: "user-board",
 } as const;
+
+/**
+ * Resolver-audience snapshot fields shared by every interaction fixture.
+ *
+ * The default is the open audience: `anyone` with `inherited` provenance, which
+ * is what the server returns for a create request that omits `resolverPolicy`
+ * (PAP-17277 contract, PAP-17280 surfaces). A fixture that wants a restriction
+ * states it explicitly, exactly as a requester must.
+ */
+function resolverAudienceFields(
+  overrides: Partial<IssueThreadInteractionBase>,
+): Pick<
+  IssueThreadInteractionBase,
+  | "resolverPolicy"
+  | "requestedResolverPolicy"
+  | "effectiveResolverPolicy"
+  | "resolverPolicyProvenance"
+  | "effectiveResolverPolicySource"
+  | "legacyResolverPolicyAliases"
+> {
+  const requested = overrides.requestedResolverPolicy ?? overrides.resolverPolicy ?? "anyone";
+  const effective = overrides.effectiveResolverPolicy ?? requested;
+  return {
+    resolverPolicy: requested,
+    requestedResolverPolicy: requested,
+    effectiveResolverPolicy: effective,
+    resolverPolicyProvenance:
+      overrides.resolverPolicyProvenance ?? (requested === "anyone" ? "inherited" : "explicit"),
+    effectiveResolverPolicySource:
+      overrides.effectiveResolverPolicySource ?? (effective === requested ? "requested" : "company_cap"),
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases ?? {
+      requested: legacyIssueThreadInteractionResolverPolicyAlias(requested),
+      effective: legacyIssueThreadInteractionResolverPolicyAlias(effective),
+    },
+  };
+}
 
 function createComment(overrides: Partial<IssueChatComment>): IssueChatComment {
   const createdAt = overrides.createdAt ?? new Date("2026-04-20T14:00:00.000Z");
@@ -105,6 +144,7 @@ function createSuggestTasksInteraction(
     },
     result: null,
     ...overrides,
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -181,6 +221,7 @@ function createAskUserQuestionsInteraction(
     },
     result: null,
     ...overrides,
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -224,6 +265,7 @@ function createRequestConfirmationInteraction(
     },
     result: null,
     ...overrides,
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -278,11 +320,12 @@ function createRequestCheckboxConfirmationInteraction(
       minSelected: 0,
       maxSelected: null,
       acceptLabel: "Delete selected",
-      rejectLabel: "Request changes",
+      rejectLabel: "Reject",
       rejectRequiresReason: false,
     },
     result: null,
     ...overrides,
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -345,6 +388,45 @@ export const rejectedSuggestedTasksInteraction = createSuggestTasksInteraction({
 });
 
 export const pendingAskUserQuestionsInteraction = createAskUserQuestionsInteraction({});
+
+/**
+ * A pending question whose last option is a first-class free-text choice
+ * (`freeText: true`). Selecting it reveals an inline text field instead of
+ * acting as a dead radio, and the built-in "Other" link is suppressed
+ * (PAP-419).
+ */
+export const pendingAskUserQuestionsWithFreeTextOption = createAskUserQuestionsInteraction({
+  id: "interaction-questions-freetext",
+  payload: {
+    version: 1,
+    title: "How should we name the new surface?",
+    submitLabel: "Send answers",
+    questions: [
+      {
+        id: "surface-name",
+        prompt: "What should we call the new surface?",
+        selectionMode: "single",
+        required: true,
+        options: [
+          {
+            id: "keep-tasks",
+            label: "Keep calling it Tasks",
+          },
+          {
+            id: "rename-work",
+            label: "Rename it Work",
+          },
+          {
+            id: "describe-it",
+            label: "I'll describe it",
+            description: "Tell us the exact name you have in mind.",
+            freeText: true,
+          },
+        ],
+      },
+    ],
+  },
+});
 
 export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
   id: "interaction-questions-answered",
@@ -447,7 +529,7 @@ export const planApprovalAcceptedRequestConfirmationInteraction = createRequestC
     version: 1,
     prompt: "Approve the plan and let the responsible start implementation?",
     acceptLabel: "Approve plan",
-    rejectLabel: "Request changes",
+    rejectLabel: "Reject",
     rejectRequiresReason: true,
     declineReasonPlaceholder: "Optional: what would you like revised?",
     target: {
@@ -683,6 +765,125 @@ export const expiredToolActionInteraction = createToolActionConfirmationInteract
   },
 });
 
+// ---------------------------------------------------------------------------
+// Secret-binding proposal fixtures. These mirror the server-owned
+// `payload.secretProposal` block and intentionally contain display metadata
+// only: no secret ids, values, fingerprints, or version material.
+// ---------------------------------------------------------------------------
+
+const secretProposalBase: RequestConfirmationSecretProposalPayload = {
+  version: 1,
+  proposalId: "eeeeeee5-5555-4555-8555-5555555555e5",
+  sourceSecretLabel: "OpenAI API key",
+  configPath: "access.evals_openai_api_key",
+  targetAgentId: "ffffffff-6666-4666-8666-6666666666f6",
+  targetAgentName: "EvalsEngineer",
+  justification:
+    "The evaluation runner needs the existing credential under its canonical config name.",
+  expiresAt: expiresInMinutes(14 * 24 * 60),
+};
+
+function createSecretProposalConfirmationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> & {
+    secretProposal?: Partial<RequestConfirmationSecretProposalPayload>;
+  },
+): RequestConfirmationInteraction {
+  const { secretProposal: secretProposalOverrides, payload, ...rest } = overrides;
+  return createRequestConfirmationInteraction({
+    id: "interaction-secret-proposal-default",
+    title: undefined,
+    summary: "Review a proposed alias for an existing secret binding.",
+    createdByAgentId: "agent-codex",
+    resolverPolicy: "human_only",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    payload: {
+      version: 1,
+      prompt: "Approve this secret binding?",
+      acceptLabel: "Approve & bind",
+      rejectLabel: "Reject",
+      allowDeclineReason: true,
+      ...payload,
+      secretProposal: { ...secretProposalBase, ...secretProposalOverrides },
+    },
+    ...rest,
+  });
+}
+
+export const pendingSecretProposalInteraction = createSecretProposalConfirmationInteraction({
+  id: "interaction-secret-proposal-pending",
+});
+
+export const executedSecretProposalInteraction = createSecretProposalConfirmationInteraction({
+  id: "interaction-secret-proposal-executed",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:03.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    secretProposal: {
+      version: 1,
+      status: "executed",
+      updatedAt: "2026-04-20T15:02:03.000Z",
+    },
+  },
+});
+
+export const failedSecretProposalInteraction = createSecretProposalConfirmationInteraction({
+  id: "interaction-secret-proposal-failed",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:03.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    secretProposal: {
+      version: 1,
+      status: "failed",
+      errorCode: "binding_snapshot_stale",
+      updatedAt: "2026-04-20T15:02:03.000Z",
+    },
+  },
+});
+
+export const rejectedSecretProposalInteraction = createSecretProposalConfirmationInteraction({
+  id: "interaction-secret-proposal-rejected",
+  status: "rejected",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "rejected",
+    reason: "Use the project-scoped credential instead.",
+    secretProposal: {
+      version: 1,
+      status: "rejected",
+      updatedAt: "2026-04-20T15:02:00.000Z",
+    },
+  },
+});
+
+export const expiredSecretProposalInteraction = createSecretProposalConfirmationInteraction({
+  id: "interaction-secret-proposal-expired",
+  status: "expired",
+  resolvedAt: new Date("2026-05-04T15:02:00.000Z"),
+  updatedAt: new Date("2026-05-04T15:02:00.000Z"),
+  secretProposal: { expiresAt: "2026-05-04T15:02:00.000Z" },
+  result: {
+    version: 1,
+    outcome: "superseded_by_newer_request",
+    secretProposal: {
+      version: 1,
+      status: "expired",
+      updatedAt: "2026-05-04T15:02:00.000Z",
+    },
+  },
+});
+
 export const commentExpiredRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-expired-comment",
   status: "expired",
@@ -734,6 +935,114 @@ export const failedRequestConfirmationInteraction = createRequestConfirmationInt
   status: "failed",
   updatedAt: new Date("2026-04-20T14:42:00.000Z"),
 });
+
+// --- P4 governance / lifecycle card states (PAP-15427) ---
+
+// Agent-addressed, agents-may-resolve pending confirmation: exercises the
+// header policy badge + addressee chip.
+export const agentAddressedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-agent-addressed",
+    title: "Confirm the deploy window with the release agent",
+    summary:
+      "Directed to the release agent, who owns this response without waiting on the board.",
+    addresseeAgentId: "agent-codex",
+  });
+
+// --- Explicit resolver restrictions (PAP-17280) ---
+// Every card above is open by default; these four are the deliberate narrowings
+// a requester or a company must ask for, one per audience row the card renders.
+
+/** Independent review requested on purpose: the creator is excluded. */
+export const notCreatorRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-not-creator",
+    title: "Independent review of the migration plan",
+    summary: "Asked for a second pair of eyes, so the agent that wrote the plan cannot approve it.",
+    requestedResolverPolicy: "not_creator",
+  });
+
+/** A decision reserved for a person. */
+export const humanOnlyRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-human-only",
+    title: "Approve the customer-facing announcement",
+    summary: "Reserved for a human on the board because it commits the company publicly.",
+    requestedResolverPolicy: "human_only",
+  });
+
+/** Open request narrowed by company interaction governance. */
+export const companyCappedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-company-capped",
+    title: "Confirm the data retention change",
+    summary: "Asked for an open audience; the company caps this kind at a human decision.",
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "human_only",
+    effectiveResolverPolicySource: "company_cap",
+  });
+
+/** Pre-migration card whose provenance cannot prove it was ever open. */
+export const legacyRestrictedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-legacy-restricted",
+    title: "Confirm the archived cleanup batch",
+    summary: "Created before Anyone became the default, so it stays restricted until re-created.",
+    requestedResolverPolicy: "not_creator",
+    resolverPolicyProvenance: "legacy_inherited_restriction",
+  });
+
+// Confirmation resolved by an agent under governance: exercises the
+// "Resolved by … / Agent" audit chip.
+export const agentResolvedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-agent-resolved",
+    title: "Approved by the release agent",
+    status: "accepted",
+    createdByAgentId: "agent-codex",
+    resolvedByAgentId: "agent-codex",
+    resolvedByRunId: "run-agent-resolve-1",
+    resolvedAt: new Date("2026-04-20T15:05:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:05:00.000Z"),
+    result: { version: 1, outcome: "accepted" },
+  });
+
+// Withdrawn confirmation (status=cancelled + result.outcome=withdrawn): exercises
+// the "Withdrawn by … / reason" footer.
+export const withdrawnRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-withdrawn",
+    title: "Withdrawn: approve the plan",
+    status: "cancelled",
+    createdByAgentId: "agent-codex",
+    resolvedByAgentId: "agent-codex",
+    resolvedByRunId: "run-agent-withdraw-1",
+    resolvedAt: new Date("2026-04-20T15:10:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:10:00.000Z"),
+    result: {
+      version: 1,
+      outcome: "withdrawn",
+      reason: "Plan superseded by a newer revision; no board decision needed.",
+    },
+  });
+
+// Interaction auto-expired when its issue reached a terminal state.
+export const issueClosedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-issue-closed",
+    title: "Expired: confirm the migration cutover",
+    status: "expired",
+    // Local, not UTC. The expiry footer renders this in the machine's timezone,
+    // and 15:12Z on the 20th is already the 21st at UTC+9, which breaks the
+    // "Apr 20" assertion in IssueThreadInteractionCard.test.tsx.
+    resolvedAt: new Date(2026, 3, 20, 15, 12, 0, 0),
+    updatedAt: new Date(2026, 3, 20, 15, 12, 0, 0),
+    result: {
+      version: 1,
+      outcome: "issue_closed",
+      reason: "Issue was closed before the confirmation was resolved.",
+    },
+  });
 
 export const pendingRequestCheckboxConfirmationInteraction =
   createRequestCheckboxConfirmationInteraction({});
@@ -802,7 +1111,7 @@ export const manyOptionsRequestCheckboxConfirmationInteraction =
       minSelected: 0,
       maxSelected: null,
       acceptLabel: "Archive selected",
-      rejectLabel: "Request changes",
+      rejectLabel: "Reject",
       rejectRequiresReason: false,
     },
   });
@@ -848,7 +1157,7 @@ export const staleTargetRequestCheckboxConfirmationInteraction =
       version: 1,
       prompt: "Check the draft documents you want me to delete.",
       acceptLabel: "Delete selected",
-      rejectLabel: "Request changes",
+      rejectLabel: "Reject",
       options: [
         { id: "draft-march-report", label: "Old draft report" },
         { id: "draft-spec-v1", label: "Spec v1 (superseded)" },
@@ -946,6 +1255,7 @@ function createRequestItemVerdictsInteraction(
     },
     result: null,
     ...overrides,
+    ...resolverAudienceFields(overrides),
   };
 }
 

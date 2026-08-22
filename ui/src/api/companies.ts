@@ -9,12 +9,81 @@ import type {
   CompanyPortabilityPreviewResult,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
+import {
+  companyImportTransferApplyPath,
+  companyImportTransferPartPath,
+  companyImportTransferPath,
+  companyImportTransferPreviewPath,
+  COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+  type CompanyImportTransferCreated,
+  type CompanyImportTransferDeclaration,
+  type CompanyImportTransferPartUploadResult,
+  type CompanyImportTransferStatus,
+} from "@paperclipai/shared/company-import-transfer";
+import { api, detachInflightGet, type RequestOptions } from "./client";
+
+const COMPANIES_LIST_PATH = "/companies";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
+/**
+ * Import fields for a zip package upload: everything the JSON request carries
+ * except `source` — the source is the uploaded zip, read server-side. Sent as a
+ * JSON-encoded `meta` form field alongside the raw `package` file.
+ */
+export type CompanyPortabilityPreviewMeta = Omit<CompanyPortabilityPreviewRequest, "source">;
+export type CompanyPortabilityImportMeta = Omit<CompanyPortabilityImportRequest, "source">;
+
+function importPackageForm(file: File, meta: CompanyPortabilityPreviewMeta | CompanyPortabilityImportMeta): FormData {
+  const form = new FormData();
+  form.append("package", file);
+  form.append("meta", JSON.stringify(meta));
+  return form;
+}
+
+export type CompanyImportJobState = "running" | "succeeded" | "failed";
+
+/** 202 body from the async opt-in on POST /companies/import (and the 409 body when a job is already running). */
+export interface CompanyImportJobAccepted {
+  job: { id: string; status: CompanyImportJobState };
+  statusUrl: string;
+  retryAfterMs?: number;
+}
+
+export interface CompanyImportJobStatus {
+  job: {
+    id: string;
+    status: CompanyImportJobState;
+    createdAt?: string;
+    updatedAt?: string;
+    completedAt?: string;
+    error?: { message: string };
+    /**
+     * Summary retained for every terminal job (board and cloud tenant); carries
+     * the imported company id so the page can navigate even when the full
+     * `importResult` is no longer available.
+     */
+    result?: {
+      companyId: string;
+      agentCount?: number;
+      warningCount?: number;
+      companyAction?: unknown;
+    };
+    /** Board-created jobs carry the full result for parity with the sync response. */
+    importResult?: CompanyPortabilityImportResult;
+  };
+  retryAfterMs?: number;
+}
+
 export const companiesApi = {
-  list: () => api.get<Company[]>("/companies"),
+  list: () => api.get<Company[]>(COMPANIES_LIST_PATH),
+  /**
+   * Call before re-reading the list for a different account: an in-flight
+   * `/companies` GET issued under the previous session would otherwise be
+   * coalesced into, and answer with that account's companies.
+   */
+  detachInflightList: () => detachInflightGet(COMPANIES_LIST_PATH),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
@@ -34,6 +103,7 @@ export const companiesApi = {
         | "budgetMonthlyCents"
         | "attachmentMaxBytes"
         | "requireBoardApprovalForNewAgents"
+        | "interactionResolverGovernance"
         | "feedbackDataSharingEnabled"
         | "brandColor"
         | "logoAssetId"
@@ -52,10 +122,53 @@ export const companiesApi = {
   exportPreview: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
+    options?: RequestOptions,
   ) =>
-    api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
+    api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data, options),
+  exportFidelity: (companyId: string) =>
+    api.get<ExportFidelityReport>(`/companies/${companyId}/export/fidelity`),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
+  /** Preview a local .zip package by uploading the raw compressed zip as multipart. */
+  importPreviewPackage: (file: File, meta: CompanyPortabilityPreviewMeta) =>
+    api.postForm<CompanyPortabilityPreviewResult>("/companies/import/preview", importPackageForm(file, meta)),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
+  // Submit an import as a server-side job: 202 with a job id to poll, or 409
+  // with the already-running job. Board sessions opt in with the proxy-safe
+  // `?async=1` query parameter — the Cloud harness strips the inbound
+  // `x-paperclip-cloud-*` header a browser would otherwise use, so that header
+  // never survives to engage the async path.
+  importBundleAsync: (data: CompanyPortabilityImportRequest) =>
+    api.post<CompanyImportJobAccepted>("/companies/import?async=1", data),
+  /** Submit a local .zip package as an async import job by uploading the raw compressed zip as multipart. */
+  importBundlePackageAsync: (file: File, meta: CompanyPortabilityImportMeta) =>
+    api.postForm<CompanyImportJobAccepted>("/companies/import?async=1", importPackageForm(file, meta)),
+  getImportJob: (jobId: string) =>
+    api.get<CompanyImportJobStatus>(`/companies/import/jobs/${encodeURIComponent(jobId)}`),
+  // Chunked resumable transfer for large local .zip packages: declare the
+  // sliced zip (content-addressed, so re-declaring the same file resumes the
+  // prior transfer with its uploaded parts intact), upload the missing parts,
+  // then preview/apply against the server-side assembled spool. Shapes and
+  // paths come from the shared transfer contract.
+  importTransferCreate: (manifest: CompanyImportTransferDeclaration) =>
+    api.post<CompanyImportTransferCreated>(`/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`, manifest),
+  importTransferUploadPart: (transferId: string, index: number, bytes: Blob) =>
+    api.putRaw<CompanyImportTransferPartUploadResult>(
+      `/companies${companyImportTransferPartPath(transferId, index)}`,
+      bytes,
+    ),
+  importTransferStatus: (transferId: string) =>
+    api.get<CompanyImportTransferStatus>(`/companies${companyImportTransferPath(transferId)}`),
+  importTransferPreview: (transferId: string, meta: CompanyPortabilityPreviewMeta) =>
+    api.post<CompanyPortabilityPreviewResult>(
+      `/companies${companyImportTransferPreviewPath(transferId)}`,
+      meta,
+    ),
+  /** Apply a fully uploaded transfer as an async job (same 202/409 contract as importBundlePackageAsync). */
+  importTransferApply: (transferId: string, meta: CompanyPortabilityImportMeta) =>
+    api.post<CompanyImportJobAccepted>(
+      `/companies${companyImportTransferApplyPath(transferId)}?async=1`,
+      meta,
+    ),
 };

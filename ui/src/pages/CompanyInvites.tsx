@@ -9,6 +9,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Badge } from "@/components/ui/badge";
 
 const inviteRoleOptions = [
@@ -70,41 +71,11 @@ export function CompanyInvites() {
 
   async function copyText(text: string, unavailableBody: string, afterFallback?: () => void) {
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
+      await copyTextToClipboard(text);
+      return true;
     } catch {
-      // Fall through to the unavailable message below.
+      afterFallback?.();
     }
-
-    const canUseLegacyCopy =
-      typeof document !== "undefined" &&
-      typeof document.execCommand === "function" &&
-      (typeof document.queryCommandSupported !== "function" || document.queryCommandSupported("copy"));
-    if (canUseLegacyCopy) {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.setAttribute("readonly", "true");
-      textarea.style.position = "fixed";
-      textarea.style.top = "0";
-      textarea.style.left = "-9999px";
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, textarea.value.length);
-
-      try {
-        const copied = document.execCommand("copy");
-        document.body.removeChild(textarea);
-        afterFallback?.();
-        if (copied) return true;
-      } catch {
-        document.body.removeChild(textarea);
-      }
-    }
-
-    afterFallback?.();
     pushToast({
       title: "Clipboard unavailable",
       body: unavailableBody,
@@ -207,7 +178,7 @@ export function CompanyInvites() {
   }
 
   return (
-    <div className="max-w-5xl space-y-8">
+    <div className="max-w-6xl space-y-8">
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <MailPlus className="h-5 w-5 text-muted-foreground" />

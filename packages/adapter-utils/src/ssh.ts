@@ -6,6 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import {
+  createUnrelatedHistoryGraftCommit,
+  GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  readSanitizedOriginRemoteUrl,
+} from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -776,6 +781,7 @@ async function importGitWorkspaceToSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
 
     const remoteSetupScript = [
       "set -e",
@@ -784,6 +790,15 @@ async function importGitWorkspaceToSsh(input: {
       'trap \'rm -f "$tmp_bundle"\' EXIT',
       'cat > "$tmp_bundle"',
       `if [ ! -d ${shellQuote(path.posix.join(input.remoteDir, ".git"))} ]; then git init ${shellQuote(input.remoteDir)} >/dev/null; fi`,
+      // Carry the workspace's (credential-scrubbed) origin into the transported
+      // repo so branches there keep a publishable remote instead of reading as
+      // remote-less snapshots. set-url covers a reused workspace whose origin
+      // changed; add covers the fresh-init case. Best-effort under `set -e`.
+      ...(originUrl
+        ? [
+          `{ git -C ${shellQuote(input.remoteDir)} remote set-url origin ${shellQuote(originUrl)} >/dev/null 2>&1 || git -C ${shellQuote(input.remoteDir)} remote add origin ${shellQuote(originUrl)} >/dev/null 2>&1; } || true`,
+        ]
+        : []),
       `git -C ${shellQuote(input.remoteDir)} fetch --force "$tmp_bundle" '${tempRef}:${tempRef}' >/dev/null`,
       input.snapshot.branchName
         ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
@@ -920,10 +935,18 @@ async function integrateImportedGitHead(input: {
     if (!currentHead || currentHead === input.importedHead) return;
 
     const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
+    // `git merge-base` exits 1 when the commits share no ancestor — the only
+    // outcome that authorizes the graft fallback below. Every other failure
+    // (timeout, missing object, repository error) must keep failing the
+    // integration instead of silently rewriting the tip.
+    let noCommonAncestor = false;
     const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    }).catch(() => null);
+    }).catch((error: unknown) => {
+      noCommonAncestor = (error as { code?: unknown } | null)?.code === 1;
+      return null;
+    });
     const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
 
     if (mergeBaseHead === input.importedHead) {
@@ -933,6 +956,28 @@ async function integrateImportedGitHead(input: {
     if (mergeBaseHead === currentHead) {
       try {
         await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        });
+        return;
+      } catch (error) {
+        if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+        throw error;
+      }
+    }
+
+    if (noCommonAncestor) {
+      // No common ancestor — merging is impossible and failing here would
+      // discard the imported work. Graft it onto the current head instead;
+      // see createUnrelatedHistoryGraftCommit.
+      const graftCommit = await createUnrelatedHistoryGraftCommit({
+        localDir: input.localDir,
+        currentHead,
+        importedHead: input.importedHead,
+        syncLabel: "Paperclip SSH sync",
+      });
+      try {
+        await runLocalGit(input.localDir, ["update-ref", headRef, graftCommit, currentHead], {
           timeout: 10_000,
           maxBuffer: 16 * 1024,
         });
@@ -963,6 +1008,7 @@ async function integrateImportedGitHead(input: {
     const mergeCommit = await runLocalGit(
       input.localDir,
       [
+        ...GIT_SYNC_COMMIT_IDENTITY_ARGS,
         "commit-tree",
         mergedTreeId,
         "-p",
@@ -1166,14 +1212,22 @@ export async function runSshCommand(
       }
     }
 
-    // Mirror buildSshSpawnTarget: source login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
-    // a profile re-exports. Without this, a remote profile that resets HOME
-    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
+    // Mirror buildSshSpawnTarget: source the login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
+    // profile re-exports. The SSH target is an operator-configured host, not a
+    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
+    // through a login profile; a non-login SSH command would miss that PATH.
+    // Source `/etc/profile` first so a host that exposes the PATH through
+    // `/etc/profile.d` scripts still resolves node and the agent CLI.
+    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
+    // .bash_profile typically sources .bashrc itself; only source .bashrc
+    // directly when no .bash_profile exists, so a host that adds nvm in
+    // .bashrc still resolves node without a double-run of the setup.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
     const remoteScript = [
+      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
@@ -1223,12 +1277,22 @@ export async function buildSshSpawnTarget(input: {
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  // Source the login profiles first, then run `env KEY=VAL cmd` so
+  // user-supplied identity overrides win over anything a profile re-exports.
+  // The SSH target is an operator-configured host, not a Paperclip sandbox
+  // image, so it can expose `node` or an agent CLI only through a login
+  // profile; a non-login SSH command would miss that PATH. Source
+  // `/etc/profile` first so a host that exposes the PATH through
+  // `/etc/profile.d` scripts still resolves node and the agent CLI. The script
+  // no longer sources `nvm.sh`; a profile that adds nvm still runs.
+  // .bash_profile typically sources .bashrc itself; only source .bashrc
+  // directly when no .bash_profile exists, so a host that adds nvm in
+  // .bashrc still resolves node without a double-run of the setup.
   const remoteScript = [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`

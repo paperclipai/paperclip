@@ -129,7 +129,8 @@ export function projectRoutes(db: Db) {
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const includeArchived = req.query.includeArchived === "true";
+    const result = await svc.list(companyId, { includeArchived });
     res.json(await filterProjectsForActor(req, result));
   });
 
@@ -488,6 +489,7 @@ export function projectRoutes(db: Db) {
               worktreePath: null,
               warnings: [],
               created: false,
+              branchCreatedByRuntime: false,
             },
             command: workspaceCommand.rawConfig,
             adapterEnv: {},
@@ -543,6 +545,7 @@ export function projectRoutes(db: Db) {
               worktreePath: null,
               warnings: [],
               created: false,
+              branchCreatedByRuntime: false,
             },
             config: { workspaceRuntime: runtimeConfig },
             adapterEnv: {},
@@ -556,7 +559,9 @@ export function projectRoutes(db: Db) {
 
         const currentDesiredState: WorkspaceRuntimeDesiredState =
           workspace.runtimeConfig?.desiredState
-          ?? ((workspace.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
+          ?? ((workspace.runtimeServices ?? []).some((service) =>
+            service.status === "provisioning" || service.status === "starting" || service.status === "running"
+          )
             ? "running"
             : "stopped");
         const nextRuntimeState: {

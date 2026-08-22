@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
-  AppGalleryEntry,
   ToolConnection,
   ToolPolicy,
   ToolProfileWithDetails,
@@ -23,11 +22,18 @@ import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
+import {
+  appDefinitionLogoUrl,
+  appDefinitionName,
+  appDefinitionSlug,
+  type AppGalleryDisplayEntry,
+} from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { SetupPanel } from "./app-detail/SetupPanel";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
@@ -147,16 +153,22 @@ export function AppDetail() {
     return labels;
   }, [userDirectoryQuery.data, sessionQuery.data]);
   const logoEntry = useMemo(
-    () => galleryEntryFor(galleryQuery.data?.apps ?? [], connection),
+    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
     [galleryQuery.data, connection],
   );
 
   const [pending, setPending] = useState(false);
   const persist = useMutation({
-    mutationFn: (next: { enabled: Set<string>; askFirst: Set<string>; access: AccessDraft }) =>
+    mutationFn: (next: {
+      enabled: Set<string>;
+      askFirst: Set<string>;
+      access: AccessDraft;
+      reviewed?: Set<string>;
+    }) =>
       toolsApi.finishApp(selectedCompanyId!, connectionId, {
         enabledCatalogEntryIds: [...next.enabled],
         askFirstCatalogEntryIds: [...next.askFirst].filter((id) => next.enabled.has(id)),
+        ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
         access: next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
       }),
     onMutate: () => setPending(true),
@@ -234,7 +246,7 @@ export function AppDetail() {
   const startOAuth = useMutation({
     mutationFn: () => toolsApi.startOAuth(connectionId),
     onSuccess: ({ authorizationUrl }) => {
-      window.location.assign(authorizationUrl);
+      navigateTopLevel(authorizationUrl);
     },
     onError: (error) =>
       pushToast({
@@ -255,7 +267,7 @@ export function AppDetail() {
         body: `${appName} no longer has access. You can connect it again any time.`,
         tone: "success",
       });
-      navigate("/apps");
+      navigate("/apps/connections");
     },
     onError: (error) =>
       pushToast({
@@ -311,15 +323,28 @@ export function AppDetail() {
       }),
   });
 
-  const apply = (mutate: { enabled?: Set<string>; askFirst?: Set<string>; access?: AccessDraft }) =>
+  const apply = (mutate: {
+    enabled?: Set<string>;
+    askFirst?: Set<string>;
+    access?: AccessDraft;
+    reviewed?: Set<string>;
+  }) =>
     persist.mutate({
       enabled: mutate.enabled ?? new Set(enabledIds),
       askFirst: mutate.askFirst ?? new Set(askFirstIds),
       access: mutate.access ?? access,
+      reviewed: mutate.reviewed,
     });
 
+  const reviewQuarantined = (allowedIds: string[]) => {
+    const quarantinedIds = new Set(quarantined.map((entry) => entry.id));
+    const nextEnabled = new Set([...enabledIds].filter((id) => !quarantinedIds.has(id)));
+    for (const id of allowedIds) nextEnabled.add(id);
+    apply({ enabled: nextEnabled, reviewed: quarantinedIds });
+  };
+
   if (!connectionId || !activeTab) {
-    return <Navigate replace to={connectionId ? appTabHref(connectionId, "setup") : "/apps"} />;
+    return <Navigate replace to={connectionId ? appTabHref(connectionId, "setup") : "/apps/connections"} />;
   }
 
   if (!selectedCompanyId) {
@@ -338,7 +363,7 @@ export function AppDetail() {
     return (
       <div className="max-w-3xl p-6">
         <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
+        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/connections")}>
           Back to apps
         </Button>
       </div>
@@ -405,7 +430,7 @@ export function AppDetail() {
           connectionId={connectionId}
           quarantined={quarantined}
           pending={pending}
-          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
+          onReviewQuarantined={reviewQuarantined}
         />
       )}
       {activeTab === "permissions" && (
@@ -426,7 +451,7 @@ export function AppDetail() {
           onSaveInstall={(next) => persistInstall.mutate(next)}
           onRefreshActions={() => refreshTools.mutate()}
           onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
-          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
+          onReviewQuarantined={reviewQuarantined}
         />
       )}
       {activeTab === "test" && (
@@ -479,7 +504,7 @@ function AppDetailHeader({
 }: {
   appName: string;
   connection: ToolConnection;
-  logoEntry: AppGalleryEntry | null;
+  logoEntry: AppGalleryDisplayEntry | null;
   status: StatusInfo;
   actionCount: number;
   renaming: boolean;
@@ -493,7 +518,7 @@ function AppDetailHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
-        <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={44} />
+        <AppLogo name={appName} logoUrl={appDefinitionLogoUrl(logoEntry)} size={44} />
         <div>
           {renaming ? (
             <form
@@ -607,16 +632,15 @@ function accessFrom(profile: ToolProfileWithDetails | undefined): AccessDraft {
   return { mode: "specific", agentIds };
 }
 
-function galleryEntryFor(apps: AppGalleryEntry[], connection: ToolConnection | undefined): AppGalleryEntry | null {
+function galleryEntryFor(
+  apps: AppGalleryDisplayEntry[],
+  connection: ToolConnection | undefined,
+): AppGalleryDisplayEntry | null {
   if (!connection) return null;
   const name = connection.name.toLowerCase();
-  return apps.find((a) => a.name.toLowerCase() === name) ?? apps.find((a) => a.key === name) ?? null;
-}
-
-function addAll(set: Set<string>, ids: string[]): Set<string> {
-  const next = new Set(set);
-  for (const id of ids) next.add(id);
-  return next;
+  return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
+    apps.find((app) => appDefinitionSlug(app) === name) ??
+    null;
 }
 
 function actionPermissionMutation(

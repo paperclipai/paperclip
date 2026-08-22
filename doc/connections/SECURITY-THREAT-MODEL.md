@@ -12,6 +12,14 @@ Apps v2 object model accepted in [PAP-13211](/PAP/issues/PAP-13211). The securit
 decisions survived the Connections v1 retirement; the v1 implementation details
 did not.
 
+Connections v3 adds forward security surfaces that later phases must threat-model
+in detail: subject-bound token requests, workspace/user grants, provider triggers,
+and the managed connector-service callback/webhook relay. Until those phases
+land, treat all four as untrusted boundaries: bind subjects and grants to the
+company, fail closed on revocation, authenticate and deduplicate triggers, and
+never trust relay-supplied tenant or connection identifiers without signed
+context and server-side ownership checks.
+
 ## Required Security Decisions
 
 1. **Credentials live only in `company_secrets`.** Connections store secret refs
@@ -47,6 +55,8 @@ did not.
   signing secrets, and remote MCP auth material.
 - Connection metadata: provider, workspace/account ids, resource filters, health
   state, transport config, and status.
+- Subject/grant metadata, provider tenant identifiers, trigger registrations,
+  and connector-service relay routing state.
 - Governance state: catalog entries, risk classes, quarantine state, profiles,
   bindings, policies, action requests, and trust rules.
 - Paperclip objects mutated by integrations: issues, comments, documents,
@@ -78,7 +88,10 @@ Trust boundaries:
    trust perimeter.
 5. Webhook boundary: inbound requests are attacker-controlled until signature
    validation and dedupe pass.
-6. External-content boundary: provider data is untrusted even when fetched
+6. Connector-service relay boundary: callbacks and trigger deliveries remain
+   untrusted until signed context resolves the company, connection, grant, and
+   subject server-side.
+7. External-content boundary: provider data is untrusted even when fetched
    through an authenticated connection.
 
 ## Flow Requirements

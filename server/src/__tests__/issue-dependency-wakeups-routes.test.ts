@@ -2,11 +2,23 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The first test in this suite imports the large `routes/issues.ts` module
+// through `vi.importActual` inside `createApp`. `vi.resetModules()` in
+// `beforeEach` forces a fresh import each test, so the first test pays the
+// one-time transform and execution cost of that module. Locally the first
+// test takes about 3.7s while the later tests take about 0.13s each. Under
+// the loaded serial shard (maxWorkers=1) this cold-start can cross vitest's
+// default 5000ms test timeout and produce a flaky "Test timed out in 5000ms"
+// failure. Give the suite generous headroom, far above the observed cold-start
+// yet still below the 30s hook timeout.
+vi.setConfig({ testTimeout: 15000 });
+
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
-const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
@@ -73,6 +85,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueThreadInteractionService: () => ({
     listForIssue: vi.fn(async () => []),
+    expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
     expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
     expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   }),
@@ -96,11 +109,26 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   );
   return {
     ...actual,
-    findExistingIssueBlockersResolvedWake: mockFindExistingIssueBlockersResolvedWake,
+    findExistingIssueBlockersResolvedWakeForReadyState:
+      mockFindExistingIssueBlockersResolvedWakeForReadyState,
   };
 });
 
 async function createApp() {
+  const emptyRows: unknown[] = [];
+  const whereResult = {
+    limit: vi.fn(async () => emptyRows),
+    then: async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows),
+  };
+  const query: Record<string, unknown> = {};
+  query.innerJoin = vi.fn(() => query);
+  query.where = vi.fn(() => whereResult);
+  const routeDb = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => query),
+    })),
+    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+  };
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -117,7 +145,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(routeDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -129,8 +157,9 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
-    mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
@@ -259,7 +288,11 @@ describe("issue dependency wakeups in issue routes", () => {
 
     const res = await request(await createApp())
       .patch(`/api/issues/${parentIssueId}`)
-      .send({ status: "blocked", blockedByIssueIds: [childIssueId] });
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
+      });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {

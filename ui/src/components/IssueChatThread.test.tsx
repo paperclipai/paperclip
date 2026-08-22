@@ -28,6 +28,7 @@ import {
   issueChatLongThreadLinkedRuns,
   issueChatLongThreadTranscriptsByRunId,
 } from "../fixtures/issueChatLongThreadFixture";
+import { expiredSecretProposalInteraction } from "../fixtures/issueThreadInteractionFixtures";
 import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
@@ -211,6 +212,13 @@ function createSuggestedTasksInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -250,6 +258,13 @@ function createQuestionInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -283,6 +298,13 @@ function createExpiredRequestConfirmationInteraction(
       commentId: "comment-1",
     },
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -627,13 +649,13 @@ describe("IssueChatThread", () => {
       );
     });
 
-    // The mode chip is always present (mockup rev 5) — neutral "Agent mode" here.
+    // The mode chip is always present (mockup rev 5) — neutral "Auto mode" here.
     const chip = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',
     ) as HTMLButtonElement | null;
     expect(chip).not.toBeNull();
     expect(chip?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Agent mode");
+    expect(chip?.textContent).toContain("Auto mode");
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
@@ -721,7 +743,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Agent mode");
+    expect(chip?.textContent).toContain("Auto mode");
 
     act(() => {
       root.unmount();
@@ -2055,8 +2077,6 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Work on this task is blocked by the linked task");
-    expect(container.textContent).toContain("Comments still wake the responsible for questions or triage");
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
     expect(container.querySelector('[data-issue-path-id="PAP-1723"]')).not.toBeNull();
@@ -2754,6 +2774,38 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Approve the plan");
     expect(container.textContent).toContain("Confirmation expired after comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders expired secret proposals as full receipts by default", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[expiredSecretProposalInteraction]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Secret binding requested");
+    expect(container.textContent).toContain("OpenAI API key");
+    expect(container.textContent).toContain("access.evals_openai_api_key");
+    expect(container.textContent).toContain("EvalsEngineer");
+    expect(container.textContent).toContain("A fresh proposal is required");
+    expect(container.textContent).not.toContain("updated this task");
 
     act(() => {
       root.unmount();
@@ -3776,7 +3828,7 @@ describe("IssueChatThread", () => {
               agentId: "agent-1",
               agentName: "Agent 1",
               adapterType: "codex_local",
-              currentStatusMessage: "Syncing git worktree to sandbox",
+              currentStatusMessage: "Syncing git worktree to environment",
               currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
               currentToolName: "bash",
               lastEventAt: new Date(Date.now() - 2000).toISOString(),

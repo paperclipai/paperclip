@@ -1,5 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
@@ -18,6 +19,7 @@ import {
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -44,6 +46,7 @@ import {
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
@@ -300,6 +303,60 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
     }
   });
   return sorted;
+}
+
+const AGE_BUCKET_DAY_MS = 24 * 60 * 60 * 1000;
+const AGE_BUCKET_WEEK_MS = 7 * AGE_BUCKET_DAY_MS;
+
+// Recency buckets for the date separators shown in date-sorted lists:
+//   0 = within the last day, 1 = within the last week, 2 = older than a week.
+// A separator is drawn between rows whenever the bucket increases, so the
+// "1 day" and "1 week" boundaries appear as the list ages downward.
+export function issueAgeBucket(date: Date | string, now: number = Date.now()): 0 | 1 | 2 {
+  const age = now - new Date(date).getTime();
+  if (age < AGE_BUCKET_DAY_MS) return 0;
+  if (age < AGE_BUCKET_WEEK_MS) return 1;
+  return 2;
+}
+
+export function issueAgeSeparatorLabel(bucket: 1 | 2): string {
+  return bucket === 1 ? "Older than a day" : "Older than a week";
+}
+
+export function issueAgeBucketsCrossed(
+  previousBucket: 0 | 1 | 2,
+  currentBucket: 0 | 1 | 2,
+): Array<1 | 2> {
+  const crossedBuckets: Array<1 | 2> = [];
+  if (previousBucket < 1 && currentBucket >= 1) crossedBuckets.push(1);
+  if (previousBucket < 2 && currentBucket >= 2) crossedBuckets.push(2);
+  return crossedBuckets;
+}
+
+// Only recency sorts (newest first) get date separators — for any other
+// sort/direction the boundaries would be meaningless.
+function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedAt" | null {
+  if (state.sortDir !== "desc") return null;
+  if (state.sortField === "created") return "createdAt";
+  if (state.sortField === "updated") return "updatedAt";
+  return null;
+}
+
+function IssueDateSeparator({ label }: { label: string }) {
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 sm:pl-0 sm:pr-4"
+      role="separator"
+      aria-label={label}
+      data-issues-date-separator=""
+    >
+      <div className="h-px flex-1 bg-border" />
+      <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
 }
 
 function issueMatchesLocalSearch(issue: Issue, normalizedSearch: string): boolean {
@@ -653,6 +710,7 @@ export function IssuesList({
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { keyboardShortcutsEnabled } = useGeneralSettings();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
@@ -1318,7 +1376,7 @@ export function IssuesList({
     const row = rootRef.current?.querySelector(
       `[data-issue-row-id="${escapeAttrValue(navKey.slice("issue:".length))}"]`,
     );
-    const link = row?.querySelector(":scope > [data-inbox-issue-link]");
+    const link = row?.querySelector("[data-inbox-issue-link]");
     return link instanceof HTMLElement ? link : null;
   }, []);
 
@@ -1407,6 +1465,11 @@ export function IssuesList({
           const pathId = issue.identifier ?? issue.id;
           const detailState = withIssueDetailHeaderSeed(st.issueLinkState, issue);
           rememberIssueDetailLocationState(pathId, detailState);
+          // Seed the full list-row snapshot + first comments page before we
+          // navigate so keyboard-driven opens paint from cache instantly, the
+          // same way pointer hover/click does through the issue link. Mirrors
+          // the inbox Enter handler.
+          void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
           navigate(createIssueDetailPath(pathId), { state: detailState });
           break;
         }
@@ -1416,7 +1479,7 @@ export function IssuesList({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [keyboardShortcutsEnabled, navigate]);
+  }, [keyboardShortcutsEnabled, navigate, queryClient]);
 
   // Keep the keyboard selection visible while navigating. Depends on the
   // render budget too: a selection past the mounted batch scrolls once its
@@ -1765,6 +1828,7 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
+                  {/* PAP-411: "priority" sort option hidden behind SHOW_TASK_PRIORITY_UI (comparator stays dormant). */}
                   {([
                     ["workflow", "Workflow"],
                     ["status", "Status"],
@@ -1772,7 +1836,9 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                  ] as const)
+                    .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
+                    .map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
@@ -1809,6 +1875,7 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
+                  {/* PAP-411: "priority" group-by option hidden behind SHOW_TASK_PRIORITY_UI (group logic stays dormant). */}
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
@@ -1817,7 +1884,9 @@ export function IssuesList({
                     ["workspace", "Workspace"],
                     ["parent", "Parent Task"],
                     ["none", "None"],
-                  ] as const).map(([value, label]) => (
+                  ] as const)
+                    .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")
+                    .map(([value, label]) => (
                     <button
                       key={value}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
@@ -2035,7 +2104,6 @@ export function IssuesList({
                         onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
                         treeGuides={depth}
                         chevronInGuide={depth > 0 && hasChildren}
-                        hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}
@@ -2247,12 +2315,44 @@ export function IssuesList({
                           ) : undefined
                         )}
                       />
-                      {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, depth + 1))}
                     </div>
                   );
                 };
 
-                return roots.map((issue) => renderIssueRow(issue, 0)).filter((node) => node !== null);
+                const separatorField = issueDateSeparatorField(viewState);
+                const separatorNow = Date.now();
+                const nodes: ReactNode[] = [];
+                let prevBucket: 0 | 1 | 2 | null = null;
+                const appendIssueRow = (issue: Issue, depth: number) => {
+                  const node = renderIssueRow(issue, depth);
+                  // Skip rows the render budget dropped so separators never
+                  // dangle above an unrendered (or absent) row.
+                  if (node === null) return;
+                  if (separatorField) {
+                    const bucket = issueAgeBucket(issue[separatorField], separatorNow);
+                    for (const crossedBucket of prevBucket === null
+                      ? []
+                      : issueAgeBucketsCrossed(prevBucket, bucket)) {
+                      nodes.push(
+                        <IssueDateSeparator
+                          key={`age-sep-${issue.id}-${crossedBucket}`}
+                          label={issueAgeSeparatorLabel(crossedBucket)}
+                        />,
+                      );
+                    }
+                    prevBucket = bucket;
+                  }
+                  nodes.push(node);
+                  if (!viewState.collapsedParents.includes(issue.id)) {
+                    for (const child of childMap.get(issue.id) ?? []) {
+                      appendIssueRow(child, depth + 1);
+                    }
+                  }
+                };
+                for (const issue of roots) {
+                  appendIssueRow(issue, 0);
+                }
+                return nodes;
               })()}
             </CollapsibleContent>
           </Collapsible>

@@ -812,8 +812,8 @@ export function PoliciesTab({ companyId }: { companyId: string }) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projects = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
   });
   const applications = useQuery({
     queryKey: queryKeys.tools.applications(companyId),
@@ -958,7 +958,7 @@ export function PoliciesTab({ companyId }: { companyId: string }) {
 
   const saving = createPolicy.isPending || updatePolicy.isPending;
   const agentsList = agents.data ?? [];
-  const projectsList = projects.data ?? [];
+  const projectsList = (projects.data ?? []).filter((project) => !project.archivedAt);
   const applicationList = applications.data?.applications ?? [];
 
   if (form) {

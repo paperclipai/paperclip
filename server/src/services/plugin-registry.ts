@@ -289,6 +289,28 @@ export function pluginRegistryService(db: Db) {
         .then((rows) => rows[0] ?? null),
 
     /**
+     * List every company-scoped configuration row for a plugin.
+     *
+     * Plugin config is company-scoped, but a worker is spawned once per plugin
+     * (not per company). Callers such as the plugin loader use this to replay
+     * each configured company's config to a freshly-started worker, so a
+     * proactive plugin that never runs inside a company-scoped invocation (and
+     * therefore cannot resolve `ctx.config.get(companyId)`) still receives its
+     * configuration at startup.
+     *
+     * Ordered deterministically by companyId: the startup replay delivers these
+     * rows to a single worker via `configChanged`, and a single-tenant worker
+     * binds to the first company it sees. Without a stable order the worker
+     * would bind to a nondeterministic (DB-dependent) company across restarts.
+     */
+    listConfigs: (pluginId: string) =>
+      db
+        .select()
+        .from(pluginConfig)
+        .where(eq(pluginConfig.pluginId, pluginId))
+        .orderBy(asc(pluginConfig.companyId)),
+
+    /**
      * Create or fully replace a plugin's company-scoped configuration.
      * If a config row already exists for the plugin/company pair it is replaced;
      * otherwise a new row is inserted.

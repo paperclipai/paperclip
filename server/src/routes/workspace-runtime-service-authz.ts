@@ -8,15 +8,21 @@ import { assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { isLowTrustRuntimeManagementAllowed } from "../services/low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "../services/trust-preset-resolver.js";
+import { WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES } from "../services/workspace-runtime-leases.js";
 import { readObject } from "../lib/objects.js";
 
-const WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES: string[] = [
-  "backlog",
-  "todo",
-  "in_progress",
-  "in_review",
-  "blocked",
-];
+const WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUS_LIST: string[] = [...WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES];
+
+/**
+ * Identity of the actor authorized to drive a workspace runtime control, resolved once
+ * so the durable runtime lease and the authorization decision agree on who is calling.
+ */
+export type WorkspaceRuntimeControlAuthorization = {
+  actorType: string;
+  agentId: string | null;
+  runId: string | null;
+  issueId: string | null;
+};
 
 function readRunIssueId(context: Record<string, unknown> | null) {
   const directIssueId = context?.issueId;
@@ -68,7 +74,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     executionWorkspaceId?: string | null;
     sourceIssueId?: string | null;
   },
-) {
+): Promise<{ runIssueId: string | null }> {
   if (req.actor.type !== "agent" || !req.actor.agentId) {
     throw forbidden("Agent authentication required");
   }
@@ -112,11 +118,12 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     runExecutionPolicy,
   });
 
+  const runIssueId = readRunIssueId(runContext);
+
   if (actorAgent.role === "ceo" && actorRuntimeTrust.kind === "standard") {
-    return;
+    return { runIssueId };
   }
 
-  const runIssueId = readRunIssueId(runContext);
   const runScopedIssue = runIssueId
     ? await db
         .select({
@@ -171,7 +178,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     .where(and(
       eq(issues.companyId, input.companyId),
       isNull(issues.hiddenAt),
-      inArray(issues.status, WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES),
+      inArray(issues.status, WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUS_LIST),
       workspaceScopeCondition,
     ));
 
@@ -185,7 +192,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
   }
 
   if (actorAgent.role === "ceo") {
-    return;
+    return { runIssueId };
   }
 
   const eligibleAgentIds = await listReportingSubtreeAgentIds(db, input.companyId, actorAgent.id);
@@ -202,7 +209,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     .where(and(
       eq(issues.companyId, input.companyId),
       isNull(issues.hiddenAt),
-      inArray(issues.status, WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES),
+      inArray(issues.status, WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUS_LIST),
       inArray(issues.assigneeAgentId, eligibleAgentIds),
       workspaceScopeCondition,
     ))
@@ -215,7 +222,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
       projectExecutionWorkspacePolicy: linkedIssue.projectExecutionWorkspacePolicy,
       runExecutionPolicy,
     });
-    return;
+    return { runIssueId };
   }
 
   throw forbidden("Missing permission to manage workspace runtime services");
@@ -321,11 +328,19 @@ export async function assertCanManageExecutionWorkspaceRuntimeServices(
     executionWorkspaceId: string;
     sourceIssueId?: string | null;
   },
-) {
+): Promise<WorkspaceRuntimeControlAuthorization> {
   if (!hasCompanyAccess(req, input.companyId)) {
     throw notFound("Execution workspace not found");
   }
   assertCompanyAccess(req, input.companyId);
-  if (req.actor.type === "board") return;
-  await assertAgentCanManageRuntimeServicesForWorkspace(db, req, input);
+  if (req.actor.type === "board") {
+    return { actorType: "board", agentId: null, runId: null, issueId: null };
+  }
+  const { runIssueId } = await assertAgentCanManageRuntimeServicesForWorkspace(db, req, input);
+  return {
+    actorType: req.actor.type,
+    agentId: req.actor.agentId ?? null,
+    runId: req.actor.runId ?? null,
+    issueId: runIssueId,
+  };
 }

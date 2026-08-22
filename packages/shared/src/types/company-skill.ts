@@ -159,6 +159,9 @@ export interface CompanySkillVersion {
   companySkillId: string;
   revisionNumber: number;
   label: string | null;
+  releaseId: string | null;
+  releaseName: string | null;
+  releasedAt: Date | null;
   fileInventory: CompanySkillVersionFileInventoryEntry[];
   authorAgentId: string | null;
   authorUserId: string | null;
@@ -244,6 +247,19 @@ export interface CompanySkillForkPrecheckResult {
   existingForks: CompanySkillForkSummary[];
 }
 
+export interface CompanySkillRenameRequest {
+  name: string;
+  slug?: string | null;
+}
+
+export interface CompanySkillRenameResult {
+  skill: CompanySkill;
+  previousName: string;
+  previousSlug: string;
+  previousKey: string;
+  reassignments: CompanySkillForkReassignment[];
+}
+
 export interface CompanySkillUpdateRequest {
   description?: string | null;
   iconUrl?: string | null;
@@ -325,6 +341,29 @@ export interface CompanySkillProjectScanRequest {
     path: string;
     slug?: string;
   }>;
+}
+
+export interface CompanySkillProjectBrowseRequest {
+  projectId: string;
+  workspaceId: string;
+  path?: string | null;
+}
+
+export interface CompanySkillProjectBrowseEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  isSkill: boolean;
+}
+
+export interface CompanySkillProjectBrowseResult {
+  projectId: string;
+  workspaceId: string;
+  workspaceName: string;
+  path: string;
+  parentPath: string | null;
+  entries: CompanySkillProjectBrowseEntry[];
+  truncated: boolean;
 }
 
 export type CompanySkillProjectScanCandidateStatus = "new" | "already_imported" | "conflict" | "skipped";

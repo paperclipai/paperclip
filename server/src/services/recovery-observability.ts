@@ -101,7 +101,7 @@ type RecoveryActionFacts = {
 };
 
 const ACTIVE_STATUSES = new Set(["active", "escalated"]);
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "in_review"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
 
 /**
  * Classify a recovery action by who ended up owning the deliverable work.

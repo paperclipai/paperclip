@@ -15,6 +15,11 @@ type AuthErrorBody =
   }
   | null;
 
+export interface SignOutResult {
+  success?: boolean;
+  redirectTo?: string;
+}
+
 export class AuthApiError extends Error {
   status: number;
   code: string | null;
@@ -105,7 +110,7 @@ function logAuthHttpError(method: string, path: string, status: number, statusTe
   });
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
+async function authPost(path: string, body: Record<string, unknown>): Promise<unknown> {
   let res: Response;
   try {
     res = await fetch(`/api/auth${path}`, {
@@ -180,7 +185,14 @@ export const authApi = {
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
 
-  signOut: async () => {
-    await authPost("/sign-out", {});
+  signOut: async (): Promise<SignOutResult | null> => {
+    const payload = await authPost("/sign-out", {});
+    if (!payload || typeof payload !== "object") return null;
+
+    const result = payload as Record<string, unknown>;
+    return {
+      ...(typeof result.success === "boolean" ? { success: result.success } : {}),
+      ...(typeof result.redirectTo === "string" ? { redirectTo: result.redirectTo } : {}),
+    };
   },
 };

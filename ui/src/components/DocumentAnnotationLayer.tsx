@@ -34,16 +34,25 @@ export interface PendingAnchor {
   selectedText: string;
 }
 
+export interface AnnotationAnchorRect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
 export interface AnnotationLayerProps {
   containerRef: React.RefObject<HTMLElement | null>;
   markdown: string;
   threads: AnnotationOverlayThread[];
   focusedThreadId: string | null;
-  onThreadFocus: (threadId: string) => void;
+  onThreadFocus: (threadId: string, rect: AnnotationAnchorRect) => void;
   /** Tracks the most recently captured pending selection. */
   pendingAnchor: PendingAnchor | null;
   onPendingAnchorChange: (anchor: PendingAnchor | null) => void;
-  onRequestComment: (anchor: PendingAnchor) => void;
+  onRequestComment: (anchor: PendingAnchor, rect: AnnotationAnchorRect) => void;
+  /** Publishes refreshed geometry for the currently open popover. */
+  onAnchorRectChange?: (rect: AnnotationAnchorRect | null) => void;
   /** Disables the "add comment" affordance when set. */
   newCommentDisabled?: boolean;
   newCommentDisabledReason?: string | null;
@@ -236,6 +245,7 @@ export function DocumentAnnotationLayer({
   pendingAnchor,
   onPendingAnchorChange,
   onRequestComment,
+  onAnchorRectChange,
   newCommentDisabled = false,
   newCommentDisabledReason = null,
   hideResolved = true,
@@ -247,6 +257,7 @@ export function DocumentAnnotationLayer({
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const lastCaptureSelectionRequestIdRef = useRef<number>(0);
+  const lastSelectionRectRef = useRef<AnnotationAnchorRect | null>(null);
   const reactId = useId();
   const nativeHighlightInstanceId = useMemo(
     () => `document-annotation-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
@@ -340,7 +351,16 @@ export function DocumentAnnotationLayer({
     }
     setNativeHighlightRanges(nativeHighlightInstanceId, nativeRanges);
     setHighlightRects(next);
-  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, pendingHighlightText, visibleThreads]);
+    const activeId = pendingHighlightText ? PENDING_HIGHLIGHT_THREAD_ID : focusedThreadId;
+    const activeRects = activeId ? next.filter((rect) => rect.threadId === activeId) : [];
+    const activeRect = activeRects.find((rect) => rect.isTail) ?? activeRects[0];
+    onAnchorRectChange?.(activeRect ? {
+      top: activeRect.top,
+      left: activeRect.left,
+      width: activeRect.width,
+      height: activeRect.height,
+    } : null);
+  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightText, visibleThreads]);
 
   useLayoutEffect(() => {
     computeHighlightRects();
@@ -428,6 +448,12 @@ export function DocumentAnnotationLayer({
     const top = Math.max(0, rect.top - overlayRect.top - 36);
     const left = Math.max(0, rect.left - overlayRect.left + rect.width / 2 - 80);
     setToolbarPosition({ top, left });
+    lastSelectionRectRef.current = {
+      top: rect.top - overlayRect.top,
+      left: rect.left - overlayRect.left,
+      width: rect.width,
+      height: rect.height,
+    };
     return {
       selector: anchor.selector,
       selectedText: containerOffset.selectedText,
@@ -467,12 +493,12 @@ export function DocumentAnnotationLayer({
     const anchor = captureSelection();
     if (anchor) {
       onPendingAnchorChange(anchor);
-      onRequestComment(anchor);
+      if (lastSelectionRectRef.current) onRequestComment(anchor, lastSelectionRectRef.current);
     }
   }, [captureSelectionRequestId, captureSelection, onPendingAnchorChange, onRequestComment]);
 
   const handleAddComment = () => {
-    if (pendingAnchor) onRequestComment(pendingAnchor);
+    if (pendingAnchor && lastSelectionRectRef.current) onRequestComment(pendingAnchor, lastSelectionRectRef.current);
   };
 
   const content = (
@@ -551,7 +577,12 @@ export function DocumentAnnotationLayer({
                 }
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  onThreadFocus(rect.threadId);
+                  onThreadFocus(rect.threadId, {
+                    top: rect.top,
+                    left: rect.left,
+                    width: rect.width,
+                    height: rect.height,
+                  });
                 }}
               />
             );

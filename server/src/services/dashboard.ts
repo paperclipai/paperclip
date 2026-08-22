@@ -102,6 +102,10 @@ export function dashboardService(db: Db) {
       // restart-killed run whose retry succeeded is pulled out of the headline
       // failed count. error_code is carried through so a failure spike can be
       // attributed to an error class (e.g. process_lost, provider_quota).
+      // Both recursive arms are bounded to the chart window: a retry is always
+      // created after the run it retries, so ancestors of an out-of-window
+      // child are themselves out of window and invisible to the membership
+      // test below. Unbounded, the seed walks every run the company ever had.
       const runActivityRows = (await db.execute(sql`
         WITH RECURSIVE recovered_runs(id) AS (
           SELECT parent.id
@@ -109,11 +113,13 @@ export function dashboardService(db: Db) {
           JOIN ${heartbeatRuns} AS parent ON parent.id = child.retry_of_run_id
           WHERE child.company_id = ${companyId}
             AND child.status = 'succeeded'
+            AND child.created_at >= ${runActivityStart.toISOString()}::timestamptz
           UNION
           SELECT parent.id
           FROM recovered_runs rr
           JOIN ${heartbeatRuns} AS child ON child.id = rr.id
           JOIN ${heartbeatRuns} AS parent ON parent.id = child.retry_of_run_id
+          WHERE child.created_at >= ${runActivityStart.toISOString()}::timestamptz
         )
         SELECT
           to_char(run.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,

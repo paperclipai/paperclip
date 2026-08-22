@@ -51,6 +51,13 @@ Project env applies to every issue run in that project. When a project env key
 matches an agent env key, the project value wins before Paperclip injects its
 own `PAPERCLIP_*` runtime variables.
 
+Separately from env bindings, the **server itself** consumes a company secret
+named `GITHUB_TOKEN`, `GH_TOKEN`, or `PAPERCLIP_GITHUB_TOKEN` (by name, no
+binding needed) to authenticate server-side git operations — cloning private
+GitHub repos for repo-only project workspaces and refreshing worktree base
+refs. See
+[Execution workspaces](../guides/board-operator/execution-workspaces-and-runtime-services.md#private-repositories-and-repo-only-project-workspaces).
+
 ## User-Specific Secrets
 
 User-specific secrets let a shared agent or project declare a slot such as
@@ -196,7 +203,7 @@ Validate secrets config:
 
 ```sh
 pnpm paperclipai doctor
-pnpm paperclipai secrets doctor --company-id <company-id>
+npx paperclipai secrets doctor --company-id <company-id>
 ```
 
 ### Environment Overrides
@@ -468,8 +475,8 @@ store.
 If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:
 
 ```sh
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id>
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx paperclipai secrets migrate-inline-env --company-id <company-id>
+npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 # low-level script for direct database maintenance
 pnpm secrets:migrate-inline-env         # dry run
@@ -486,7 +493,7 @@ Company exports include only environment declarations. They do not include
 secret IDs, provider references, encrypted material, or plaintext values.
 
 ```sh
-pnpm paperclipai secrets declarations --company-id <company-id> --kind secret
+npx paperclipai secrets declarations --company-id <company-id> --kind secret
 ```
 
 Before importing a package into another instance, use those declarations to

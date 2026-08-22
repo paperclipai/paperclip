@@ -8,6 +8,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  executionWorkspaces,
   heartbeatRuns,
   issues,
   projectWorkspaces,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("summary slot service", () => {
     await db.delete(documents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(activityLog);
@@ -76,6 +78,35 @@ describeEmbeddedPostgres("summary slot service", () => {
     const projectId = randomUUID();
     await db.insert(projects).values({ id: projectId, companyId, name: "Paperclip App" });
     return projectId;
+  }
+
+  async function seedProjectWorkspace(companyId: string, projectId: string) {
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+    return projectWorkspaceId;
+  }
+
+  async function seedExecutionWorkspace(
+    companyId: string,
+    projectId: string,
+    projectWorkspaceId: string | null = null,
+  ) {
+    const executionWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: `Execution workspace ${executionWorkspaceId}`,
+    });
+    return executionWorkspaceId;
   }
 
   async function seedSummarizer(companyId: string, ready = true) {
@@ -117,6 +148,15 @@ describeEmbeddedPostgres("summary slot service", () => {
     return { companyId, scopeKind: "project", slotKey: "header", scopeId: projectId };
   }
 
+  function executionWorkspaceSelector(companyId: string, executionWorkspaceId: string) {
+    return {
+      companyId,
+      scopeKind: "execution_workspace",
+      slotKey: "header",
+      scopeId: executionWorkspaceId,
+    };
+  }
+
   describe("reads and target visibility", () => {
     it("returns an empty slot state before any generation", async () => {
       const companyId = await seedCompany();
@@ -142,6 +182,18 @@ describeEmbeddedPostgres("summary slot service", () => {
       await expect(svc.getSlot(projectSelector(companyId, foreignProjectId))).rejects.toMatchObject({
         status: 404,
       });
+    });
+
+    it("rejects an execution workspace owned by another company", async () => {
+      const companyId = await seedCompany();
+      const otherCompanyId = await seedCompany();
+      const otherProjectId = await seedProject(otherCompanyId);
+      const foreignExecutionWorkspaceId = await seedExecutionWorkspace(otherCompanyId, otherProjectId);
+      const svc = summarySlotService(db);
+
+      await expect(
+        svc.getSlot(executionWorkspaceSelector(companyId, foreignExecutionWorkspaceId)),
+      ).rejects.toMatchObject({ status: 404 });
     });
 
     it("rejects a workspaces_overview selector that carries a scopeId", async () => {
@@ -232,26 +284,24 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRow.description).toContain(
         `GET /api/companies/${companyId}/summary-slots/project/header?scopeId=${projectId}`,
       );
-      expect(issueRow.description).toContain(
+      expect(issueRow.description).not.toContain(
         "do not call the revisions or issues-list endpoints",
       );
       expect(issueRow.description).toContain(
         `PUT /api/companies/${companyId}/summary-slots/project/header`,
       );
       expect(issueRow.description).toContain(
-        "one or two plain-prose paragraphs on the (max two) things that matter most",
+        "opens with the 1–3 specific, concrete, actionable items",
       );
-      expect(issueRow.description).toContain("opens with a `**Decide:**` block");
-      expect(issueRow.description).toContain("`**I suggest:**` recommendation");
-      expect(issueRow.description).toContain("followed by a `**Review:**` block");
+      expect(issueRow.description).toContain("unblock this work");
       expect(issueRow.description).toContain(
-        "what the reader can approve on a skim vs what needs their eyes",
+        "read whatever issues you need to understand the state",
       );
       expect(issueRow.description).toContain(
-        "End the summary with a `**Recent work:**` block",
+        "a reader who has not memorized issue ids or threads",
       );
       expect(issueRow.description).toContain(
-        "at most three or four issues inline; never a trailing list of issue links",
+        "a trailing list of issue links or any link dump",
       );
       expect(issueRow.description).toContain("Not a task list");
       expect(issueRow.description).toContain(
@@ -268,6 +318,65 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRow.description).toContain(`/${issuePrefix(companyId)}/issues/`);
       expect(issueRow.description).not.toContain("/PAP/issues/");
       expect(issueRow.description).not.toContain("Other project issue");
+    });
+
+    it("keeps summaries and snapshots isolated between execution workspaces", async () => {
+      const companyId = await seedCompany();
+      const projectId = await seedProject(companyId);
+      const projectWorkspaceId = await seedProjectWorkspace(companyId, projectId);
+      const firstExecutionWorkspaceId = await seedExecutionWorkspace(companyId, projectId, projectWorkspaceId);
+      const secondExecutionWorkspaceId = await seedExecutionWorkspace(companyId, projectId, projectWorkspaceId);
+      await seedSummarizer(companyId);
+      const svc = summarySlotService(db);
+
+      await db.insert(issues).values([
+        {
+          companyId,
+          projectId,
+          projectWorkspaceId,
+          executionWorkspaceId: firstExecutionWorkspaceId,
+          identifier: `${issuePrefix(companyId)}-201`,
+          issueNumber: 201,
+          title: "First workspace task",
+          status: "in_progress",
+          priority: "medium",
+        },
+        {
+          companyId,
+          projectId,
+          projectWorkspaceId,
+          executionWorkspaceId: secondExecutionWorkspaceId,
+          identifier: `${issuePrefix(companyId)}-202`,
+          issueNumber: 202,
+          title: "Second workspace task",
+          status: "blocked",
+          priority: "high",
+        },
+      ]);
+
+      const firstSelector = executionWorkspaceSelector(companyId, firstExecutionWorkspaceId);
+      const secondSelector = executionWorkspaceSelector(companyId, secondExecutionWorkspaceId);
+      const generated = await svc.generate(firstSelector, { userId: "board-user" });
+
+      expect(generated.slot).toMatchObject({
+        scopeKind: "execution_workspace",
+        scopeId: firstExecutionWorkspaceId,
+        status: "generating",
+      });
+      const generationIssue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, generated.generatingIssue.id))
+        .then((rows) => rows[0]!);
+      expect(generationIssue.description).toContain("First workspace task");
+      expect(generationIssue.description).not.toContain("Second workspace task");
+      expect(generationIssue.description).toContain('"scopeKind": "execution_workspace"');
+      expect(generationIssue.description).toContain(`"scopeId": "${firstExecutionWorkspaceId}"`);
+      await expect(svc.getSlot(secondSelector)).resolves.toEqual({
+        slot: null,
+        document: null,
+        generatingIssue: null,
+      });
     });
 
     it("dedupes concurrent generate clicks without creating an orphan task", async () => {
