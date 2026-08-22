@@ -24,6 +24,11 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+// Narrow subset of the transient-upstream family: specifically an Anthropic 529
+// "Overloaded" response. This is the trigger for the OpenRouter fallback path,
+// distinct from the broader rate-limit/503/quota signals in
+// CLAUDE_TRANSIENT_UPSTREAM_RE which OpenRouter cannot recover.
+const CLAUDE_OVERLOADED_RE = /(?:\b529\b|overloaded(?:_error)?|server\s+overloaded)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
@@ -557,4 +562,22 @@ export function isClaudeProviderQuotaError(input: {
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
   return CLAUDE_PROVIDER_QUOTA_RE.test(haystack);
+}
+
+/**
+ * True when the failure is specifically an Anthropic 529 "Overloaded" response.
+ * This is a strict subset of {@link isClaudeTransientUpstreamError}; callers gate
+ * the OpenRouter fallback on this so they only re-route the one failure class an
+ * Anthropic-compatible alternate endpoint can actually clear (a 529 from
+ * Anthropic's own fleet), never a provider quota or a broad rate limit.
+ */
+export function isClaudeOverloadedError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_OVERLOADED_RE.test(haystack);
 }
