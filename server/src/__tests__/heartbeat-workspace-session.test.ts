@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveIssueScopedAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
@@ -1177,6 +1177,28 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       previousSessionParams: {
         sessionId: "session-1",
         cwd: fallbackCwd,
+        workspaceId: "workspace-1",
+      },
+      resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
+    });
+
+    expect(result.sessionParams).toMatchObject({
+      sessionId: "session-1",
+      cwd: "/tmp/new-project-cwd",
+      workspaceId: "workspace-1",
+    });
+    expect(result.warning).toContain("Attempting to resume session");
+  });
+
+  it("migrates issue-scoped fallback sessions to project workspace when project cwd becomes available (BRO-1717)", () => {
+    const agentId = "agent-123";
+    const issueScopedFallbackCwd = resolveIssueScopedAgentWorkspaceDir(agentId, "issue-abc");
+
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId,
+      previousSessionParams: {
+        sessionId: "session-1",
+        cwd: issueScopedFallbackCwd,
         workspaceId: "workspace-1",
       },
       resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
