@@ -445,6 +445,12 @@ export interface IssueReviewAttentionPath {
   responder: string | null;
   since: string | null;
   ref: string | null;
+  /**
+   * True when the path still exists but has gone quiet for longer than its kind allows,
+   * so it no longer satisfies the action-path requirement. Stale paths are still listed
+   * so the board can see which reviewer or interaction went quiet.
+   */
+  stale?: boolean;
 }
 
 export interface IssueReviewAttention {
@@ -842,6 +848,13 @@ export interface Issue {
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
+  /**
+   * When the issue last entered `in_review`. This is the clock a review path with no
+   * activity of its own is aged against: unlike `updatedAt` it is not refreshed by
+   * comments or unrelated edits, so a reviewer who never acts cannot be revived by
+   * traffic on the issue around them.
+   */
+  reviewTransitionAt?: Date | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;

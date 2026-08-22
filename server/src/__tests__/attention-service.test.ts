@@ -327,13 +327,19 @@ describeEmbeddedPostgres("attention service", () => {
       relatedIssueId: blockerParentId,
       type: "blocks",
     });
+    // Both of these cover a review that still has a *live* participant, so their
+    // freshness is load-bearing: a participant path ages out after
+    // REVIEW_PATH_STALE_AFTER_MS, and a stalled review enters the feed whatever its
+    // participant type. Pinning them to a fixed past date meant they drifted into
+    // "stalled" as the calendar moved, which is the opposite of what each asserts.
+    const recentlyTouched = new Date(Date.now() - 60_000);
     const reviewUserIssueId = await insertIssue({
       companyId,
       identifier: "ATN-6",
       title: "Human review",
       status: "in_review",
       executionState: pendingUserExecutionState(),
-      updatedAt: new Date("2026-07-09T12:06:00.000Z"),
+      updatedAt: recentlyTouched,
     });
     await insertIssue({
       companyId,
@@ -341,7 +347,7 @@ describeEmbeddedPostgres("attention service", () => {
       title: "Agent review excluded",
       status: "in_review",
       executionState: pendingAgentExecutionState(reviewerId),
-      updatedAt: new Date("2026-07-09T12:07:00.000Z"),
+      updatedAt: recentlyTouched,
     });
 
     const pendingApprovalId = randomUUID();
