@@ -2,18 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PaperclipApiClient } from "./client.js";
 import { createToolDefinitions } from "./tools.js";
 
-function makeClient() {
+function makeClient(scopes: string[] = ["paperclip:write"]) {
   return new PaperclipApiClient({
     apiUrl: "http://localhost:3100/api",
     apiKey: "token-123",
     companyId: "11111111-1111-1111-1111-111111111111",
     agentId: "22222222-2222-2222-2222-222222222222",
     runId: "33333333-3333-3333-3333-333333333333",
+    scopes,
   });
 }
 
-function getTool(name: string) {
-  const tool = createToolDefinitions(makeClient()).find((candidate) => candidate.name === name);
+function getTool(name: string, scopes?: string[]) {
+  const tool = createToolDefinitions(makeClient(scopes)).find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`Missing tool ${name}`);
   return tool;
 }
@@ -28,6 +29,31 @@ function mockJsonResponse(body: unknown, status = 200) {
 describe("paperclip MCP tools", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+
+  it("hides write tools without write scope", () => {
+    const toolNames = createToolDefinitions(makeClient([])).map((tool) => tool.name);
+
+    expect(toolNames).toContain("paperclipListIssues");
+    expect(toolNames).not.toContain("paperclipAddComment");
+    expect(toolNames).not.toContain("paperclipUpdateIssue");
+  });
+
+  it("labels write tools when write scope is present", () => {
+    const tool = getTool("paperclipAddComment");
+
+    expect(tool.description).toContain("WRITE ACTION");
+    expect(tool.description).toContain("paperclip:write");
+  });
+
+  it("rejects direct write requests without write scope", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const client = makeClient([]);
+
+    await expect(client.requestJson("POST", "/issues/PAP-1135/comments", {
+      body: { body: "test" },
+    })).rejects.toThrow("paperclip:write scope");
   });
 
   it("adds auth headers and run id to mutating requests", async () => {
@@ -108,6 +134,7 @@ describe("paperclip MCP tools", () => {
       title: "Assigned follow-up",
       workMode: "standard",
       priority: "medium",
+      allowDuplicate: false,
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
     });
