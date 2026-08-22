@@ -8161,6 +8161,33 @@ export function issueService(db: Db) {
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
 
+      // Checkout must not reopen terminal issues. Resume/reopen belongs on the
+      // comment/update path, which clears completedAt/cancelledAt first.
+      const checkoutableStatuses = expectedStatuses.filter(
+        (status) => status !== "done" && status !== "cancelled",
+      );
+      if (checkoutableStatuses.length === 0) {
+        const current = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Issue not found");
+        throw conflict("Issue checkout conflict", {
+          issueId: current.id,
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+        });
+      }
+
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const readiness = dependencyReadiness.get(id);
       const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
@@ -8200,7 +8227,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
+            inArray(issues.status, checkoutableStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -8226,6 +8253,16 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (current.status === "done" || current.status === "cancelled") {
+        throw conflict("Issue checkout conflict", {
+          issueId: current.id,
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+        });
+      }
 
       if (
         current.assigneeAgentId === agentId &&
@@ -8306,7 +8343,7 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
+                inArray(issues.status, checkoutableStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
               ),
