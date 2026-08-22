@@ -131,6 +131,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  deleteBlastRadius: vi.fn(),
   setDefault: vi.fn(),
   customImageTemplate: vi.fn(),
   startCustomImageSetupSession: vi.fn(),
@@ -445,6 +446,32 @@ describe("CompanyEnvironments — test provider button", () => {
       { id: "env-1", name: "Alpha", driver: "sandbox", description: null, config: { provider: "e2b" } },
       { id: "env-2", name: "Beta", driver: "sandbox", description: null, config: { provider: "e2b" } },
     ]);
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue({
+      environmentId: "env-1",
+      canDelete: true,
+      deleteBlockedReasons: [],
+      staticReferences: {
+        isManagedLocal: false,
+        isInstanceDefault: false,
+        agentDefaultCount: 0,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        activeCustomImageSetupSessionCount: 0,
+        hasActiveRuntimeUse: false,
+      },
+    });
+    mockEnvironmentsApi.remove.mockResolvedValue({
+      id: "env-1",
+      name: "Alpha",
+      driver: "sandbox",
+      description: null,
+      config: {},
+    });
     mockEnvironmentsApi.create.mockImplementation(async (_companyId: string, body: { name: string }) => ({
       id: "env-new",
       name: body.name,
@@ -644,6 +671,208 @@ describe("CompanyEnvironments — test provider button", () => {
     await flushReact();
 
     expect(getEnvironmentFormPage()).toBeNull();
+  });
+
+  it("deletes an environment from the edit form after confirming the blast radius", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () => {
+      click(findButton(getEnvironmentFormPage()!, "Delete"));
+    });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.deleteBlastRadius).toHaveBeenCalledWith("env-1");
+      expect(document.body.textContent).toContain("Nothing references it.");
+    });
+
+    const confirm = Array.from(document.body.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Delete")
+      .at(-1);
+    await act(async () => {
+      confirm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.remove).toHaveBeenCalledExactlyOnceWith("env-1");
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()).toBeNull();
+    });
+  });
+
+  it("re-checks the blast radius when the dialog is reopened", async () => {
+    root = createRoot(container);
+    // The app-wide client keeps data fresh for 30s; the delete dialog must not inherit it.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () => {
+      click(findButton(getEnvironmentFormPage()!, "Delete"));
+    });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.deleteBlastRadius).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).toContain("Nothing references it.");
+    });
+
+    // The edit form has its own Cancel; the dialog's is the one portalled in last.
+    const dialogCancel = Array.from(document.body.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Cancel")
+      .at(-1);
+    await act(async () => {
+      click(dialogCancel);
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findButton(getEnvironmentFormPage()!, "Delete"));
+    });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.deleteBlastRadius).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("surfaces a failed blast-radius check and recovers on retry", async () => {
+    const blastRadius = {
+      environmentId: "env-1",
+      canDelete: true,
+      deleteBlockedReasons: [],
+      staticReferences: {
+        isManagedLocal: false,
+        isInstanceDefault: false,
+        agentDefaultCount: 0,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        activeCustomImageSetupSessionCount: 0,
+        hasActiveRuntimeUse: false,
+      },
+    };
+    mockEnvironmentsApi.deleteBlastRadius
+      .mockRejectedValueOnce(new Error("blast radius lookup failed"))
+      .mockResolvedValueOnce(blastRadius);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () => {
+      click(findButton(getEnvironmentFormPage()!, "Delete"));
+    });
+    // The failure must be visible, not a dialog that silently offers nothing.
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain("Could not check what references this environment");
+      expect(document.body.textContent).toContain("blast radius lookup failed");
+    });
+    const blockedConfirm = Array.from(document.body.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Delete")
+      .at(-1);
+    expect(blockedConfirm?.hasAttribute("disabled")).toBe(true);
+    expect(mockEnvironmentsApi.remove).not.toHaveBeenCalled();
+
+    await act(async () => {
+      click(findButton(document.body, "Retry"));
+    });
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain("Nothing references it.");
+    });
+
+    const confirm = Array.from(document.body.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Delete")
+      .at(-1);
+    expect(confirm?.hasAttribute("disabled")).toBe(false);
+    await act(async () => {
+      confirm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.remove).toHaveBeenCalledExactlyOnceWith("env-1");
+  });
+
+  it("blocks deletion when the environment is the instance default", async () => {
+    mockEnvironmentsApi.deleteBlastRadius.mockResolvedValue({
+      environmentId: "env-1",
+      canDelete: false,
+      deleteBlockedReasons: ["instance_default"],
+      staticReferences: {
+        isManagedLocal: false,
+        isInstanceDefault: true,
+        agentDefaultCount: 2,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        activeCustomImageSetupSessionCount: 0,
+        hasActiveRuntimeUse: false,
+      },
+    });
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    await act(async () => {
+      click(findButton(getEnvironmentFormPage()!, "Delete"));
+    });
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain("it is the instance default environment");
+    });
+
+    const confirm = Array.from(document.body.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Delete")
+      .at(-1);
+    expect(confirm?.hasAttribute("disabled")).toBe(true);
+    expect(mockEnvironmentsApi.remove).not.toHaveBeenCalled();
   });
 
   it("opens the edit form on a standalone page with existing values and closes after save", async () => {

@@ -619,14 +619,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
+  const envConfig = parseObject(config.env);
+  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const useConfiguredInsteadOfAgentHome =
+    !executionTargetIsRemote && workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = targetWorkspaceRealization?.mode === "in_place"
     ? targetWorkspaceRealization.authoritativeRoot
     : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
-  const envConfig = parseObject(config.env);
-  const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())

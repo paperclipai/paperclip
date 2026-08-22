@@ -299,6 +299,8 @@ export const queryKeys = {
     capabilities: (companyId: string) => ["environment-capabilities", companyId] as const,
     customImageTemplate: (environmentId: string) =>
       ["environments", environmentId, "custom-image-template"] as const,
+    deleteBlastRadius: (environmentId: string) =>
+      ["environments", environmentId, "delete-blast-radius"] as const,
     customImageSetupSession: (sessionId: string) =>
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },

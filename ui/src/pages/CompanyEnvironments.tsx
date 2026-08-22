@@ -31,6 +31,16 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "@/components/environment-variables-editor";
@@ -1656,6 +1666,70 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     };
   }, [environmentHasUnsavedChanges]);
 
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  const deleteBlastRadiusQuery = useQuery({
+    queryKey: editingEnvironmentId
+      ? queryKeys.environments.deleteBlastRadius(editingEnvironmentId)
+      : ["environment-delete-blast-radius", "none"],
+    queryFn: () => environmentsApi.deleteBlastRadius(editingEnvironmentId!),
+    enabled: deleteDialogOpen && Boolean(editingEnvironmentId),
+    // The blast radius is a point-in-time answer about other actors' state (leases,
+    // references), so the client-wide staleTime must not apply: reopening the dialog
+    // has to ask the server again rather than replay what it saw up to 30s ago.
+    staleTime: 0,
+  });
+  const blastRadius = deleteBlastRadiusQuery.data ?? null;
+  const deleteBlockedReason = blastRadius && !blastRadius.canDelete
+    ? blastRadius.deleteBlockedReasons.map((reason) => reason === "managed_local"
+      ? "it is the managed local environment"
+      : "it is the instance default environment").join(" and ")
+    : null;
+  const blastRadiusReferences = blastRadius
+    ? ([
+      ["agent", blastRadius.staticReferences.agentDefaultCount],
+      ["execution workspace", blastRadius.staticReferences.executionWorkspaceSelectionCount],
+      ["issue", blastRadius.staticReferences.issueSelectionCount],
+      ["project", blastRadius.staticReferences.projectSelectionCount],
+      ["secret binding", blastRadius.staticReferences.secretBindingCount],
+      ["active lease", blastRadius.activeRuntimeUse.activeLeaseCount],
+      ["running image setup", blastRadius.activeRuntimeUse.activeCustomImageSetupSessionCount],
+    ] as const)
+      .filter(([, count]) => count > 0)
+      .map(([label, count]) => `${count} ${label}${count === 1 ? "" : "s"}`)
+    : [];
+
+  const deleteEnvironmentMutation = useMutation({
+    mutationFn: async (environmentId: string) => await environmentsApi.remove(environmentId),
+    onSuccess: async (environment) => {
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.environments.list(selectedCompanyId),
+        });
+      }
+      setDeleteDialogOpen(false);
+      initializedFormKeyRef.current = null;
+      setEnvironmentForm(createEmptyEnvironmentForm());
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
+      environmentMutation.reset();
+      draftEnvironmentProbeMutation.reset();
+      navigate(ENVIRONMENTS_PATH, { replace: true });
+      pushToast({
+        title: "Environment deleted",
+        body: `${environment.name} was removed.`,
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Delete failed",
+        body: error instanceof Error ? error.message : "Could not delete the environment.",
+        tone: "error",
+      });
+    },
+  });
+
   function closeEnvironmentForm() {
     if (environmentMutation.isPending) return;
     if (!confirmDiscardEnvironmentChanges()) return;
@@ -2247,6 +2321,17 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
           </div>
 
           <div className="flex flex-wrap justify-end gap-2 py-4">
+            {editingEnvironmentId ? (
+              <Button
+                variant="outline"
+                className="mr-auto text-destructive hover:text-destructive"
+                onClick={() => setDeleteDialogOpen(true)}
+                disabled={environmentMutation.isPending || deleteEnvironmentMutation.isPending}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               onClick={closeEnvironmentForm}
@@ -2276,6 +2361,67 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   : "Create environment"}
             </Button>
           </div>
+
+          <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Delete {editingEnvironment?.name ?? "this environment"}?
+                </AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-2">
+                    <p>This cannot be undone.</p>
+                    {deleteBlastRadiusQuery.isFetching ? <p>Checking what references it...</p> : null}
+                    {deleteBlastRadiusQuery.isError ? (
+                      <p className="text-destructive">
+                        Could not check what references this environment:{" "}
+                        {deleteBlastRadiusQuery.error instanceof Error
+                          ? deleteBlastRadiusQuery.error.message
+                          : "the blast-radius check failed."}
+                      </p>
+                    ) : null}
+                    {deleteBlockedReason && !deleteBlastRadiusQuery.isFetching ? (
+                      <p className="text-destructive">
+                        This environment cannot be deleted because {deleteBlockedReason}.
+                      </p>
+                    ) : null}
+                    {blastRadius && blastRadius.canDelete && !deleteBlastRadiusQuery.isFetching ? (
+                      blastRadiusReferences.length > 0 ? (
+                        <p>
+                          Still referenced by {blastRadiusReferences.join(", ")}. Those references
+                          will be cleared.
+                        </p>
+                      ) : <p>Nothing references it.</p>
+                    ) : null}
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={deleteEnvironmentMutation.isPending}>Cancel</AlertDialogCancel>
+                {deleteBlastRadiusQuery.isError ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => { void deleteBlastRadiusQuery.refetch(); }}
+                    disabled={deleteBlastRadiusQuery.isFetching}
+                  >
+                    {deleteBlastRadiusQuery.isFetching ? "Retrying..." : "Retry"}
+                  </Button>
+                ) : null}
+                <AlertDialogAction
+                  onClick={() => {
+                    if (editingEnvironmentId) deleteEnvironmentMutation.mutate(editingEnvironmentId);
+                  }}
+                  disabled={
+                    deleteEnvironmentMutation.isPending
+                    || deleteBlastRadiusQuery.isFetching
+                    || blastRadius?.canDelete !== true
+                  }
+                >
+                  {deleteEnvironmentMutation.isPending ? "Deleting..." : "Delete"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
         </SecretRefHintsContext.Provider>
       ) : null}
