@@ -1021,6 +1021,23 @@ export function createPluginWorkerHandle(
       return companyId ? { companyId } : null;
     }
 
+    // Jobs are instance-scoped: register a real invocation (empty companyId =
+    // "unrestricted sentinel") so nested worker→host calls echo a valid id
+    // instead of tripping contextForWorkerMessage's no-id fallback whenever a
+    // scoped invocation (onEvent/executeTool) happens to be active at the same
+    // moment. Without this, a job's own calls are indistinguishable from a call
+    // that lost track of a scope it should have had, and get denied
+    // intermittently under real event traffic.
+    //
+    // contextForWorkerMessage applies proactive company resolution for any
+    // company-referencing call from this sentinel scope: configured companies
+    // succeed, unconfigured companies are denied, kind-"none" calls (instance-
+    // scoped operations) always succeed. Company-scoped jobs (params.companyId
+    // present) still take their scope from the top-level check above.
+    if (method === "runJob") {
+      return { companyId: "" };
+    }
+
     return null;
   }
 
@@ -1985,6 +2002,31 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
+
+    // For instance-scoped invocations (runJob registers companyId:"" to avoid the
+    // no-id fallback), apply the same proactive company resolution as the no-id
+    // path. This prevents the unrestricted sentinel from silently granting access
+    // to every company the worker happens to name:
+    //   • A company-referencing call to a configured company → succeed with that
+    //     company's explicit scope (same behaviour as a proactive call).
+    //   • A company-referencing call to an unconfigured company → deny.
+    //   • A kind-"none" call (referencedCompanyId returns null) → succeed with the
+    //     unrestricted scope so that instance-scoped operations (e.g. state.get
+    //     scopeKind:"instance") always work regardless of concurrent scoped
+    //     invocations.
+    if (!entry.scope.companyId) {
+      const proactiveCompanyId = referencedCompanyId(
+        message.method,
+        (message as { params?: unknown }).params,
+      );
+      if (proactiveCompanyId) {
+        if (proactiveCompanyScopes.has(proactiveCompanyId)) {
+          return { invocationScope: { companyId: proactiveCompanyId }, traceparent: entry.traceparent };
+        }
+        return { invalidInvocationScope: true };
+      }
+    }
+
     return { invocationScope: entry.scope, traceparent: entry.traceparent };
   }
 

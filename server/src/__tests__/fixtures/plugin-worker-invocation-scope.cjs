@@ -23,15 +23,25 @@ function sendNestedHostRequest(originalRequest, invocationId) {
         configPath: params.configPath || "apiKeyRef",
       }
     : hostMethod === "state.get"
-    ? {
-        // Company-scoped state key — the shape a proactive gateway loop uses
-        // (ctx.state.get with scopeKind "company"). The host derives the
-        // requested company from scopeId, not companyId.
-        scopeKind: "company",
-        scopeId: requestedCompanyId,
-        namespace: params.namespace || "ns",
-        stateKey: params.stateKey || "key",
-      }
+    ? params.nestedScopeKind === "instance"
+      ? {
+          // Instance-scoped state key — kind-"none" call, no company reference.
+          // Used to test that runJob's unrestricted invocation scope admits
+          // instance-scoped operations regardless of any concurrently active
+          // company-scoped invocation.
+          scopeKind: "instance",
+          namespace: params.namespace || "ns",
+          stateKey: params.stateKey || "key",
+        }
+      : {
+          // Company-scoped state key — the shape a proactive gateway loop uses
+          // (ctx.state.get with scopeKind "company"). The host derives the
+          // requested company from scopeId, not companyId.
+          scopeKind: "company",
+          scopeId: requestedCompanyId,
+          namespace: params.namespace || "ns",
+          stateKey: params.stateKey || "key",
+        }
     : hostMethod === "events.subscribe"
     ? {
         // The subscribe shape the SDK issues from setup() via
@@ -98,13 +108,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction"],
+        supportedMethods: ["getData", "performAction", "runJob"],
       },
     });
     return;
   }
 
-  if (method === "getData" || method === "performAction") {
+  if (method === "getData" || method === "performAction" || method === "runJob") {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }
