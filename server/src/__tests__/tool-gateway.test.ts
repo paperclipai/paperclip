@@ -4114,6 +4114,103 @@ rl.on("line", (line) => {
     ]);
   });
 
+  it("returns spec-valid MCP results for plugin tools over the gateway protocol", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const results: Record<string, { content?: string; data?: unknown; error?: string }> = {
+      "demo-plugin:structured": { content: "structured ok", data: { ok: true } },
+      "demo-plugin:text_only": { content: "text only" },
+      "demo-plugin:failing": { error: "plugin refused the call" },
+      "demo-plugin:empty_error": { error: "", content: "ignored on failure" },
+    };
+    const dispatcher: PluginToolDispatcher = {
+      initialize: async () => {},
+      teardown: () => {},
+      listToolsForAgent: () => Object.keys(results).map((name) => ({
+        name,
+        displayName: name,
+        description: "Plugin tool fixture.",
+        parametersSchema: { type: "object" },
+        pluginId: "demo-plugin",
+      })),
+      getTool: () => null,
+      executeTool: async (tool) => ({
+        pluginId: "demo-plugin",
+        toolName: tool.split(":")[1]!,
+        result: results[tool]!,
+      }),
+      registerPluginTools: () => {},
+      unregisterPluginTools: () => {},
+      toolCount: () => Object.keys(results).length,
+      getRegistry: () => {
+        throw new Error("not used");
+      },
+    };
+
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, Object.keys(results));
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "demo-plugin:structured",
+      parameters: {},
+    })).resolves.toMatchObject({
+      status: "completed",
+      result: { content: "structured ok", data: { ok: true } },
+    });
+
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Plugin MCP surface", profileId: profile.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
+
+    const structured = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "demo-plugin:structured", arguments: {} } })
+      .expect(200);
+    expect(structured.body.result).toEqual({
+      content: [{ type: "text", text: "structured ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    });
+
+    const textOnly = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "demo-plugin:text_only", arguments: {} } })
+      .expect(200);
+    expect(textOnly.body.result).toEqual({
+      content: [{ type: "text", text: "text only" }],
+      isError: false,
+    });
+    expect(textOnly.body.result).not.toHaveProperty("structuredContent");
+
+    const failing = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "demo-plugin:failing", arguments: {} } })
+      .expect(200);
+    expect(failing.body.result).toEqual({
+      content: [{ type: "text", text: "plugin refused the call" }],
+      isError: true,
+    });
+
+    const emptyError = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "demo-plugin:empty_error", arguments: {} } })
+      .expect(200);
+    expect(emptyError.body.result).toEqual({
+      content: [{ type: "text", text: "ignored on failure" }],
+      isError: true,
+    });
+  });
+
   it("rejects caller-supplied issue context outside the run company", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
