@@ -47,6 +47,10 @@ function asBoolean(value: unknown) {
   return typeof value === "boolean" ? value : null;
 }
 
+function asArray(value: unknown): unknown[] | null {
+  return Array.isArray(value) ? value : null;
+}
+
 function asNestedString(record: Record<string, unknown>, key: string, nestedKey: string) {
   const nested = asRecord(record[key]);
   return nested ? asString(nested[nestedKey]) : null;
@@ -188,7 +192,7 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
   };
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null, reviewDecision?: string): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -197,7 +201,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headRef = asNestedString(body, "head", "ref");
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
-  const reviewDecision = asString(body.review_decision);
+  const headSha = asNestedString(body, "head", "sha");
 
   let statusKey = state;
   let statusLabel = state === "open" ? "Open" : state === "closed" ? "Closed" : "Unknown";
@@ -255,6 +259,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
+      ...(headSha ? { headSha } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
     },
   };
@@ -305,6 +310,161 @@ async function safeJson(response: Response) {
   } catch {
     return null;
   }
+}
+
+type OpinionatedReviewMap = Map<string, string>;
+
+function graphQlUrlFor(apiBaseUrl: string) {
+  return apiBaseUrl.endsWith("/api/v3")
+    ? `${apiBaseUrl.slice(0, -"/api/v3".length)}/api/graphql`
+    : `${apiBaseUrl}/graphql`;
+}
+
+function parseNextPageUrl(linkHeader: string | null) {
+  if (!linkHeader) return null;
+  for (const link of linkHeader.split(",")) {
+    const match = /^\s*<([^>]+)>;\s*rel="([^"]+)"\s*$/.exec(link);
+    if (match?.[2] === "next") return match[1] ?? null;
+  }
+  return null;
+}
+
+async function fetchLatestOpinionatedReviews(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  headers: Record<string, string>,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<OpinionatedReviewMap | null> {
+  const query = `
+    query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          latestOpinionatedReviews(first: 100, after: $after) {
+            nodes {
+              author {
+                login
+              }
+              state
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const reviewStates = new Map<string, string>();
+  let after: string | null = null;
+
+  do {
+    let response: Response;
+    try {
+      response = await fetchImpl(graphQlUrlFor(baseUrl), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ query, variables: { owner, repo, number, after } }),
+      });
+    } catch {
+      return null;
+    }
+
+    if (!response.ok) return null;
+
+    const body = await safeJson(response);
+    if (!body) return null;
+    const data = asRecord(body.data);
+    const repository = asRecord(data?.repository);
+    const pullRequest = asRecord(repository?.pullRequest);
+    const latestOpinionatedReviews = asRecord(pullRequest?.latestOpinionatedReviews);
+    const nodes = asArray(latestOpinionatedReviews?.nodes);
+    if (!nodes) return reviewStates;
+
+    for (const node of nodes) {
+      const review = asRecord(node);
+      if (!review) continue;
+      const authorLogin = asNestedString(review, "author", "login");
+      const state = asString(review.state);
+      if (!authorLogin || !state) continue;
+      reviewStates.set(authorLogin, state);
+    }
+
+    const pageInfo = asRecord(latestOpinionatedReviews?.pageInfo);
+    const hasNextPage = asBoolean(pageInfo?.hasNextPage) ?? false;
+    after = hasNextPage ? asString(pageInfo?.endCursor) : null;
+    if (hasNextPage && !after) return null;
+  } while (after);
+
+  return reviewStates;
+}
+
+async function hasApprovalAtHead(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  headers: Record<string, string>,
+  identity: GitHubObjectIdentity,
+  headSha: string,
+): Promise<boolean> {
+  let reviewsUrl: string | null = `${baseUrl}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/pulls/${
+    identity.number
+  }/reviews?per_page=100`;
+  const approverLogins = new Set<string>();
+
+  while (reviewsUrl) {
+    let reviewsResponse: Response;
+    try {
+      reviewsResponse = await fetchImpl(reviewsUrl, { headers });
+    } catch {
+      return false;
+    }
+
+    if (!reviewsResponse.ok) return false;
+    const reviewFailure = failureFromGitHubResponse(reviewsResponse);
+    if (reviewFailure) return false;
+
+    let reviewsJson: unknown;
+    try {
+      reviewsJson = await reviewsResponse.json();
+    } catch {
+      return false;
+    }
+    const reviews = asArray(reviewsJson);
+    if (!reviews) return false;
+
+    for (const review of reviews) {
+      const reviewRecord = asRecord(review);
+      if (!reviewRecord) continue;
+      if (asString(reviewRecord.commit_id) !== headSha) continue;
+      if (asString(reviewRecord.state) !== "APPROVED") continue;
+      const login = asNestedString(reviewRecord, "user", "login");
+      if (login) approverLogins.add(login);
+    }
+
+    reviewsUrl = parseNextPageUrl(reviewsResponse.headers.get("link"));
+  }
+
+  if (approverLogins.size === 0) return false;
+
+  const latestOpinionatedReviews = await fetchLatestOpinionatedReviews(
+    fetchImpl,
+    baseUrl,
+    headers,
+    identity.owner,
+    identity.repo,
+    identity.number,
+  );
+  if (!latestOpinionatedReviews) return false;
+
+  for (const login of approverLogins) {
+    const latestState = latestOpinionatedReviews.get(login);
+    if (latestState === "APPROVED") return true;
+  }
+
+  return false;
 }
 
 async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
@@ -386,8 +546,9 @@ export function createGitHubExternalObjectProvider(
         };
         if (token) headers.authorization = `Bearer ${token}`;
 
+        const apiBase = gitHubApiBase(identity.host);
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
-        const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
+        const url = `${apiBase}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
 
         let response: Response;
         try {
@@ -430,10 +591,20 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
+        let reviewDecision: string | undefined;
+        if (objectType === "pull_request") {
+          const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
+          const headSha = asNestedString(body, "head", "sha");
+          if (!merged && headSha) {
+            const hasApproval = await hasApprovalAtHead(fetchImpl, apiBase, headers, identity, headSha);
+            if (hasApproval) reviewDecision = "APPROVED";
+          }
+        }
+
         return {
           ok: true,
           snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
+            ? pullRequestSnapshot(identity, body, etag, reviewDecision)
             : issueSnapshot(identity, body, etag),
         };
       },
