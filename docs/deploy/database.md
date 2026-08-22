@@ -64,6 +64,8 @@ DATABASE_PREPARED_STATEMENTS=false
 
 Related optional client tuning (driver defaults apply when unset): `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`.
 
+Set `DATABASE_CIRCUIT_BREAKER=true` to fail queries fast while the database is unreachable, instead of parking each one until `connect_timeout` elapses — during an outage that pile-up is what exhausts process memory. Tune with `DATABASE_CIRCUIT_BREAKER_FAILURE_THRESHOLD` and `DATABASE_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS`; see `doc/DATABASE.md` for the full description.
+
 ## Switching Between Modes
 
 | `DATABASE_URL` | Mode |

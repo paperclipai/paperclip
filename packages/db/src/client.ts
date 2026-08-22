@@ -5,6 +5,12 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
+import { withConnectionCircuitBreaker } from "./circuit-breaker-sql.js";
+import {
+  ConnectionCircuitBreaker,
+  DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+  DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+} from "./connection-circuit-breaker.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -67,6 +73,19 @@ export interface DatabaseClientOptions {
   idleTimeoutSeconds?: number;
   /** postgres.js `connect_timeout` in seconds (driver default: 30). */
   connectTimeoutSeconds?: number;
+  /**
+   * Fail fast while the database is unreachable instead of parking every
+   * query until `connect_timeout` elapses. Omit to disable (the default),
+   * which keeps behavior identical to a bare `postgres(url)`.
+   */
+  circuitBreaker?: CircuitBreakerSettings;
+}
+
+export interface CircuitBreakerSettings {
+  /** Consecutive connection failures that trip the breaker open. */
+  failureThreshold: number;
+  /** How long the breaker stays open before admitting one probe query. */
+  resetTimeoutMs: number;
 }
 
 function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
@@ -103,7 +122,33 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (idleTimeoutSeconds !== undefined) options.idleTimeoutSeconds = idleTimeoutSeconds;
   const connectTimeoutSeconds = envPositiveInteger(env, "DATABASE_CONNECT_TIMEOUT_SECONDS");
   if (connectTimeoutSeconds !== undefined) options.connectTimeoutSeconds = connectTimeoutSeconds;
+  const circuitBreaker = circuitBreakerSettingsFromEnv(env);
+  if (circuitBreaker !== undefined) options.circuitBreaker = circuitBreaker;
   return options;
+}
+
+/**
+ * The breaker is off unless `DATABASE_CIRCUIT_BREAKER` is true. Setting either
+ * tuning variable also turns it on, so an operator who reaches for a threshold
+ * does not have to remember the enable flag as well.
+ */
+function circuitBreakerSettingsFromEnv(env: NodeJS.ProcessEnv): CircuitBreakerSettings | undefined {
+  const enabled = envBoolean(env, "DATABASE_CIRCUIT_BREAKER");
+  const failureThreshold = envPositiveInteger(env, "DATABASE_CIRCUIT_BREAKER_FAILURE_THRESHOLD");
+  const resetTimeoutSeconds = envPositiveInteger(env, "DATABASE_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS");
+
+  if (enabled === false) return undefined;
+  if (enabled === undefined && failureThreshold === undefined && resetTimeoutSeconds === undefined) {
+    return undefined;
+  }
+
+  return {
+    failureThreshold: failureThreshold ?? DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+    resetTimeoutMs:
+      resetTimeoutSeconds === undefined
+        ? DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS
+        : resetTimeoutSeconds * 1000,
+  };
 }
 
 export function postgresJsOptions(options: DatabaseClientOptions): Record<string, unknown> {
@@ -117,7 +162,8 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = options ?? databaseClientOptionsFromEnv();
-  const sql = postgres(url, postgresJsOptions(resolved));
+  const breaker = resolved.circuitBreaker ? new ConnectionCircuitBreaker(resolved.circuitBreaker) : null;
+  const sql = withConnectionCircuitBreaker(postgres(url, postgresJsOptions(resolved)), breaker);
   return drizzlePg(sql, { schema });
 }
 
