@@ -20,14 +20,14 @@ import {
   AdvancedToolsLink,
   BYO_CONNECT_HREF,
   ByoConnectCard,
-  NOTION_CONNECT_HREF,
   POPULAR_KEYS,
   ZAPIER_CONNECT_HREF,
 } from "./store-cards";
+import { appSourceConnectHref, isMcpDirectOAuthConnectSlug } from "./app-connect-policy";
 
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
-  if (slug === "notion") return NOTION_CONNECT_HREF;
+  if (isMcpDirectOAuthConnectSlug(slug)) return appSourceConnectHref(slug);
   if (slug === "zapier") return ZAPIER_CONNECT_HREF;
   return null;
 }

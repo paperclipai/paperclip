@@ -3336,6 +3336,106 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
   });
 
+  it("treats a complete manifest endpoint pair as authoritative and skips discovery", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      name: "Slack manifest precedence",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("manifest endpoint precedence must not run OAuth discovery"),
+    );
+
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+
+    expect(`${new URL(started.authorizationUrl).origin}${new URL(started.authorizationUrl).pathname}`).toBe(
+      "https://slack.com/oauth/v2/authorize",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("discovers Linear's MCP authorization server when the manifest omits endpoint hints", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "linear",
+      name: "Linear discovery precedence",
+    });
+    const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+    const requestedUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      requestedUrls.push(href);
+      if (href === "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          resource: "https://mcp.linear.app/mcp",
+          authorization_servers: ["https://mcp.linear.app"],
+          scopes_supported: ["read", "write"],
+        });
+      }
+      if (href === "https://mcp.linear.app/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://mcp.linear.app",
+          authorization_endpoint: "https://mcp.linear.app/authorize",
+          token_endpoint: "https://mcp.linear.app/token",
+          registration_endpoint: "https://mcp.linear.app/register",
+          revocation_endpoint: "https://mcp.linear.app/token",
+          grant_types_supported: [
+            "authorization_code",
+            "refresh_token",
+            "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          ],
+          scopes_supported: ["read", "write", "openid", "email"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
+        });
+      }
+      if (href === "https://mcp.linear.app/register") {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          client_name: "Paperclip (paperclip.example)",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+        return mcpHttpResponse({
+          client_id: "linear-dcr-client",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri,
+      actor: { actorType: "user", actorId: "board" },
+    });
+
+    expect(`${new URL(started.authorizationUrl).origin}${new URL(started.authorizationUrl).pathname}`).toBe(
+      "https://mcp.linear.app/authorize",
+    );
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("linear-dcr-client");
+    expect(requestedUrls).toEqual([
+      "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp",
+      "https://mcp.linear.app/.well-known/oauth-authorization-server",
+      "https://mcp.linear.app/register",
+    ]);
+  });
+
   it("discovers Notion MCP OAuth metadata, registers one public client, and reuses it", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "");

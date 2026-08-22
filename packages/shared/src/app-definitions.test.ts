@@ -9,6 +9,11 @@ describe("AppDefinition catalog",()=>{
   expect(notion?.redirectConstraints).toBe("https-or-loopback-http");
   expect(notion?.methods[0]?.defaults).toEqual({serverUrl:"https://mcp.notion.com/mcp"});
  });
- it("preserves required Linear OAuth scopes",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="linear")?.methods[0]?.defaults?.scopesHint).toEqual(["read","write"]));
+ it("uses discovery-first Linear MCP OAuth metadata",()=>{
+  const linear=APP_DEFINITIONS.find((app)=>app.slug==="linear");
+  expect(linear?.methods[0]?.defaults).toEqual({serverUrl:"https://mcp.linear.app/mcp",scopesHint:["read","write"]});
+  expect(linear?.redirectConstraints).toBeUndefined();
+  expect(linear?.methods[0]?.guidanceMd).not.toContain("Register a Linear OAuth app");
+ });
  it("enforces method and field invariants",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods){if(method.auth==="api_key")expect(method.keyPlacement).toBeTruthy();if(method.auth==="oauth")expect(method.ownershipModes.length).toBeGreaterThan(0);for(const field of method.credentialFields??[])if(field.required&&field.type!=="checkbox")expect(field.placeholder).toBeTruthy()}});
 });
