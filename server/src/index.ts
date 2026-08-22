@@ -804,6 +804,15 @@ export async function startServer(): Promise<StartedServer> {
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
+  // Resolves once the HTTP listener is bound (see `server.listen(...)` below).
+  // Any recovery/reconciliation step that can dispatch a process run must wait
+  // on this before running: a spawned process that immediately calls back into
+  // our own API sees ECONNREFUSED if the listener isn't bound yet (RENA-56174).
+  let resolveServerListening!: () => void;
+  const serverListening = new Promise<void>((resolve) => {
+    resolveServerListening = resolve;
+  });
+
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
   // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
@@ -1260,21 +1269,32 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
-        await heartbeat.resumeQueuedRuns();
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-        if (
-          promotion.promoted > 0 ||
-          reconciled.assignmentDispatched > 0 ||
-          reconciled.dispatchRequeued > 0 ||
-          reconciled.continuationRequeued > 0 ||
-          reconciled.successfulRunHandoffEscalated > 0 ||
-          reconciled.escalated > 0
-        ) {
-          logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-            "startup heartbeat recovery changed assigned issue state",
-          );
-        }
+
+        // Defer run-dispatching reconciliation until the HTTP listener is bound
+        // instead of awaiting it inline: awaiting `serverListening` here would
+        // deadlock, since that promise only resolves once `server.listen(...)`
+        // runs further down this same startup function, after this recovery
+        // IIFE has already been awaited to completion.
+        const startupRunDispatch = serverListening.then(async () => {
+          await heartbeat.resumeQueuedRuns();
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            promotion.promoted > 0 ||
+            reconciled.assignmentDispatched > 0 ||
+            reconciled.dispatchRequeued > 0 ||
+            reconciled.continuationRequeued > 0 ||
+            reconciled.successfulRunHandoffEscalated > 0 ||
+            reconciled.escalated > 0
+          ) {
+            logger.warn(
+              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              "startup heartbeat recovery changed assigned issue state",
+            );
+          }
+        }).catch((err) => {
+          logger.error({ err }, "startup run dispatch after server listen failed");
+        });
+        trackHeartbeatSchedulerWork(startupRunDispatch);
 
         const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
         if (issueGraphReconciled.escalationsCreated > 0 || issueGraphReconciled.dependencyWakesHealed > 0) {
@@ -1601,6 +1621,7 @@ export async function startServer(): Promise<StartedServer> {
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
       logger.info(`Server listening on ${config.host}:${listenPort}`);
+      resolveServerListening();
       void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
         if (notified) logger.info("Notified systemd that Paperclip is ready");
       });

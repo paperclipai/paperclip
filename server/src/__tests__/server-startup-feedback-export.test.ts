@@ -557,6 +557,37 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
   });
 
+  it("dispatches queued/stranded runs only after the HTTP listener is bound (RENA-56174/56175 boot race)", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+
+    await startServer();
+    // Flush the microtask queue so the post-listen dispatch chain
+    // (`serverListening.then(...)`), which startServer() does not await
+    // directly, has a chance to run before we assert on it.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.reconcileStrandedAssignedIssues).toHaveBeenCalledTimes(1);
+
+    const listenCallOrder = fakeServer.listen.mock.invocationCallOrder[0];
+    const resumeQueuedRunsCallOrder = heartbeatServiceMock.resumeQueuedRuns.mock.invocationCallOrder[0];
+    const reconcileStrandedCallOrder = heartbeatServiceMock.reconcileStrandedAssignedIssues.mock.invocationCallOrder[0];
+
+    // A process dispatched before the listener is bound would call back into
+    // our own API and see ECONNREFUSED (RENA-56174). Both run-dispatching
+    // reconciliation steps must therefore fire strictly after `server.listen`
+    // was invoked, not during the earlier, synchronously-awaited startup
+    // recovery pass.
+    expect(resumeQueuedRunsCallOrder).toBeGreaterThan(listenCallOrder);
+    expect(reconcileStrandedCallOrder).toBeGreaterThan(listenCallOrder);
+  });
+
   it("refuses authenticated public startup without an external database URL", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       deploymentExposure: "public",
