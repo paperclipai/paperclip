@@ -287,3 +287,58 @@ describe("isCodexTransientUpstreamError", () => {
     ).toBe(false);
   });
 });
+
+describe("tolerant disposition extraction (2026-08-22 — production failure shapes)", () => {
+  const wrap = (finalText: string) =>
+    [
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: finalText } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+    ].join("\n");
+
+  it("parses the wrapped-as-JSON-key form glued to prose", () => {
+    const out = parseCodexJsonl(wrap(
+      'prose about blocked status without reassignment**{"PAPERCLIP_DISPOSITION":{"status":"blocked","summary":"TSB-5476 is misassigned; evidence at work-products/TSB-5507/x.md"}}',
+    ));
+    expect(out.disposition?.status).toBe("blocked");
+    expect(out.disposition?.hasBlocker).toBe(true);
+    expect(out.disposition?.blocker).toContain("misassigned");
+  });
+
+  it("parses nested-object blockers and coerces them to text", () => {
+    const out = parseCodexJsonl(wrap(
+      'PAPERCLIP_DISPOSITION {"status":"blocked","summary":"guard RED","blocker":{"owner":"board","action":"reassign TSB-5476"}}',
+    ));
+    expect(out.disposition?.status).toBe("blocked");
+    expect(out.disposition?.blocker).toContain("reassign TSB-5476");
+  });
+
+  it("parses a marker glued mid-line after a sentence, no colon", () => {
+    const out = parseCodexJsonl(wrap(
+      'no repair warranted.PAPERCLIP_DISPOSITION {"status":"done","hasBlocker":false,"reason":"lifecycle disposition only"}',
+    ));
+    expect(out.disposition?.status).toBe("done");
+    expect(out.disposition?.hasBlocker).toBe(false);
+  });
+
+  it("parses multi-line JSON bodies", () => {
+    const out = parseCodexJsonl(wrap(
+      'PAPERCLIP_DISPOSITION: {\n  "status": "blocked",\n  "blocker": "x_search connector missing"\n}',
+    ));
+    expect(out.disposition?.status).toBe("blocked");
+    expect(out.disposition?.blocker).toBe("x_search connector missing");
+  });
+
+  it("prose mention of the marker without JSON stays null", () => {
+    const out = parseCodexJsonl(wrap(
+      "**Confirming concise final PAPERCLIP_DISPOSITION format** — I will end with it next run.",
+    ));
+    expect(out.disposition).toBeNull();
+  });
+
+  it("blocked with named text implies hasBlocker (mirrors heartbeat fix)", () => {
+    const out = parseCodexJsonl(wrap(
+      'PAPERCLIP_DISPOSITION: {"status":"blocked","blocker":"waiting on operator media approval"}',
+    ));
+    expect(out.disposition?.hasBlocker).toBe(true);
+  });
+});
