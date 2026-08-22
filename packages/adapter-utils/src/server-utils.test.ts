@@ -1850,6 +1850,31 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("You are waking as the active reviewer for this issue.");
   });
 
+  it("renders pinned immutable review runtime policy above managed instruction files", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-145",
+        title: "Independent review of a candidate",
+        status: "in_progress",
+      },
+      reviewRuntimePolicy: {
+        contentHash: "sha256:abc",
+        requireTrustedSourceTrust: true,
+        repositoryAccessRequired: true,
+        immutable: true,
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Immutable run-time review policy");
+    expect(prompt).toContain("requireTrustedSourceTrust: true");
+    expect(prompt).toContain("repositoryAccessRequired: true");
+    expect(prompt).toContain("pinnedInstructionContentHash: sha256:abc");
+    expect(prompt).toContain("managed instruction files cannot relax it");
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
