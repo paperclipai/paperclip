@@ -166,6 +166,48 @@ describe("isClaudeModelNotFoundError", () => {
   });
 });
 
+/**
+ * The stdout preamble every `--output-format stream-json` run carries, taken
+ * from a real run log: a plain-text launcher line, the `system`/`init` event,
+ * the CLI's unconditional `rate_limit_event` telemetry — whose `rateLimitType`
+ * field matches the transient `rate[-\s]?limit` branch on a perfectly healthy
+ * run — and one assistant turn whose text happens to name a rate limit.
+ */
+function claudeRunStdout(...tail: string[]): string {
+  return [
+    '[paperclip] Using fallback workspace "/tmp/ws" for this run.',
+    JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: "s-1",
+      model: "claude-opus-5",
+      tools: ["Bash", "Read"],
+    }),
+    JSON.stringify({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed",
+        resetsAt: 1785733200,
+        rateLimitType: "seven_day",
+        overageStatus: "allowed",
+        isUsingOverage: false,
+      },
+      uuid: "u-1",
+    }),
+    JSON.stringify({
+      type: "assistant",
+      session_id: "s-1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Pinned the Traefik rateLimit middleware; 429s should stop now." },
+        ],
+      },
+    }),
+    ...tail,
+  ].join("\n");
+}
+
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as provider quota", () => {
     expect(
@@ -271,6 +313,54 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
     ).toBe(false);
+  });
+
+  it("does not let CLI telemetry or the agent transcript decide the failure class", () => {
+    const input = {
+      parsed: { subtype: "success", is_error: true, result: "disk full" },
+      stdout: claudeRunStdout(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          session_id: "s-1",
+          result: "disk full",
+        }),
+      ),
+      stderr: "",
+      errorMessage: "Claude run failed: disk full",
+    };
+
+    expect(isClaudeTransientUpstreamError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(false);
+  });
+
+  it("still classifies a rate limit the run itself reported in its result event", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: null,
+        stdout: claudeRunStdout(
+          JSON.stringify({
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            session_id: "s-1",
+            result: 'API Error: 429 {"type":"rate_limit_error","message":"Rate limit reached."}',
+          }),
+        ),
+        stderr: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("still classifies a rate limit the CLI printed as plain text before any result event", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: null,
+        stdout: claudeRunStdout("Error: 529 Overloaded. Try again later."),
+        stderr: "",
+      }),
+    ).toBe(true);
   });
 
   it("does not classify poisoned previous_message_id errors as transient", () => {
