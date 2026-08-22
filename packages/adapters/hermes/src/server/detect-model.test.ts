@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { parseModelFromConfig, resolveProvider } from "./detect-model.js";
+import { inferProviderFromModel, parseModelFromConfig, resolveProvider } from "./detect-model.js";
 import { testEnvironment } from "./test.js";
 
 const providerEnvKeys = [
@@ -87,6 +87,39 @@ test("resolveProvider still infers from the requested model when Hermes config i
   })).toEqual({
     provider: "anthropic",
     resolvedFrom: "modelInference",
+  });
+});
+
+test("inferProviderFromModel preserves explicit OpenRouter model routes before bare-name inference", () => {
+  expect(inferProviderFromModel("openrouter/fusion")).toBe("openrouter");
+  expect(inferProviderFromModel("z-ai/glm-5.2")).toBe("openrouter");
+});
+
+test("resolveProvider routes curated OpenRouter picker models through OpenRouter by default", () => {
+  expect(resolveProvider({
+    explicitProvider: undefined,
+    model: "openrouter/fusion",
+  })).toEqual({
+    provider: "openrouter",
+    resolvedFrom: "modelInference",
+  });
+
+  expect(resolveProvider({
+    explicitProvider: undefined,
+    model: "z-ai/glm-5.2",
+  })).toEqual({
+    provider: "openrouter",
+    resolvedFrom: "modelInference",
+  });
+});
+
+test("resolveProvider still lets explicit provider config override OpenRouter picker inference", () => {
+  expect(resolveProvider({
+    explicitProvider: "zai",
+    model: "z-ai/glm-5.2",
+  })).toEqual({
+    provider: "zai",
+    resolvedFrom: "adapterConfig",
   });
 });
 
