@@ -74,6 +74,8 @@ import type {
   PluginAuthorizationDecisionResult,
   PluginAuthorizationPolicyRecord,
   PluginAuthorizationPolicySummary,
+  PluginAcceptedPlanDecompositionChildInput,
+  PluginAcceptedPlanDecompositionResult,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -1893,6 +1895,18 @@ export interface WorkerToHostMethods {
   "issues.getAttachmentContent": [
     params: { attachmentId: string; companyId: string; maxBytes?: number | null },
     result: PluginIssueAttachmentContent | null,
+  ];
+  "issues.decomposeAcceptedPlan": [
+    params: {
+      sourceIssueId: string;
+      companyId: string;
+      acceptedPlanRevisionId: string;
+      children: PluginAcceptedPlanDecompositionChildInput[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginAcceptedPlanDecompositionResult,
   ];
 
   // Issue Documents
