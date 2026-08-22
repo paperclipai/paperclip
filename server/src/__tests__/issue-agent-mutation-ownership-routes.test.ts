@@ -363,6 +363,39 @@ async function createApp(actor: Record<string, unknown>, db?: unknown) {
   return app;
 }
 
+
+function makeActiveRecovery(overrides: Record<string, unknown> = {}) {
+  return {
+    id: recoveryActionId,
+    companyId,
+    sourceIssueId: issueId,
+    recoveryIssueId: null,
+    kind: "issue_graph_liveness",
+    status: "active",
+    ownerType: "agent",
+    ownerAgentId,
+    ownerUserId: null,
+    previousOwnerAgentId: peerAgentId,
+    returnOwnerAgentId: peerAgentId,
+    cause: "stranded_assigned_issue",
+    fingerprint: "stranded:test",
+    evidence: {},
+    nextAction: "Restore a live execution path.",
+    wakePolicy: null,
+    monitorPolicy: null,
+    attemptCount: 1,
+    maxAttempts: null,
+    timeoutAt: null,
+    lastAttemptAt: new Date("2026-08-19T12:00:00.000Z"),
+    outcome: null,
+    resolutionNote: null,
+    resolvedAt: null,
+    createdAt: new Date("2026-08-19T12:00:00.000Z"),
+    updatedAt: new Date("2026-08-19T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function peerActor(overrides: Record<string, unknown> = {}) {
   return {
     type: "agent",
@@ -894,6 +927,178 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+
+  it("allows standard-trust peer comments on a peer-owned in-progress issue without mutating status", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_explicit_grant",
+      explanation: "Allowed by the shared visible-issue write rule.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Cross-lane append-only note." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["low-trust", "deny_low_trust_boundary", "Issue is outside this low-trust boundary.", {}],
+    ["skill-test", "deny_scope", "Skill-test keys cannot comment on another issue.", { keyScope: { kind: "skill_test", issueId: "99999999-9999-4999-8999-999999999999" } }],
+    ["task-bridge", "deny_scope", "Task-bridge keys cannot comment on an unrelated issue.", { keyId: "99999999-9999-4999-8999-999999999999", keyScope: { kind: "task_bridge", parentIssueId: "99999999-9999-4999-8999-999999999999" } }],
+  ])("denies %s peer comments on a peer-owned issue", async (_label, reason, explanation, actorOverrides) => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason,
+      explanation,
+    }));
+
+    const res = await request(await createApp(peerActor(actorOverrides)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Should stay denied." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows the previous owner to close a recovery-stolen in-progress issue", async () => {
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+      expect.anything(),
+    );
+  });
+
+  it("allows the previous owner to cancel a recovery-stolen issue", async () => {
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "cancelled" }),
+      expect.anything(),
+    );
+  });
+
+  it("allows the previous owner to close a recovery-stolen blocked issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects previous-owner description rewrites after recovery steal", async () => {
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ description: "Should stay denied." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects previous-owner reassignment after recovery steal", async () => {
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("revokes prior-owner close after the new owner successfully checkouts", async () => {
+    const checkoutRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: ownerAgentId,
+      checkoutRunId,
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+    mockHeartbeatService.getRun.mockResolvedValue({ id: checkoutRunId, agentId: ownerAgentId });
+    mockIssueService.listComments.mockResolvedValue([]);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("revokes prior-owner close after the new owner posts a non-recovery comment", async () => {
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+    mockIssueService.listComments.mockResolvedValue([{
+      id: "comment-new-owner",
+      authorAgentId: ownerAgentId,
+      createdAt: new Date("2026-08-19T12:10:00.000Z"),
+      presentation: null,
+      deletedAt: null,
+    }]);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not revoke prior-owner close on a recovery system_notice from the new owner", async () => {
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecovery());
+    mockIssueService.listComments.mockResolvedValue([{
+      id: "comment-recovery",
+      authorAgentId: ownerAgentId,
+      createdAt: new Date("2026-08-19T12:01:00.000Z"),
+      presentation: { kind: "system_notice" },
+      deletedAt: null,
+    }]);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+      expect.anything(),
+    );
   });
 
   it("rejects peer agents from listing comments when issue read is outside their boundary", async () => {
