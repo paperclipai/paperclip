@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pipelineCaseIssueLinks, pipelineCases } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -9462,6 +9463,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      pipelineManagedLifecycle,
     ] = await Promise.all([
       issue
         ? db
@@ -9601,6 +9603,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      // Pipeline-managed lifecycle: this issue is linked (work/conversation)
+      // to a non-terminal pipeline case — the pipeline's stage gates own the
+      // next action, so disposition recovery must leave it alone.
+      issue
+        ? db
+          .select({ id: pipelineCaseIssueLinks.id })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(pipelineCases, eq(pipelineCases.id, pipelineCaseIssueLinks.caseId))
+          .where(
+            and(
+              eq(pipelineCaseIssueLinks.companyId, issue.companyId),
+              eq(pipelineCaseIssueLinks.issueId, issue.id),
+              isNull(pipelineCaseIssueLinks.retiredAt),
+              inArray(pipelineCaseIssueLinks.role, ["work", "conversation"]),
+              isNull(pipelineCases.terminalKind),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -9620,6 +9642,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
+      hasPipelineManagedLifecycle: Boolean(pipelineManagedLifecycle),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });

@@ -303,6 +303,9 @@ vi.mock("../services/index.js", () => ({
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
   statusCardService: vi.fn(() => ({})),
+  pipelineService: vi.fn(() => ({
+    sweepIssueGateCases: vi.fn(async () => ({ advanced: 0 })),
+  })),
   toolAccessService: vi.fn(() => ({
     sweepConnectionHealth: vi.fn(async () => ({
       checked: 0,

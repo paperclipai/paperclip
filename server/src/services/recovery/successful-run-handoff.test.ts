@@ -565,4 +565,18 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
   });
+
+  it("skips the disposition nag when a pipeline case owns the issue lifecycle", () => {
+    const decision = decide({ hasPipelineManagedLifecycle: true });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind === "skip") {
+      expect(decision.reason).toContain("pipeline");
+    }
+  });
+
+  it("still requires a disposition when no pipeline case owns the issue", () => {
+    const decision = decide({ hasPipelineManagedLifecycle: false });
+    expect(decision.kind).not.toBe("skip");
+  });
+
 });

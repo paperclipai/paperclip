@@ -449,6 +449,14 @@ export function decideSuccessfulRunHandoff(input: {
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   hasActiveRoutineContinuation: boolean;
+  /**
+   * The issue is work/conversation-linked to a NON-TERMINAL pipeline case: a
+   * pipeline owns this issue's lifecycle (stage gates decide what happens
+   * next), so a "missing disposition" nag has no action the agent can validly
+   * take — the anchor legitimately stays `in_progress` while the pipeline waits
+   * (e.g. fan-out children, human stage approvals).
+   */
+  hasPipelineManagedLifecycle?: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -472,6 +480,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  if (input.hasPipelineManagedLifecycle) {
+    return { kind: "skip", reason: "pipeline-linked issue: a pipeline case owns the next action" };
+  }
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (isPluginManagedIssueLifecycle(issue)) {
     return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
