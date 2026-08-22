@@ -4,14 +4,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
+  ConfigurationIncompleteFailure,
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
   buildReferencedProjectRunObservability,
   buildRunWorkspaceHints,
   extractMentionedSkillIdsFromSources,
+  isSecretRefOnlyConfigChange,
   resolveAdditionalProjectWorkspace,
   resolveAdditionalRunWorkspaces,
   resolveExecutionRunAdapterConfig,
+  resolveWithSecretBindingConfigRefresh,
   type ResolveAdditionalProjectWorkspaceDeps,
   type ResolveAdditionalRunWorkspacesOptions,
   type ResolvedAdditionalWorkspace,
@@ -475,6 +478,152 @@ describe("resolveExecutionRunAdapterConfig", () => {
       consumerType: "project",
       consumerId: "project-1",
     });
+  });
+});
+
+describe("resolveWithSecretBindingConfigRefresh", () => {
+  it("accepts only secret-reference changes as compatible refreshes", () => {
+    const initialConfig = {
+      command: "claude",
+      env: {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "secret_ref",
+          secretId: "secret-token-5",
+          version: "latest",
+        },
+      },
+    };
+
+    expect(isSecretRefOnlyConfigChange(initialConfig, {
+      command: "claude",
+      env: {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "secret_ref",
+          secretId: "secret-token-4",
+          version: 2,
+        },
+      },
+    })).toBe(true);
+    expect(isSecretRefOnlyConfigChange(initialConfig, initialConfig)).toBe(false);
+    expect(isSecretRefOnlyConfigChange(initialConfig, {
+      ...initialConfig,
+      command: "claude-beta",
+    })).toBe(false);
+    expect(isSecretRefOnlyConfigChange(initialConfig, {
+      command: "claude",
+      env: {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "secret_ref",
+          secretId: "secret-token-4",
+          version: 2,
+          projectionClass: "token",
+          projectionAllowlistKey: "CLAUDE_CODE_OAUTH_TOKEN",
+        },
+      },
+    })).toBe(false);
+  });
+
+  it("retries once with a refreshed config when an agent secret binding changes during pre-dispatch", async () => {
+    const staleSnapshot = {
+      env: {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "secret_ref",
+          secretId: "secret-token-5",
+          version: "latest",
+        },
+      },
+    };
+    const refreshedSnapshot = {
+      env: {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "secret_ref",
+          secretId: "secret-token-4",
+          version: "latest",
+        },
+      },
+    };
+    const resolve = vi.fn(async (snapshot: typeof staleSnapshot) => {
+      const binding = snapshot.env.CLAUDE_CODE_OAUTH_TOKEN;
+      if (binding.secretId === "secret-token-5") {
+        throw new ConfigurationIncompleteFailure("configuration incomplete: binding missing", {
+          configurationIncomplete: {
+            reason: "secret_binding_missing",
+            missingBindings: [{ secretId: binding.secretId }],
+          },
+        });
+      }
+      return { resolvedSecretId: binding.secretId };
+    });
+    const refreshSnapshot = vi.fn().mockResolvedValue(refreshedSnapshot);
+
+    const result = await resolveWithSecretBindingConfigRefresh({
+      initialSnapshot: staleSnapshot,
+      resolve,
+      refreshSnapshot,
+    });
+
+    expect(result).toEqual({
+      value: { resolvedSecretId: "secret-token-4" },
+      snapshot: refreshedSnapshot,
+      refreshed: true,
+    });
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(refreshSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("does not refresh for a stable configuration-incomplete failure", async () => {
+    const failure = new ConfigurationIncompleteFailure("configuration incomplete: credential missing", {
+      configurationIncomplete: {
+        reason: "codex_credentials_missing",
+      },
+    });
+    const refreshSnapshot = vi.fn();
+
+    await expect(resolveWithSecretBindingConfigRefresh({
+      initialSnapshot: { command: "codex" },
+      resolve: vi.fn().mockRejectedValue(failure),
+      refreshSnapshot,
+    })).rejects.toBe(failure);
+    expect(refreshSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("preserves the original missing-binding failure when no compatible config changed", async () => {
+    const failure = new ConfigurationIncompleteFailure("configuration incomplete: binding missing", {
+      configurationIncomplete: {
+        reason: "secret_binding_missing",
+      },
+    });
+
+    await expect(resolveWithSecretBindingConfigRefresh({
+      initialSnapshot: { command: "claude" },
+      resolve: vi.fn().mockRejectedValue(failure),
+      refreshSnapshot: vi.fn().mockResolvedValue(null),
+    })).rejects.toBe(failure);
+  });
+
+  it("does not loop when the refreshed config still has a missing binding", async () => {
+    const firstFailure = new ConfigurationIncompleteFailure("configuration incomplete: old binding missing", {
+      configurationIncomplete: {
+        reason: "secret_binding_missing",
+      },
+    });
+    const refreshedFailure = new ConfigurationIncompleteFailure("configuration incomplete: new binding missing", {
+      configurationIncomplete: {
+        reason: "secret_binding_missing",
+      },
+    });
+    const resolve = vi.fn()
+      .mockRejectedValueOnce(firstFailure)
+      .mockRejectedValueOnce(refreshedFailure);
+    const refreshSnapshot = vi.fn().mockResolvedValue({ command: "claude", revision: 2 });
+
+    await expect(resolveWithSecretBindingConfigRefresh({
+      initialSnapshot: { command: "claude", revision: 1 },
+      resolve,
+      refreshSnapshot,
+    })).rejects.toBe(refreshedFailure);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(refreshSnapshot).toHaveBeenCalledOnce();
   });
 });
 
