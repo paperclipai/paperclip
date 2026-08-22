@@ -1345,6 +1345,53 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("reuses a worktree when git emits the 2.42+ 'already used by worktree' message", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-10683-worktree-new-git-msg";
+    const existingWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+    await fs.mkdir(path.dirname(existingWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, existingWorktree, "HEAD"], { cwd: repoRoot });
+    const altWorktreePath = path.join(repoRoot, ".paperclip", "other-worktrees", branchName);
+    await fs.mkdir(path.dirname(altWorktreePath), { recursive: true });
+    const realized = await realizeExecutionWorkspace({
+      base: { baseCwd: altWorktreePath, source: "project_primary", projectId: "project-1", workspaceId: "workspace-1", repoUrl: null, repoRef: "HEAD" },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}", worktreeParentDir: ".paperclip/other-worktrees" } },
+      issue: { id: "issue-1", identifier: "PAP-10683", title: "worktree reuse new git msg" },
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      recorder,
+    });
+    const expectedWorktreePath = await fs.realpath(existingWorktree);
+    expect(realized.created).toBe(false);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
+    await execFileAsync("git", ["worktree", "remove", existingWorktree], { cwd: repoRoot }).catch(() => {});
+    await execFileAsync("git", ["branch", "-D", branchName], { cwd: repoRoot }).catch(() => {});
+    await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("reuses a worktree when git emits the 2.42+ 'already used by worktree' message", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-10683-worktree-new-git-msg";
+    const existingWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    const { recorder } = createWorkspaceOperationRecorderDouble();
+    await fs.mkdir(path.dirname(existingWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, existingWorktree, "HEAD"], { cwd: repoRoot });
+    const altWorktreePath = path.join(repoRoot, ".paperclip", "other-worktrees", branchName);
+    const realized = await realizeExecutionWorkspace({
+      base: { baseCwd: altWorktreePath, source: "project_primary", projectId: "project-1", workspaceId: "workspace-1", repoUrl: null, repoRef: "HEAD" },
+      config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}-{{slug}}", worktreeParentDir: ".paperclip/other-worktrees" } },
+      issue: { id: "issue-1", identifier: "PAP-10683", title: "worktree reuse new git msg" },
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      recorder,
+    });
+    const expectedWorktreePath = await fs.realpath(existingWorktree);
+    expect(realized.created).toBe(false);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
+    await execFileAsync("git", ["worktree", "remove", existingWorktree], { cwd: repoRoot }).catch(() => {});
+    await execFileAsync("git", ["branch", "-D", branchName], { cwd: repoRoot }).catch(() => {});
+    await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+  });
+
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
     const repoRoot = await createTempRepo();
 
