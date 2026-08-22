@@ -209,14 +209,55 @@ export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000
   }
 }
 
+// Throttle + cache for the Anthropic OAuth usage endpoint.
+// The endpoint is rate-limited; without this we hammered it on every UI poll,
+// so each cycle returned 429 and the provider tab showed an error even though
+// usage data was recent and valid. State is module-scoped so all callers share
+// the same throttle window.
+const CLAUDE_QUOTA_MIN_INTERVAL_MS = 60_000;
+const CLAUDE_QUOTA_CACHE_TTL_MS = 5 * 60_000;
+const CLAUDE_QUOTA_MAX_BACKOFF_MS = 15 * 60_000;
+let claudeQuotaCache: { windows: QuotaWindow[]; fetchedAt: number } | null = null;
+let claudeQuotaNextAllowedAt = 0;
+let claudeQuotaConsecutive429s = 0;
+
+function claudeQuotaCacheIsFresh(now: number): boolean {
+  return claudeQuotaCache != null && now - claudeQuotaCache.fetchedAt < CLAUDE_QUOTA_CACHE_TTL_MS;
+}
+
 export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
+  const now = Date.now();
+  if (now < claudeQuotaNextAllowedAt) {
+    if (claudeQuotaCacheIsFresh(now)) {
+      return claudeQuotaCache!.windows;
+    }
+    const waitSec = Math.max(1, Math.round((claudeQuotaNextAllowedAt - now) / 1000));
+    throw new Error(`anthropic usage api throttled (next attempt in ${waitSec}s)`);
+  }
   const resp = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
     headers: {
       Authorization: `Bearer ${token}`,
       "anthropic-beta": "oauth-2025-04-20",
     },
   });
+  if (resp.status === 429) {
+    claudeQuotaConsecutive429s += 1;
+    const backoffMs = Math.min(
+      CLAUDE_QUOTA_MAX_BACKOFF_MS,
+      CLAUDE_QUOTA_MIN_INTERVAL_MS * Math.pow(2, claudeQuotaConsecutive429s - 1),
+    );
+    const jitterMs = Math.floor(Math.random() * 5_000);
+    claudeQuotaNextAllowedAt = Date.now() + backoffMs + jitterMs;
+    if (claudeQuotaCacheIsFresh(Date.now())) {
+      return claudeQuotaCache!.windows;
+    }
+    throw new Error(
+      `anthropic usage api returned 429 (backing off ${Math.round((backoffMs + jitterMs) / 1000)}s)`,
+    );
+  }
   if (!resp.ok) throw new Error(`anthropic usage api returned ${resp.status}`);
+  claudeQuotaConsecutive429s = 0;
+  claudeQuotaNextAllowedAt = Date.now() + CLAUDE_QUOTA_MIN_INTERVAL_MS;
   const body = (await resp.json()) as AnthropicUsageResponse;
   const windows: QuotaWindow[] = [];
 
@@ -271,6 +312,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
           : "Monthly extra usage pool",
     });
   }
+  claudeQuotaCache = { windows, fetchedAt: Date.now() };
   return windows;
 }
 
@@ -429,7 +471,10 @@ function quoteForShell(value: string): string {
 }
 
 function buildClaudeCliShellProbeCommand(): string {
-  const feed = "(sleep 2; printf '/usage\\r'; sleep 6; printf '\\033'; sleep 1; printf '\\003')";
+  // Claude Code v2.1.145+ shows a workspace-trust prompt on first start in an
+  // untrusted directory. The original feed sent /usage at t=2s, which was eaten
+  // by the trust dialog. Prepend "1\r" so the dialog auto-accepts before /usage fires.
+  const feed = "(sleep 1; printf '1\\r'; sleep 2; printf '/usage\\r'; sleep 6; printf '\\033'; sleep 1; printf '\\003')";
   const claudeCommand = "claude --tools \"\"";
   if (process.platform === "darwin") {
     return `${feed} | script -q /dev/null ${claudeCommand}`;
