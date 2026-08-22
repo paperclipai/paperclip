@@ -141,15 +141,21 @@ Use `--drain-required` only when the deploy intentionally requires the old termi
 When Paperclip manages embedded PostgreSQL, it suppresses that dependency's eager
 `SIGINT`/`SIGTERM` cleanup hooks. Paperclip owns signal ordering so the heartbeat
 snapshot and any required drain complete while the database is still available;
-the coordinated shutdown path stops embedded PostgreSQL afterward.
+the coordinated shutdown path stops embedded PostgreSQL afterward. If the
+shutdown database query still fails, Paperclip logs the error and writes a
+filesystem-only snapshot of the preflight run set instead of leaving the marker
+without a shutdown snapshot.
 
 The request command records the preflight set of running heartbeat IDs and writes
 an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
 This lets a previous server version capture its snapshot at the old path while
 the new server correlates that snapshot back to the authoritative instance
 request. If any preflight run ID is absent from the shutdown snapshot, the
-startup report includes it in `lostRunIds`; a missing snapshot therefore cannot
-look like a zero-loss restart.
+replacement server reconstructs that candidate from its fresh database
+connection. A live detached process remains eligible for adoption. A dead or
+server-stdio process is recorded as `server_shutdown_interrupted` and queued for
+retry. Only a failed adoption or failed interruption appears in `lostRunIds`, so
+a missing shutdown-time database connection cannot silently lose every run.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
