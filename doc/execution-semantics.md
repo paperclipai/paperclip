@@ -519,7 +519,7 @@ Example:
 Recovery rule:
 
 - if the latest issue-linked run failed/timed out/cancelled and no live execution path remains, Paperclip queues one automatic assignment recovery wake
-- if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
+- if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates a board-owned recovery action without changing the source assignee or waking a substitute agent; the visible comment is evidence, not the recovery path by itself
 
 This is a dispatch recovery, not a continuation recovery.
 
@@ -540,7 +540,7 @@ Example:
 Recovery rule:
 
 - Paperclip queues one automatic continuation wake
-- if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
+- if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates a board-owned recovery action without changing the source assignee or waking a substitute agent; the visible comment is evidence, not the recovery path by itself
 
 This is an active-work continuity recovery.
 
@@ -558,7 +558,7 @@ Recovery rule for a parked-for-review continuation:
 - the retry bound is keyed by an idempotent durable source-state fingerprint. Comments, repeated parked summaries, and equivalent prose do not reset it. Durable changes such as source status or assignee changes, dependency or interaction changes, approval or execution-policy changes, monitor changes, or work-product changes may create a new fingerprint
 - on upgrade, consecutive historical `issue_continuation_waiting_on_review` cancellations for the same accepted interaction and still-unchanged durable source state seed this same counter. Five applicable pre-upgrade parks therefore exhaust the ceiling immediately; the absence of a historical `deliberate_wait_without_target` recovery-action row does not grant five new attempts
 - the action persists the unchanged fingerprint, source-attempt count, due time, source owner, and return owner. Startup and periodic reconciliation reuse that state, fold the action when a current typed wait appears, and reschedule or escalate an expired attempt that has no live scheduled run. Idempotency keys prevent a restart from creating duplicate wakes or scheduled runs
-- after five attempts with the same fingerprint, Paperclip opens one separate source-scoped manager recovery action. The manager owns only path repair; the source assignee remains unchanged. The manager gets five separate attempts on the same immediate, 60, 120, 240, and 480 second bounded-delay schedule before exhaustion escalates visibly to the board
+- after five attempts with the same fingerprint, Paperclip opens one board-owned source-scoped recovery action. The source assignee remains unchanged, no manager/creator/executive substitute is woken, and the board chooses whether to repair, retry the original owner, explicitly reassign, or resolve
 - a recovery action is a healthy wait only while its owner has a live run, queued wake, scheduled retry, typed wait, or explicit board escalation. Source liveness and every blocker-chain projection use that same nested result
 
 An accepted interaction supersedes a continuation park recorded before that acceptance. A queued continuation carrying a parseable `interactionResolvedAt` must not be cancelled solely because an older continuation summary says to wait for review or approval. Interaction-continuation recovery is bounded: after three consecutive continuation wakes are cancelled without a run starting, recovery converts a real dependency wait when one exists or escalates the missing execution path visibly instead of requeueing forever.
@@ -788,9 +788,11 @@ Examples:
 - a dependency graph has an invalid/uninvokable owner, unassigned blocker, or invalid review participant
 - an active run is silent past the watchdog threshold
 
-The recovery action stays source-scoped by default. The source issue should show the recovery owner, cause, evidence, next action, and wake or monitor policy in its own thread/detail surface.
+The recovery action stays source-scoped by default. Stranded-task escalation is board-owned and records the cause, evidence, next action, source and return owner, `routingPolicy: board_escalation_no_takeover_v1`, and wake or monitor policy in the source thread/detail surface.
 
-The recovery owner owns the repair action, not the source deliverable. Manager escalation must preserve the source issue assignee unless an operator makes an explicit reassignment decision or an applicable serious-failure policy authorizes transfer.
+The board owns the recovery decision, not the source deliverable. Automatic recovery must preserve both source assignee fields. Only an explicit operator decision or applicable serious-failure policy may transfer the deliverable.
+
+An upgrade may encounter an already-active agent-owned recovery action. Paperclip keeps that record readable and resolvable for compatibility, but periodic reconciliation does not enqueue another takeover wake from it.
 
 Create an issue-backed recovery action only when a separate issue is the right execution object. In that fallback form, the source issue remains visible and is blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, delegate real follow-up work, or record the reason the signal is a false positive.
 
@@ -802,7 +804,7 @@ Human escalation is required when the next safe action depends on board judgment
 
 Examples:
 
-- all candidate recovery owners are paused, terminated, pending approval, or budget-blocked
+- the original owner is paused, terminated, pending approval, or budget-blocked
 - the issue is human-owned rather than agent-owned
 - the run is intentionally quiet but needs an operator decision before cancellation or continuation
 
@@ -822,7 +824,7 @@ The recovery model is intentionally conservative:
 
 - preserve ownership
 - use the cause-specific bound when the control plane lost execution continuity; deliberate waits without a target use five fingerprinted original-owner disposition repairs
-- open an explicit recovery action when the system can identify a bounded recovery owner/action
+- open a board-owned recovery action when the original-owner bound is exhausted or unsafe
 - escalate visibly when the system cannot safely keep going
 
 ## 15. Practical Interpretation

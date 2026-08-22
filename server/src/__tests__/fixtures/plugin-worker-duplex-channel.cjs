@@ -8,10 +8,11 @@
 //   - `mode`: "normal" | "malformed-open" | "no-open-reply" | "duplicate-open-reply" |
 //     "no-write-reply"
 //   - `workerSessionId`: the worker session id the open reply returns (default "ws-1")
-//   - `data`: an array of `{ chunk, sid? }`. The fixture emits each as a data
-//     notification after the open reply. `sid` defaults to the real worker session
-//     id; a test sets a wrong `sid` to prove the host drops a mismatched
-//     notification and counts a protocol error.
+//   - `data`: an array of `{ chunk, sid?, rid? }`. The fixture emits each as a
+//     data notification after the open reply. `sid` defaults to the real worker
+//     session id and `rid` defaults to the real host route id; a test sets a wrong
+//     `sid` or `rid` to prove the host drops a mismatched-pair notification and
+//     counts a protocol error.
 //   - `exitCode`: when set, the fixture emits an exit notification after the data.
 //   - `dataAfterExit`: an array of `{ chunk, sid? }`, same shape as `data`. The
 //     fixture emits these as data notifications after the exit notification, so a
@@ -34,22 +35,28 @@ function send(message) {
 }
 
 // Serialize the scripted data and exit frames as newline-delimited lines. The
-// batch mode writes these together with the open reply in one stdout write.
-function scriptedFrameLines(directive, workerSessionId) {
+// batch mode writes these together with the open reply in one stdout write. Each
+// frame carries the exact pair, so the host binds and routes by the pair. A test
+// sets a wrong `sid` or `rid` to force a mismatch.
+function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
   const data = Array.isArray(directive.data) ? directive.data : [];
   let lines = "";
   for (const entry of data) {
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "duplexChannel.data",
-      params: { workerSessionId: entry.sid ?? workerSessionId, chunk: entry.chunk },
+      params: {
+        hostRouteId: entry.rid ?? hostRouteId,
+        workerSessionId: entry.sid ?? workerSessionId,
+        chunk: entry.chunk,
+      },
     })}\n`;
   }
   if (typeof directive.exitCode === "number") {
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "duplexChannel.exit",
-      params: { workerSessionId, exitCode: directive.exitCode },
+      params: { hostRouteId, workerSessionId, exitCode: directive.exitCode },
     })}\n`;
   }
   const dataAfterExit = Array.isArray(directive.dataAfterExit) ? directive.dataAfterExit : [];
@@ -57,7 +64,11 @@ function scriptedFrameLines(directive, workerSessionId) {
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "duplexChannel.data",
-      params: { workerSessionId: entry.sid ?? workerSessionId, chunk: entry.chunk },
+      params: {
+        hostRouteId: entry.rid ?? hostRouteId,
+        workerSessionId: entry.sid ?? workerSessionId,
+        chunk: entry.chunk,
+      },
     })}\n`;
   }
   return lines;
@@ -106,11 +117,15 @@ rl.on("line", (line) => {
     const mode = directive.mode ?? "normal";
     const workerSessionId = directive.workerSessionId ?? "ws-1";
     const closeMode = directive.closeMode ?? "ack";
-    routes.set(params.hostRouteId, {
+    const hostRouteId = params.hostRouteId;
+    routes.set(hostRouteId, {
+      hostRouteId,
       workerSessionId,
       closeMode,
       echoInput: directive.echoInput === true,
       noWriteReply: mode === "no-write-reply",
+      emitAfterCloseChunk:
+        typeof directive.emitAfterCloseChunk === "string" ? directive.emitAfterCloseChunk : null,
     });
 
     if (mode === "no-open-reply") {
@@ -123,17 +138,18 @@ rl.on("line", (line) => {
       return;
     }
 
+    // Echo the host route id on the reply, so the host binds the exact pair.
     const openReplyLine = `${JSON.stringify({
       jsonrpc: "2.0",
       id: message.id,
-      result: { workerSessionId },
+      result: { hostRouteId, workerSessionId },
     })}\n`;
 
     if (directive.batchWithOpenReply === true) {
       // Write the open reply and the scripted frames in one stdout write. The
       // host reads them in one batch, so a data or exit frame arrives before the
       // route binds. The host must hold and replay the frame after the bind.
-      process.stdout.write(openReplyLine + scriptedFrameLines(directive, workerSessionId));
+      process.stdout.write(openReplyLine + scriptedFrameLines(directive, hostRouteId, workerSessionId));
       return;
     }
 
@@ -145,29 +161,38 @@ rl.on("line", (line) => {
     }
 
     // Emit the scripted data and the exit after the open reply, so the host
-    // binds the route first.
+    // binds the route first. Each frame echoes the exact pair; a test overrides
+    // `sid` or `rid` to force a mismatch.
     setImmediate(() => {
-      process.stdout.write(scriptedFrameLines(directive, workerSessionId));
+      process.stdout.write(scriptedFrameLines(directive, hostRouteId, workerSessionId));
     });
     return;
   }
 
   if (method === "duplexChannelWrite") {
-    const entry = [...routes.values()].find(
-      (route) => route.workerSessionId === params.workerSessionId,
-    );
-    if (entry && entry.noWriteReply) {
+    // Act only on the exact live pair. A write whose pair does not match a bound
+    // route applies no bytes.
+    const entry = routes.get(params.hostRouteId);
+    if (!entry || entry.workerSessionId !== params.workerSessionId) {
+      send({ jsonrpc: "2.0", id: message.id, result: null });
+      return;
+    }
+    if (entry.noWriteReply) {
       // Never reply, so the host write call stays pending. The test proves the
       // host ends the route on the pending-request bound.
       return;
     }
-    if (entry && entry.echoInput) {
-      // Echo the input back as one data notification for the bound session, so a
+    if (entry.echoInput) {
+      // Echo the input back as one data notification for the bound pair, so a
       // test proves the input reaches the worker and the output routes back.
       send({
         jsonrpc: "2.0",
         method: "duplexChannel.data",
-        params: { workerSessionId: entry.workerSessionId, chunk: `echo:${params.data}` },
+        params: {
+          hostRouteId: entry.hostRouteId,
+          workerSessionId: entry.workerSessionId,
+          chunk: `echo:${params.data}`,
+        },
       });
     }
     send({ jsonrpc: "2.0", id: message.id, result: null });
@@ -191,7 +216,28 @@ rl.on("line", (line) => {
       send({ jsonrpc: "2.0", id: message.id, result: { hostRouteId: "mismatched-route" } });
       return;
     }
-    send({ jsonrpc: "2.0", id: message.id, result: { hostRouteId: params.hostRouteId } });
+    // A bound close echoes both identifiers; a pre-bind close with no entry
+    // echoes the host route id only.
+    const ack = entry
+      ? { hostRouteId: params.hostRouteId, workerSessionId: entry.workerSessionId }
+      : { hostRouteId: params.hostRouteId };
+    send({ jsonrpc: "2.0", id: message.id, result: ack });
+    if (entry && entry.emitAfterCloseChunk) {
+      // Emit one late data frame for the just-closed pair, so a test proves the
+      // host drops a late frame for a tombstoned pair and does not retire the
+      // worker.
+      setImmediate(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "duplexChannel.data",
+          params: {
+            hostRouteId: entry.hostRouteId,
+            workerSessionId: entry.workerSessionId,
+            chunk: entry.emitAfterCloseChunk,
+          },
+        });
+      });
+    }
     return;
   }
 

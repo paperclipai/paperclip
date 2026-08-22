@@ -272,8 +272,60 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
   });
 
+  it("preserves legacy recovery ownership when new evidence is folded into an active action", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const svc = issueRecoveryActionService(db);
+    const legacy = await svc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "process_lost",
+      fingerprint: "legacy-recovery",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Repair the execution path.",
+      wakePolicy: { type: "bounded_recovery_owner", ownerAgentId: managerId, attempt: 1, maxAttempts: 5 },
+      attemptCount: 1,
+      maxAttempts: 5,
+    });
+
+    const updated = await svc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "process_lost",
+      fingerprint: "legacy-recovery",
+      evidence: { latestRunId: "run-2" },
+      evidenceOnCreate: { routingPolicy: "board_escalation_no_takeover_v1" },
+      nextAction: "Board decision required.",
+      wakePolicy: { type: "board_escalation" },
+      preserveExistingOwner: true,
+    });
+
+    expect(updated).toMatchObject({
+      id: legacy.id,
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      attemptCount: 2,
+      maxAttempts: 5,
+      nextAction: "Repair the execution path.",
+      evidence: expect.objectContaining({ latestRunId: "run-2" }),
+      wakePolicy: expect.objectContaining({ type: "bounded_recovery_owner" }),
+    });
+    expect(updated.evidence).not.toHaveProperty("routingPolicy");
+  });
+
   it("escalates stranded assigned work into a source action instead of a recovery issue", async () => {
-    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+    const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
     const latestRun = {
@@ -286,18 +338,20 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       livenessState: "needs_followup",
     } as const;
 
-    await recovery.escalateStrandedAssignedIssue({
-      issue: sourceIssue,
-      previousStatus: "in_progress",
-      latestRun,
-      comment: "Automatic continuation recovery failed.",
-    });
-    await recovery.escalateStrandedAssignedIssue({
-      issue: sourceIssue,
-      previousStatus: "in_progress",
-      latestRun,
-      comment: "Automatic continuation recovery failed.",
-    });
+    await Promise.all([
+      recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        comment: "Automatic continuation recovery failed.",
+      }),
+      recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        comment: "Automatic continuation recovery failed.",
+      }),
+    ]);
 
     const actionRows = await db
       .select()
@@ -308,10 +362,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       companyId,
       kind: "stranded_assigned_issue",
       status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
       attemptCount: 2,
+      evidence: expect.objectContaining({
+        routingPolicy: "board_escalation_no_takeover_v1",
+      }),
     });
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
@@ -323,12 +382,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
-      issueId: sourceIssue.id,
-      sourceIssueId: sourceIssue.id,
-      recoveryCause: "stranded_assigned_issue",
-    });
+    expect(updatedIssue?.assigneeAgentId).toBe(coderId);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   // Model the production payload: `requestedRef` keeps the operator spelling,
@@ -506,15 +561,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it.each([
-    ["process_lost", undefined, "coder"],
-    ["adapter_failed", "successful_run_missing_state", "coder"],
-    ["codex_output_inactivity_monitor", undefined, "coder"],
-    ["workspace_validation_failed", "workspace_validation_failed", "manager"],
-    ["adapter_failed", undefined, "manager"],
+    ["process_lost", undefined],
+    ["adapter_failed", "successful_run_missing_state"],
+    ["codex_output_inactivity_monitor", undefined],
+    ["workspace_validation_failed", "workspace_validation_failed"],
+    ["adapter_failed", undefined],
   ] as const)(
     "routes %s recovery through the cause-keyed playbook",
-    async (errorCode, explicitCause, expectedOwner) => {
-      const { managerId, coderId, sourceIssue } = await seedCompany();
+    async (errorCode, explicitCause) => {
+      const { coderId, sourceIssue } = await seedCompany();
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
       const latestRun = {
@@ -539,21 +594,24 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         ...(explicitCause ? { recoveryCause: explicitCause } : {}),
       });
 
-      const expectedOwnerId = expectedOwner === "coder" ? coderId : managerId;
       const [action] = await db
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
-      expect(action?.ownerAgentId).toBe(expectedOwnerId);
-      expect(enqueueWakeup).toHaveBeenCalledWith(
-        expectedOwnerId,
-        expect.objectContaining({
-          reason: "source_scoped_recovery_action",
-          payload: expect.objectContaining({
-            recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
-          }),
+      expect(action).toMatchObject({
+        ownerType: "board",
+        ownerAgentId: null,
+        previousOwnerAgentId: coderId,
+        returnOwnerAgentId: coderId,
+        evidence: expect.objectContaining({
+          routingPolicy: "board_escalation_no_takeover_v1",
         }),
-      );
+        wakePolicy: expect.objectContaining({
+          type: "board_escalation",
+          preservesSourceAssignee: true,
+        }),
+      });
+      expect(enqueueWakeup).not.toHaveBeenCalled();
     },
   );
 
@@ -1063,7 +1121,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [action] = await db.select().from(issueRecoveryActions);
     expect(action).toMatchObject({
       sourceIssueId,
-      ownerAgentId: managerId,
+      ownerType: "board",
+      ownerAgentId: null,
       previousOwnerAgentId: coderId,
       cause: "configuration_incomplete",
       recoveryIssueId: null,
@@ -1211,13 +1270,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[1]?.[1]?.payload).toMatchObject({
-      issueId: sourceIssue.id,
-      sourceIssueId: sourceIssue.id,
-      strandedRunId: secondLatestRun.id,
-      recoveryCause: "stranded_assigned_issue",
-    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
@@ -1311,9 +1364,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       }),
       nextAction: expect.stringContaining("git worktree branch incoherence"),
       wakePolicy: expect.objectContaining({
-        type: "wake_owner",
-        reason: "source_scoped_recovery_action",
-        ownerAgentId: expect.any(String),
+        type: "board_escalation",
+        reason: "workspace_validation_failed",
+        preservesSourceAssignee: true,
       }),
     });
 
@@ -1327,14 +1380,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       tone: "danger",
       title: "Workspace validation failed",
     });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        reason: "source_scoped_recovery_action",
-        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
-      }),
-    );
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {

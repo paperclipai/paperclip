@@ -42,6 +42,7 @@ import {
   type AdapterRemoteExecutionSpec,
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
@@ -347,6 +348,12 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    /**
+     * The host duplex telemetry recorder for this run. The orchestrator threads
+     * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
+     * target. Absent keeps the safe no-op default in the bridge.
+     */
+    duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -515,6 +522,7 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
       const authoritativeRoot =

@@ -350,20 +350,18 @@ function OnboardingWizardInner({
           (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
         )?.id ?? null
       : null;
-  const { hasMission: routeCompanyHasMission, settled: routeMissionSettled } =
-    useCompanyMission(routeMatchedCompanyId);
-
-  // Hold the options back until the mission lookup settles, exactly as they
-  // are already held back while companies load. The step below is applied once
-  // and not revised, so the wizard must not open before the answer is in.
+  // The mission lookup used to gate this: the step was applied once and not
+  // revised, so opening before the answer arrived left the customer on the
+  // wrong step. The step no longer depends on the answer, so the wait bought
+  // nothing but a slower open. Companies still gate it — the resolver needs
+  // them to match the prefix at all.
   const routeOnboardingOptions =
-    (companyPrefix && companiesLoading) || !routeMissionSettled
+    companyPrefix && companiesLoading
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
           companyPrefix,
           companies,
-          companyHasMission: routeCompanyHasMission,
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
@@ -457,6 +455,12 @@ function OnboardingWizardInner({
   // every company change, and the effect also calls setStep - it would drag
   // the user back to the route's initial step mid-flow.
   const createdCompanyIdRef = useRef<string | null>(null);
+  // In flight, synchronously. `loading` cannot answer this: it is state, so a
+  // second caller in the same tick — key repeat holding Enter down — reads the
+  // value the first has not written yet. `createdCompanyId` cannot answer it
+  // either, because it is not set until the request it guards has resolved. A
+  // ref is written before the request goes out, so the second caller sees it.
+  const creatingCompanyRef = useRef(false);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -1190,6 +1194,54 @@ function OnboardingWizardInner({
     }
   }
 
+  // Step 1 → 3 ("Name your company"): create the company, then go straight to
+  // the first agent.
+  //
+  // This work used to live at the end of `handleConfirmMission`, because step 1
+  // led to the mission step and the company was created when that step was
+  // confirmed. Onboarding no longer asks for the mission, so step 1 has to do
+  // its own creating — routing 1 → 3 without this left the wizard on the agent
+  // step with no company to hire into, and nothing said so.
+  //
+  // No goal is written here. That is the difference from the path this was
+  // taken from, and it is deliberate: the mission is collected later, in the
+  // tenant app, so writing an empty one now would only give the company a goal
+  // it did not choose.
+  async function handleCreateCompany() {
+    if (createdCompanyId) {
+      setStep(3);
+      return;
+    }
+    if (creatingCompanyRef.current) return;
+    creatingCompanyRef.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      const company = await companiesApi.create({ name: companyName.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      // Nothing was in hand when this started, so "unchanged" means still
+      // nothing. A route that supplied a company while the request was open has
+      // taken over the wizard, and adopting the company just created would
+      // fight it — and would leave the customer on a company they never
+      // navigated to.
+      if (!stillTheSameCompany(null)) return;
+      setCreatedCompanyId(company.id);
+      // Keep the mirror current rather than waiting for the next render, for
+      // the same reason the mission path does: anything downstream that asks
+      // `stillTheSameCompany` in this tick would otherwise be told no.
+      createdCompanyIdRef.current = company.id;
+      setCreatedCompanyPrefix(company.issuePrefix);
+      setSelectedCompanyId(company.id);
+      setStep(3);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create company");
+    } finally {
+      creatingCompanyRef.current = false;
+      setLoading(false);
+    }
+  }
+
+
   // Step 4 → 5 ("Give it a heartbeat"): hire the lead agent + seed its
   // instructions, then advance to Review. Guarded so revisiting step 4
   // doesn't hire a second agent.
@@ -1368,6 +1420,14 @@ function OnboardingWizardInner({
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    // Something nearer the key already dealt with it. The company-name field
+    // handles Enter itself and does not check for a modifier, so Cmd+Enter in
+    // that field reaches both handlers — and both would start creating a
+    // company. The `loading` guard below cannot catch that: `setLoading(true)`
+    // has not landed while the same event is still bubbling, so the second
+    // caller reads the value the first one has not written yet. Two companies,
+    // one keystroke.
+    if (e.defaultPrevented) return;
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       // Every button below is disabled while a request is in flight. The
@@ -1376,7 +1436,10 @@ function OnboardingWizardInner({
       // yet — two goals for one mission, two agents for one hire.
       if (loading) return;
       if (step === 0) return; // front door requires click
-      if (step === 1 && companyName.trim()) setStep(2);
+      if (step === 1 && companyName.trim()) {
+        if (skipsMissionStep) void handleCreateCompany();
+        else setStep(2);
+      }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
       else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
@@ -1390,6 +1453,24 @@ function OnboardingWizardInner({
   // The arc strip stands in for the full-length bar only when the run began on
   // the arc — the Cloud-first path, where the company already exists and steps
   // 1-2 never happen. A run that started at step 1 keeps one continuous count.
+  // Step 2 is two different screens wearing one number: the grow path's "tell us
+  // about your team" questionnaire, and the create path's mission step.
+  // Onboarding stopped asking for the mission, but the questionnaire is still
+  // how a grow run describes the team it is levelling up — its answers seed the
+  // lead agent — so only the create path skips ahead.
+  const skipsMissionStep = onboardingPath !== "grow";
+
+  // Back lands on whatever came before this step *for this run*, which is not
+  // always `step - 1`. A create run went 1 → 3, so stepping blindly would walk
+  // it into the mission screen it never saw. Two runs still belong on step 2
+  // going back: a grow run, whose step 2 is the questionnaire rather than the
+  // mission, and a run that *entered* on the mission step because something
+  // opened it there — it has seen that screen, so Back owes it the way back.
+  function backStepFrom(current: Step): Step {
+    if (current === 3 && skipsMissionStep && entryStep !== 2) return 1;
+    return (current - 1) as Step;
+  }
+
   const isAgentArcStep = agentArcStepFor(step) !== null;
   const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
 
@@ -1450,15 +1531,19 @@ function OnboardingWizardInner({
                   : "w-full max-w-md px-8 py-12",
               )}
             >
-              {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
+              {/* Full-length progress bar (brand .wsteps/.wstep) — segment N
                   filled once step ≥ N. Completed segments jump back.
                   Hidden for a run that entered on the agent arc: the arc strip
                   below counts that run's three steps, and showing both put two
                   progress bars on the same screen. A run that started at step 1
-                  keeps this one throughout, so its count never restarts. */}
+                  keeps this one throughout, so its count never restarts.
+
+                  Step 2 is absent: onboarding no longer asks for the mission, so
+                  a segment for it would be one the run can never fill, and the
+                  count would visibly skip from 1 to 3. */}
               {!showsAgentArcStepper && (
               <div className="flex items-center gap-1.5 mb-8">
-                {([1, 2, 3, 4, 5] as const).map((s) => {
+                {([1, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
                   const canJump = canJumpToOnboardingStep({
                     targetStep: s,
@@ -1683,8 +1768,8 @@ function OnboardingWizardInner({
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && companyName.trim()) {
                           e.preventDefault();
-                          if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                          setStep(2);
+                          if (skipsMissionStep) void handleCreateCompany();
+                          else setStep(2);
                         }
                       }}
                       autoFocus
@@ -2349,7 +2434,7 @@ function OnboardingWizardInner({
                 <FooterNav
                   onBack={
                     canGoBackFromOnboardingStep({ currentStep: step, entryStep })
-                      ? () => setStep((step - 1) as Step)
+                      ? () => setStep(backStepFrom(step))
                       : undefined
                   }
                   // The prototype's cloud flow hires on this step and calls the
@@ -2382,7 +2467,7 @@ function OnboardingWizardInner({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setStep((step - 1) as Step)}
+                      onClick={() => setStep(backStepFrom(step))}
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
@@ -2394,12 +2479,15 @@ function OnboardingWizardInner({
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim()}
+                      disabled={!companyName.trim() || loading}
                       onClick={() => {
-                        if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                        setStep(2);
+                        if (skipsMissionStep) void handleCreateCompany();
+                        else setStep(2);
                       }}
                     >
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : null}
                       Next
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>

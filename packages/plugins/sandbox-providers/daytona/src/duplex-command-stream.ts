@@ -74,6 +74,16 @@ export type DuplexChannelSessionOpener = (
   command: readonly string[],
 ) => Promise<DuplexChannelSession>;
 
+/**
+ * The typed, closed reason for a duplex channel write failure. The seam reports
+ * only this constant, never the raw provider error text. It maps to the host
+ * telemetry `write_error` loss reason.
+ */
+export const DAYTONA_DUPLEX_WRITE_ERROR_REASON = "write_error" as const;
+
+/** The typed reason a rejected host-to-sandbox write reports. */
+export type DaytonaDuplexWriteErrorReason = typeof DAYTONA_DUPLEX_WRITE_ERROR_REASON;
+
 /** The options for the Daytona duplex channel session. */
 export interface DaytonaDuplexChannelOptions {
   /** The working directory for the duplex channel PTY. Defaults to the sandbox default. */
@@ -84,6 +94,13 @@ export interface DaytonaDuplexChannelOptions {
    * stdout frame stream. Defaults to a per-channel path under `/tmp`.
    */
   diagnosticsPath?: string;
+  /**
+   * The write-error seam. The session calls it one time when a host-to-sandbox
+   * `sendInput` rejects. The session then ends the channel at once. The seam
+   * carries only the typed {@link DaytonaDuplexWriteErrorReason}; the raw provider
+   * error never reaches it.
+   */
+  onWriteError?: (reason: DaytonaDuplexWriteErrorReason) => void;
 }
 
 // The terminal size for the duplex channel PTY. The channel carries bytes, not a
@@ -183,6 +200,17 @@ export async function openDaytonaDuplexChannelSession(
   // frame newlines. The diagnostics redirect keeps the stdout frame stream clean.
   await handle.sendInput(buildDuplexChannelLaunchWrapper(command, diagnosticsPath));
 
+  // Report a host-to-sandbox write failure one time and end the channel at once.
+  // The seam carries only the typed reason; the raw provider error never leaves
+  // this scope. The channel end propagates the loss up through the exit.
+  let writeErrorReported = false;
+  const endOnWriteError = (): void => {
+    if (writeErrorReported) return;
+    writeErrorReported = true;
+    options?.onWriteError?.(DAYTONA_DUPLEX_WRITE_ERROR_REASON);
+    void handle.kill().catch(() => undefined);
+  };
+
   return {
     onData(next: (chunk: string) => void): void {
       listener = next;
@@ -194,8 +222,12 @@ export async function openDaytonaDuplexChannelSession(
     },
     write(data: string): void {
       // Fire the input write. A write error must not throw into the transport, so
-      // the transport's stream stays the single result path.
-      void handle.sendInput(data).catch(() => undefined);
+      // the transport's stream stays the single result path. On a rejected write,
+      // end the channel at once and report the typed reason. The raw provider
+      // error never reaches a sink.
+      void handle.sendInput(data).catch(() => {
+        endOnWriteError();
+      });
     },
     async wait(): Promise<{ exitCode: number | null }> {
       const result = await handle.wait();

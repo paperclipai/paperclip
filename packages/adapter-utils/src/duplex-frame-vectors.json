@@ -92,15 +92,45 @@
     {
       "name": "valid-ready",
       "category": "valid",
-      "bytes": "{\"version\":1,\"type\":\"ready\",\"address\":\"127.0.0.1:47215\"}\n",
+      "bytes": "{\"version\":1,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\"}\n",
       "roundTrip": true,
       "expected": [
         {
           "frame": {
             "version": 1,
             "type": "ready",
-            "address": "127.0.0.1:47215"
+            "nonce": "9f8e7d6c5b4a39281706f5e4d3c2b1a0"
           }
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-missing-nonce",
+      "category": "invalid",
+      "bytes": "{\"version\":1,\"type\":\"ready\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-with-address",
+      "category": "invalid",
+      "bytes": "{\"version\":1,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\",\"address\":\"http://127.0.0.1:47215\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-with-port",
+      "category": "invalid",
+      "bytes": "{\"version\":1,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\",\"port\":47215}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
         }
       ]
     },
@@ -351,6 +381,36 @@
       "expected": [
         {
           "error": "version_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "request-id-at-max-bytes",
+      "category": "idBoundValid",
+      "bytes": "{\"version\":1,\"type\":\"request\",\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"body\":\"\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 1,
+            "type": "request",
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "method": "GET",
+            "path": "/",
+            "query": "",
+            "headers": {},
+            "body": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "request-id-over-max-bytes",
+      "category": "idBoundInvalid",
+      "bytes": "{\"version\":1,\"type\":\"request\",\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"body\":\"\"}\n",
+      "expected": [
+        {
+          "error": "id_too_large"
         }
       ]
     }

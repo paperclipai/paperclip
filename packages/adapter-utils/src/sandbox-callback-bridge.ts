@@ -51,7 +51,7 @@ const MAX_BACKSTOP_WRITE_ATTEMPTS = 3;
 // finish well under the in-sandbox 30s response deadline.
 const BACKSTOP_WRITE_RETRY_MS = 50;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
-const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
+export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
@@ -60,7 +60,7 @@ const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 // stdout and resolves one response frame from stdin. The generated `.mjs`
 // selects the mode from `PAPERCLIP_API_BRIDGE_MODE`.
 const SANDBOX_CALLBACK_BRIDGE_FILE_MODE = "queue_v1";
-const SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE = "duplex_v1";
+export const SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE = "duplex_v1";
 
 // The duplex gateway HTTP wait budget default. The gateway waits this long for a
 // response frame before it answers the local caller with a 502 timeout. The
@@ -1745,6 +1745,7 @@ export async function startSandboxCallbackBridgeServer(input: {
  */
 const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 1;
 const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1000000;
+const DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES = 256;
 const DUPLEX_NEWLINE_BYTE = 0x0a;
 const DUPLEX_EMPTY = Buffer.alloc(0);
 const DUPLEX_RESPONSE_OUTCOMES = new Set(["completed", "indeterminate", "unavailable"]);
@@ -1820,6 +1821,9 @@ function duplexValidateRequest(frame) {
   ) {
     return duplexFail("malformed_frame", "request frame has a missing or wrong-typed field");
   }
+  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
+    return duplexFail("id_too_large", "request frame id exceeds the maximum size");
+  }
   return duplexOk(frame);
 }
 
@@ -1834,12 +1838,20 @@ function duplexValidateResponse(frame) {
   ) {
     return duplexFail("malformed_frame", "response frame has a missing or wrong-typed field");
   }
+  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
+    return duplexFail("id_too_large", "response frame id exceeds the maximum size");
+  }
   return duplexOk(frame);
 }
 
 function duplexValidateReady(frame) {
-  if (typeof frame.address !== "string") {
-    return duplexFail("malformed_frame", "ready frame has a missing or wrong-typed address");
+  if (typeof frame.nonce !== "string") {
+    return duplexFail("malformed_frame", "ready frame has a missing or wrong-typed nonce");
+  }
+  for (const key of Object.keys(frame)) {
+    if (key !== "version" && key !== "type" && key !== "nonce") {
+      return duplexFail("malformed_frame", "ready frame has an unexpected field");
+    }
   }
   return duplexOk(frame);
 }
@@ -1922,6 +1934,12 @@ const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
 const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
 const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
+// The host assigns the loopback port and passes it through the launch
+// environment. The duplex gateway binds exactly this port; it never selects a
+// different one. The host also passes one random per-open nonce here. The
+// gateway echoes it in the READY frame so the host correlates READY with this
+// channel open. The nonce is a liveness signal, not authentication.
+const bridgeNonce = process.env.PAPERCLIP_BRIDGE_NONCE || "";
 const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
 const responseTimeoutMs = Number(
   process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS ||
@@ -2296,6 +2314,18 @@ function runDuplexGateway() {
     process.exit(0);
   });
 
+  // Bind-or-exit. The host assigns a positive loopback port. The gateway binds
+  // exactly that port. On a non-positive assigned port or a bind failure it
+  // writes a diagnostic and exits with a nonzero code. It never selects a
+  // different port, so no untrusted workload can steer the endpoint.
+  if (!Number.isInteger(port) || port <= 0) {
+    diag("duplex gateway requires a positive assigned PAPERCLIP_BRIDGE_PORT; got " + String(port));
+    process.exit(1);
+  }
+  server.on("error", (error) => {
+    diag("duplex gateway could not bind port " + String(port) + ": " + (error && error.message ? error.message : String(error)));
+    process.exit(1);
+  });
   server.listen(port, host, () => {
     const address = server.address();
     if (!address || typeof address === "string") {
@@ -2303,12 +2333,14 @@ function runDuplexGateway() {
       process.exit(1);
       return;
     }
-    // The one READY frame carries the validated listener address. Stdout carries
+    // The gateway sends READY only after the listener binds. READY is a liveness
+    // signal: it carries the frame version and the echoed nonce, and no address
+    // data. The host builds the endpoint from its own stored port. Stdout carries
     // only frames.
     writeFrame({
       version: DUPLEX_FRAME_VERSION,
       type: "ready",
-      address: "http://" + host + ":" + address.port,
+      nonce: bridgeNonce,
     });
   });
 }

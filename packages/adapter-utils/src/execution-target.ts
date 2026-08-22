@@ -2,10 +2,11 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
+  type CommandManagedDuplexChannel,
   type CommandManagedRuntimeAsset,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
@@ -23,19 +24,45 @@ export type {
   SandboxAdditionalSource,
 } from "./sandbox-managed-runtime.js";
 import {
+  authorizeSandboxCallbackBridgeRequestWithRoutes,
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE,
+  SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   sandboxCallbackBridgeDirectories,
+  sanitizeSandboxCallbackBridgeHeaders,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
   syncRemoteTextFileWithHashSkip,
+  syncSandboxCallbackBridgeEntrypoint,
 } from "./sandbox-callback-bridge.js";
 import {
   createSandboxRunLogTailFactory,
   type SandboxRunLogTailFactory,
 } from "./sandbox-run-log-stream.js";
+import {
+  createDuplexBridgeBroker,
+  DEFAULT_DUPLEX_BROKER_BUDGETS,
+  DUPLEX_CHANNEL_LOST_ERROR_CODE,
+  isSafeBridgeMethod,
+  typedDuplexLossReason,
+  type DuplexBridgeBroker,
+  type DuplexBrokerBudgets,
+  type DuplexBrokerForwardResult,
+  type DuplexBrokerRunDisposition,
+} from "./duplex-bridge-broker.js";
+import {
+  decodeDuplexLine,
+  DEFAULT_MAX_DUPLEX_FRAME_BYTES,
+  type DuplexRequestFrame,
+} from "./duplex-frame-codec.js";
+import {
+  createDuplexTelemetry,
+  type DuplexFallbackReason,
+  type DuplexTelemetryRecorder,
+} from "./duplex-telemetry.js";
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
   ensureCommandResolvable,
@@ -129,6 +156,14 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * narrowing, then attaches it here. Absent when no snapshot was resolved.
    */
   readonly effectiveCapabilities?: EffectiveSandboxCapabilities | null;
+  /**
+   * Per-run duplex bridge kill switch. The host stamps it on the same seam as
+   * `effectiveCapabilities`. `true` selects the duplex transport only when the
+   * capability `duplexCommandStream` is also `true`; any other value keeps the
+   * file bridge. The value stays on the host and never enters the sandbox
+   * environment. Absent means no grant.
+   */
+  readonly enableSandboxDuplexBridge?: boolean;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
@@ -142,6 +177,13 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * set to `false` to explicitly opt out back to batch-at-end delivery.
    */
   streamRunLogs?: boolean | null;
+  /**
+   * The injected duplex telemetry recorder for this run. The host attaches it on
+   * the same seam as `runner`, so this live object stays on the host and never
+   * enters the sandbox environment. The bridge binds it to the fixed duplex
+   * observability surface. Absent means the safe no-op default.
+   */
+  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
 }
 
 export type AdapterExecutionTarget =
@@ -194,6 +236,18 @@ export interface AdapterExecutionTargetProcessOptions {
    * onLog is suppressed and incremental chunks flow through `onLog` instead.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  /**
+   * Sandbox-only: the atomic run-disposition settle from the Paperclip bridge
+   * handle. When provided, `runAdapterExecutionTargetProcess` calls it once at
+   * the clean-completion boundary of the process, synchronously and before the
+   * run-log tail finishes. The call reads the disposition and marks the
+   * host-observed orderly completion in one broker step, so a gateway exit
+   * after the clean process completion cannot latch a false mid-run loss. A
+   * control channel that died before the clean completion still fails the run
+   * closed with the typed `duplex_channel_lost` code. The file bridge path
+   * never sets it.
+   */
+  settleRunDisposition?: (() => DuplexBrokerRunDisposition) | null;
   localProcessSandbox?: LocalProcessSandboxOptions | null;
 }
 
@@ -213,6 +267,33 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * `runAdapterExecutionTargetProcess` via `options.runLogTail`.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  /**
+   * Read the terminal run disposition of the duplex control channel. It reports a
+   * failure when the channel was lost before an orderly completion, and names the
+   * typed loss reason. It reports a success for a healthy channel or a
+   * normal-teardown loss. The file bridge path never sets it, so the method is
+   * absent there. The caller reads it at the run-disposition seam to fail a run
+   * whose control channel died mid-turn.
+   */
+  readRunDisposition?(): DuplexBrokerRunDisposition;
+  /**
+   * Atomically read the run disposition and mark the host-observed orderly
+   * completion in one broker step. The ACP lane calls it at the terminal
+   * finalization boundary for a success-eligible completion, so no `await` can
+   * separate the read from the mark and a teardown loss cannot slip in between.
+   * A loss that already latched keeps the failure, because the broker no-ops the
+   * mark after a latched loss. The file bridge path never sets it.
+   */
+  settleRunDisposition?(): DuplexBrokerRunDisposition;
+  /**
+   * Mark the host-observed orderly completion of the agent turn on the broker's
+   * ordered lifecycle. The caller marks it at the ACP terminal-finalization
+   * boundary for a still-success-eligible completion, so a later teardown loss
+   * cannot flip the run to a failure. A loss that already latched keeps the
+   * failure, because the broker no-ops the mark after a latched loss. The file
+   * bridge path never sets it, so the method is absent there.
+   */
+  markOrderlyCompletion?(): void;
   stop(): Promise<void>;
 }
 
@@ -316,6 +397,35 @@ export function adapterExecutionTargetUsesManagedHome(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
   return target?.kind === "remote" && target.transport === "sandbox";
+}
+
+/**
+ * Read the per-run duplex bridge kill switch off a target. Only a sandbox
+ * target with `enableSandboxDuplexBridge` set to `true` returns `true`. Every
+ * other target and every other value returns `false`, so the caller fails
+ * closed to the file bridge.
+ */
+export function adapterExecutionTargetEnablesSandboxDuplexBridge(
+  target: AdapterExecutionTarget | null | undefined,
+): boolean {
+  return (
+    target?.kind === "remote" &&
+    target.transport === "sandbox" &&
+    target.enableSandboxDuplexBridge === true
+  );
+}
+
+/**
+ * Read the injected duplex telemetry recorder off a target. Only a sandbox
+ * target with a recorder attached returns it. Every other target returns null,
+ * so the bridge falls back to the safe no-op recorder.
+ */
+export function adapterExecutionTargetDuplexTelemetryRecorder(
+  target: AdapterExecutionTarget | null | undefined,
+): DuplexTelemetryRecorder | null {
+  return target?.kind === "remote" && target.transport === "sandbox"
+    ? target.duplexTelemetryRecorder ?? null
+    : null;
 }
 
 export function adapterExecutionTargetRemoteCwd(
@@ -632,6 +742,35 @@ export async function resolveAdapterExecutionTargetCommandForLogs(
   });
 }
 
+// Apply the run-disposition seam to one clean process result. Only a clean
+// completion is success-eligible: a timed-out, signalled, or non-zero-exit
+// result is already a failure, so the seam leaves it unchanged. This is the same
+// success-eligibility rule the ACP lane applies. For a success-eligible result
+// the seam settles the disposition in one atomic broker step: it reads the
+// disposition and marks the host-observed orderly completion together, so a
+// gateway exit after the clean completion cannot latch a false mid-run loss. A
+// duplex control channel that died before the clean completion fails the run
+// closed: the seam sets a non-zero exit code, the typed `duplex_channel_lost`
+// error code, and a stderr note that names only the typed loss reason.
+function applyRunDispositionSeam(
+  result: RunProcessResult,
+  settleRunDisposition: (() => DuplexBrokerRunDisposition) | null | undefined,
+): RunProcessResult {
+  const successEligible = result.exitCode === 0 && !result.timedOut && result.signal === null;
+  if (!successEligible || !settleRunDisposition) return result;
+  const disposition = settleRunDisposition();
+  if (!disposition.failed) return result;
+  const lossReason = disposition.lossReason ?? "other";
+  const note = `[paperclip] The sandbox duplex control channel was lost (${lossReason}) before the run completed.\n`;
+  const separator = result.stderr.length > 0 && !result.stderr.endsWith("\n") ? "\n" : "";
+  return {
+    ...result,
+    exitCode: 1,
+    errorCode: DUPLEX_CHANNEL_LOST_ERROR_CODE,
+    stderr: `${result.stderr}${separator}${note}`,
+  };
+}
+
 export async function runAdapterExecutionTargetProcess(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,
@@ -668,10 +807,17 @@ export async function runAdapterExecutionTargetProcess(
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
       });
+      // Settle the duplex run disposition synchronously at the clean-completion
+      // boundary, before the run-log tail finishes. The atomic settle marks the
+      // host-observed orderly completion in one broker step, so a gateway exit
+      // after the clean process completion cannot latch a false mid-run loss. A
+      // control channel that died before this clean completion still fails the
+      // run closed.
+      const settled = applyRunDispositionSeam(result, options.settleRunDisposition);
       if (runLogTail) {
         await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
       }
-      return result;
+      return settled;
     } catch (error) {
       if (runLogTail) {
         await runLogTail.abort();
@@ -1143,6 +1289,9 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       remoteCwd,
       timeoutMs: typeof parsed.timeoutMs === "number" ? parsed.timeoutMs : null,
       streamRunLogs: typeof parsed.streamRunLogs === "boolean" ? parsed.streamRunLogs : null,
+      // Fail closed: only the literal `true` reads as a grant. An absent field
+      // or any other value parses as no grant, so a round-trip never invents one.
+      enableSandboxDuplexBridge: parsed.enableSandboxDuplexBridge === true,
       ...(effectiveCapabilities ? { effectiveCapabilities } : {}),
     };
   }
@@ -2184,6 +2333,440 @@ child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal
 ${PROCESS_SESSION_STDIN_POLL_TAIL}`;
 }
 
+/** The default deadline for the duplex readiness handshake, in milliseconds. */
+const DEFAULT_DUPLEX_READINESS_TIMEOUT_MS = 10_000;
+
+/** The default bounded budget to close a partial duplex channel, in milliseconds. */
+const DEFAULT_DUPLEX_CLEANUP_BUDGET_MS = 2_000;
+
+/**
+ * Reserve a loopback port the host assigns to the duplex gateway. The host binds
+ * an ephemeral listener on `127.0.0.1`, reads the port the operating system
+ * chose, then closes the listener. The number is very likely free when the
+ * gateway binds it a moment later. The gateway binds exactly this port or exits
+ * nonzero, so a taken port fails closed to the file bridge and never steers the
+ * endpoint.
+ */
+async function reserveHostAssignedLoopbackPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      if (!address || typeof address === "string") {
+        probe.close(() => reject(new Error("Could not reserve a loopback port for the duplex gateway.")));
+        return;
+      }
+      const reserved = address.port;
+      probe.close(() => resolve(reserved));
+    });
+  });
+}
+
+/**
+ * Build the argument vector that launches the duplex gateway in the sandbox. The
+ * host passes the assigned port and the per-open nonce only through the launch
+ * environment, so the argument vector sets them as environment assignments in
+ * front of the node command. No addressing data comes from the channel.
+ *
+ * The script uses `exec env NAME=value ... command`. A POSIX shell accepts an
+ * environment-assignment prefix only on a plain command, never on `exec`. The
+ * form `exec NAME=value command` exits with status 127. The `env` utility carries
+ * the assignments, and `exec` still replaces the shell with the gateway process,
+ * so the gateway keeps the process slot and the assigned environment.
+ */
+export function buildDuplexGatewayLaunchArgv(input: {
+  shellCommand: "bash" | "sh";
+  remoteEntrypoint: string;
+  nodeCommand?: string | null;
+  env: Record<string, string>;
+}): string[] {
+  const assignments = Object.entries(input.env)
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
+    .join(" ");
+  const nodeCommand = input.nodeCommand?.trim() || "node";
+  const script = `exec env ${assignments} ${shellQuote(nodeCommand)} ${shellQuote(input.remoteEntrypoint)}`;
+  return [input.shellCommand, ...shellCommandArgs(script)];
+}
+
+/** The reason the duplex readiness handshake did not pass. */
+type DuplexReadinessFailure =
+  | "protocol_contamination"
+  | "nonce_mismatch"
+  | "channel_exit"
+  | "timeout";
+
+/** The outcome of the duplex readiness handshake. */
+type DuplexReadinessResult =
+  | { ok: true }
+  | { ok: false; reason: DuplexReadinessFailure };
+
+/**
+ * Map a readiness failure to the fixed fallback reason. Each readiness failure
+ * maps to exactly one reason from the closed telemetry set, so the fallback
+ * counter and the transport event carry only an approved value.
+ */
+function duplexReadinessFallbackReason(reason: DuplexReadinessFailure): DuplexFallbackReason {
+  switch (reason) {
+    case "protocol_contamination":
+      return "contaminated";
+    case "nonce_mismatch":
+      return "ready_nonce_mismatch";
+    case "timeout":
+      return "ready_timeout";
+    case "channel_exit":
+      return "ready_invalid";
+  }
+}
+
+/**
+ * The fixed marker the worker manager puts in a route-busy rejection. The manager
+ * defines the constant; this module matches the fixed string, because the two
+ * layers ship in separate packages and share no import. The marker names the
+ * process-scoped route ceiling, so it carries no route, query, body, or token.
+ */
+const DUPLEX_ROUTE_BUSY_ERROR_MARKER = "DUPLEX_CHANNEL_ROUTE_BUSY";
+
+/**
+ * Report whether the caught open error is a route-busy rejection. The host maps it
+ * to the `route_busy` fallback stage, so a full process-scoped route ceiling never
+ * folds into a generic open failure.
+ */
+function isDuplexRouteBusyError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(DUPLEX_ROUTE_BUSY_ERROR_MARKER);
+}
+
+/**
+ * The cap on the pre-READY readiness buffer, in bytes. The gate reads untrusted
+ * bytes before the READY line arrives, so it bounds the buffer. The cap is the
+ * codec frame-size bound plus one line of margin, so a legitimate maximum-size
+ * READY frame still fits. Past the cap with no newline, the stream cannot be a
+ * valid READY frame, so the gate finishes with protocol contamination.
+ */
+const DUPLEX_READINESS_BUFFER_CAP_BYTES = DEFAULT_MAX_DUPLEX_FRAME_BYTES + 4_096;
+
+/**
+ * Derive the nested broker budgets from one forward budget. The response budget
+ * and the gateway wait budget each add a fixed margin, so the nested budget
+ * order holds for any finite forward budget. The default forward budget (30 s)
+ * yields the historical 32 s response budget and 35 s gateway wait budget, so a
+ * caller that sets no forward budget sees no change.
+ */
+function deriveNestedDuplexBrokerBudgets(forwardTimeoutMs: number): DuplexBrokerBudgets {
+  const responseMargin =
+    DEFAULT_DUPLEX_BROKER_BUDGETS.responseBudgetMs - DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs;
+  const gatewayMargin =
+    DEFAULT_DUPLEX_BROKER_BUDGETS.gatewayWaitMs - DEFAULT_DUPLEX_BROKER_BUDGETS.responseBudgetMs;
+  const responseBudgetMs = forwardTimeoutMs + responseMargin;
+  const gatewayWaitMs = responseBudgetMs + gatewayMargin;
+  return { forwardTimeoutMs, responseBudgetMs, gatewayWaitMs };
+}
+
+/**
+ * Create the run-log directory on the sandbox before the tail starts. The file
+ * bridge worker creates this directory on the file path. The duplex path starts
+ * no worker, so the host creates the directory here. The tail then reads a real
+ * directory from its first tick.
+ *
+ * This step is best effort. The broker already serves the duplex transport when
+ * the host reaches it, and the tail wrap command runs its own `mkdir -p` as a
+ * backstop. So a create failure must not tear down a working duplex transport;
+ * the host swallows it and still builds the tail. The log line names no raw
+ * error, so no raw error rides a log line here.
+ */
+async function ensureSandboxRunLogDirectory(input: {
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  logsDir: string;
+  shellCommand: "bash" | "sh";
+  timeoutMs: number | null | undefined;
+}): Promise<void> {
+  try {
+    await input.runner.execute({
+      command: input.shellCommand,
+      args: shellCommandArgs(`mkdir -p ${shellQuote(input.logsDir)}`),
+      cwd: input.remoteCwd,
+      timeoutMs: input.timeoutMs ?? undefined,
+    });
+  } catch {
+    // Best effort: the tail wrap command creates the directory before it writes.
+  }
+}
+
+/**
+ * The duplex readiness gate. The gate owns the single data listener and the
+ * single exit listener of the channel while the host waits for a valid READY
+ * frame. It resolves the handshake, then hands the channel to the broker.
+ *
+ * The gate authenticates readiness with the nonce and the strict READY schema,
+ * not with the line position. A PTY channel echoes the launch wrapper line before
+ * it sets raw mode, so the first line is often not the READY frame. The gate skips
+ * each pre-READY line that does not decode as a READY frame, then accepts the first
+ * line that decodes as a READY frame with the matching nonce. A line that decodes
+ * as a READY frame with a wrong nonce fails the handshake with a nonce mismatch. An
+ * early exit or a timeout also fails the handshake. The gate never dispatches a
+ * request; the broker does that after readiness passes.
+ *
+ * The skipped bytes stay in the capped buffer, so the O(1) cap and the readiness
+ * timeout still bound the wait. The gate enforces the cap on every pre-READY path
+ * and before it decodes a candidate line, so an over-cap prefix never reaches READY
+ * acceptance. The cap check has priority over READY acceptance on every path.
+ */
+// The count of the pre-READY newline-scan work, in UTF-16 code units. Each
+// search adds the number of code units it can read. A test reads this count to
+// prove the scan work stays linear in the bytes received. Production code never
+// reads this count.
+let duplexReadinessNewlineScanUnits = 0;
+
+/**
+ * Find the first newline in `buffer` at or after index `from` and return its
+ * index, or -1. `String#indexOf` reads the code units from `from` up to the
+ * newline it finds, or to the end of the buffer when it finds none. This helper
+ * counts that real scan distance for a test. The count stays linear in the bytes
+ * received when the caller advances `from` past each newline it consumes.
+ */
+function findNewlineFrom(buffer: string, from: number): number {
+  const newlineIndex = buffer.indexOf("\n", from);
+  const scanned = newlineIndex === -1 ? buffer.length - from : newlineIndex - from + 1;
+  duplexReadinessNewlineScanUnits += scanned;
+  return newlineIndex;
+}
+
+/**
+ * Test-only surface for the pre-READY readiness gate. A test reads the scan
+ * count to prove the newline search work stays linear in the bytes received.
+ * Production code does not use this object.
+ */
+export const __duplexReadinessTesting = {
+  readNewlineScanUnits: (): number => duplexReadinessNewlineScanUnits,
+  resetNewlineScanUnits: (): void => {
+    duplexReadinessNewlineScanUnits = 0;
+  },
+};
+
+interface DuplexReadinessGate {
+  /** Resolves with the handshake outcome. It never rejects. */
+  readonly ready: Promise<DuplexReadinessResult>;
+  /**
+   * The channel view the broker consumes after readiness passes. It replays the
+   * bytes that followed the READY frame, then forwards each later chunk and the
+   * exit. The gate keeps one real data listener, so the broker never double-binds
+   * the channel.
+   */
+  readonly brokerChannel: CommandManagedDuplexChannel;
+}
+
+function createDuplexReadinessGate(
+  channel: CommandManagedDuplexChannel,
+  options: { nonce: string; timeoutMs: number },
+): DuplexReadinessGate {
+  let settled = false;
+  let readyOk = false;
+  // The raw bytes the host reads before the READY frame completes. The buffer is
+  // append-only, so the O(1) cap check on `buffer.length` stays valid.
+  let buffer = "";
+  // The start index of the current line in `buffer`. A leading blank line
+  // advances this cursor past its newline without a buffer copy.
+  let lineStart = 0;
+  // The next index to search for a newline. The gate scans from here, so each
+  // code unit is read at most one time for the newline search.
+  let scanFrom = 0;
+  // The bytes that followed the READY frame, held until the broker binds.
+  let pending = "";
+  // The exit that arrived after READY but before the broker bound, if any.
+  let pendingExit: { exitCode: number | null } | null = null;
+  let dataSink: ((chunk: string) => void) | null = null;
+  let exitSink: ((exit: { exitCode: number | null }) => void) | null = null;
+  let resolveReady!: (result: DuplexReadinessResult) => void;
+  const ready = new Promise<DuplexReadinessResult>((resolve) => {
+    resolveReady = resolve;
+  });
+
+  const timer = setTimeout(() => finish({ ok: false, reason: "timeout" }), options.timeoutMs);
+  timer.unref?.();
+
+  function finish(result: DuplexReadinessResult): void {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (result.ok) readyOk = true;
+    resolveReady(result);
+  }
+
+  channel.onData((chunk) => {
+    if (dataSink) {
+      dataSink(chunk);
+      return;
+    }
+    if (readyOk) {
+      // READY already passed; hold the bytes until the broker binds.
+      pending += chunk;
+      return;
+    }
+    if (settled) {
+      // The handshake already failed. The channel is untrusted and can keep
+      // sending bytes until the host closes it. Drop them, so a failed handshake
+      // never grows the buffer after the gate settles.
+      return;
+    }
+    // Append the new bytes and continue the newline search from `scanFrom`, the
+    // first index not yet examined. Each code unit is read at most one time for
+    // the search, so the total scan work stays linear in the bytes received.
+    buffer += chunk;
+    for (;;) {
+      const newlineIndex = findNewlineFrom(buffer, scanFrom);
+      if (newlineIndex === -1) {
+        // No complete line yet. The whole buffer up to the end is now scanned.
+        scanFrom = buffer.length;
+        // The gate reads untrusted bytes, so bound the pre-READY buffer. Past
+        // the cap with no complete READY line, the stream cannot be a valid
+        // READY frame, so finish with protocol contamination. The retained
+        // skipped lines count against the cap; that is acceptable and fail-closed.
+        //
+        // Gate on buffer.length, the UTF-16 code-unit count, which is O(1).
+        // Buffer.byteLength is O(n), so a byte check on every newline-less chunk
+        // makes the pre-READY window quadratic in the bytes received. The UTF-8
+        // byte length is greater than or equal to the UTF-16 code-unit count for
+        // every string, so this check never fires before the byte cap is truly
+        // exceeded. It can fire late by at most a factor of 3, so peak buffer
+        // memory stays bounded near 3 MB.
+        if (buffer.length > DUPLEX_READINESS_BUFFER_CAP_BYTES) {
+          finish({ ok: false, reason: "protocol_contamination" });
+        }
+        return;
+      }
+      if (newlineIndex === lineStart) {
+        // Skip a blank line, the same as the frame decoder. Advance the line-start
+        // cursor past the newline without a buffer copy, then search the next line
+        // from the position after the newline. Enforce the cap after the advance,
+        // so a blank-line flood past the cap fails closed before READY acceptance.
+        lineStart = newlineIndex + 1;
+        scanFrom = newlineIndex + 1;
+        if (lineStart > DUPLEX_READINESS_BUFFER_CAP_BYTES) {
+          finish({ ok: false, reason: "protocol_contamination" });
+          return;
+        }
+        continue;
+      }
+      // A complete non-blank candidate line spans `[lineStart, newlineIndex)`.
+      // Enforce the cap on the line's end offset before the decode, so an over-cap
+      // prefix never reaches READY acceptance on a completed line.
+      if (newlineIndex + 1 > DUPLEX_READINESS_BUFFER_CAP_BYTES) {
+        finish({ ok: false, reason: "protocol_contamination" });
+        return;
+      }
+      // Slice only the single candidate line for the decode.
+      const line = buffer.slice(lineStart, newlineIndex);
+      let decoded = decodeDuplexLine(line);
+      if (!decoded.ok) {
+        // The whole line did not decode. A terminal can put bytes in front of the
+        // gateway's first frame on the same line, with no newline between them: a
+        // shell with bracketed paste enabled writes its disable sequence and a
+        // bare carriage return (`ESC [ ? 2 0 0 4 l CR`) immediately before the
+        // child's first output. So retry the decode from the first `{` in the
+        // line, which is where a frame can start.
+        //
+        // This does not weaken the handshake. The retry still runs the same
+        // strict decode over the remainder of the line, and readiness still
+        // authenticates on the nonce below, so a prefix cannot forge a frame or
+        // smuggle a second one — it can only be discarded.
+        const braceIndex = line.indexOf("{");
+        if (braceIndex > 0) {
+          decoded = decodeDuplexLine(line.slice(braceIndex));
+        }
+      }
+      if (decoded.ok && decoded.frame.type === "ready") {
+        // A line that decodes as a READY frame authenticates by the nonce. A wrong
+        // nonce fails the handshake; the matching nonce passes it.
+        if (decoded.frame.nonce !== options.nonce) {
+          finish({ ok: false, reason: "nonce_mismatch" });
+          return;
+        }
+        // Hold the bytes that follow the READY line for the broker to replay.
+        pending = buffer.slice(newlineIndex + 1);
+        finish({ ok: true });
+        return;
+      }
+      // The line does not decode as a READY frame. A PTY echo line or any other
+      // pre-READY noise reaches here. Skip it and keep scanning; the nonce and the
+      // strict schema, not the line position, authenticate readiness. Enforce the
+      // cap after the advance, so a noise-line flood past the cap fails closed.
+      lineStart = newlineIndex + 1;
+      scanFrom = newlineIndex + 1;
+      if (lineStart > DUPLEX_READINESS_BUFFER_CAP_BYTES) {
+        finish({ ok: false, reason: "protocol_contamination" });
+        return;
+      }
+    }
+  });
+
+  channel.onExit((exit) => {
+    if (exitSink) {
+      exitSink(exit);
+      return;
+    }
+    if (readyOk) {
+      // The channel exited after READY but before the broker bound. Hold the
+      // exit so the broker still learns of the loss.
+      pendingExit = exit;
+      return;
+    }
+    finish({ ok: false, reason: "channel_exit" });
+  });
+
+  const brokerChannel: CommandManagedDuplexChannel = {
+    write: (data: string) => channel.write(data),
+    onData: (listener: (chunk: string) => void) => {
+      dataSink = listener;
+      if (pending.length > 0) {
+        const replay = pending;
+        pending = "";
+        listener(replay);
+      }
+    },
+    onExit: (listener: (exit: { exitCode: number | null }) => void) => {
+      exitSink = listener;
+      if (pendingExit) {
+        const exit = pendingExit;
+        pendingExit = null;
+        listener(exit);
+      }
+    },
+    stop: () => channel.stop(),
+    close: () => channel.close(),
+  };
+
+  return { ready, brokerChannel };
+}
+
+/**
+ * Close a partial duplex channel inside a bounded budget, then stop the child.
+ * The host runs this on any readiness failure, so a failed duplex attempt leaves
+ * no live provider session before the fallback to the file bridge.
+ */
+async function closeDuplexChannelWithinBudget(
+  channel: CommandManagedDuplexChannel,
+  budgetMs: number,
+): Promise<void> {
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, budgetMs);
+      timer.unref?.();
+    });
+    await Promise.race([channel.close().catch(() => undefined), budget]);
+    if (timer !== undefined) clearTimeout(timer);
+  } catch {
+    // Best effort: the stop below still removes the child.
+  } finally {
+    try {
+      channel.stop();
+    } catch {
+      // The channel is already gone; nothing more to do.
+    }
+  }
+}
+
 export async function startAdapterExecutionTargetPaperclipBridge(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
@@ -2194,6 +2777,21 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   hostApiUrl?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   maxBodyBytes?: number | null;
+  // The deadline for one forward call, in milliseconds. This is the inner budget
+  // of the duplex broker's nested budget set. The default is the forward budget
+  // in `DEFAULT_DUPLEX_BROKER_BUDGETS` (30 s), so the current behavior does not
+  // change when the caller sets no option.
+  forwardTimeoutMs?: number | null;
+  // The first strict gate for the duplex transport. The host selects duplex only
+  // when this is exactly `true` and the resolved capability
+  // `duplexCommandStream` is exactly `true`. Any other value of either gate
+  // selects the file bridge. The caller reads this from the experimental instance
+  // setting `enableSandboxDuplexBridge`. The default is the file bridge.
+  enableSandboxDuplexBridge?: boolean | null;
+  // The deadline for the duplex readiness handshake, in milliseconds. On a
+  // timeout the host closes the partial channel and selects the file bridge. The
+  // default is `DEFAULT_DUPLEX_READINESS_TIMEOUT_MS`.
+  duplexReadinessTimeoutMs?: number | null;
   // Return the current-run parent-context token. The factory threads it into the
   // callback bridge worker, which reads it per request so each request
   // `sandbox.exec` span parents to the live run span. When it is absent, the
@@ -2204,6 +2802,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // request's execs group under one wrapper span. When it is absent, the request
   // work runs under the run parent with no wrapper span.
   runtimeSpan?: RuntimeSpanRunner;
+  // The injected recorder for the fixed duplex observability surface. The factory
+  // binds it to a provider-scoped telemetry facade, which records the channel-open
+  // span, the request span, the guarded counters, and the transport event. The
+  // default is a no-op recorder, so the surface stays inert until the host injects
+  // a real recorder.
+  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
   if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
     return null;
@@ -2218,6 +2822,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   if (hostApiToken.length === 0) {
     throw new Error("Sandbox bridge mode requires a host-side Paperclip API token.");
   }
+  // The forward budget for one relayed request. It stays at the broker's default
+  // forward budget (30 s) when the caller sets no option, so current behavior
+  // does not change.
+  const forwardTimeoutMs = input.forwardTimeoutMs ?? DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs;
 
   const runtimeRootDir =
     input.runtimeRootDir?.trim().length
@@ -2257,6 +2865,370 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   );
 
   const bridgeAsset = await createSandboxCallbackBridgeAsset();
+
+  // The provider-scoped telemetry facade for the fixed duplex observability
+  // surface. It maps the raw provider key through the allowlist one time, so no
+  // raw plugin key reaches a span, a counter, or the event. The default recorder
+  // is a no-op, so the facade is inert until the host injects a real recorder.
+  const duplexProviderKey =
+    "providerKey" in target ? target.providerKey ?? undefined : undefined;
+  const duplexTelemetry = createDuplexTelemetry({
+    recorder: input.duplexTelemetryRecorder ?? undefined,
+    providerKey: duplexProviderKey,
+  });
+
+  // PAPERCLIP_BRIDGE_DEBUG opts into verbose stdout logs of every bridge proxy
+  // request/response. The query string is logged verbatim, so callers who pass
+  // auth tokens or other sensitive values as query parameters should be aware
+  // those values appear in the host process's stdout when this flag is enabled.
+  // Only intended for active debugging in trusted environments.
+  const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
+
+  // One forward of a relayed sandbox request onto the existing Paperclip API
+  // path. The forward applies the real host token and the signed run id, so the
+  // token replacement and the run attribution stay in one place for both the
+  // file bridge and the duplex broker. The sandbox request carries only the
+  // bridge token; the real agent token never leaves the host.
+  const forwardBridgeRequest = async (
+    request: { method: string; path: string; query: string; headers: Record<string, string>; body: string },
+    signal?: AbortSignal,
+    options?: { suppressDebugLog?: boolean },
+  ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
+    const method = request.method.trim().toUpperCase() || "GET";
+    // The per-request debug log prints the method, the path, and the query. The
+    // duplex path suppresses it, so no route or query rides a log line there. The
+    // file path keeps the existing behavior.
+    const emitDebugLog = bridgeDebugEnabled && options?.suppressDebugLog !== true;
+    if (emitDebugLog) {
+      await onLog(
+        "stdout",
+        `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+      );
+    }
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(request.headers)) {
+      if (value.trim().length === 0) continue;
+      headers.set(key, value);
+    }
+    headers.set("authorization", `Bearer ${hostApiToken}`);
+    headers.set("x-paperclip-run-id", input.runId);
+    // Abort the forward when the caller aborts the request (its per-iteration
+    // timeout or watchdog fired, or the broker's forward budget ended), or after
+    // the forward budget here, whichever comes first.
+    const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
+    const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+      method,
+      headers,
+      ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+      signal: forwardSignal,
+    });
+    if (emitDebugLog) {
+      await onLog(
+        "stdout",
+        `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+      );
+    }
+    // The host delivered response headers, so the response-body read starts after
+    // the host processed the request. A later response-body read failure (a body
+    // over the size limit, or a stream read error) needs a classification by
+    // method safety. A safe method (GET, HEAD, OPTIONS, TRACE) never changes host
+    // state, so a retry cannot double-apply a mutation and the failure stays
+    // retryable. A mutating or otherwise unsafe method may have committed on the
+    // host, so a retryable status is unsafe: it makes the caller repeat the
+    // request with a new request id outside the broker deduplication set, and the
+    // host applies the mutation twice. For an unsafe method the code returns a
+    // non-retryable 504 and marks the outcome indeterminate, exactly like an
+    // aborted in-flight forward. The in-sandbox server maps the indeterminate 504
+    // to a non-retryable 409 for both the file bridge and the duplex broker.
+    let responseBody: string;
+    try {
+      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
+    } catch (error) {
+      if (isSafeBridgeMethod(method)) {
+        // The method is safe, so a retry cannot double-apply a mutation. Return a
+        // retryable 502 with no indeterminate marker, so the gateway passes it
+        // through as a retryable status.
+        return {
+          status: 502,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+      return {
+        status: 504,
+        headers: {
+          "content-type": "application/json",
+          "x-paperclip-bridge-outcome": "indeterminate",
+        },
+        body: JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          outcome: "indeterminate",
+          retryable: false,
+        }),
+      };
+    }
+    const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
+    if (commentMarker) await onLog("stdout", commentMarker);
+    return {
+      status: response.status,
+      headers: buildBridgeResponseHeaders(response),
+      body: responseBody,
+    };
+  };
+
+  // Two strict gates guard the duplex transport. Select duplex only when the
+  // experimental setting is exactly `true`, the resolved capability
+  // `duplexCommandStream` is exactly `true`, and the runner exposes the duplex
+  // channel. Any other value of either gate selects the file bridge below.
+  const duplexRequested = input.enableSandboxDuplexBridge === true;
+  const capabilityGranted =
+    "effectiveCapabilities" in target &&
+    target.effectiveCapabilities?.duplexCommandStream === true;
+  const openDuplexChannel = runner.openDuplexChannel?.bind(runner);
+  // Record the pre-attempt fallback for a file-bridge selection that opens no
+  // channel. `gate_off` marks the kill switch off; `capability_absent` marks the
+  // capability or the runner method absent. A later channel-open failure records
+  // its own fallback through the channel-open attempt below.
+  if (!duplexRequested) {
+    duplexTelemetry.recordFallback("gate_off");
+  } else if (!capabilityGranted || typeof openDuplexChannel !== "function") {
+    duplexTelemetry.recordFallback("capability_absent");
+  }
+  if (duplexRequested && capabilityGranted && typeof openDuplexChannel === "function") {
+    // Begin the channel-open attempt. The block reports exactly one terminal:
+    // `ready` on success, or `fallback(reason)` on an open or a readiness failure.
+    const duplexChannelOpen = duplexTelemetry.startChannelOpen();
+    const readinessTimeoutMs =
+      typeof input.duplexReadinessTimeoutMs === "number" &&
+      Number.isFinite(input.duplexReadinessTimeoutMs) &&
+      input.duplexReadinessTimeoutMs > 0
+        ? Math.trunc(input.duplexReadinessTimeoutMs)
+        : DEFAULT_DUPLEX_READINESS_TIMEOUT_MS;
+
+    // The host assigns the loopback port before it opens the channel. It passes
+    // the port and one random per-open nonce to the gateway only through the
+    // launch environment. It builds the sandbox-facing origin from its own
+    // stored port. No field of any channel frame contributes to the endpoint.
+    //
+    // Provider-boundary rationale (a security-review condition): the Daytona SDK
+    // surface the plugin uses (`sandbox.process` sessions, PTY, and exec;
+    // `sandbox.fs`) exposes no listener identity that the provider control plane
+    // binds to a launched process. No channel-supplied address can be attested,
+    // so this design uses zero channel-supplied addressing data. The only actor
+    // that can pre-bind the host-assigned loopback port before the agent starts
+    // is the provider itself, which already delivers the agent launch
+    // environment. The gateway bind-or-exit contract fails closed. This is an
+    // accepted provider-untrusted residual, not endpoint authentication: the
+    // nonce is a liveness signal, because a compromised channel can read the
+    // launch environment; the endpoint stays safe because it never derives from
+    // the channel.
+    const assignedPort = await reserveHostAssignedLoopbackPort();
+    const nonce = randomBytes(16).toString("hex");
+    const sandboxOrigin = `http://127.0.0.1:${assignedPort}`;
+
+    let channel: CommandManagedDuplexChannel | null = null;
+    // The open runs two stages under one try: the entrypoint sync, then the
+    // channel open. The stage names the exact open-failure outcome in the catch.
+    let openStage: "entrypoint_sync" | "channel_open" = "entrypoint_sync";
+    try {
+      const assetSync = await syncSandboxCallbackBridgeEntrypoint({
+        runner,
+        remoteCwd: target.remoteCwd,
+        assetRemoteDir,
+        bridgeAsset,
+        timeoutMs: bridgeTimeoutMs,
+        shellCommand,
+      });
+      const gatewayEnv: Record<string, string> = {
+        PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE,
+        PAPERCLIP_BRIDGE_TOKEN: bridgeToken,
+        PAPERCLIP_BRIDGE_HOST: "127.0.0.1",
+        PAPERCLIP_BRIDGE_PORT: String(assignedPort),
+        PAPERCLIP_BRIDGE_NONCE: nonce,
+        PAPERCLIP_BRIDGE_MAX_BODY_BYTES: String(maxBodyBytes),
+      };
+      const command = buildDuplexGatewayLaunchArgv({
+        shellCommand,
+        remoteEntrypoint: assetSync.remoteEntrypoint,
+        env: gatewayEnv,
+      });
+      openStage = "channel_open";
+      channel = await openDuplexChannel({ command });
+    } catch (error) {
+      // The channel never opened, so no request could carry the bridge token.
+      // The open call is the last statement of the try, so `channel` is still
+      // null here; there is nothing to close. Fall through to the file bridge
+      // below. Bind and keep the caught error, so the fallback names the exact
+      // open-failure stage: a full process-scoped route ceiling is `route_busy`;
+      // otherwise the stage is the entrypoint sync or the channel open. The log
+      // line names only the fixed stage enum, so no raw provider error rides a log
+      // line on the duplex path.
+      const reason: DuplexFallbackReason = isDuplexRouteBusyError(error)
+        ? "route_busy"
+        : openStage === "entrypoint_sync"
+          ? "entrypoint_sync_failed"
+          : "channel_open_failed";
+      duplexChannelOpen.fallback(reason);
+      await onLog(
+        "stderr",
+        `[paperclip] Could not open the sandbox duplex channel (${reason}). Using the file bridge.\n`,
+      );
+      channel = null;
+    }
+
+    if (channel) {
+      const gate = createDuplexReadinessGate(channel, { nonce, timeoutMs: readinessTimeoutMs });
+      const readiness = await gate.ready;
+      if (!readiness.ok) {
+        // Fail closed. Close the partial channel inside a bounded budget, then
+        // select the file bridge. The broker never started, so no request that
+        // carries the bridge token reached the channel or any endpoint. The reason
+        // is a fixed enum, so it rides the log line and the fallback telemetry
+        // with no raw value.
+        await closeDuplexChannelWithinBudget(channel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
+        duplexChannelOpen.fallback(duplexReadinessFallbackReason(readiness.reason));
+        await onLog(
+          "stderr",
+          `[paperclip] Sandbox duplex readiness failed (${readiness.reason}). Using the file bridge.\n`,
+        );
+      } else {
+        // Readiness passed. Construct the broker inside the guarded region, so a
+        // construction throw closes the channel within the cleanup budget and
+        // selects the file bridge. The broker enforces the same route allowlist
+        // as the file bridge, then forwards each request with the real token and
+        // the run id. The agent environment below receives the bridge URL and
+        // token only now, after readiness passed.
+        let broker: DuplexBridgeBroker | null = null;
+        try {
+          broker = createDuplexBridgeBroker({
+            channel: gate.brokerChannel,
+            // Derive the nested budgets from the forward budget, so any forward
+            // budget keeps the nested order the broker asserts at construction.
+            budgets: deriveNestedDuplexBrokerBudgets(forwardTimeoutMs),
+            forwardRequest: async (
+              request: DuplexRequestFrame,
+              options: { signal: AbortSignal },
+            ): Promise<DuplexBrokerForwardResult> => {
+              const denialReason = authorizeSandboxCallbackBridgeRequestWithRoutes(request);
+              if (denialReason) {
+                return {
+                  status: 403,
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ error: denialReason }),
+                };
+              }
+              // Apply the header allowlist on the host, next to the route check.
+              // The host is the trust boundary: the sandbox controls the frame
+              // headers, so the host drops every header outside the allowlist
+              // before the authenticated forward. The forward then applies the
+              // real token and the run id.
+              const sanitizedRequest = {
+                ...request,
+                headers: sanitizeSandboxCallbackBridgeHeaders(request.headers),
+              };
+              // Suppress the per-request debug log on the duplex path, so no route
+              // or query rides a log line here.
+              return forwardBridgeRequest(sanitizedRequest, options.signal, {
+                suppressDebugLog: true,
+              });
+            },
+            // The duplex path emits only the fixed transport telemetry. It passes no
+            // free-form logger, so no raw provider error rides a log line here.
+            telemetry: duplexTelemetry,
+            // Surface a terminal channel loss on the run log. The broker latches
+            // the failure on its ordered lifecycle; the host names only the typed,
+            // closed loss reason here, never the raw provider message. The caller
+            // reads the latched disposition through `readRunDisposition` at the
+            // run-disposition seam.
+            onLoss: (record) => {
+              void onLog(
+                "stderr",
+                `[paperclip] Sandbox duplex channel lost (${typedDuplexLossReason(record.reason)}). The run fails.\n`,
+              );
+            },
+          });
+        } catch {
+          // The broker construction failed, so no broker owns the channel. Close
+          // the channel within the cleanup budget, then select the file bridge.
+          // The log line names no raw error, so no raw error rides a log line on
+          // the duplex path.
+          await closeDuplexChannelWithinBudget(channel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
+          duplexChannelOpen.fallback("broker_construction_failed");
+          await onLog(
+            "stderr",
+            "[paperclip] Could not start the sandbox duplex broker. Using the file bridge.\n",
+          );
+        }
+        if (broker) {
+          const activeBroker = broker;
+          activeBroker.start();
+          duplexChannelOpen.ready();
+          await onLog(
+            "stdout",
+            "[paperclip] Sandbox duplex transport ready; serving the host-assigned origin.\n",
+          );
+          // Stream run logs on the duplex path with the same gate and the same
+          // log line as the file path. The duplex path starts no file-bridge
+          // worker, so create the log directory before the tail starts.
+          let duplexRunLogTail: SandboxRunLogTailFactory | null = null;
+          if (target.transport === "sandbox" && target.streamRunLogs !== false) {
+            const duplexLogsDir = sandboxCallbackBridgeDirectories(queueDir).logsDir;
+            await ensureSandboxRunLogDirectory({
+              runner,
+              remoteCwd: target.remoteCwd,
+              logsDir: duplexLogsDir,
+              shellCommand,
+              timeoutMs: bridgeTimeoutMs,
+            });
+            duplexRunLogTail = createSandboxRunLogTailFactory({
+              runner,
+              remoteCwd: target.remoteCwd,
+              logsDir: duplexLogsDir,
+              shellCommand,
+            });
+            await onLog("stdout", "[paperclip] Sandbox run log streaming enabled for this run.\n");
+          }
+          return {
+            env: {
+              PAPERCLIP_API_URL: sandboxOrigin,
+              PAPERCLIP_API_KEY: bridgeToken,
+              PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE,
+            },
+            runLogTail: duplexRunLogTail,
+            // Read the broker's ordered lifecycle latch at the run-disposition
+            // seam. A loss ordered before an orderly completion reports a failure
+            // with the typed loss reason; every other state reports a success.
+            readRunDisposition: (): DuplexBrokerRunDisposition => activeBroker.runDisposition,
+            // Atomically read the latch and mark the orderly completion for the
+            // ACP success-eligible terminal, so no await separates the read from
+            // the mark and a teardown loss cannot slip in between.
+            settleRunDisposition: (): DuplexBrokerRunDisposition => activeBroker.settleRunDisposition(),
+            // Surface the broker's orderly-completion mark to the run-disposition
+            // seam. The seam marks the completion for a success-eligible terminal,
+            // so a teardown loss after the completion stays a normal teardown.
+            markOrderlyCompletion: (): void => activeBroker.markOrderlyCompletion(),
+            stop: async () => {
+              // Close the channel before lease release. The broker sends an orderly
+              // close and releases the route, then stops the child, so no live
+              // provider session remains when the caller releases the lease.
+              await activeBroker.close();
+              activeBroker.stop();
+              // A channel that did not reach the `closed` state may leave a live
+              // provider session, so record one session leak.
+              if (activeBroker.state !== "closed") {
+                duplexTelemetry.recordSessionLeak();
+              }
+              await bridgeAsset.cleanup();
+            },
+          };
+        }
+      }
+    }
+  }
+
   let server: Awaited<ReturnType<typeof startSandboxCallbackBridgeServer>> | null = null;
   let worker: Awaited<ReturnType<typeof startSandboxCallbackBridgeWorker>> | null = null;
   try {
@@ -2266,13 +3238,6 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: bridgeTimeoutMs,
       shellCommand,
     });
-    // PAPERCLIP_BRIDGE_DEBUG opts into verbose stdout logs of every bridge
-    // proxy request/response. The query string is logged verbatim, so callers
-    // who pass auth tokens or other sensitive values as query parameters
-    // should be aware those values appear in the host process's stdout when
-    // this flag is enabled. Only intended for active debugging in trusted
-    // environments.
-    const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
     // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
     // setup on the active `bridge.paperclip` step, and runs each request under
     // the run parent context (see `runWithRuntimeParent` inside that function).
@@ -2284,50 +3249,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request, options) => {
-        const method = request.method.trim().toUpperCase() || "GET";
-        if (bridgeDebugEnabled) {
-          await onLog(
-            "stdout",
-            `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
-          );
-        }
-        const headers = new Headers();
-        for (const [key, value] of Object.entries(request.headers)) {
-          if (value.trim().length === 0) continue;
-          headers.set(key, value);
-        }
-        headers.set("authorization", `Bearer ${hostApiToken}`);
-        headers.set("x-paperclip-run-id", input.runId);
-        // Abort the forward when the worker aborts the request (its per-iteration
-        // timeout or watchdog fired), or after the 30s ceiling, whichever comes
-        // first. The worker abort lets the bridge fail a hung forward fast
-        // instead of stranding the request until the 30s ceiling.
-        const timeoutSignal = AbortSignal.timeout(30_000);
-        const forwardSignal = options?.signal
-          ? AbortSignal.any([options.signal, timeoutSignal])
-          : timeoutSignal;
-        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
-          method,
-          headers,
-          ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-          signal: forwardSignal,
-        });
-        if (bridgeDebugEnabled) {
-          await onLog(
-            "stdout",
-            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
-          );
-        }
-        const responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
-        const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
-        if (commentMarker) await onLog("stdout", commentMarker);
-        return {
-          status: response.status,
-          headers: buildBridgeResponseHeaders(response),
-          body: responseBody,
-        };
-      },
+      handleRequest: async (request, options) => forwardBridgeRequest(request, options?.signal),
     });
     server = await startSandboxCallbackBridgeServer({
       runner,

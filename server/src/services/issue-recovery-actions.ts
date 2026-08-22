@@ -16,6 +16,10 @@ type IssueRecoveryActionRow = typeof issueRecoveryActions.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
 
+function asDatabaseDate(value: string | Date | null) {
+  return typeof value === "string" ? new Date(value) : value;
+}
+
 export type UpsertIssueRecoveryActionInput = {
   companyId: string;
   sourceIssueId: string;
@@ -29,6 +33,8 @@ export type UpsertIssueRecoveryActionInput = {
   cause: string;
   fingerprint: string;
   evidence?: Record<string, unknown>;
+  /** Evidence written only when this upsert creates a new action row. */
+  evidenceOnCreate?: Record<string, unknown>;
   nextAction: string;
   wakePolicy?: Record<string, unknown> | null;
   monitorPolicy?: Record<string, unknown> | null;
@@ -41,6 +47,10 @@ export type UpsertIssueRecoveryActionInput = {
   // one. The new failure then gets a distinct recovery identity and a fresh
   // operator notice, and the prior identity stays as a resolved record.
   supersedeOnIdentityChange?: boolean;
+  // Rollout compatibility for active pre-policy actions. Refresh their
+  // evidence/attempt metadata without silently changing the recorded owner or
+  // the wake/monitor contract that made that owner authoritative.
+  preserveExistingOwner?: boolean;
 };
 
 export type ResolveIssueRecoveryActionInput = {
@@ -202,7 +212,10 @@ export function issueRecoveryActionService(db: Db) {
       returnOwnerAgentId: input.returnOwnerAgentId ?? null,
       cause: input.cause,
       fingerprint: input.fingerprint,
-      evidence: input.evidence ?? {},
+      evidence: {
+        ...(input.evidence ?? {}),
+        ...(input.evidenceOnCreate ?? {}),
+      },
       nextAction: input.nextAction,
       wakePolicy: input.wakePolicy ?? null,
       monitorPolicy: input.monitorPolicy ?? null,
@@ -279,26 +292,51 @@ export function issueRecoveryActionService(db: Db) {
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
-          recoveryIssueId: input.recoveryIssueId ?? null,
-          kind: input.kind,
-          status: "active",
-          ownerType,
-          ownerAgentId: input.ownerAgentId ?? null,
-          ownerUserId: input.ownerUserId ?? null,
-          previousOwnerAgentId: input.previousOwnerAgentId ?? existing.previousOwnerAgentId,
-          returnOwnerAgentId: input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
-          cause: input.cause,
-          fingerprint: input.fingerprint,
-          evidence: input.evidence ?? existing.evidence,
-          nextAction: input.nextAction,
-          wakePolicy: input.wakePolicy ?? null,
-          monitorPolicy: input.monitorPolicy ?? null,
+          recoveryIssueId: input.preserveExistingOwner
+            ? existing.recoveryIssueId
+            : input.recoveryIssueId ?? null,
+          kind: input.preserveExistingOwner ? existing.kind : input.kind,
+          status: input.preserveExistingOwner ? existing.status : "active",
+          ownerType: input.preserveExistingOwner ? existing.ownerType : ownerType,
+          ownerAgentId: input.preserveExistingOwner
+            ? existing.ownerAgentId
+            : input.ownerAgentId ?? null,
+          ownerUserId: input.preserveExistingOwner
+            ? existing.ownerUserId
+            : input.ownerUserId ?? null,
+          previousOwnerAgentId: input.preserveExistingOwner
+            ? existing.previousOwnerAgentId
+            : input.previousOwnerAgentId ?? existing.previousOwnerAgentId,
+          returnOwnerAgentId: input.preserveExistingOwner
+            ? existing.returnOwnerAgentId
+            : input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
+          cause: input.preserveExistingOwner ? existing.cause : input.cause,
+          fingerprint: input.preserveExistingOwner ? existing.fingerprint : input.fingerprint,
+          evidence: input.preserveExistingOwner
+            ? {
+              ...(existing.evidence ?? {}),
+              ...(input.evidence ?? {}),
+            }
+            : input.evidence ?? existing.evidence,
+          nextAction: input.preserveExistingOwner ? existing.nextAction : input.nextAction,
+          wakePolicy: input.preserveExistingOwner
+            ? existing.wakePolicy
+            : input.wakePolicy ?? null,
+          monitorPolicy: input.preserveExistingOwner
+            ? existing.monitorPolicy
+            : input.monitorPolicy ?? null,
           attemptCount: input.attemptCount ?? existing.attemptCount + 1,
-          maxAttempts: input.maxAttempts ?? null,
-          timeoutAt: input.timeoutAt ?? null,
-          lastAttemptAt: input.lastAttemptAt ?? now,
-          outcome: null,
-          resolutionNote: null,
+          maxAttempts: input.preserveExistingOwner
+            ? existing.maxAttempts
+            : input.maxAttempts ?? null,
+          timeoutAt: input.preserveExistingOwner
+            ? asDatabaseDate(existing.timeoutAt)
+            : input.timeoutAt ?? null,
+          lastAttemptAt: input.preserveExistingOwner
+            ? asDatabaseDate(existing.lastAttemptAt)
+            : input.lastAttemptAt ?? now,
+          outcome: input.preserveExistingOwner ? existing.outcome : null,
+          resolutionNote: input.preserveExistingOwner ? existing.resolutionNote : null,
           resolvedAt: null,
           updatedAt: now,
         })

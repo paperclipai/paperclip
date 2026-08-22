@@ -233,45 +233,51 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(currentStep()).toBe("agent");
   });
 
-  it("stays closed until the mission lookup settles", async () => {
-    // The step is applied once. Opening before the answer is in would land the
-    // customer on the mission step and leave them there.
+  // Four tests lived here, and all four were about one thing: the landing step
+  // was derived from the company's goals, so every state of that lookup —
+  // pending, failed, resolved, resolved-again-with-a-different-answer — could
+  // move the customer. Onboarding no longer asks for the mission, so the step
+  // no longer reads the goals at all and those four states collapse into one
+  // assertion. Kept as three cases rather than one because the property worth
+  // defending is that *none* of them reaches the wizard, which a single happy
+  // path would not show.
+  it("opens on the agent step without waiting for the goals lookup", async () => {
+    // This used to stay closed until the lookup settled, because the step it
+    // would have picked depended on the answer. Waiting now only delays the open.
     routerState.pathname = "/PC1/onboarding";
     mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
     await render();
+    await settle();
 
-    expect(currentStep()).toBe("closed");
+    expect(currentStep()).toBe("agent");
   });
 
-  it("opens on the mission step when the lookup fails, rather than not at all", async () => {
-    // Fail-open. A goals request that exhausts its retries must cost the step,
-    // not the whole flow.
+  it("opens on the agent step when the goals lookup fails outright", async () => {
     routerState.pathname = "/PC1/onboarding";
     mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
     await render();
     await settle();
 
-    expect(currentStep()).toBe("mission");
+    expect(currentStep()).toBe("agent");
   });
 
   it("does not move an open wizard when a later refetch finds a mission", async () => {
-    // The defect this file exists for. The lookup fails, the wizard opens on
-    // the mission step, the customer starts typing — and a refetch then
-    // succeeds. The derived step flips from 2 to 3. Before the fix, the sync
-    // effect took that as a dependency and moved the customer to the agent
-    // step mid-sentence.
+    // The defect this file exists for, in its current form. A refetch landing
+    // mid-flow used to flip the derived step from 2 to 3 and move the customer
+    // mid-sentence. Nothing derives the step from goals any more, so the answer
+    // changing is not an event the wizard can see — which is what this asserts.
     routerState.pathname = "/PC1/onboarding";
     mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
     await render();
     await settle();
-    expect(currentStep()).toBe("mission");
+    expect(currentStep()).toBe("agent");
 
     await act(async () => {
       queryClient.setQueryData(queryKeys.goals.list("company-1"), [COMPANY_GOAL]);
     });
     await settle();
 
-    expect(currentStep()).toBe("mission");
+    expect(currentStep()).toBe("agent");
   });
 
   it("does not move an open wizard when the dialog is re-opened with a new step", async () => {
@@ -297,17 +303,13 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(currentStep()).toBe("mission");
   });
 
-  it("re-decides the step when the route names a different company", async () => {
-    // The guard must hold the step against a *stale value settling*, not
-    // against a genuinely new request. Navigating to another company's
-    // onboarding is a new request, and its answer is a different one.
+  it("re-decides the company when the route names a different one", async () => {
+    // The step is the same either way now; the company is not, and a route that
+    // names a new one is still a new request.
     routerState.pathname = "/PC1/onboarding";
-    mockGoalsApi.list.mockImplementation((companyId: string) =>
-      companyId === "company-2" ? Promise.resolve([COMPANY_GOAL]) : Promise.resolve([]),
-    );
     await render();
     await settle();
-    expect(currentStep()).toBe("mission");
+    expect(currentStep()).toBe("agent");
 
     routerState.pathname = "/PC2/onboarding";
     await rerender();
@@ -325,6 +327,22 @@ describe("OnboardingWizard — which step it lands on", () => {
       dialogState.onboardingOpen = true;
       dialogState.onboardingOptions = {
         companyId: "company-1",
+        initialStep: ONBOARDING_MISSION_STEP,
+      };
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+    }
+
+    // The route no longer lands on the mission step — onboarding stopped
+    // asking — so a test that needs that step opens it the way the tenant app
+    // will when it collects the mission later: explicitly, naming the company.
+    // What these tests defend is unchanged: state written for one company must
+    // not survive into the next.
+    async function openMissionStepFor(companyId: string) {
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = {
+        companyId,
         initialStep: ONBOARDING_MISSION_STEP,
       };
       await render();
@@ -473,11 +491,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       // the next company skip saving its own mission, and the launch path then
       // links that company's project to the previous company's goal.
       mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
-      routerState.pathname = "/PC1/onboarding";
-      dialogState.onboardingOpen = false;
-      await render();
-      await settle();
-      expect(currentStep()).toBe("mission");
+      await openMissionStepFor("company-1");
 
       const direct = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("I know my mission"),
@@ -489,7 +503,10 @@ describe("OnboardingWizard — which step it lands on", () => {
       await settle();
       expect(currentStep()).toBe("agent");
 
-      routerState.pathname = "/PC2/onboarding";
+      dialogState.onboardingOptions = {
+        companyId: "company-2",
+        initialStep: ONBOARDING_MISSION_STEP,
+      };
       await rerender();
       await settle();
       expect(currentStep()).toBe("mission");
@@ -522,10 +539,7 @@ describe("OnboardingWizard — which step it lands on", () => {
           resolveCreate = resolve;
         }),
       );
-      routerState.pathname = "/PC1/onboarding";
-      await render();
-      await settle();
-      expect(currentStep()).toBe("mission");
+      await openMissionStepFor("company-1");
 
       const direct = [...document.body.querySelectorAll("button")].find((b) =>
         b.textContent?.includes("I know my mission"),
@@ -536,7 +550,10 @@ describe("OnboardingWizard — which step it lands on", () => {
       await click(confirmMissionButton()!);
 
       // Switch companies before the write lands, then let it land.
-      routerState.pathname = "/PC2/onboarding";
+      dialogState.onboardingOptions = {
+        companyId: "company-2",
+        initialStep: ONBOARDING_MISSION_STEP,
+      };
       await rerender();
       await settle();
       await act(async () => resolveCreate({ id: "goal-company-1" }));
@@ -566,7 +583,15 @@ describe("OnboardingWizard — which step it lands on", () => {
       // a goal id behind, and the company created next would read it as
       // "mission already written" and never be asked for one.
       mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      // Reached explicitly: the route no longer lands here. The withdrawal this
+      // defends against is still route-driven, so the route is set too — it takes
+      // over the moment the explicit open is released.
       routerState.pathname = "/PC1/onboarding";
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = {
+        companyId: "company-1",
+        initialStep: ONBOARDING_MISSION_STEP,
+      };
       await render();
       await settle();
 
@@ -613,9 +638,6 @@ describe("OnboardingWizard — which step it lands on", () => {
         )!,
       );
       await settle();
-      setControlledValue(missionTextarea()!, "Acme's mission");
-      await settle();
-      await click(confirmMissionButton()!);
       await settle();
       expect(mockCompaniesApi.create).toHaveBeenCalled();
       expect(currentStep()).toBe("agent");
@@ -676,7 +698,8 @@ describe("OnboardingWizard — which step it lands on", () => {
     await render();
     await settle();
 
-    // Step 1: name a new company, then confirm the mission to create it.
+    // Step 1 creates the company on its own now — the mission step used to do
+    // it, and no longer runs.
     const nameInput = document.body.querySelector("input")! as HTMLInputElement;
     setControlledValue(nameInput, "Initech");
     await settle();
@@ -685,12 +708,6 @@ describe("OnboardingWizard — which step it lands on", () => {
     )!;
     await act(async () => {
       next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await settle();
-    setControlledValue(missionTextarea()!, "Initech's mission");
-    await settle();
-    await act(async () => {
-      confirmMissionButton()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     // A route supplies an existing company before the create lands.
@@ -702,12 +719,15 @@ describe("OnboardingWizard — which step it lands on", () => {
     await settle();
 
     // Adopting the created company would select it globally and take the
-    // customer off the one they navigated to. Asserted on the selection call
-    // rather than on the rendered name: the name reads "Acme" either way,
-    // because the switch reset clears it and the backfill refills it from the
-    // company list, which has no entry for the company just created.
+    // customer off the one they navigated to. The selection call is the
+    // assertion; it always was, and the author of this test said so.
+    //
+    // The rendered name used to back it up, but the wizard lands on the agent
+    // step now and that step names no company. Anchored on the step instead, so
+    // a selection call that never happened because nothing rendered would fail
+    // here rather than read as a pass.
+    expect(currentStep()).toBe("agent");
     expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Acme");
   });
 
   it("applies the step again when the wizard is re-opened", async () => {

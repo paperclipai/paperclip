@@ -2054,17 +2054,19 @@ export interface PluginDuplexChannelClient {
   /**
    * Deliver one raw data chunk of a persistent duplex channel.
    *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair.
    * @param workerSessionId - The worker session identifier the open reply returned.
    * @param chunk - The raw channel output text.
    */
-  data(workerSessionId: string, chunk: string): void;
+  data(hostRouteId: string, workerSessionId: string, chunk: string): void;
   /**
    * Deliver the child exit of a persistent duplex channel.
    *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair.
    * @param workerSessionId - The worker session identifier the open reply returned.
    * @param exitCode - The child exit code, or null when the child ended with no code.
    */
-  exit(workerSessionId: string, exitCode: number | null): void;
+  exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void;
 }
 
 // ---------------------------------------------------------------------------

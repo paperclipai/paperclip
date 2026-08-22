@@ -21,6 +21,8 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
+  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
@@ -951,6 +953,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
         target: runtimeExecutionTarget,
+        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+        duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(runtimeExecutionTarget),
         runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
         adapterKey: "codex",
         timeoutSec,
@@ -1307,6 +1311,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, cleaned);
           },
           runLogTail: paperclipBridge?.runLogTail,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
           localProcessSandbox,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
@@ -1342,7 +1347,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseCodexJsonl>;
         monitor?:
@@ -1474,7 +1479,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          authRefreshFailure
+          // Forward the transport-level error code from the run-disposition
+          // seam first. A lost duplex control channel surfaces the typed
+          // `duplex_channel_lost` code before any provider classification.
+          attempt.proc.errorCode
+            ? attempt.proc.errorCode
+            : authRefreshFailure
             ? authRefreshFailure
             : providerQuota
             ? "provider_quota"

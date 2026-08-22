@@ -646,6 +646,8 @@ async function expectContainedWorkspaceBranchFailure(input: {
     executionRunId: null,
     checkoutRunId: null,
   });
+  const sourceAssigneeAgentId = issueById.get(input.sourceIssueId)?.assigneeAgentId;
+  expect(sourceAssigneeAgentId).toEqual(expect.any(String));
   expect(issueById.get(input.sameWorkspaceSiblingId)).toMatchObject({
     status: "in_progress",
     executionRunId: null,
@@ -664,6 +666,11 @@ async function expectContainedWorkspaceBranchFailure(input: {
     kind: "workspace_validation",
     cause: "workspace_validation_failed",
     status: "active",
+    ownerType: "board",
+    ownerAgentId: null,
+    ownerUserId: null,
+    previousOwnerAgentId: sourceAssigneeAgentId,
+    returnOwnerAgentId: sourceAssigneeAgentId,
     fingerprint: expect.stringContaining(String(workspaceValidation.fingerprint)),
     attemptCount: 1,
     evidence: expect.objectContaining({
@@ -671,6 +678,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
       latestRunId: input.runId,
       latestRunErrorCode: "workspace_validation_failed",
       recoveryCause: "workspace_validation_failed",
+      routingPolicy: "board_escalation_no_takeover_v1",
       workspaceValidation: expect.objectContaining({
         fingerprint: workspaceValidation.fingerprint,
         expectedBranch: input.expectedBranch,
@@ -686,9 +694,9 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
     nextAction: expect.stringContaining("choose a new execution workspace"),
     wakePolicy: expect.objectContaining({
-      type: "wake_owner",
-      reason: "source_scoped_recovery_action",
-      ownerAgentId: expect.any(String),
+      type: "board_escalation",
+      reason: "workspace_validation_failed",
+      preservesSourceAssignee: true,
     }),
   });
 

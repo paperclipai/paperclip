@@ -396,6 +396,85 @@ describe("openDaytonaDuplexChannelSession", () => {
 
     expect(process.createOptions?.cwd).toBe("/paperclip-workspace");
   });
+
+  it("ends the channel with the typed write_error and no raw text when a write rejects", async () => {
+    // The fake handle accepts the launch wrapper write, then rejects every later
+    // write with a raw provider message. The seam must map the cause to the typed
+    // reason and never surface the raw text.
+    const rawProviderText = "RAW-PROVIDER-BROKEN-PIPE-9z8y7x";
+    let sends = 0;
+    let killed = 0;
+    const handle: DaytonaPtyHandle = {
+      async waitForConnection(): Promise<void> {},
+      async sendInput(): Promise<void> {
+        sends += 1;
+        if (sends === 1) return; // the launch wrapper write succeeds.
+        throw new Error(rawProviderText);
+      },
+      wait(): Promise<{ exitCode?: number; error?: string }> {
+        return new Promise(() => {});
+      },
+      async kill(): Promise<void> {
+        killed += 1;
+      },
+      async disconnect(): Promise<void> {},
+    };
+    const process: DaytonaPtyProcess = {
+      async createPty(): Promise<DaytonaPtyHandle> {
+        return handle;
+      },
+    };
+    const writeErrors: string[] = [];
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY, {
+      onWriteError: (reason) => writeErrors.push(reason),
+    });
+
+    session.write("frame\n");
+    // Let the rejected write settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The seam reported exactly the typed reason, ended the channel, and leaked no
+    // raw provider text.
+    expect(writeErrors).toEqual(["write_error"]);
+    expect(killed).toBe(1);
+    expect(JSON.stringify(writeErrors)).not.toContain(rawProviderText);
+  });
+
+  it("reports a write error one time even when more writes reject", async () => {
+    let sends = 0;
+    let killed = 0;
+    const handle: DaytonaPtyHandle = {
+      async waitForConnection(): Promise<void> {},
+      async sendInput(): Promise<void> {
+        sends += 1;
+        if (sends === 1) return;
+        throw new Error("broken");
+      },
+      wait(): Promise<{ exitCode?: number; error?: string }> {
+        return new Promise(() => {});
+      },
+      async kill(): Promise<void> {
+        killed += 1;
+      },
+      async disconnect(): Promise<void> {},
+    };
+    const process: DaytonaPtyProcess = {
+      async createPty(): Promise<DaytonaPtyHandle> {
+        return handle;
+      },
+    };
+    const writeErrors: string[] = [];
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY, {
+      onWriteError: (reason) => writeErrors.push(reason),
+    });
+
+    session.write("a");
+    session.write("b");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(writeErrors).toEqual(["write_error"]);
+    expect(killed).toBe(1);
+  });
 });
 
 describe("createDaytonaDuplexChannelSessionOpener", () => {

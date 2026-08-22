@@ -2,7 +2,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
+import {
+  createDuplexRouteSlotController,
+  createPluginWorkerHandle,
+} from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DUPLEX_CHANNEL_WORKER_ENTRYPOINT = path.join(
@@ -37,10 +40,10 @@ function makeDuplexHandle(extra?: Record<string, unknown>) {
 // The test directive rides in `providerLeaseId`, an opaque field the manager
 // forwards to the worker unchanged. The duplex channel is generic, so the
 // command is a plain fixed string with no allowlist.
-function duplexOpenInput(directive: unknown) {
+function duplexOpenInput(directive: unknown, companyId = "company-1") {
   return {
     driverKey: "daytona",
-    companyId: "company-1",
+    companyId,
     environmentId: "env-1",
     providerLeaseId: JSON.stringify(directive),
     command: "bridge-callback",
@@ -48,28 +51,45 @@ function duplexOpenInput(directive: unknown) {
 }
 
 describe("plugin worker manager duplex channel route", () => {
-  it("delivers data only for the exact bound worker session id and drops a mismatch", async () => {
+  it("fails closed and retires the worker on a forged worker session id", async () => {
     const handle = makeDuplexHandle();
     try {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           workerSessionId: "ws-A",
-          data: [
-            { chunk: "good-1" },
-            { chunk: "forged", sid: "ws-EVIL" },
-            { chunk: "good-2" },
-          ],
-          exitCode: 0,
+          // The frame carries the bound host route id but a forged worker session
+          // id, so its pair matches no live route.
+          data: [{ chunk: "forged", sid: "ws-EVIL" }],
         }),
       );
       const chunks: string[] = [];
       session.onData((chunk) => chunks.push(chunk));
-      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
-      // The forged notification carries a wrong worker session id, so the host
-      // drops it. Only the two bound chunks reach the listener, in order.
-      expect(chunks).toEqual(["good-1", "good-2"]);
-      await session.close();
+      // The forged pair is an ownership violation. The host reaches no listener and
+      // retires the worker, so the wait settles with the fixed non-secret null exit.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual([]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("fails closed and retires the worker on a forged host route id", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          // The frame carries the bound worker session id but a forged host route
+          // id, so its pair matches no live route.
+          data: [{ chunk: "forged", rid: "duplex-route-forged" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual([]);
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -213,20 +233,79 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
-  it("permits one active duplex channel per worker", async () => {
+  it("routes two concurrent cross-company duplex routes by the exact pair with no cross-talk", async () => {
     const handle = makeDuplexHandle();
     try {
       await handle.start();
-      const first = await handle.openDuplexChannel(duplexOpenInput({ mode: "normal" }));
-      // A second open while the first route is not closed rejects with one fixed
-      // non-secret error before it reaches the worker.
+      const routeA = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-A", data: [{ chunk: "a-1" }], exitCode: 0 }, "company-A"),
+      );
+      const routeB = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-B", data: [{ chunk: "b-1" }], exitCode: 0 }, "company-B"),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      await expect(routeA.wait()).resolves.toEqual({ exitCode: 0 });
+      await expect(routeB.wait()).resolves.toEqual({ exitCode: 0 });
+      // The host routes each frame by the exact pair, so each route receives only
+      // its own data. Neither route sees the other's chunk.
+      expect(aChunks).toEqual(["a-1"]);
+      expect(bChunks).toEqual(["b-1"]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("reports an explicit route-busy result when the aggregate ceiling is full", async () => {
+    // A process-scoped ceiling of one slot. The manager injects one shared
+    // controller into every worker; the test injects a small one directly.
+    const handle = makeDuplexHandle({ duplexRouteSlots: createDuplexRouteSlotController(1) });
+    try {
+      await handle.start();
+      const first = await handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-A" }));
+      // The ceiling is full, so the second open rejects with the fixed route-busy
+      // error before it reaches the worker. An active channel never downgrades.
       await expect(
-        handle.openDuplexChannel(duplexOpenInput({ mode: "normal" })),
+        handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-B" })),
       ).rejects.toThrow("DUPLEX_CHANNEL_ROUTE_BUSY");
+      // Closing the first route releases its slot, so a later open is admitted.
       await first.close();
-      // After the first route closes and the worker acknowledges the close, a new
-      // open is admitted.
-      const second = await handle.openDuplexChannel(duplexOpenInput({ mode: "normal" }));
+      const third = await handle.openDuplexChannel(duplexOpenInput({ workerSessionId: "ws-C" }));
+      await third.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a late frame for a tombstoned pair and keeps the worker for a new open", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const first = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-A", emitAfterCloseChunk: "after-close" }),
+      );
+      const chunks: string[] = [];
+      first.onData((chunk) => chunks.push(chunk));
+      // Close the route. The host installs the tombstone atomically before the slot
+      // frees. The worker then emits one late frame for the closed pair.
+      await first.close();
+      // Give the late frame time to arrive. The host drops it, so it reaches no
+      // listener and does not retire the worker.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(chunks).toEqual([]);
+      // The worker is still alive: a new open on the same worker succeeds and
+      // delivers its own data.
+      const second = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-B", data: [{ chunk: "b-1" }], exitCode: 0 }),
+      );
+      const secondChunks: string[] = [];
+      second.onData((chunk) => secondChunks.push(chunk));
+      await expect(second.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(secondChunks).toEqual(["b-1"]);
       await second.close();
     } finally {
       await handle.stop().catch(() => undefined);

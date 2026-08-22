@@ -1119,22 +1119,28 @@ export interface PluginDuplexChannelOpenParams {
   command: readonly string[];
 }
 
-/** The open reply. It returns the worker session identifier for data binding only. */
+/** The open reply. It echoes the host route identifier and returns the worker session identifier. */
 export interface PluginDuplexChannelOpenResult {
+  /** The host route identifier the open request carried. The worker echoes it, so the host binds the exact pair. */
+  hostRouteId: string;
   /** The worker session identifier. It binds the data and the exit notification only. */
   workerSessionId: string;
 }
 
-/** The write request. It carries the worker session identifier and the raw input bytes. */
+/** The write request. It carries the exact route pair and the raw input bytes. */
 export interface PluginDuplexChannelWriteParams {
+  /** The host route identifier the open request carried. The worker acts only on the exact live pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw input bytes to write to the channel. */
   data: string;
 }
 
-/** The stop request. It carries the worker session identifier. */
+/** The stop request. It carries the exact route pair. */
 export interface PluginDuplexChannelStopParams {
+  /** The host route identifier the open request carried. The worker acts only on the exact live pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
 }
@@ -1155,14 +1161,22 @@ export interface PluginDuplexChannelCloseParams {
   workerSessionId?: string;
 }
 
-/** The close reply. It acknowledges the close and carries the same host route identifier. */
+/** The close reply. It acknowledges the close and echoes the route identifiers. */
 export interface PluginDuplexChannelCloseResult {
   /** The close acknowledgement. It carries the same host route identifier the close sent. */
   hostRouteId: string;
+  /**
+   * The bound worker session identifier. The worker echoes it on a bound close,
+   * so the host verifies the exact pair. It is absent on a pre-bind route-only
+   * close, where no session bound yet.
+   */
+  workerSessionId?: string;
 }
 
 /** The worker→host duplex channel data notification parameters. */
 export interface PluginDuplexChannelDataParams {
+  /** The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw channel output bytes. */
@@ -1171,6 +1185,8 @@ export interface PluginDuplexChannelDataParams {
 
 /** The worker→host duplex channel exit notification parameters. */
 export interface PluginDuplexChannelExitParams {
+  /** The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair. */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The child exit code, or null when the child ended with no code. */
