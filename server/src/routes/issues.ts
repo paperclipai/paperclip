@@ -379,6 +379,26 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
   next();
 }
 
+// AGE-755: report-only guard rail for the same invariant checked by the
+// liveness sweep (no assignee, no monitor) -- but evaluated at create time so
+// the gap is visible in logs/response immediately instead of only surfacing
+// later via the `livenessInvariantViolation` list filter. Never blocks the
+// create; legitimate unassigned backlog creation is unaffected because
+// `backlog`/`done` are excluded.
+function describeUnownedIssueCreateWarning(
+  issue: { id: string; identifier: string | null; status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+  executionPolicy: { monitor?: unknown } | null | undefined,
+): string | null {
+  if (issue.status === "backlog" || issue.status === "done" || issue.status === "cancelled") return null;
+  if (issue.assigneeAgentId || issue.assigneeUserId) return null;
+  if (executionPolicy?.monitor) return null;
+  return (
+    `Issue ${issue.identifier ?? issue.id} was created with status "${issue.status}" but no assigneeAgentId, ` +
+    "no assigneeUserId, and no monitor scheduled -- it may violate the no-assignee/no-monitor/no-blocker " +
+    "liveness invariant (AGE-755). Report-only: verify a blocker, assignee, or monitor exists."
+  );
+}
+
 function noopTaskWatchdogService(): TaskWatchdogService {
   return {
     getActiveForIssue: async () => null,
@@ -6020,6 +6040,11 @@ export function issueRoutes(
       res.status(400).json({ error: "includeLiveDescendantSummary must be true or false when provided" });
       return;
     }
+    const livenessInvariantViolation = parseOptionalBooleanQuery(req.query.livenessInvariantViolation);
+    if (livenessInvariantViolation === null) {
+      res.status(400).json({ error: "livenessInvariantViolation must be true or false when provided" });
+      return;
+    }
     if (assigneeAgentFilterRaw !== undefined) {
       if (typeof assigneeAgentFilterRaw !== "string") {
         res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
@@ -6078,6 +6103,7 @@ export function issueRoutes(
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      livenessInvariantViolation: livenessInvariantViolation === true,
     };
     const requestKey = issueListRequestKey({
       req,
@@ -8799,10 +8825,19 @@ export function issueRoutes(
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
+    const livenessWarning = describeUnownedIssueCreateWarning(issue, executionPolicy);
+    if (livenessWarning) {
+      logger.warn(
+        { issueId: issue.id, companyId, identifier: issue.identifier, status: issue.status },
+        livenessWarning,
+      );
+    }
+
     res.status(201).json({
       ...issue,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      ...(livenessWarning ? { warnings: [livenessWarning] } : {}),
     });
   });
 

@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -577,6 +577,13 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  /**
+   * AGE-755: only return non-terminal issues (`todo`/`in_progress`/`in_review`/`blocked`)
+   * that violate the ownership invariant -- no assigneeAgentId, no assigneeUserId,
+   * no live/future `monitorNextCheckAt`, and no unresolved (non `done`/`cancelled`)
+   * blocker via `issue_relations`. Report-only: this never mutates the issue.
+   */
+  livenessInvariantViolation?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -5687,6 +5694,24 @@ export function issueService(db: Db) {
         if (Number.isFinite(since.getTime())) {
           conditions.push(gt(issues.updatedAt, since));
         }
+      }
+      if (filters?.livenessInvariantViolation) {
+        conditions.push(
+          and(
+            inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+            isNull(issues.assigneeAgentId),
+            isNull(issues.assigneeUserId),
+            or(isNull(issues.monitorNextCheckAt), lte(issues.monitorNextCheckAt, sql`now()`))!,
+            sql`NOT EXISTS (
+              SELECT 1 FROM ${issueRelations} blocker_rel
+              JOIN ${issues} blocker_issue ON blocker_issue.id = blocker_rel.issue_id
+              WHERE blocker_rel.related_issue_id = ${issues.id}
+                AND blocker_rel.company_id = ${companyId}
+                AND blocker_rel.type = 'blocks'
+                AND blocker_issue.status NOT IN ('done', 'cancelled')
+            )`,
+          )!,
+        );
       }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
