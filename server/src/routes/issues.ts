@@ -1876,10 +1876,22 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   ) {
     return false;
   }
-  // Only human comments should implicitly reopen finished work.
+  // Only human comments should implicitly move work back to todo.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  // AGE-759: a plain comment must never silently reopen a *terminal*
+  // (done/cancelled) issue. Every client that intentionally wants that
+  // (the web UI's own `shouldImplicitlyReopenComment` heuristic, the
+  // `resume: true` contract agents are instructed to use) already sends an
+  // explicit `reopen`/`resume` flag on the same request, so requiring that
+  // flag here costs those callers nothing while closing the silent-reopen
+  // hole for every other caller (curl, scripts, cross-issue audit notes)
+  // that only sends `{ comment }`. Terminal-state reopening is handled by
+  // `explicitMoveToTodoRequested` (reopen/resume) at the call site, not by
+  // this function. A `blocked` issue is not terminal — it is mid-flight,
+  // waiting on an external nudge — so the plain "please continue" comment
+  // convenience remains for that status only.
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
