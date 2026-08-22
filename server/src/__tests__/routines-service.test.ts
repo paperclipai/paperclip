@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -2105,6 +2105,75 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(0);
+  });
+
+  it("reuses the committed issue when the enclosing routine run transaction rolls back", async () => {
+    let rejectWakeup = true;
+    const { routine, svc } = await seedFixture({
+      wakeup: async () => {
+        if (rejectWakeup) throw new Error("queue unavailable");
+        return null;
+      },
+    });
+    const idempotencyKey = "rollback-readback";
+
+    await db.execute(
+      sql.raw(`
+        create function paperclip_test_reject_routine_issue_delete() returns trigger
+        language plpgsql as $$
+        begin
+          if old.origin_kind = 'routine_execution' then
+            raise exception 'forced routine transaction rollback';
+          end if;
+          return old;
+        end;
+        $$;
+      `),
+    );
+    await db.execute(
+      sql.raw(`
+        create trigger paperclip_test_reject_routine_issue_delete
+        before delete on issues
+        for each row execute function paperclip_test_reject_routine_issue_delete();
+      `),
+    );
+
+    try {
+      await expect(
+        svc.runRoutine(routine.id, { source: "api", idempotencyKey }),
+      ).rejects.toThrow();
+    } finally {
+      await db.execute(
+        sql.raw("drop trigger if exists paperclip_test_reject_routine_issue_delete on issues"),
+      );
+      await db.execute(
+        sql.raw("drop function if exists paperclip_test_reject_routine_issue_delete()"),
+      );
+    }
+
+    const [orphanIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(orphanIssue).toBeDefined();
+    if (!orphanIssue) throw new Error("Expected the committed routine issue");
+    await expect(
+      db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id)),
+    ).resolves.toHaveLength(0);
+
+    rejectWakeup = false;
+    const retry = await svc.runRoutine(routine.id, { source: "api", idempotencyKey });
+
+    expect(retry.status).toBe("issue_created");
+    expect(retry.linkedIssueId).toBe(orphanIssue.id);
+    const routineIssues = await db
+      .select({ id: issues.id, originRunId: issues.originRunId })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toEqual([{ id: orphanIssue.id, originRunId: retry.id }]);
+    await expect(
+      db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id)),
+    ).resolves.toHaveLength(1);
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
