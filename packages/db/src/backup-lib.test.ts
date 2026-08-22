@@ -2,9 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  assertSufficientBackupFreeSpace,
+  createBufferedTextFileWriter,
+  runDatabaseBackup,
+  runDatabaseRestore,
+  sweepOrphanedBackupIntermediates,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -567,4 +573,192 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+
+  // AGE-1090: JS-fallback engine must stream straight through gzip and never
+  // materialize a full plaintext .sql intermediate on disk.
+  it(
+    "never creates a plaintext .sql intermediate for the javascript engine, even mid-run",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-no-plaintext-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."no_plaintext_rows" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+        `);
+        const payload = "y".repeat(16384);
+        for (let index = 0; index < 400; index += 1) {
+          await sourceSql`
+            INSERT INTO "public"."no_plaintext_rows" ("payload") VALUES (${payload})
+          `;
+        }
+
+        // Poll the backup directory throughout the run. If the old two-phase
+        // write-then-compress behavior regressed, a large plaintext `.sql`
+        // file (with no `.sql.gz` sibling yet) would appear here mid-run.
+        const observedPlaintextFiles: Array<{ name: string; sizeBytes: number }> = [];
+        let polling = true;
+        const pollLoop = (async () => {
+          while (polling) {
+            if (fs.existsSync(backupDir)) {
+              for (const name of fs.readdirSync(backupDir)) {
+                if (name.endsWith(".sql") && !name.endsWith(".sql.gz")) {
+                  const fullPath = path.join(backupDir, name);
+                  try {
+                    observedPlaintextFiles.push({ name, sizeBytes: fs.statSync(fullPath).size });
+                  } catch {
+                    // File may have been removed between readdir and stat; ignore.
+                  }
+                }
+              }
+            }
+            await new Promise((r) => setTimeout(r, 10));
+          }
+        })();
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-no-plaintext-test",
+          backupEngine: "javascript",
+        });
+
+        polling = false;
+        await pollLoop;
+
+        expect(observedPlaintextFiles).toEqual([]);
+        expect(result.backupFile).toMatch(/\.sql\.gz$/);
+        expect(fs.existsSync(result.backupFile)).toBe(true);
+
+        // Only the .sql.gz (and the size-state file) should ever exist in backupDir.
+        const finalEntries = fs.readdirSync(backupDir);
+        for (const name of finalEntries) {
+          expect(name.endsWith(".sql") && !name.endsWith(".sql.gz")).toBe(false);
+        }
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "logs which engine ran for the javascript fallback path",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-engine-log-");
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-engine-log-test",
+          backupEngine: "javascript",
+        });
+
+        const logged = errorSpy.mock.calls.map((call) => String(call[0]));
+        expect(logged.some((line) => line.includes("engine=javascript"))).toBe(true);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+    30_000,
+  );
+});
+
+describe("assertSufficientBackupFreeSpace", () => {
+  it("refuses to start when free space is below the required multiplier of the last backup", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-freespace-");
+    const filenamePrefix = "paperclip-freespace-test";
+
+    // Simulate an enormous prior successful backup so that no real disk has
+    // 3x its size free, without needing to actually shrink the test volume.
+    fs.writeFileSync(
+      path.join(backupDir, ".paperclip-backup-state.json"),
+      JSON.stringify({
+        lastSuccessfulSizeBytesByPrefix: {
+          [filenamePrefix]: Number.MAX_SAFE_INTEGER / 4,
+        },
+      }),
+      "utf8",
+    );
+
+    await expect(assertSufficientBackupFreeSpace(backupDir, filenamePrefix)).rejects.toThrow(
+      /refusing to start/,
+    );
+  });
+
+  it("allows the run when no prior backup size is recorded", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-freespace-empty-");
+    await expect(
+      assertSufficientBackupFreeSpace(backupDir, "paperclip-freespace-empty-test"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows the run when free space comfortably exceeds the multiplier", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-freespace-small-");
+    const filenamePrefix = "paperclip-freespace-small-test";
+    fs.writeFileSync(
+      path.join(backupDir, ".paperclip-backup-state.json"),
+      JSON.stringify({ lastSuccessfulSizeBytesByPrefix: { [filenamePrefix]: 1024 } }),
+      "utf8",
+    );
+    await expect(assertSufficientBackupFreeSpace(backupDir, filenamePrefix)).resolves.toBeUndefined();
+  });
+});
+
+describe("sweepOrphanedBackupIntermediates", () => {
+  it("removes a stale orphaned .sql file that has no .sql.gz sibling", () => {
+    const backupDir = createTempDir("paperclip-db-backup-sweep-");
+    const filenamePrefix = "paperclip-sweep-test";
+    const orphanPath = path.join(backupDir, `${filenamePrefix}-2026-01-01T00-00-00.sql`);
+    fs.writeFileSync(orphanPath, "x".repeat(4096));
+    // Backdate mtime well past the stale threshold used below.
+    const oldTime = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(orphanPath, oldTime, oldTime);
+
+    const { reclaimedFiles, reclaimedBytes } = sweepOrphanedBackupIntermediates(
+      backupDir,
+      filenamePrefix,
+      1000, // stale after 1s for this test
+    );
+
+    expect(reclaimedFiles).toEqual([path.basename(orphanPath)]);
+    expect(reclaimedBytes).toBe(4096);
+    expect(fs.existsSync(orphanPath)).toBe(false);
+  });
+
+  it("leaves a fresh (not-yet-stale) .sql file alone", () => {
+    const backupDir = createTempDir("paperclip-db-backup-sweep-fresh-");
+    const filenamePrefix = "paperclip-sweep-fresh-test";
+    const activePath = path.join(backupDir, `${filenamePrefix}-2026-01-01T00-00-00.sql`);
+    fs.writeFileSync(activePath, "in-progress");
+
+    const { reclaimedFiles } = sweepOrphanedBackupIntermediates(backupDir, filenamePrefix, 60 * 60 * 1000);
+
+    expect(reclaimedFiles).toEqual([]);
+    expect(fs.existsSync(activePath)).toBe(true);
+  });
+
+  it("leaves a .sql file alone when its .sql.gz sibling already exists", () => {
+    const backupDir = createTempDir("paperclip-db-backup-sweep-completed-");
+    const filenamePrefix = "paperclip-sweep-completed-test";
+    const completedPath = path.join(backupDir, `${filenamePrefix}-2026-01-01T00-00-00.sql`);
+    fs.writeFileSync(completedPath, "stale-but-has-sibling");
+    fs.writeFileSync(`${completedPath}.gz`, "gz-bytes");
+    const oldTime = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(completedPath, oldTime, oldTime);
+
+    const { reclaimedFiles } = sweepOrphanedBackupIntermediates(backupDir, filenamePrefix, 1000);
+
+    expect(reclaimedFiles).toEqual([]);
+    expect(fs.existsSync(completedPath)).toBe(true);
+  });
 });
