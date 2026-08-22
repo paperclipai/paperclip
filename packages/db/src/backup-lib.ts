@@ -11,7 +11,8 @@ import {
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
-import { open as openFile, readFile, writeFile } from "node:fs/promises";
+import { open as openFile, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip, type Gzip } from "node:zlib";
 import postgres from "postgres";
@@ -106,6 +107,31 @@ function backupStateFilePath(backupDir: string): string {
   return resolve(backupDir, BACKUP_STATE_FILE_NAME);
 }
 
+// Serializes all reads/writes of the shared backup-state JSON file within
+// this process. Concurrent runDatabaseBackup calls in the same process (e.g.
+// overlapping schedules) would otherwise race a read-modify-write against
+// this file: each reads the same stale state, then the last writer's write
+// wins and silently erases another prefix's recorded size. Chaining every
+// access through this promise turns that race into a queue. This does not
+// protect against a second *process* (e.g. a concurrent CLI invocation)
+// writing the same file at the same time — that would need real cross-process
+// file locking, which is out of scope here per the "no new dependency"
+// constraint on this fix; see AGE-1090 for the tracked follow-up if that ever
+// becomes a real deployment shape.
+let backupStateQueue: Promise<unknown> = Promise.resolve();
+
+function withBackupStateLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = backupStateQueue.then(fn, fn);
+  // Swallow rejections in the queue chain itself so one failed access doesn't
+  // permanently wedge the queue for later callers; each caller still sees its
+  // own result/rejection via `result`.
+  backupStateQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 async function readBackupState(backupDir: string): Promise<BackupStateFile> {
   try {
     const raw = await readFile(backupStateFilePath(backupDir), "utf8");
@@ -119,13 +145,33 @@ async function readBackupState(backupDir: string): Promise<BackupStateFile> {
   }
 }
 
+/**
+ * Writes `content` to `filePath` atomically: write to a sibling temp file
+ * first, then rename over the destination. `rename` within the same
+ * directory is atomic on POSIX filesystems, so readers never observe a
+ * partially-written/truncated JSON file — either the old content or the new
+ * content, never a half-written one.
+ */
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  await writeFile(tmpPath, content, "utf8");
+  try {
+    await rename(tmpPath, filePath);
+  } catch (error) {
+    await unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+}
+
 async function recordSuccessfulBackupSize(backupDir: string, filenamePrefix: string, sizeBytes: number): Promise<void> {
   try {
-    const state = await readBackupState(backupDir);
-    const byPrefix = { ...(state.lastSuccessfulSizeBytesByPrefix ?? {}) };
-    byPrefix[filenamePrefix] = sizeBytes;
-    const next: BackupStateFile = { ...state, lastSuccessfulSizeBytesByPrefix: byPrefix };
-    await writeFile(backupStateFilePath(backupDir), JSON.stringify(next, null, 2), "utf8");
+    await withBackupStateLock(async () => {
+      const state = await readBackupState(backupDir);
+      const byPrefix = { ...(state.lastSuccessfulSizeBytesByPrefix ?? {}) };
+      byPrefix[filenamePrefix] = sizeBytes;
+      const next: BackupStateFile = { ...state, lastSuccessfulSizeBytesByPrefix: byPrefix };
+      await writeFileAtomic(backupStateFilePath(backupDir), JSON.stringify(next, null, 2));
+    });
   } catch (error) {
     // The size-state file is an optimization for the preflight free-space gate,
     // not a backup itself. Never fail a successful backup over it.
