@@ -1408,6 +1408,7 @@ export type {
   RoutineListItem,
   JsonSchema,
   PluginJobDeclaration,
+  PluginJobScope,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,

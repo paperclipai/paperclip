@@ -71,6 +71,21 @@ export type {
 // ---------------------------------------------------------------------------
 
 /**
+ * Tenancy of a declared scheduled job.
+ *
+ * - `"instance"` (default) — the job fires once per tick with no company
+ *   scope. The run carries no invocation scope, so company-scoped host calls
+ *   (`config.get`, `secrets.resolve`, `issues.*`, company-scoped `state.*`)
+ *   are refused. Use for plugin-runtime maintenance.
+ * - `"company"` — the job fires once per tick *per company the plugin is
+ *   enabled for*. Each run carries that company's invocation scope, so
+ *   company-scoped host calls are authorized.
+ *
+ * @see PLUGIN_SPEC.md §17 — Scheduled Jobs
+ */
+export type PluginJobScope = "instance" | "company";
+
+/**
  * Declares a scheduled job a plugin can run.
  *
  * @see PLUGIN_SPEC.md §17 — Scheduled Jobs
@@ -84,6 +99,15 @@ export interface PluginJobDeclaration {
   description?: string;
   /** Cron expression for the schedule (e.g. "star/15 star star star star" or "0 * * * *"). */
   schedule?: string;
+  /**
+   * Tenancy of the job. Defaults to `"instance"` when omitted, which is the
+   * pre-existing behavior: one unscoped run per tick.
+   *
+   * Declare `"company"` when the handler needs company data. Without it the
+   * handler gets no invocation scope and every company-scoped host call is
+   * refused with "company context is required".
+   */
+  scope?: PluginJobScope;
 }
 
 /**

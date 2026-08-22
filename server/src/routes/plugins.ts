@@ -2627,10 +2627,14 @@ export function pluginRoutes(
    * Creates a run with `trigger: "manual"` and dispatches immediately.
    * The response returns before the job completes (non-blocking).
    *
-   * Response: `{ runId: string, jobId: string }`
+   * Body: `{ companyId?: string }` — required for a `scope: "company"` job,
+   * rejected for an instance-scoped one (see PLUGIN_SPEC.md §17.1).
+   *
+   * Response: `{ runId: string, jobId: string, companyId: string | null }`
    * Errors:
    * - 404 if plugin not found
-   * - 400 if job not found, not active, already running, or worker unavailable
+   * - 400 if job not found, not active, already running, worker unavailable,
+   *   or the `companyId` does not match the job's declared scope
    */
   router.post("/plugins/:pluginId/jobs/:jobId/trigger", async (req, res) => {
     assertInstanceAdmin(req);
@@ -2652,8 +2656,12 @@ export function pluginRoutes(
       return;
     }
 
+    const companyId = typeof req.body?.companyId === "string" && req.body.companyId.trim()
+      ? req.body.companyId.trim()
+      : null;
+
     try {
-      const result = await jobDeps.scheduler.triggerJob(jobId, "manual");
+      const result = await jobDeps.scheduler.triggerJob(jobId, "manual", companyId);
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
