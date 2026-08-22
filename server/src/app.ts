@@ -1,4 +1,4 @@
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, { Router, type Request as ExpressRequest, type RequestHandler } from "express";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
@@ -75,6 +75,7 @@ import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
+import { backupRoutes } from "./routes/backups.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -112,6 +113,7 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import type { BackupManager } from "./services/backups.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -160,6 +162,130 @@ export function resolveViteHmrProtocol(value: string | undefined): "ws" | "wss" 
   if (!value) return undefined;
   if (value === "ws" || value === "wss") return value;
   throw new Error("PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss");
+}
+
+/**
+ * Blocks API writes while a portable backup captures a snapshot and blocks
+ * nearly all API traffic during restore. This is mounted at the application
+ * API and MCP boundaries, before auth and other early routers, so their writes
+ * cannot bypass the consistency window.
+ */
+export function createBackupOperationBarrier(
+  backupManager: Pick<BackupManager, "isRestoreRunning" | "isSnapshotBarrierActive">,
+): RequestHandler {
+  return (req, res, next) => {
+    // actorMiddleware records API-key use before next(). Do not let a Bearer
+    // request reach even the restore-status/control exceptions while an
+    // operation is active, or that accounting write defeats the barrier.
+    const hasBearerAuthorization = /^bearer(?:\s|$)/iu.test(req.get("authorization") ?? "");
+    const controlRoute =
+      req.path === "/health"
+      || req.path === "/auth/get-session"
+      || req.path === "/backups"
+      || req.path.startsWith("/backups/");
+
+    if (!backupManager.isRestoreRunning()) {
+      if (!backupManager.isSnapshotBarrierActive()) {
+        next();
+        return;
+      }
+      if (hasBearerAuthorization) {
+        res.status(503).json({
+          error: "Backup snapshot consistency window is active. Bearer-authenticated API routes are temporarily paused until the snapshot finishes.",
+        });
+        return;
+      }
+      if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS" || controlRoute) {
+        next();
+        return;
+      }
+
+      res.status(503).json({
+        error: "Backup snapshot consistency window is active. Mutating API routes are temporarily paused until the snapshot finishes.",
+      });
+      return;
+    }
+
+    if (hasBearerAuthorization) {
+      res.status(503).json({
+        error: "Backup restore in progress. Bearer-authenticated API routes are temporarily unavailable until it finishes.",
+      });
+      return;
+    }
+    if (controlRoute) {
+      next();
+      return;
+    }
+
+    res.status(503).json({
+      error: "Backup restore in progress. Most API routes are temporarily unavailable until it finishes.",
+    });
+  };
+}
+
+/**
+ * Startup-only restore maintenance mode deliberately exposes a tiny control
+ * surface. It is mounted before actorMiddleware because bearer authentication
+ * updates API-key accounting before it calls next(). In particular, do not
+ * allow a bearer token to reach the otherwise-permitted backup control routes.
+ */
+export function createRestoreMaintenanceBarrier(): RequestHandler {
+  return (req, res, next) => {
+    const hasBearerAuthorization = /^bearer(?:\s|$)/iu.test(req.get("authorization") ?? "");
+    const controlRoute =
+      req.path === "/health"
+      || req.path === "/auth/get-session"
+      || req.path === "/backups"
+      || req.path.startsWith("/backups/");
+
+    if (!hasBearerAuthorization && controlRoute) {
+      next();
+      return;
+    }
+
+    res.status(503).json({
+      error: "Restore maintenance mode is active. Only health, session, and backup API routes are available.",
+    });
+  };
+}
+
+/** MCP invokes the same mutating services as the REST API, so no MCP route is
+ * available while the process is isolated for a restore. */
+export function createRestoreMaintenanceMcpBarrier(): RequestHandler {
+  return (_req, res) => {
+    res.status(503).json({
+      error: "Restore maintenance mode is active. MCP is temporarily unavailable.",
+    });
+  };
+}
+
+/**
+ * A database restore or rollback recovery must begin in the isolated process
+ * mode above. Keep this admission check at the shared API boundary as defense
+ * in depth, ahead of actor middleware and the route handler.
+ */
+export function createRestoreMaintenancePreconditionBarrier(): RequestHandler {
+  return (req, res, next) => {
+    const pathWithoutTrailingSlash = req.path.replace(/\/+$/u, "");
+    const isRestoreOrRecoveryMutation =
+      req.method === "POST"
+      && (
+        pathWithoutTrailingSlash === "/backups/recovery/rollback"
+        || (
+          pathWithoutTrailingSlash.startsWith("/backups/")
+          && pathWithoutTrailingSlash.endsWith("/restore")
+        )
+      );
+
+    if (!isRestoreOrRecoveryMutation) {
+      next();
+      return;
+    }
+
+    res.status(503).json({
+      error: "Database restore and rollback recovery require PAPERCLIP_RESTORE_MAINTENANCE_MODE=true at process startup.",
+    });
+  };
 }
 
 export function listenViteHmrServer(server: HttpServer, port: number, bindHost: string): Promise<void> {
@@ -292,6 +418,8 @@ export async function createApp(
     };
     databaseBackupService?: InstanceDatabaseBackupService;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    backupManager?: BackupManager;
+    restoreMaintenanceMode?: boolean;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -354,6 +482,25 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  if (opts.restoreMaintenanceMode) {
+    // Keep this ahead of the operation barrier and actor middleware. The mode
+    // must reject ordinary requests before they can update auth/audit state or
+    // reach a plugin/heartbeat-backed service.
+    app.use("/api", createRestoreMaintenanceBarrier());
+    app.use("/mcp", createRestoreMaintenanceMcpBarrier());
+  } else {
+    app.use("/api", createRestoreMaintenancePreconditionBarrier());
+  }
+  if (opts.backupManager) {
+    // This must run before actorMiddleware: API-key authentication updates
+    // last-used/audit state before calling next(), which would otherwise write
+    // during a snapshot or restore consistency window.
+    const backupOperationBarrier = createBackupOperationBarrier(opts.backupManager);
+    app.use("/api", backupOperationBarrier);
+    // MCP tool invocations may write through the same services as regular API
+    // routes. Keep them behind the operation barrier as well.
+    app.use("/mcp", backupOperationBarrier);
+  }
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
@@ -539,6 +686,9 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  if (opts.backupManager) {
+    api.use(backupRoutes(opts.backupManager));
+  }
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -782,8 +932,10 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  jobCoordinator.start();
-  scheduler.start();
+  if (!opts.restoreMaintenanceMode) {
+    jobCoordinator.start();
+    scheduler.start();
+  }
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -807,13 +959,13 @@ export async function createApp(
     }
   };
 
-  feedbackExportTimer = opts.feedbackExportService
+  feedbackExportTimer = !opts.restoreMaintenanceMode && opts.feedbackExportService
     ? setInterval(() => {
       void flushPendingFeedbackExports();
     }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
-  if (opts.feedbackExportService) {
+  if (!opts.restoreMaintenanceMode && opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
@@ -832,39 +984,46 @@ export async function createApp(
         logger.error({ err }, "abandoned company import transfer spool sweep failed");
       });
   };
-  let importTransferSweepTimer: ReturnType<typeof setInterval> | null = setInterval(
-    sweepImportTransferSpools,
-    IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
-  );
-  importTransferSweepTimer.unref?.();
+  let importTransferSweepTimer: ReturnType<typeof setInterval> | null = null;
+  if (!opts.restoreMaintenanceMode) {
+    importTransferSweepTimer = setInterval(
+      sweepImportTransferSpools,
+      IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+    );
+    importTransferSweepTimer.unref?.();
+  }
   // Startup only (never on the hourly interval — that would kill live
   // applies): apply jobs are in-memory in this single process, so any run
   // still "applying" now was interrupted by the previous shutdown and would
   // otherwise 409 every retry forever. Fail those stranded runs — their
   // spooled parts stay reusable — then run the normal sweep once.
-  void companyTransferRunService
-    .recoverStrandedApplyingRuns(db)
-    .then((recovered) => {
-      if (recovered.length > 0) {
-        logger.warn(
-          { count: recovered.length, runIds: recovered },
-          "failed company transfer runs stranded in applying by a restart",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "stranded company transfer apply recovery failed");
-    })
-    .finally(() => {
-      sweepImportTransferSpools();
+  if (!opts.restoreMaintenanceMode) {
+    void companyTransferRunService
+      .recoverStrandedApplyingRuns(db)
+      .then((recovered) => {
+        if (recovered.length > 0) {
+          logger.warn(
+            { count: recovered.length, runIds: recovered },
+            "failed company transfer runs stranded in applying by a restart",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "stranded company transfer apply recovery failed");
+      })
+      .finally(() => {
+        sweepImportTransferSpools();
+      });
+    void toolDispatcher.initialize().catch((err) => {
+      logger.error({ err }, "Failed to initialize plugin tool dispatcher");
     });
-  void toolDispatcher.initialize().catch((err) => {
-    logger.error({ err }, "Failed to initialize plugin tool dispatcher");
-  });
-  const devWatcher = createPluginDevWatcher(
-    lifecycle,
-    async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-  );
+  }
+  const devWatcher = opts.restoreMaintenanceMode
+    ? null
+    : createPluginDevWatcher(
+      lifecycle,
+      async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+    );
   // Auto-provision bundled plugins so their providers are registered for
   // agent runs. Bundles are excluded from the pnpm
   // workspace and built standalone into the image (see Dockerfile), then
@@ -897,25 +1056,27 @@ export async function createApp(
   // that must not outrun plugin availability — managed sandbox environments
   // (`applyManagedEnvironments`) run before the heartbeat resumes queued
   // runs — can sequence on it. It never rejects.
-  const bundledPluginsStartup = ensureBundledPlugins(
-    bundledPluginInstalls,
-    { registry: pluginRegistry, loader, lifecycle, logger },
-    // Managed mode reinstalls soft-uninstalled bundles (the control plane
-    // owns provisioning); self-hosted leaves an operator's uninstall alone.
-    // Operator-DISABLED plugins are never touched in either mode.
-    { reinstallUninstalled: managedAutoInstallKeys !== null },
-  )
-    .then(() => loader.loadAll())
-    .then((result) => {
-    if (!result) return;
-    for (const loaded of result.results) {
-      if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-        devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
-      }
-    }
-  }).catch((err) => {
-    logger.error({ err }, "Failed to load ready plugins on startup");
-  });
+  const bundledPluginsStartup = opts.restoreMaintenanceMode
+    ? Promise.resolve()
+    : ensureBundledPlugins(
+      bundledPluginInstalls,
+      { registry: pluginRegistry, loader, lifecycle, logger },
+      // Managed mode reinstalls soft-uninstalled bundles (the control plane
+      // owns provisioning); self-hosted leaves an operator's uninstall alone.
+      // Operator-DISABLED plugins are never touched in either mode.
+      { reinstallUninstalled: managedAutoInstallKeys !== null },
+    )
+      .then(() => loader.loadAll())
+      .then((result) => {
+        if (!result) return;
+        for (const loaded of result.results) {
+          if (devWatcher && loaded.success && loaded.plugin.packagePath) {
+            devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+          }
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Failed to load ready plugins on startup");
+      });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion

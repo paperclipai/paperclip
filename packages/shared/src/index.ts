@@ -257,6 +257,7 @@ export {
 } from "./app-definitions.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
 export * from "./validators/status-card.js";
+export * from "./validators/backup.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,

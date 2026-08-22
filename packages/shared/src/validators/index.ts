@@ -136,6 +136,7 @@ export {
 } from "./summary-slot.js";
 
 export * from "./status-card.js";
+export * from "./backup.js";
 
 export {
   externalObjectStatusCategorySchema,

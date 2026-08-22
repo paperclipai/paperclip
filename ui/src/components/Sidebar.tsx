@@ -5,6 +5,7 @@ import {
   Target,
   LayoutDashboard,
   DollarSign,
+  HardDriveDownload,
   History,
   Search,
   SquarePen,
@@ -40,6 +41,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -56,6 +58,7 @@ export function Sidebar() {
   const [companyOpen, setCompanyOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { isMobile, collapsed, collapseLocked, peeking, toggleCollapsed, setCollapsed } = useSidebar();
+  const isCloud = Boolean(useCloudInstance());
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
@@ -278,6 +281,7 @@ export function Sidebar() {
           {showApps ? <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} /> : null}
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          {!isCloud ? <SidebarNavItem to="/backups" label="Backups" icon={HardDriveDownload} /> : null}
           {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />

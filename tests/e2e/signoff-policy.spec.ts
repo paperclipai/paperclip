@@ -44,6 +44,7 @@ interface TestContext {
 
 interface IssueRunLockState {
   companyId: string;
+  status: string;
   assigneeAgentId: string | null;
   checkoutRunId: string | null;
   executionRunId: string | null;
@@ -124,10 +125,64 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   const issue = await res.json();
   return {
     companyId: issue.companyId,
+    status: issue.status,
     assigneeAgentId: issue.assigneeAgentId ?? null,
     checkoutRunId: issue.checkoutRunId ?? null,
     executionRunId: issue.executionRunId ?? null,
   };
+}
+
+async function isCurrentRunLockCheckoutConflict(
+  res: Awaited<ReturnType<APIRequestContext["post"]>>,
+  agentId: string,
+  expectedStatuses: string[],
+) {
+  if (res.status() !== 409) return false;
+  const body = await res.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const response = body as Record<string, unknown>;
+  if (response.error !== "Issue checkout conflict") return false;
+  const details = response.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return false;
+  const conflict = details as Record<string, unknown>;
+  return (
+    conflict.assigneeAgentId === agentId &&
+    typeof conflict.status === "string" &&
+    expectedStatuses.includes(conflict.status) &&
+    (typeof conflict.checkoutRunId === "string" || typeof conflict.executionRunId === "string")
+  );
+}
+
+async function retryBoardCheckoutWithCurrentLockOnConflict(
+  board: APIRequestContext,
+  agent: AgentAuth,
+  issueId: string,
+  expectedStatuses: string[],
+  failedRes: Awaited<ReturnType<APIRequestContext["post"]>>,
+) {
+  if (!(await isCurrentRunLockCheckoutConflict(failedRes, agent.agentId, expectedStatuses))) {
+    return failedRes;
+  }
+
+  let res = failedRes;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, 50 * 2 ** attempt)));
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    if (
+      issueRunLock.assigneeAgentId !== agent.agentId ||
+      !expectedStatuses.includes(issueRunLock.status)
+    ) {
+      return res;
+    }
+
+    res = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
+      data: { agentId: agent.agentId, expectedStatuses },
+    });
+    if (!(await isCurrentRunLockCheckoutConflict(res, agent.agentId, expectedStatuses))) {
+      return res;
+    }
+  }
+  return res;
 }
 
 async function retryAgentPatchWithCurrentLockOnConflict(
@@ -240,9 +295,16 @@ async function agentCheckoutAndPatch(
     }
     // If agent checkout fails (e.g. run expired), fall back to board checkout
     // then PATCH with the agent's identity
-    const boardCheckout = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
+    const initialBoardCheckout = await board.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
       data: { agentId: agent.agentId, expectedStatuses },
     });
+    const boardCheckout = await retryBoardCheckoutWithCurrentLockOnConflict(
+      board,
+      agent,
+      issueId,
+      expectedStatuses,
+      initialBoardCheckout,
+    );
     if (!boardCheckout.ok()) {
       throw new Error(`Board checkout failed: ${await boardCheckout.text()}`);
     }

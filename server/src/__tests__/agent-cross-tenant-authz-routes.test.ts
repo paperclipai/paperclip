@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.unmock("http");
 vi.unmock("node:http");
@@ -342,6 +342,13 @@ function resetMockDefaults() {
 }
 
 describe.sequential("agent cross-tenant route authorization", () => {
+  // Keep the deliberately lazy route imports after the module mocks, but do
+  // not charge a cold transform of the agent route graph to the first route
+  // assertion's five-second behavior timeout.
+  beforeAll(async () => {
+    await loadRouteModules();
+  }, 30_000);
+
   beforeEach(() => {
     resetMockDefaults();
   });
