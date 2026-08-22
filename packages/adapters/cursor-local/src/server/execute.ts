@@ -46,7 +46,7 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
+import { parseCursorJsonl, isCursorUnknownSessionError, isCursorEmptySuccessfulExecution } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -702,6 +702,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Cursor exited with code ${attempt.proc.exitCode ?? -1}`;
+
+    // Policy refusals and silent CLI exits can return exitCode=0 with no tokens;
+    // treat those as adapter failures so recovery does not cascade on fake success.
+    if (isCursorEmptySuccessfulExecution({
+      exitCode: attempt.proc.exitCode,
+      errorMessage: parsedError,
+      usage: attempt.parsed.usage,
+      summary: attempt.parsed.summary,
+    })) {
+      return {
+        exitCode: 1,
+        signal: attempt.proc.signal,
+        timedOut: false,
+        errorMessage: "Cursor exited without invoking the LLM (0 tokens and no assistant output)",
+        errorCode: "cursor_empty_execution",
+        usage: attempt.parsed.usage,
+        sessionId: resolvedSessionId,
+        sessionParams: resolvedSessionParams,
+        sessionDisplayId: resolvedSessionId,
+        provider: providerFromModel,
+        biller: resolveCursorBiller(effectiveEnv, billingType, providerFromModel),
+        model,
+        billingType,
+        costUsd: attempt.parsed.costUsd,
+        resultJson: {
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+        },
+        summary: attempt.parsed.summary,
+        clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+      };
+    }
 
     return {
       exitCode: attempt.proc.exitCode,
