@@ -2656,6 +2656,84 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runsAfterResume.some((run) => run.status === "issue_created")).toBe(true);
   });
 
+  // A paused company suppresses every agent wakeup, so a routine that keeps
+  // filing issues while it is paused only builds a backlog nobody can work.
+  it("suppresses scheduled ticks while the company is paused, then resumes when unpaused", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, trigger.id));
+
+    expect((await svc.tickScheduledTriggers(new Date())).triggered).toBe(0);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
+
+    const skippedRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(skippedRuns).toHaveLength(1);
+    expect(skippedRuns[0]?.status).toBe("skipped");
+    expect(skippedRuns[0]?.failureReason).toBe("company_paused");
+    expect(skippedRuns[0]?.linkedIssueId).toBeNull();
+
+    // The trigger still advanced, so resuming continues at the next cron
+    // boundary instead of replaying every firing missed during the pause.
+    const pausedTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+    expect(pausedTrigger!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
+
+    await db.update(companies).set({ status: "active" }).where(eq(companies.id, companyId));
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, trigger.id));
+
+    expect((await svc.tickScheduledTriggers(new Date())).triggered).toBe(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+  });
+
+  // The pause lever a company has for this is project pause, which cannot reach
+  // a routine that belongs to no project. Company pause is what covers those.
+  it("suppresses a project-less routine while the company is paused", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db.update(routines).set({ projectId: null }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    expect((await svc.tickScheduledTriggers(new Date())).triggered).toBe(0);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
+  });
+
+  // Reverse control: an active company keeps firing exactly as before.
+  it("fires a scheduled tick normally while the company is active", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    expect((await svc.tickScheduledTriggers(new Date())).triggered).toBe(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+  });
+
   it("skips a gated scheduled tick when quiet without advancing the activity window", async () => {
     const { companyId, routine, svc } = await seedFixture();
     await db.update(routines).set({

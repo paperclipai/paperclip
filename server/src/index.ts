@@ -1399,6 +1399,11 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         if (heartbeatSchedulerStopped) return;
+        // The tick itself decides which routines may fire (paused company,
+        // paused project, worktree cutoff). It must keep running even while
+        // scheduling is suppressed: skipping it would leave `nextRunAt` in the
+        // past, and a catch-up-enabled routine would then replay every missed
+        // firing at once on resume.
         scheduleExternalObjectRefreshSweep(new Date());
 
         if (heartbeatSchedulerStopped) return;
