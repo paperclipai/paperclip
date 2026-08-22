@@ -94,6 +94,14 @@ describe("local process sandbox", () => {
     expect(target.args).toContain(workspace);
     expect(target.args).toContain(managedHome);
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
+    const readOnlyBinds = target.args.flatMap((argument, index) =>
+      argument === "--ro-bind" ? [[target.args[index + 1], target.args[index + 2]]] : []
+    );
+    for (const systemPath of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      const stats = await fs.lstat(systemPath).catch(() => null);
+      if (!stats?.isSymbolicLink()) continue;
+      expect(readOnlyBinds).not.toContainEqual([systemPath, systemPath]);
+    }
   });
 
   it("binds a confined absolute alias to the synchronized workspace", async () => {

@@ -402,7 +402,11 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
       mounted.add(normalized);
       created.add(normalized);
     };
-    for (const systemPath of SYSTEM_READ_PATHS) await mount(systemPath, "ro");
+    for (const systemPath of SYSTEM_READ_PATHS) {
+      const stats = await fs.lstat(systemPath).catch(() => null);
+      if (stats?.isSymbolicLink()) continue;
+      await mount(systemPath, "ro");
+    }
     for (const executablePath of await executableReadPaths(input.executable)) await mount(executablePath, "ro");
     if (networkScope === "allowlist") {
       for (const nodePath of await executableReadPaths(process.execPath)) await mount(nodePath, "ro");
