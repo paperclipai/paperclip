@@ -82,6 +82,7 @@ import {
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
+import { DEFAULT_RUN_LEASE_TTL_MS } from "./heartbeat-run-liveness.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -367,6 +368,12 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+/**
+ * MAD-891: a run that sat in `queued` past its lease without ever starting and
+ * could not be dispatched. Distinct from `process_lost` (which had a process)
+ * and from the `claimQueuedRun` cancel codes (which are modelled refusals).
+ */
+export const ORPHANED_DISPATCH_ERROR_CODE = "dispatch_orphaned";
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
 // The reaper stops retrying a pending_cleanup lease after this many attempts.
@@ -13860,6 +13867,126 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  /**
+   * MAD-891: backstop for runs stranded in `queued` with `startedAt = null`.
+   *
+   * `resumeQueuedRuns` -> `startNextQueuedRunForAgent` -> `claimQueuedRun` is the
+   * dispatcher, and every *known* refusal inside it is terminal (cancel + lock
+   * release). But a dispatch that fails for an unmodelled reason — the failure
+   * storm on 2026-08-16, a throw between promotion and claim, a scheduling
+   * suppression window that outlives the run — leaves the row `queued` forever.
+   * That state is owned by nothing: `promoteDueScheduledRetries` only selects
+   * `scheduled_retry`, `reapOrphanedRuns` deliberately skips `queued`, and the
+   * lock reaper cannot release a run that is neither terminal nor missing. Every
+   * mutation on the issue then 409s with `Issue run ownership conflict`.
+   *
+   * This sweep resolves such runs one way or the other: dispatch it if the agent
+   * can take it now, otherwise fail it with a distinct `dispatch_orphaned` code
+   * so it becomes terminal and the MAD-622 reaper releases its issue lock. Rows
+   * are never deleted.
+   *
+   * A run merely *waiting its turn* behind a busy agent is not an orphan, so the
+   * fail path is skipped whenever the agent has no free concurrency slot.
+   */
+  async function sweepOrphanedQueuedRuns(opts?: { orphanTtlMs?: number; now?: Date }) {
+    const orphanTtlMs = opts?.orphanTtlMs ?? DEFAULT_RUN_LEASE_TTL_MS;
+    const now = opts?.now ?? new Date();
+    if ((await getSchedulingSuppression()).suppressed) {
+      return { dispatched: 0, failed: 0, runIds: [] as string[] };
+    }
+    const cutoff = await getWorktreeExecutionCutoff();
+
+    const candidates = await db
+      .select({ run: heartbeatRuns })
+      .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(and(
+        eq(heartbeatRuns.status, "queued"),
+        isNull(heartbeatRuns.startedAt),
+        eq(companies.status, "active"),
+        lte(heartbeatRuns.createdAt, new Date(now.getTime() - orphanTtlMs)),
+        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+      ))
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .limit(50);
+
+    let dispatched = 0;
+    const failedRunIds: string[] = [];
+    const nudgedAgentIds = new Set<string>();
+
+    for (const { run: candidate } of candidates) {
+      // Something in this process is already driving it; not an orphan.
+      if (runningProcesses.has(candidate.id) || activeRunExecutions.has(candidate.id)) continue;
+
+      // Try the normal dispatcher first — a stalled queue that can simply be
+      // drained should be drained, not failed. One nudge per agent per sweep
+      // drains that agent's whole queue, so don't re-nudge for each candidate.
+      if (!nudgedAgentIds.has(candidate.agentId)) {
+        nudgedAgentIds.add(candidate.agentId);
+        await startNextQueuedRunForAgent(candidate.agentId);
+      }
+
+      const current = await getRun(candidate.id);
+      if (!current) continue;
+      if (current.status !== "queued") {
+        dispatched += 1;
+        continue;
+      }
+
+      const agent = await getAgent(current.agentId);
+      if (!agent) continue; // claimQueuedRun cancels agent-less runs on its own.
+
+      // Legitimately queued behind the agent's own concurrency limit.
+      const policy = parseHeartbeatPolicy(agent);
+      const runningCount = await countRunningRunsForAgent(current.agentId);
+      if (policy.maxConcurrentRuns - runningCount <= 0) continue;
+
+      const reason =
+        `Failed because the run stayed queued for over ${Math.round(orphanTtlMs / 60_000)} minutes `
+        + "without ever starting and could not be dispatched";
+      // Compare-and-set on `queued`: a dispatcher that claims this run between
+      // the check above and here must win, so we never fail a live run.
+      const transition = await setRunStatusFromLive(current.id, "failed", ["queued"], {
+        finishedAt: now,
+        error: reason,
+        errorCode: ORPHANED_DISPATCH_ERROR_CODE,
+        resultJson: {
+          ...parseObject(current.resultJson),
+          stopReason: ORPHANED_DISPATCH_ERROR_CODE,
+        },
+      });
+      if (!transition.updated || !transition.run) continue;
+      const failed = transition.run;
+
+      await setWakeupStatus(failed.wakeupRequestId, "failed", { finishedAt: now, error: reason });
+      // Terminal now, so this releases the issue execution lock the orphan held.
+      await releaseIssueExecutionAndPromote(failed);
+
+      await appendRunEvent(failed, await nextRunEventSeq(failed.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: reason,
+        payload: {
+          orphanTtlMs,
+          queuedAt: failed.createdAt ? new Date(failed.createdAt).toISOString() : null,
+          scheduledRetryReason: failed.scheduledRetryReason,
+          scheduledRetryAttempt: failed.scheduledRetryAttempt,
+        },
+      });
+
+      failedRunIds.push(failed.id);
+    }
+
+    if (failedRunIds.length > 0) {
+      logger.warn(
+        { failedCount: failedRunIds.length, runIds: failedRunIds, dispatched },
+        "failed orphaned queued heartbeat runs that never started",
+      );
+    }
+    return { dispatched, failed: failedRunIds.length, runIds: failedRunIds };
+  }
+
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
@@ -19559,6 +19686,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+    sweepOrphanedQueuedRuns,
 
     scheduleBoundedRetry: async (
       runId: string,
