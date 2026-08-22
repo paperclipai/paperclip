@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1628,6 +1628,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      const pendingBoardAskIssueIds = new Set<string>();
+      for (const interaction of boardInteractionRows) {
+        pendingBoardAskIssueIds.add(interaction.issueId);
+      }
+
       const reviewRows = await db
         .select({
           id: issues.id,
@@ -1643,7 +1648,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), visibleIssueCondition()))
+        .where(and(
+          eq(issues.companyId, companyId),
+          or(
+            eq(issues.status, "in_review"),
+            inArray(issues.id, [...pendingBoardAskIssueIds]),
+          ),
+          visibleIssueCondition(),
+        ))
         .orderBy(desc(issues.updatedAt), desc(issues.id));
       const reviewIssueIds = reviewRows.map((row) => row.id);
       const pendingReviewApprovalRows = reviewIssueIds.length === 0

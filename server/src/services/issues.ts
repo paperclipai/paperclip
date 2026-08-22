@@ -2900,8 +2900,44 @@ async function listIssueReviewAttentionMap(
   const result = new Map<string, IssueReviewAttention>();
   for (const row of issueRows) result.set(row.id, reviewAttentionNone());
 
+  const candidateIds = issueRows
+    .filter((row) => row.companyId === companyId)
+    .map((row) => row.id);
+  if (candidateIds.length === 0) return result;
+
+  const candidateInteractionRows: Array<{
+    id: string;
+    companyId: string;
+    issueId: string;
+    status: string;
+    kind: string;
+    createdAt: Date;
+  }> = [];
+  for (const chunk of chunkList(candidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    candidateInteractionRows.push(...await dbOrTx
+      .select({
+        id: issueThreadInteractions.id,
+        companyId: issueThreadInteractions.companyId,
+        issueId: issueThreadInteractions.issueId,
+        status: issueThreadInteractions.status,
+        kind: issueThreadInteractions.kind,
+        createdAt: issueThreadInteractions.createdAt,
+      })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.status, "pending"),
+        inArray(issueThreadInteractions.issueId, chunk),
+      )));
+  }
+
+  // A pending interaction is a live review path regardless of issue status:
+  // every resolver policy includes the Board, so a `blocked` card with a
+  // pending ask still needs the full path pipeline run, not just `in_review`.
+  const pendingInteractionIssueIds = new Set(candidateInteractionRows.map((row) => row.issueId));
   const reviewIds = issueRows
-    .filter((row) => row.companyId === companyId && row.status === "in_review")
+    .filter((row) => row.companyId === companyId
+      && (row.status === "in_review" || pendingInteractionIssueIds.has(row.id)))
     .map((row) => row.id);
   if (reviewIds.length === 0) return result;
 
