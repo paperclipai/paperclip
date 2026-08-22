@@ -17,7 +17,9 @@ const repoRoot = path.resolve(scriptDir, "..");
 const workspacePath = path.join(repoRoot, "pnpm-workspace.yaml");
 const releasePackageMapPath = path.join(repoRoot, "scripts", "release-package-map.mjs");
 
-function parseWorkspaceEntries(workspaceText) {
+// Exported so scripts/test-standalone-plugin-packages.mjs classifies packages
+// against pnpm-workspace.yaml exactly the way this builder does.
+export function parseWorkspaceEntries(workspaceText) {
   // Keep this aligned with the repo's block-sequence `packages:` format in
   // pnpm-workspace.yaml. If that file moves to a more complex YAML shape,
   // switch this parser to a real YAML parser instead of line matching.
@@ -61,7 +63,7 @@ function globToRegExp(pattern) {
   return new RegExp(`^${regex}$`);
 }
 
-function isWorkspacePackage(pkgDir, workspaceEntries) {
+export function isWorkspacePackage(pkgDir, workspaceEntries) {
   let included = false;
 
   for (const entry of workspaceEntries) {
