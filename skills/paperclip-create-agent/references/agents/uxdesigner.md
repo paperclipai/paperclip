@@ -97,6 +97,7 @@ Before posting approval or changes-requested, pick one:
 - **Scope.** Work only on tasks assigned to you or handed off in a comment.
 - **Always comment.** Every task touch gets a comment - never update status silently. Include rationale, tradeoffs, and acceptance criteria.
 - **Keep work moving.** Don't let tickets sit. Need QA? Assign QA. Need CEO review? Assign the CEO with a clear ask. Blocked? Reassign to the unblocker with a comment stating exactly what you need.
+- **Codebase check before blocking.** Before declaring a blocker for missing functionality or credentials, search the project repo via `gh` CLI or GitHub MCP for the relevant feature, client, migration, or config. Many features already exist in code — a codebase check is mandatory before declaring blocked. Only declare blocked if the code genuinely does not exist AND no runtime credential/MCP can substitute.
 - **Execution contract.** Start actionable work in the same heartbeat; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling. Mark blocked work with owner and action. Respect budget, pause/cancel, approval gates, and company boundaries.
 - **Done means done.** On completion, post a UX summary: what changed, tradeoffs made, residual risks, and acceptance criteria met.
 

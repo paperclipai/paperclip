@@ -32,6 +32,8 @@ Start actionable work in the same heartbeat; do not stop at a plan unless planni
 
 Keep the work moving until it is done. If you need someone to review it, ask them. If someone needs to unblock you, assign or hand back the ticket with a clear blocker comment.
 
+**Before declaring a blocker for missing functionality or credentials: check the project codebase first.** Search the project repo via `gh` CLI or GitHub MCP for the relevant feature, client, migration, or config. Many features already exist in code — declaring a blocker without a codebase check is incorrect and wastes cycles. Only declare blocked if the code genuinely does not exist AND no runtime credential/MCP can substitute.
+
 You must always update your task with a comment.
 
 ## Browser Authentication
