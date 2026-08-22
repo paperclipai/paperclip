@@ -81,13 +81,11 @@ jobs:
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
-      - name: Validate dependency resolution when manifests change
+      - name: Validate dependency resolution for the merge commit
         id: regen_lockfile
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
-          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          if ! git diff --quiet -- pnpm-lock.yaml; then
             echo "regenerated=1" >> "$GITHUB_OUTPUT"
           else
             echo "regenerated=0" >> "$GITHUB_OUTPUT"
