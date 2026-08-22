@@ -108,7 +108,14 @@ source defaults to the Docker named volume `postgres-data`; set
 preferred. Changing this setting selects a different, initially empty database
 location; existing data is not migrated automatically.
 
-The root `docker-compose.yml` also includes an nginx TLS proxy. By default it generates a self-signed certificate for `localhost` into the `proxy-certs` Docker volume and publishes only ports `80` and `443`. Host-specific domains and real certificate mounts belong in ignored local override files such as `docker-compose.override.yml`, not in tracked git files.
+The root `docker-compose.yml` also includes an nginx TLS proxy. By default it
+generates a self-signed certificate for `localhost` into the `proxy-certs`
+Docker volume, publishes the Paperclip port only on
+`127.0.0.1:${PAPERCLIP_PORT:-3100}`, and publishes proxy ports `80` and `443`.
+The Paperclip container also resolves `host.docker.internal` through Docker's
+host gateway. Host-specific domains and real certificate mounts belong in
+ignored local override files such as `docker-compose.override.yml`, not in
+tracked git files.
 
 Put hostnames and public URL values in `.env`:
 

@@ -103,9 +103,11 @@ services:
         condition: service_healthy
         required: false
     ports:
-      # Published on the host so the app is accessible without the proxy.
+      # Loopback-only access without bypassing the public TLS proxy.
       # Set PAPERCLIP_PORT in .env to change the host port (default: 3100).
-      - "${PAPERCLIP_PORT:-3100}:3100"
+      - "127.0.0.1:${PAPERCLIP_PORT:-3100}:3100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${PAPERCLIP_DATA_DIR:-./data/docker-paperclip}:/paperclip
     cap_add:
