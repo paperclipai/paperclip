@@ -5003,6 +5003,8 @@ export function agentRoutes(
       lastOutputSeq: heartbeatRuns.lastOutputSeq,
       lastOutputStream: heartbeatRuns.lastOutputStream,
       lastOutputBytes: heartbeatRuns.lastOutputBytes,
+      processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRuns.processGroupId,
       processStartedAt: heartbeatRuns.processStartedAt,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
     };
@@ -5227,6 +5229,8 @@ export function agentRoutes(
         lastOutputSeq: heartbeatRuns.lastOutputSeq,
         lastOutputStream: heartbeatRuns.lastOutputStream,
         lastOutputBytes: heartbeatRuns.lastOutputBytes,
+        processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId,
         processStartedAt: heartbeatRuns.processStartedAt,
       })
       .from(heartbeatRuns)
