@@ -457,7 +457,7 @@ function safeRemoteProviderErrorDetails(
       if (context.operation === "secret.create") {
         details.requiredCapability = "secretsmanager:CreateSecret";
         details.actionableMessage =
-          "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, the runtime credentials also need KMS write permissions for that key.";
+          "Ensure the Paperclip server runtime can resolve valid AWS credentials, then grant them secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, those credentials also need KMS write permissions for that key.";
         details.safeAlternative =
           "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.";
       } else if (context.operation === "secret.rotate") {

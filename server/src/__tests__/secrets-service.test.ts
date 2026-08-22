@@ -2758,6 +2758,9 @@ describeEmbeddedPostgres("secretService", () => {
         requiredCapability: "secretsmanager:CreateSecret",
       },
     });
+    expect((thrown as HttpError).details?.actionableMessage).toContain(
+      "Ensure the Paperclip server runtime can resolve valid AWS credentials",
+    );
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
