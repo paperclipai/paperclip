@@ -110,6 +110,7 @@ export type AuthorizationDecision = {
     | "allow_direct_parent_report"
     | "allow_visible_issue_write"
     | "allow_self"
+    | "allow_parent_assignee"
     | "allow_company_agent"
     | "allow_company_member"
     | "allow_simple_company_member"
@@ -381,9 +382,31 @@ async function scopeAllows(
       : typeof requestedScope.targetAgentId === "string"
         ? requestedScope.targetAgentId
         : null;
+  const requestedIssueId = typeof requestedScope.issueId === "string" ? requestedScope.issueId : null;
+  const requestedParentIssueId = typeof requestedScope.parentIssueId === "string" ? requestedScope.parentIssueId : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
   const requestedUserId = typeof requestedScope.userId === "string" ? requestedScope.userId : null;
   let constrained = false;
+
+  const issueIds = [
+    ...scopeValuesForKeys(grantScope, ["issueId", "issueIds", "taskId", "taskIds"]),
+    ...prefixedScopeValues(grantScope, "issue:"),
+    ...prefixedScopeValues(grantScope, "task:"),
+  ];
+  if (issueIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(issueIds, requestedIssueId)) return false;
+  }
+
+  const parentIssueIds = [
+    ...scopeValuesForKeys(grantScope, ["parentIssueId", "parentIssueIds", "parentTaskId", "parentTaskIds"]),
+    ...prefixedScopeValues(grantScope, "parent_issue:"),
+    ...prefixedScopeValues(grantScope, "parent_task:"),
+  ];
+  if (parentIssueIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(parentIssueIds, requestedParentIssueId)) return false;
+  }
 
   const projectIds = [
     ...scopeValueList(grantScope.projectId),
@@ -1299,6 +1322,12 @@ export function authorizationService(db: Db) {
     return isAgentInSubtree(db, companyId, managerAgentId, assigneeAgentId);
   }
 
+  async function isAssignedParentOwner(companyId: string, actorAgentId: string, parentIssueId: string | null | undefined) {
+    if (!parentIssueId) return false;
+    const parent = await loadIssue(parentIssueId);
+    return parent?.companyId === companyId && parent.assigneeAgentId === actorAgentId;
+  }
+
   function commentAuthorCanGrantIssueMention(input: {
     mentionedAgentId: string;
     issueAssigneeAgentId: string | null;
@@ -1488,6 +1517,20 @@ export function authorizationService(db: Db) {
       });
       if (scopedDecision.allowed || broadDecision.reason === "deny_missing_grant") return scopedDecision;
       return broadDecision;
+    }
+
+    async function decideWithIssueMutationGrant(
+      principalType: PrincipalType,
+      principalId: string,
+    ): Promise<AuthorizationDecision> {
+      return decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: "tasks:mutate",
+        scope: input.scope,
+      });
     }
 
     async function decideWithAgentConfigReadGrant(
@@ -2167,6 +2210,31 @@ export function authorizationService(db: Db) {
         })
       ) {
         return allowIssueMentionGrant(input.action);
+      }
+      if (input.action === "issue:mutate") {
+        const issueMutationGrantDecision = await decideWithIssueMutationGrant("agent", actorAgentId);
+        if (issueMutationGrantDecision.allowed) return issueMutationGrantDecision;
+      }
+      if (
+        input.action === "issue:mutate" &&
+        resource.assigneeAgentId &&
+        await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_chain",
+          explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
+      if (
+        input.action === "issue:mutate" &&
+        await isAssignedParentOwner(companyId, actorAgentId, resource?.parentIssueId)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_parent_assignee",
+          explanation: "Allowed because the actor owns the parent issue for this child issue.",
+        });
       }
       if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
     }
