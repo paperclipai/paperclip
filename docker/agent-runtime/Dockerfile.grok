@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+# xAI Grok Build CLI. Installs a `grok` bin plus the matching platform-native
+# binary via optionalDependencies (@xai-official/grok-linux-x64). The grok_local
+# adapter shells out to `grok --single --output-format streaming-json`; its
+# configured command defaults to `grok`, so no rename shim is needed (unlike
+# claude-code). Pinned for reproducible, supply-chain-auditable builds.
+RUN npm install -g @xai-official/grok@1.0.0 \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+
+USER 1000:1000
+
+# Verify the CLI is on PATH for the adapter's command resolution / shim exec.
+RUN command -v grok >/dev/null 2>&1 || (echo "grok not on PATH"; exit 1)
