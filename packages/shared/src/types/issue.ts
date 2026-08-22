@@ -824,6 +824,16 @@ export interface Issue {
   monitorAttemptCount?: number;
   monitorNotes?: string | null;
   monitorScheduledBy?: IssueMonitorScheduledBy | null;
+  /**
+   * Cheap, list-safe monitor liveness projection derived from the flat
+   * `monitor*` columns above (see `deriveFlatMonitorStatus` in the server) —
+   * always present (never omitted) whenever an issue is returned from a list
+   * or single-issue read. Collapses the full `executionState.monitor.status`
+   * enum's `"cleared"` into `"none"`, since both mean "no live wake path".
+   * Do not read `.executionState?.monitor?.status` and default to `"none"`
+   * for the same field — use this field instead (AGE-924).
+   */
+  monitorStatus?: "scheduled" | "triggered" | "none";
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
@@ -925,6 +935,7 @@ export type CompactIssue = Pick<
   archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
   successfulRunHandoff: SuccessfulRunHandoffState | null;
+  monitorStatus?: "scheduled" | "triggered" | "none";
 };
 
 /**

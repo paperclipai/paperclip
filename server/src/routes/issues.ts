@@ -201,6 +201,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
+import { deriveFlatMonitorStatus } from "../services/issue-execution-policy.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
@@ -2399,6 +2400,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.isUnreadForMe !== undefined ? { isUnreadForMe: issue.isUnreadForMe } : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
+    ...(issue.monitorStatus !== undefined ? { monitorStatus: issue.monitorStatus } : {}),
   };
 }
 
@@ -2430,10 +2432,14 @@ type IssueListPreparedResponse =
       body: CompactIssue[];
       etag: string;
       cacheControl: string;
+      noWakePathScanTruncated?: boolean;
+      noWakePathNextOffset?: number;
     }
   | {
       kind: "full";
       body: unknown[];
+      noWakePathScanTruncated?: boolean;
+      noWakePathNextOffset?: number;
     };
 
 type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
@@ -6012,6 +6018,16 @@ export function issueRoutes(
       res.status(400).json({ error: "sortDir must be 'asc' or 'desc' when provided" });
       return;
     }
+    const rawNoWakePath = req.query.noWakePath as string | undefined;
+    if (rawNoWakePath !== undefined && rawNoWakePath !== "true" && rawNoWakePath !== "1" && rawNoWakePath !== "false" && rawNoWakePath !== "0") {
+      res.status(400).json({ error: "noWakePath must be a boolean" });
+      return;
+    }
+    const noWakePath = rawNoWakePath === "true" || rawNoWakePath === "1";
+    if (noWakePath && attention === "blocked") {
+      res.status(400).json({ error: "noWakePath cannot be combined with attention=blocked" });
+      return;
+    }
     if (hasPlanDocument === null) {
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
@@ -6078,6 +6094,7 @@ export function issueRoutes(
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      noWakePath: noWakePath ? true : undefined,
     };
     const requestKey = issueListRequestKey({
       req,
@@ -6095,6 +6112,8 @@ export function issueRoutes(
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
+        const noWakePathScanTruncated = Boolean((rawResult as unknown as { noWakePathScanTruncated?: boolean }).noWakePathScanTruncated);
+        const noWakePathNextOffset = (rawResult as unknown as { noWakePathNextOffset?: number }).noWakePathNextOffset;
         const result = await actorCanReadCompanyScope(req, companyId)
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
@@ -6128,6 +6147,8 @@ export function issueRoutes(
             body: compactResult,
             etag: compactIssueListEtag(compactResult),
             cacheControl: "private, must-revalidate",
+            noWakePathScanTruncated,
+            noWakePathNextOffset,
           };
         }
         const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -6149,6 +6170,8 @@ export function issueRoutes(
         }));
         return {
           kind: "full",
+          noWakePathScanTruncated,
+          noWakePathNextOffset,
           body: result.map((issue) => ({
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
@@ -6183,6 +6206,12 @@ export function issueRoutes(
     if (coordinated.response.kind === "compact") {
       res.setHeader("Cache-Control", coordinated.response.cacheControl);
       res.setHeader("ETag", coordinated.response.etag);
+      if (coordinated.response.noWakePathScanTruncated) {
+        res.setHeader("X-Paperclip-No-Wake-Path-Scan-Truncated", "true");
+        if (coordinated.response.noWakePathNextOffset !== undefined) {
+          res.setHeader("X-Paperclip-No-Wake-Path-Next-Offset", String(coordinated.response.noWakePathNextOffset));
+        }
+      }
       const etagMatched = requestMatchesEtag(req.header("if-none-match"), coordinated.response.etag);
       logIssueListRequest({
         req,
@@ -6214,6 +6243,12 @@ export function issueRoutes(
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
+    if (coordinated.response.noWakePathScanTruncated) {
+      res.setHeader("X-Paperclip-No-Wake-Path-Scan-Truncated", "true");
+      if (coordinated.response.noWakePathNextOffset !== undefined) {
+        res.setHeader("X-Paperclip-No-Wake-Path-Next-Offset", String(coordinated.response.noWakePathNextOffset));
+      }
+    }
     res.json(coordinated.response.body);
   });
 
@@ -6712,6 +6747,7 @@ export function issueRoutes(
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
+      monitorStatus: deriveFlatMonitorStatus(issue),
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       productivityReview,
