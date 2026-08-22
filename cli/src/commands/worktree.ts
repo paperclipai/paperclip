@@ -65,8 +65,11 @@ import {
   formatEmbeddedPostgresError,
   loadWithoutEmbeddedPostgresExitHooks,
   prepareEmbeddedPostgresNativeRuntime,
+  inspectPostmasterLock,
+  probeProcessLiveness,
 } from "@paperclipai/db";
 import type { Command } from "commander";
+import { decideEmbeddedCluster } from "../embedded-postgres-ownership.js";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
 import { expandHomePrefix } from "../config/home.js";
 import type { PaperclipConfig } from "../config/schema.js";
@@ -561,15 +564,42 @@ function readPidFilePort(postmasterPidFile: string): number | null {
   }
 }
 
+/**
+ * Returned when postmaster.pid exists but yields no usable pid. Truthy, so the
+ * directory still reads as owned, but distinguishable from a real pid so callers
+ * can refuse instead of guessing which server to adopt.
+ */
+const UNIDENTIFIED_POSTMASTER = -1;
+
+/**
+ * The pid of a postmaster that may still own this data directory, or null when
+ * it is provably gone.
+ *
+ * Liveness is delegated to the shared probe rather than a local try/catch. A
+ * blanket catch reports EPERM — a postmaster left by an elevated or
+ * different-session run — as dead, and callers here use that answer to decide
+ * whether to delete postmaster.pid and start a second postmaster over live data.
+ * Anything short of proof of death therefore returns the pid, so the safety
+ * checks downstream stay engaged.
+ */
 function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   if (!existsSync(postmasterPidFile)) return null;
   try {
     const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
+    // A malformed, empty or zero pid line is not proof the directory is free.
+    // Returning null would let the caller delete the lock and start a second
+    // postmaster over data that may still be live, so report it as owned by
+    // someone we cannot name.
+    if (!Number.isInteger(pid) || pid === 0) return UNIDENTIFIED_POSTMASTER;
+    // PostgreSQL negates the pid for a standalone backend, which still owns the
+    // directory; probe the magnitude but report the directory as occupied.
+    return probeProcessLiveness(Math.abs(pid)) === "dead" ? null : pid;
   } catch {
-    return null;
+    // The file exists but could not be read or parsed. That is still evidence
+    // something claimed the directory, so do not report it as free. Callers test
+    // this with a truthy check, so the sentinel has to be truthy; -1 says "owned
+    // by someone we cannot name" rather than "owned by pid -1".
+    return UNIDENTIFIED_POSTMASTER;
   }
 }
 
@@ -1156,20 +1186,35 @@ export async function ensureEmbeddedPostgres(
   }
   await prepareEmbeddedPostgresNativeRuntime();
 
-  const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  if (runningPid) {
+  // The allowExisting guard turns on ownership alone, so it is answered from the
+  // lock file before anything tries to reach the cluster. Refusing to seed over a
+  // database somebody else owns must not depend on that database being reachable
+  // -- an owner mid-recovery, or wedged, is exactly when the guard matters most.
+  const ownership = inspectPostmasterLock(dataDir).status;
+  if (options.allowExisting === false && ownership !== "absent" && ownership !== "stale") {
+    throw new Error(
+      `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running. `
+      + "Stop the worktree service that owns this database, then retry the seed.",
+    );
+  }
+
+  // One adjudicator for the whole repo. It refuses on ambiguity and verifies
+  // that whatever answers a port actually serves THIS data directory before we
+  // hand it to callers that create databases and take backups on it.
+  const decision = await decideEmbeddedCluster(dataDir, preferredPort);
+  if (decision.action === "adopt") {
+    // The lock-file check above cannot see an owner whose postmaster.pid is
+    // absent or stale, and the adjudicator can — it probes the port. Both
+    // guards are needed: the first catches an owner too wedged to answer, this
+    // one catches an owner the lock file never recorded. Without it the seed
+    // flow proceeds to resetPostgresDatabase and drops a live database.
     if (options.allowExisting === false) {
       throw new Error(
-        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running (pid=${runningPid}). `
-        + "Stop the worktree service that owns this database, then retry the seed.",
+        `Cannot seed target embedded PostgreSQL at ${dataDir} while it is already running `
+        + `(port=${decision.port}). Stop the worktree service that owns this database, then retry the seed.`,
       );
     }
-    return {
-      port: readPidFilePort(postmasterPidFile) ?? preferredPort,
-      startedByThisProcess: false,
-      stop: async () => {},
-    };
+    return { port: decision.port, startedByThisProcess: false, stop: async () => {} };
   }
 
   const port = await findAvailablePort(preferredPort);
@@ -1195,9 +1240,9 @@ export async function ensureEmbeddedPostgres(
       });
     }
   }
-  if (existsSync(postmasterPidFile)) {
-    rmSync(postmasterPidFile, { force: true });
-  }
+  // The lock file is deliberately left in place. PostgreSQL clears a stale
+  // postmaster.pid itself, atomically, as it takes ownership; deleting it here
+  // races a cluster that starts in between and destroys its live lock.
   try {
     await instance.start();
   } catch (error) {
@@ -4322,7 +4367,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   }
 
   if (runningTargetPid && opts.allowLiveTarget) {
-    p.log.warning(`Proceeding even though the target embedded PostgreSQL appears to be running (pid ${runningTargetPid}).`);
+    p.log.warning(`Proceeding even though the target embedded PostgreSQL appears to be running (${runningTargetPid === UNIDENTIFIED_POSTMASTER ? "owner unidentified" : `pid ${runningTargetPid}`}).`);
   }
 
   const spinner = p.spinner();
@@ -4447,7 +4492,8 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   const runningTargetPid = readRunningPostmasterPid(path.resolve(repairPaths.embeddedPostgresDataDir, "postmaster.pid"));
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database appears to be running (${runningTargetPid === UNIDENTIFIED_POSTMASTER ? "owner unidentified" : `pid ${runningTargetPid}`}). ` +
+        `Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
   if (runningTargetPid && opts.allowLiveTarget) {

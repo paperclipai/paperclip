@@ -136,6 +136,151 @@ export async function getPostgresDataDirectory(url: string): Promise<string | nu
   }
 }
 
+/** `the database system is starting up` — the postmaster is replaying WAL. */
+const POSTGRES_STARTING_UP_CODE = "57P03";
+
+/**
+ * Transport-level failures that mean "not listening yet" rather than "broken".
+ * A postmaster that is still binding its socket refuses or resets connections,
+ * and postgres.js surfaces its own `CONNECTION_*` codes for the same window.
+ */
+const POSTGRES_NOT_READY_CONNECTION_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+  // postgres.js emits this verbatim from Errors.connection("CONNECT_TIMEOUT")
+  // when the socket opens but the startup handshake does not finish inside
+  // `connect_timeout` — routine while a postmaster replays WAL. The name is not
+  // prefixed with CONNECTION_; spelling it that way silently disables the retry.
+  "CONNECT_TIMEOUT",
+]);
+
+const MAX_ERROR_CAUSE_DEPTH = 8;
+
+function errorCauseChain(err: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let current = err;
+  for (let depth = 0; depth < MAX_ERROR_CAUSE_DEPTH && current != null; depth += 1) {
+    chain.push(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return chain;
+}
+
+function hasErrorCode(err: unknown, matches: (code: string) => boolean): boolean {
+  return errorCauseChain(err).some((entry) => {
+    const code = (entry as { code?: unknown } | null)?.code;
+    return typeof code === "string" && matches(code);
+  });
+}
+
+/** True while PostgreSQL is accepting connections but still recovering. */
+export function isPostgresStartingUpError(err: unknown): boolean {
+  return hasErrorCode(err, (code) => code === POSTGRES_STARTING_UP_CODE);
+}
+
+/** True when nothing is answering on the socket yet. */
+export function isPostgresConnectionUnavailableError(err: unknown): boolean {
+  return hasErrorCode(err, (code) => POSTGRES_NOT_READY_CONNECTION_CODES.has(code));
+}
+
+/**
+ * True for failures that a postmaster mid-startup produces and that resolve on
+ * their own. Authentication and permission failures are deliberately excluded
+ * so they surface immediately instead of being retried until the deadline.
+ */
+export function isPostgresNotReadyError(err: unknown): boolean {
+  return isPostgresStartingUpError(err) || isPostgresConnectionUnavailableError(err);
+}
+
+export type WaitForPostgresReadyOptions = {
+  /** Give up after this long. Defaults to 60s, enough for local WAL replay. */
+  timeoutMs?: number;
+  /**
+   * postgres.js `connect_timeout` for one probe attempt, in seconds. Keep it
+   * below `timeoutMs`: a socket that opens but never finishes the handshake
+   * costs a full connect timeout, so a probe allowed to outlast the budget
+   * spends all of it on attempt one and the retry loop below never runs.
+   * Defaults to 5s, which suits the 60s default budget.
+   */
+  connectTimeoutSeconds?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  onRetry?: (info: { attempt: number; elapsedMs: number; delayMs: number; err: unknown }) => void;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  probe?: (url: string) => Promise<void>;
+};
+
+const DEFAULT_READY_TIMEOUT_MS = 60_000;
+const DEFAULT_READY_INITIAL_DELAY_MS = 100;
+const DEFAULT_READY_MAX_DELAY_MS = 1_000;
+const DEFAULT_PROBE_CONNECT_TIMEOUT_SECONDS = 5;
+
+function createReadinessProbe(connectTimeoutSeconds: number) {
+  return async function readinessProbe(url: string): Promise<void> {
+    const sql = postgres(url, {
+      max: 1,
+      onnotice: () => {},
+      connect_timeout: connectTimeoutSeconds,
+    });
+    try {
+      await sql`select 1`;
+    } finally {
+      await sql.end({ timeout: 5 }).catch(() => {});
+    }
+  };
+}
+
+/**
+ * Block until PostgreSQL answers queries, retrying the startup-only failures
+ * with backoff.
+ *
+ * Adopting a cluster someone else started means we arrive at an arbitrary point
+ * in its lifecycle — frequently mid-recovery, where every query fails 57P03.
+ * Without this wait the caller's first statement throws and takes the process
+ * down, which only looks survivable under a watcher that happens to restart it.
+ */
+export async function waitForPostgresReady(
+  url: string,
+  options: WaitForPostgresReadyOptions = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+  const maxDelayMs = options.maxDelayMs ?? DEFAULT_READY_MAX_DELAY_MS;
+  const now = options.now ?? (() => Date.now());
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const probe =
+    options.probe ??
+    createReadinessProbe(options.connectTimeoutSeconds ?? DEFAULT_PROBE_CONNECT_TIMEOUT_SECONDS);
+
+  const startedAt = now();
+  let delayMs = options.initialDelayMs ?? DEFAULT_READY_INITIAL_DELAY_MS;
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await probe(url);
+      return;
+    } catch (err) {
+      const elapsedMs = now() - startedAt;
+      if (!isPostgresNotReadyError(err)) throw err;
+      if (elapsedMs + delayMs >= timeoutMs) {
+        throw new Error(
+          `PostgreSQL did not become ready within ${timeoutMs}ms ` +
+            `(${attempt} attempt(s), ${elapsedMs}ms elapsed): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
+      options.onRetry?.({ attempt, elapsedMs, delayMs, err });
+      await sleep(delayMs);
+      delayMs = Math.min(Math.ceil(delayMs * 1.5), maxDelayMs);
+    }
+  }
+}
+
 async function listMigrationFiles(): Promise<string[]> {
   const entries = await readdir(MIGRATIONS_FOLDER, { withFileTypes: true });
   return entries
