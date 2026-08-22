@@ -251,8 +251,8 @@ export const issuesApi = {
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
-  cancelInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
+  cancelInteraction: (id: string, interactionId: string, reason: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, { reason }),
   respondToInteraction: (
     id: string,
     interactionId: string,

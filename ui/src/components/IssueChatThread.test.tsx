@@ -2724,11 +2724,33 @@ describe("IssueChatThread", () => {
       cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
+    const textarea = container.querySelector(
+      'textarea[aria-label="Cancellation reason"]',
+    ) as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Superseded by a newer question");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const confirmButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Confirm cancellation"),
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
     expect(onCancelInteraction).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "interaction-question-1",
         kind: "ask_user_questions",
       }),
+      "Superseded by a newer question",
     );
 
     act(() => {

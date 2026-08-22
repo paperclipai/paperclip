@@ -822,6 +822,64 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
+
+    const racingInteraction = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope-race",
+          prompt: "Choose the replacement scope",
+          selectionMode: "single",
+          options: [{ id: "phase-3", label: "Phase 3" }],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const race = await Promise.allSettled([
+      interactionsSvc.cancelQuestions({ id: issueId, companyId }, racingInteraction.id, {
+        reason: "First concurrent cancellation",
+      }, {
+        userId: "board-user-one",
+      }),
+      interactionsSvc.cancelQuestions({ id: issueId, companyId }, racingInteraction.id, {
+        reason: "Second concurrent cancellation",
+      }, {
+        userId: "board-user-two",
+      }),
+    ]);
+    const winnerResult = race.find((result) => result.status === "fulfilled");
+    const loserResult = race.find((result) => result.status === "rejected");
+
+    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(race.filter((result) => result.status === "rejected")).toHaveLength(1);
+    if (winnerResult?.status !== "fulfilled" || loserResult?.status !== "rejected") {
+      throw new Error("Expected exactly one winning interaction cancellation");
+    }
+
+    const winner = winnerResult.value;
+    expect(winner).toMatchObject({
+      status: "cancelled",
+      result: {
+        cancellationReason: expect.stringMatching(/concurrent cancellation$/),
+      },
+    });
+    expect(loserResult.reason).toMatchObject({
+      status: 409,
+      details: {
+        code: "interaction_already_resolved",
+        interactionStatus: "cancelled",
+        resolvedAt: expect.any(Date),
+        resolvedByAgentId: null,
+        resolvedByRunId: null,
+        resolvedByUserId: winner.resolvedByUserId,
+      },
+    });
   });
 
   it("persists cancelled ask_user_questions interactions without answer data", async () => {
@@ -891,6 +949,25 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       cancelled: true,
       cancellationReason: "Not needed anymore",
       summaryMarkdown: null,
+    });
+
+    await expect(interactionsSvc.cancelQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Second cancellation",
+    }, {
+      userId: "another-board-user",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "interaction_already_resolved",
+        interactionStatus: "cancelled",
+        resolvedAt: expect.any(Date),
+        resolvedByAgentId: null,
+        resolvedByRunId: null,
+        resolvedByUserId: "local-board",
+      },
     });
 
     await expect(interactionsSvc.answerQuestions({

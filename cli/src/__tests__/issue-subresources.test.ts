@@ -220,6 +220,17 @@ describe("issue subresource commands", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({
       selectedOptionIds: ["file-a", "file-b"],
     });
+    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({
+      reason: "stale",
+    });
+  });
+
+  it("requires --reason for interaction:cancel", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(run(["issue", "interaction:cancel", ISSUE_ID, INTERACTION_ID])).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("forwards the agent run-id header and inferred content-type on attachment:upload", async () => {

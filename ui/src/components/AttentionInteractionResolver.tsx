@@ -110,8 +110,8 @@ export function AttentionInteractionResolver({
   });
 
   const cancelMutation = useMutation({
-    mutationFn: (input: { interactionId: string }) =>
-      issuesApi.cancelInteraction(issueId, input.interactionId),
+    mutationFn: (input: { interactionId: string; reason: string }) =>
+      issuesApi.cancelInteraction(issueId, input.interactionId, input.reason),
     onSuccess: invalidate,
   });
 
@@ -154,8 +154,8 @@ export function AttentionInteractionResolver({
       onSubmitInteractionAnswers={(target: AskUserQuestionsInteraction, answers) =>
         respondMutation.mutateAsync({ interactionId: target.id, answers }).then(() => undefined)
       }
-      onCancelInteraction={(target: AskUserQuestionsInteraction) =>
-        cancelMutation.mutateAsync({ interactionId: target.id }).then(() => undefined)
+      onCancelInteraction={(target: AskUserQuestionsInteraction, reason) =>
+        cancelMutation.mutateAsync({ interactionId: target.id, reason }).then(() => undefined)
       }
       onSubmitInteractionVerdicts={(target: RequestItemVerdictsInteraction, verdicts) =>
         verdictsMutation.mutateAsync({ interactionId: target.id, verdicts }).then(() => undefined)

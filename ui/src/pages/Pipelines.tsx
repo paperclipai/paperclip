@@ -2454,9 +2454,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     await invalidateConversation();
   }, [conversationIssueId, invalidateConversation]);
 
-  const handleCancelConversationInteraction = useCallback(async (interaction: AskUserQuestionsInteraction) => {
+  const handleCancelConversationInteraction = useCallback(async (interaction: AskUserQuestionsInteraction, reason: string) => {
     if (!conversationIssueId) return;
-    await issuesApi.cancelInteraction(conversationIssueId, interaction.id);
+    await issuesApi.cancelInteraction(conversationIssueId, interaction.id, reason);
     await invalidateConversation();
   }, [conversationIssueId, invalidateConversation]);
 

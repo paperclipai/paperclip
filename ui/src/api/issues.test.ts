@@ -124,4 +124,17 @@ describe("issuesApi.list", () => {
       },
     );
   });
+
+  it("posts the required interaction cancellation reason", async () => {
+    await issuesApi.cancelInteraction(
+      "issue-1",
+      "interaction-1",
+      "Superseded by a newer question",
+    );
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/issues/issue-1/interactions/interaction-1/cancel",
+      { reason: "Superseded by a newer question" },
+    );
+  });
 });

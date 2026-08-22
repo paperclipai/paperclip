@@ -561,7 +561,26 @@ function interactionAlreadyResolvedError() {
   );
 }
 
-function interactionTerminalError(row: { status: string; result?: unknown }) {
+type TerminalInteractionSnapshot = {
+  status: string;
+  result?: unknown;
+  resolvedByAgentId?: string | null;
+  resolvedByRunId?: string | null;
+  resolvedByUserId?: string | null;
+  resolvedAt?: Date | string | null;
+};
+
+function terminalInteractionDetails(row: TerminalInteractionSnapshot) {
+  return {
+    interactionStatus: row.status,
+    resolvedAt: row.resolvedAt ?? null,
+    resolvedByAgentId: row.resolvedByAgentId ?? null,
+    resolvedByRunId: row.resolvedByRunId ?? null,
+    resolvedByUserId: row.resolvedByUserId ?? null,
+  };
+}
+
+function interactionTerminalError(row: TerminalInteractionSnapshot) {
   const result = row.result && typeof row.result === "object" && !Array.isArray(row.result)
     ? row.result as unknown as Record<string, unknown>
     : null;
@@ -570,6 +589,7 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
       409,
       "interaction_stale_target",
       "Interaction target is stale",
+      terminalInteractionDetails(row),
     );
   }
   if (result?.outcome === "superseded_by_comment" || result?.outcome === "superseded_by_newer_request") {
@@ -577,6 +597,7 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
       409,
       "interaction_superseded",
       "Interaction has been superseded",
+      terminalInteractionDetails(row),
     );
   }
   if (result?.outcome === "issue_closed") return interactionIssueClosedError();
@@ -584,6 +605,7 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
     409,
     "interaction_already_resolved",
     "Interaction has already been resolved",
+    terminalInteractionDetails(row),
   );
 }
 
@@ -3393,7 +3415,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw interactionTerminalError(current);
       }
 
-      const reason = data.reason?.trim() || null;
+      const reason = data.reason.trim();
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
@@ -3418,6 +3440,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         .returning();
 
       if (!updated) {
+        const winner = await db
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .then((rows) => rows[0] ?? null);
+        if (winner) throw interactionTerminalError(winner);
         throw interactionAlreadyResolvedError();
       }
 

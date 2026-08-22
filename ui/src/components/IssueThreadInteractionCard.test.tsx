@@ -314,6 +314,51 @@ describe("IssueThreadInteractionCard", () => {
     expect(withHandler.textContent).toContain("Cancel question");
   });
 
+  it("requires and submits an audit reason before cancelling a question", async () => {
+    const onCancelInteraction = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onCancelInteraction,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    const cancelButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Cancel question"),
+    );
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = host.querySelector(
+      'textarea[aria-label="Cancellation reason"]',
+    ) as HTMLTextAreaElement | null;
+    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Confirm cancellation"),
+    ) as HTMLButtonElement | undefined;
+    expect(textarea).toBeTruthy();
+    expect(confirmButton?.disabled).toBe(true);
+    expect(onCancelInteraction).not.toHaveBeenCalled();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "  Superseded by the revised request  ");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(confirmButton?.disabled).toBe(false);
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onCancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      "Superseded by the revised request",
+    );
+  });
+
   it("renders expired question interactions as resolved and non-actionable", () => {
     const host = renderCard({
       interaction: commentExpiredAskUserQuestionsInteraction,
