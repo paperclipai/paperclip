@@ -4223,12 +4223,19 @@ export function secretService(db: Db) {
 
       try {
         return await db.transaction(async (tx) => {
+          // Stamp revokedAt while demoting. resolveSecretValueInternal() already treats a
+          // non-null revokedAt as "not resolvable", but until now no code path ever wrote
+          // it, so a rotated-away version was indistinguishable from a live one.
+          // Scoped to status = "current" deliberately: an unscoped update would rewrite
+          // the revocation time of every older version on each subsequent rotation and
+          // destroy the audit trail this change exists to record.
           await tx
             .update(companySecretVersions)
-            .set({ status: "previous" })
+            .set({ status: "previous", revokedAt: new Date() })
             .where(and(
               eq(companySecretVersions.secretId, secret.id),
               ne(companySecretVersions.version, nextVersion),
+              eq(companySecretVersions.status, "current"),
             ));
           await tx
             .update(companySecretVersions)
