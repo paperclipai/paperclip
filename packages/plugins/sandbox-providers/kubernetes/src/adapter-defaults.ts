@@ -9,6 +9,8 @@ export interface AdapterDefaults {
   defaultEnv?: Record<string, string>;
 }
 
+export type RuntimeImageOverrides = Record<string, string>;
+
 const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
@@ -72,24 +74,36 @@ function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
 /**
  * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
  * is authoritative (replace semantics): the type MUST be present and complete,
- * else this throws. With no registry, falls back to the built-in REGISTRY.
+ * else this throws. With no registry, falls back to the built-in REGISTRY. A
+ * matching `runtimeImages` entry overrides only the image, preserving env keys,
+ * egress defaults, probe command, and default env.
  */
 export function getAdapterDefaults(
   adapterType: string,
   registry?: readonly AdapterRegistryEntry[],
+  runtimeImages?: RuntimeImageOverrides,
 ): AdapterDefaults {
   if (registry && registry.length > 0) {
     const entry = registry.find((e) => e.adapterType === adapterType);
     if (!entry) {
       throw new Error(`Adapter "${adapterType}" is not in the configured adapter registry`);
     }
-    return fromRegistryEntry(entry);
+    return applyRuntimeImageOverride(adapterType, fromRegistryEntry(entry), runtimeImages);
   }
   const defaults = REGISTRY[adapterType];
   if (!defaults) {
     throw new Error(`Unknown adapter type: ${adapterType}`);
   }
-  return defaults;
+  return applyRuntimeImageOverride(adapterType, defaults, runtimeImages);
+}
+
+function applyRuntimeImageOverride(
+  adapterType: string,
+  defaults: AdapterDefaults,
+  runtimeImages?: RuntimeImageOverrides,
+): AdapterDefaults {
+  const runtimeImage = runtimeImages?.[adapterType]?.trim();
+  return runtimeImage ? { ...defaults, runtimeImage } : defaults;
 }
 
 /**

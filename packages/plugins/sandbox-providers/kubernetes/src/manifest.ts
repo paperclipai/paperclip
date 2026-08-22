@@ -49,6 +49,12 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description: "Override the default registry for agent runtime images (default: ghcr.io/paperclipai).",
           },
+          runtimeImages: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description:
+              "Per-adapter runtime image overrides keyed by adapter type, e.g. {\"claude_local\":\"ghcr.io/paperclipai/agent-runtime-claude:git-sha\"}. Overrides only the image; env keys, probes, and egress defaults remain from the adapter defaults.",
+          },
           imageAllowList: {
             type: "array",
             items: { type: "string" },
