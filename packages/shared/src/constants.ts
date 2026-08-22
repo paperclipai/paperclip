@@ -237,6 +237,32 @@ export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
+// Issue statuses a comment may carry as a structured disposition. These are the
+// status outcomes behind the server's successful-run handoff options
+// (SUCCESSFUL_RUN_HANDOFF_OPTIONS in
+// server/src/services/recovery/successful-run-handoff.ts). Shared cannot import
+// from server, so the status union is duplicated here — keep both in lockstep.
+export const ISSUE_COMMENT_DISPOSITION_STATUSES = [
+  "done",
+  "cancelled",
+  "in_review",
+  "blocked",
+] as const;
+export type IssueCommentDispositionStatus = (typeof ISSUE_COMMENT_DISPOSITION_STATUSES)[number];
+
+// Response-side warning codes for a structured disposition comment whose
+// status transition did not run. Stable machine-readable envelope codes:
+// - issue_not_in_progress: disposition ignored because the issue was not
+//   in_progress when the comment posted.
+// - transition_rejected: the PATCH-equivalent transition was denied by an
+//   authorization gate or failed validation; the comment still posted.
+export const ISSUE_COMMENT_DISPOSITION_WARNING_CODES = [
+  "issue_not_in_progress",
+  "transition_rejected",
+] as const;
+export type IssueCommentDispositionWarningCode =
+  (typeof ISSUE_COMMENT_DISPOSITION_WARNING_CODES)[number];
+
 export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
 export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
 

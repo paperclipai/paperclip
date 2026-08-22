@@ -322,6 +322,34 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("accepts a structured disposition on issue comments", () => {
+    for (const disposition of ["done", "cancelled", "in_review", "blocked"] as const) {
+      const parsed = addIssueCommentSchema.parse({
+        body: "Scope complete.",
+        disposition,
+      });
+
+      expect(parsed.disposition).toBe(disposition);
+    }
+  });
+
+  it("keeps the comment disposition optional", () => {
+    const parsed = addIssueCommentSchema.parse({ body: "Progress update." });
+
+    expect(parsed.disposition).toBeUndefined();
+  });
+
+  it("rejects comment dispositions that are not valid handoff statuses", () => {
+    for (const disposition of ["todo", "in_progress", "backlog", "resolved", ""]) {
+      expect(
+        addIssueCommentSchema.safeParse({
+          body: "Scope complete.",
+          disposition,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("normalizes escaped line breaks in generated task drafts", () => {
     const parsed = suggestedTaskDraftSchema.parse({
       clientKey: "task-1",
