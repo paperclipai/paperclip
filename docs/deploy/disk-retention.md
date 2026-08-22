@@ -84,13 +84,17 @@ preserved, not reclaimed.
      remote — e.g. the default branch every plain `git clone` leaves
      checked out before a feature branch — is fine and does not block
      removal; only a branch with commits that exist nowhere else does), any
-     `git stash` entry, or a tag pointing at a commit not reachable from the
-     pushed upstream. Checked entirely locally (`git merge-base
-     --is-ancestor`, no network call), and only computed once every other
-     gate above already passed, so it costs nothing on the common
-     node_modules-only path. Found by code review before it could ship:
-     the original PR/merge check only validated the checked-out branch,
-     not other branches/stashes/tags a worktree can also be carrying.
+     `git stash` entry, a tag pointing at a commit not reachable from the
+     pushed upstream, or a commit reachable only through a reflog entry
+     (`git fsck --unreachable --no-reflogs`) — e.g. one left behind by a
+     `git reset --hard` or an amend, gone the instant `.git` (and its
+     reflog) is deleted along with everything else. Checked entirely
+     locally (`git merge-base --is-ancestor`, `git fsck`, no network call),
+     and only computed once every other gate above already passed, so it
+     costs nothing on the common node_modules-only path. Found by code
+     review before it could ship: the original PR/merge check only
+     validated the checked-out branch, not other branches/stashes/tags/
+     reflog entries a worktree can also be carrying.
 
    Any one of these failing to hold — for any reason, including a lookup
    error — keeps the worktree and falls back to tier 1.

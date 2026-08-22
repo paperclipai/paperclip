@@ -13,6 +13,7 @@ import {
   getLocalOnlyTags,
   getUpstreamRef,
   hasCommittedLockfile,
+  hasReflogOnlyCommits,
   hasTrackedFilesUnderNodeModules,
   hasUnpushedOtherLocalBranch,
   hasUnsafeExtraGitState,
@@ -157,36 +158,18 @@ test("hasTrackedFilesUnderNodeModules: flags a force-added file, ignores unrelat
   assert.equal(hasTrackedFilesUnderNodeModules("node_modules-cache/file.js\n"), false);
 });
 
-test("hasUnsafeExtraGitState: blocks on an unpushed other branch, a stash, a local-only tag, or unknown facts; clears when all are safe", () => {
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: [] }),
-    false,
-  );
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: true, stashCount: 0, localOnlyTags: [] }),
-    true,
-  );
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 1, localOnlyTags: [] }),
-    true,
-  );
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: ["v1-wip"] }),
-    true,
-  );
+test("hasUnsafeExtraGitState: blocks on an unpushed other branch, a stash, a local-only tag, a reflog-only commit, or unknown facts; clears when all are safe", () => {
+  const safe = { hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: [], reflogOnlyCommits: false };
+  assert.equal(hasUnsafeExtraGitState(safe), false);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, hasUnpushedOtherBranch: true }), true);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, stashCount: 1 }), true);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, localOnlyTags: ["v1-wip"] }), true);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, reflogOnlyCommits: true }), true);
   // fail closed when any underlying signal could not be determined at all
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: null, stashCount: 0, localOnlyTags: [] }),
-    true,
-  );
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: null, localOnlyTags: [] }),
-    true,
-  );
-  assert.equal(
-    hasUnsafeExtraGitState({ hasUnpushedOtherBranch: false, stashCount: 0, localOnlyTags: null }),
-    true,
-  );
+  assert.equal(hasUnsafeExtraGitState({ ...safe, hasUnpushedOtherBranch: null }), true);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, stashCount: null }), true);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, localOnlyTags: null }), true);
+  assert.equal(hasUnsafeExtraGitState({ ...safe, reflogOnlyCommits: null }), true);
 });
 
 test("decideAction: active session always preserves, regardless of everything else", () => {
@@ -467,6 +450,16 @@ test("getLocalOnlyTags: a tag on the pushed commit is safe, a tag on an unpushed
   assert.deepEqual(localOnly, ["local-only-tag"]);
 });
 
+test("hasReflogOnlyCommits: false for an ordinary clean history, true after a hard reset leaves a commit recoverable only via reflog (Greptile review, PR #11936)", () => {
+  const { workDir } = makeRepoFixture();
+  assert.equal(hasReflogOnlyCommits(workDir), false);
+  fs.writeFileSync(path.join(workDir, "throwaway.txt"), "will be reset away\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "about to be discarded"]);
+  git(workDir, ["reset", "--hard", "HEAD~1"]);
+  assert.equal(hasReflogOnlyCommits(workDir), true);
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end CLI tests against real git fixtures
 // ---------------------------------------------------------------------------
@@ -631,6 +624,85 @@ test("CLI --apply --remove-merged-worktrees: a merged, clean, fully-pushed, inac
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.existsSync(finalWorkDir), false, "merged + clean + pushed + inactive worktree must be fully removed");
+});
+
+test("CLI --apply --remove-merged-worktrees: a stash entry blocks full removal even with a merged-looking PR (Greptile review, PR #11936)", () => {
+  const { workDir } = makeRepoFixture({ branchName: "feature/merged-with-stash" });
+  fs.writeFileSync(path.join(workDir, "wip-stash.txt"), "not committed, only stashed\n");
+  git(workDir, ["stash", "push", "-u", "-m", "wip"]);
+  const home = makeTempDir("reap-home-stash-");
+  fs.mkdirSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1"), { recursive: true });
+  fs.renameSync(workDir, path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+  const finalWorkDir = fs.realpathSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+
+  const result = runScript(["--apply", "--remove-merged-worktrees", "--json", "--recent-commit-minutes", "0"], {
+    REAP_HOME: home,
+    REAP_PR_LOOKUP_CMD: path.join(fixtureBin(), "pr-lookup-merged.sh"),
+    REAP_ACTIVE_SESSION_CMD: path.join(fixtureBin(), "always-inactive.sh"),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(finalWorkDir), "a worktree carrying a stash must not be fully removed (.git survives)");
+  assert.ok(fs.existsSync(path.join(finalWorkDir, ".git")), "the git directory itself must survive");
+  assert.equal(git(finalWorkDir, ["stash", "list"]).trim().length > 0, true, "the stash itself must survive untouched");
+  const parsed = JSON.parse(result.stdout);
+  const entry = parsed.results.find((r) => r.dir === finalWorkDir);
+  // A stash blocks ONLY the full-worktree tier (documented fallback
+  // behavior) — node_modules-only reclaim still fires since it never
+  // touches branch/stash/tag state at all.
+  assert.equal(entry.action, "reap-node-modules");
+  assert.equal(fs.existsSync(path.join(finalWorkDir, "node_modules")), false);
+});
+
+test("CLI --apply --remove-merged-worktrees: a reflog-only commit (from a hard reset) blocks full removal (Greptile review, PR #11936)", () => {
+  const { workDir } = makeRepoFixture({ branchName: "feature/merged-with-reflog" });
+  fs.writeFileSync(path.join(workDir, "throwaway.txt"), "will be reset away, still recoverable via reflog\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "about to be discarded"]);
+  git(workDir, ["reset", "--hard", "HEAD~1"]); // matches the pushed upstream again, but leaves a reflog-only commit
+  const home = makeTempDir("reap-home-reflog-");
+  fs.mkdirSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1"), { recursive: true });
+  fs.renameSync(workDir, path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+  const finalWorkDir = fs.realpathSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+
+  const result = runScript(["--apply", "--remove-merged-worktrees", "--json", "--recent-commit-minutes", "0"], {
+    REAP_HOME: home,
+    REAP_PR_LOOKUP_CMD: path.join(fixtureBin(), "pr-lookup-merged.sh"),
+    REAP_ACTIVE_SESSION_CMD: path.join(fixtureBin(), "always-inactive.sh"),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(finalWorkDir), "a worktree with a reflog-only commit must not be fully removed");
+  assert.ok(fs.existsSync(path.join(finalWorkDir, ".git")), "the git directory (and its reflog) must survive");
+  const parsed = JSON.parse(result.stdout);
+  const entry = parsed.results.find((r) => r.dir === finalWorkDir);
+  assert.equal(entry.action, "reap-node-modules"); // falls back to tier 1, same as the stash case
+});
+
+test("CLI --apply: a git-tracked (force-added) file under node_modules blocks reclaim even with a clean, committed lockfile (Greptile review, PR #11936)", () => {
+  const { workDir } = makeRepoFixture({ branchName: "feature/tracked-node-modules" });
+  fs.writeFileSync(path.join(workDir, "node_modules", "patched-dep.js"), "// hand patch, force-added\n");
+  git(workDir, ["add", "-f", "node_modules/patched-dep.js"]);
+  git(workDir, ["commit", "-m", "force-add a patched dependency file"]);
+  // Node_modules-only reclaim never checks ahead-of-remote status (only the
+  // full-worktree tier does), so this commit is deliberately left unpushed.
+  const home = makeTempDir("reap-home-tracked-nm-");
+  fs.mkdirSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1"), { recursive: true });
+  fs.renameSync(workDir, path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+  const finalWorkDir = fs.realpathSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+
+  const result = runScript(["--apply", "--json", "--recent-commit-minutes", "0"], {
+    REAP_HOME: home,
+    REAP_PR_LOOKUP_CMD: path.join(fixtureBin(), "pr-lookup-open.sh"),
+    REAP_ACTIVE_SESSION_CMD: path.join(fixtureBin(), "always-inactive.sh"),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(
+    fs.existsSync(path.join(finalWorkDir, "node_modules", "patched-dep.js")),
+    "a git-tracked file under node_modules must survive — a reinstall would silently drop it",
+  );
+  const parsed = JSON.parse(result.stdout);
+  const entry = parsed.results.find((r) => r.dir === finalWorkDir);
+  assert.equal(entry.action, "preserve");
+  assert.match(entry.reason, /tracked file exists under node_modules/);
 });
 
 test("CLI --apply --remove-merged-worktrees: an OPEN pr blocks full removal but node_modules still reclaimed", () => {

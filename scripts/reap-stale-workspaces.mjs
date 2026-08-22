@@ -199,7 +199,7 @@ export function parseGitHubOwnerRepo(remoteUrl) {
  * @param {boolean} facts.nodeModulesTracked - `git ls-files` shows a tracked path under node_modules/
  * @param {boolean} facts.recentlyCommitted - HEAD landed within the recent-commit threshold
  * @param {boolean} facts.isSharedWorktreeParent - `git worktree list` shows >1 entry
- * @param {boolean} facts.hasUnsafeExtraGitState - an unpushed other local branch, a stash, or a local-only tag exists
+ * @param {boolean} facts.hasUnsafeExtraGitState - an unpushed other local branch, a stash, a local-only tag, or a reflog-only commit exists
  * @param {boolean} facts.allowWorktreeRemoval - `--remove-merged-worktrees` was passed
  * @returns {{ action: "reap-worktree" | "reap-node-modules" | "preserve", reason: string }}
  */
@@ -511,6 +511,29 @@ export function getStashCount(cwd) {
 }
 
 /**
+ * True when this repo has at least one commit reachable ONLY through a
+ * reflog entry — not through any branch, tag, or remote-tracking ref. Found
+ * via `git fsck --unreachable --no-reflogs` (which deliberately does NOT
+ * treat reflogs as roots, so a commit still recoverable via `git reflog`
+ * shows up as "unreachable"). A commit like this — left behind by a
+ * `git reset --hard`, an interactive rebase, or an amend — is recoverable
+ * right up until the moment a full worktree removal deletes `.git` (and
+ * its reflog) along with everything else. Null (fail closed) when this
+ * can't be determined at all (e.g. `git`/`fsck` unavailable).
+ */
+export function hasReflogOnlyCommits(cwd) {
+  try {
+    const out = execFileSync("git", ["-C", cwd, "fsck", "--unreachable", "--no-reflogs"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.split("\n").some((line) => line.trim().startsWith("unreachable commit"));
+  } catch {
+    return null; // unknown — caller must fail closed
+  }
+}
+
+/**
  * Local tags whose commit is NOT reachable from `upstreamRef` (the branch's
  * pushed tracking ref), or null when this can't be determined. A tag like
  * this can point at a commit that would otherwise be unreachable from any
@@ -553,11 +576,31 @@ export function getLocalOnlyTags(cwd, upstreamRef) {
  * any stash entry, or any local-only tag. Also true (fail closed) when any
  * of the three underlying signals could not be determined at all.
  */
-export function hasUnsafeExtraGitState({ hasUnpushedOtherBranch, stashCount, localOnlyTags }) {
-  if (hasUnpushedOtherBranch === null || stashCount === null || localOnlyTags === null) return true;
+/**
+ * True when this repo carries git state beyond "the current branch, fully
+ * pushed" that a full worktree removal (`rmSync` of the whole directory)
+ * would permanently destroy: an unpushed OTHER local branch (one whose
+ * commits are not mirrored on any remote — NOT merely "another branch
+ * exists", since e.g. a plain `git clone` always keeps the default branch
+ * locally alongside a checked-out feature branch, with zero unique commits),
+ * any stash entry, any local-only tag, or any commit reachable only through
+ * a reflog entry (e.g. left behind by a `git reset --hard` or an amend, and
+ * gone the instant `.git` itself is deleted). Also true (fail closed) when
+ * any of the four underlying signals could not be determined at all.
+ */
+export function hasUnsafeExtraGitState({ hasUnpushedOtherBranch, stashCount, localOnlyTags, reflogOnlyCommits }) {
+  if (
+    hasUnpushedOtherBranch === null ||
+    stashCount === null ||
+    localOnlyTags === null ||
+    reflogOnlyCommits === null
+  ) {
+    return true;
+  }
   if (hasUnpushedOtherBranch) return true;
   if (stashCount > 0) return true;
   if (localOnlyTags.length > 0) return true;
+  if (reflogOnlyCommits) return true;
   return false;
 }
 
@@ -640,9 +683,9 @@ export function evaluateWorktree(
   const lastCommitEpochSeconds = getLastCommitEpochSeconds(dir);
   const recentlyCommitted = isRecentlyCommitted(lastCommitEpochSeconds, Math.floor(now / 1000), recentCommitMinutes);
 
-  // The stash/other-branch/local-tag checks below cost 2-3 extra `git`
-  // subprocess calls, all local (no network). Only pay that cost when every
-  // OTHER worktree-removal gate already holds — i.e. exactly when
+  // The stash/other-branch/local-tag/reflog checks below cost 3-4 extra
+  // `git` subprocess calls, all local (no network). Only pay that cost when
+  // every OTHER worktree-removal gate already holds — i.e. exactly when
   // `decideAction` would otherwise choose "reap-worktree" — so the default
   // (or a node_modules-only) run never pays for it.
   const prSaysMergedOrClosed = prState === "merged" || prState === "closed";
@@ -653,6 +696,7 @@ export function evaluateWorktree(
         hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
         stashCount: getStashCount(dir),
         localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
+        reflogOnlyCommits: hasReflogOnlyCommits(dir),
       })
     : false;
 
@@ -737,11 +781,12 @@ export function revalidateBeforeDelete(
       hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
       stashCount: getStashCount(dir),
       localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
+      reflogOnlyCommits: hasReflogOnlyCommits(dir),
     });
     if (unsafeExtraGitState) {
       return {
         safe: false,
-        reason: "revalidation-before-delete: an unpushed local branch/stash/tag appeared since evaluation",
+        reason: "revalidation-before-delete: an unpushed local branch/stash/tag/reflog-only commit appeared since evaluation",
       };
     }
     return { safe: true };
