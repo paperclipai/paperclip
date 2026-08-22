@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
+  issueRelations,
   issues,
   projectWorkspaces,
   projects,
@@ -367,6 +368,116 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run?.triggerPayload).toMatchObject({
       transientFailure: { clearedAt: expect.any(String) },
     });
+  });
+
+  it("clears a routine execution issue blocker edge to its standing parent on completion", async () => {
+    const { companyId, issueSvc, projectId, routine, svc } = await seedFixture();
+    const parentIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: "Standing readiness target",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.update(routines).set({ parentIssueId: parentIssue.id }).where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toEqual(expect.any(String));
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: run.linkedIssueId!,
+      relatedIssueId: parentIssue.id,
+      type: "blocks",
+    });
+    await db.update(routines).set({ parentIssueId: null }).where(eq(routines.id, routine.id));
+    const replacementParent = await issueSvc.create(companyId, {
+      projectId,
+      title: "Replacement parent",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: replacementParent.id, status: "done" })
+      .where(eq(issues.id, run.linkedIssueId!));
+
+    await svc.syncRunStatusForIssue(run.linkedIssueId!);
+
+    const blockerEdges = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, run.linkedIssueId!));
+    expect(blockerEdges).toEqual([]);
+  });
+
+  it("clears legacy routine blocker edges when the parent snapshot is absent", async () => {
+    const { companyId, issueSvc, projectId, routine, svc } = await seedFixture();
+    const originalParent = await issueSvc.create(companyId, {
+      projectId,
+      title: "Original standing target",
+      status: "in_review",
+      priority: "medium",
+    });
+    await svc.update(routine.id, {
+      parentIssueId: originalParent.id,
+      baseRevisionId: routine.latestRevisionId,
+    }, {});
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toEqual(expect.any(String));
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: run.linkedIssueId!,
+      relatedIssueId: originalParent.id,
+      type: "blocks",
+    });
+    const unrelatedTarget = await issueSvc.create(companyId, {
+      projectId,
+      title: "Unrelated blocked target",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: run.linkedIssueId!,
+      relatedIssueId: unrelatedTarget.id,
+      type: "blocks",
+    });
+    const storedRun = await db
+      .select({ id: routineRuns.id, triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.linkedIssueId, run.linkedIssueId!))
+      .then((rows) => rows[0]!);
+    const { executionIssue: _executionIssue, ...legacyPayload } = storedRun.triggerPayload as Record<string, unknown>;
+    await db.update(routineRuns).set({ triggerPayload: legacyPayload }).where(eq(routineRuns.id, storedRun.id));
+    await db.update(routines).set({ parentIssueId: null }).where(eq(routines.id, routine.id));
+
+    const replacementParent = await issueSvc.create(companyId, {
+      projectId,
+      title: "Replacement parent",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: replacementParent.id, status: "done" })
+      .where(eq(issues.id, run.linkedIssueId!));
+
+    await svc.syncRunStatusForIssue(run.linkedIssueId!);
+
+    const blockerEdges = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, run.linkedIssueId!));
+    expect(blockerEdges).toEqual([
+      expect.objectContaining({
+        relatedIssueId: unrelatedTarget.id,
+        type: "blocks",
+      }),
+    ]);
   });
 
   it("filters listed routines by project", async () => {

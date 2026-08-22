@@ -16,6 +16,7 @@ import {
   goals,
   heartbeatRuns,
   issueInboxArchives,
+  issueRelations,
   issues,
   pluginManagedResources,
   plugins,
@@ -123,6 +124,19 @@ function executionIssueTransientFailureClearedAtFromPayload(payload: unknown): s
   if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
   const clearedAt = (transientFailure as Record<string, unknown>).clearedAt;
   return typeof clearedAt === "string" ? clearedAt : null;
+}
+
+function executionIssueParentIdFromPayload(payload: unknown): string | null | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const executionIssue = (payload as Record<string, unknown>).executionIssue;
+  if (!executionIssue || typeof executionIssue !== "object" || Array.isArray(executionIssue)) return undefined;
+  const parentId = (executionIssue as Record<string, unknown>).parentId;
+  return typeof parentId === "string" ? parentId : parentId === null ? null : undefined;
+}
+
+function routineRevisionParentIssueIdFromSnapshot(snapshot: unknown): string | null | undefined {
+  const parsed = routineRevisionSnapshotSchema.safeParse(snapshot);
+  return parsed.success ? parsed.data.routine.parentIssueId : undefined;
 }
 
 function legacyExecutionIssueTransientFailureStatus(
@@ -1552,7 +1566,11 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
-  async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
+  async function finalizeRun(
+    runId: string,
+    patch: Partial<typeof routineRuns.$inferInsert>,
+    executor: Pick<Db, "update"> = db,
+  ) {
     return executor
       .update(routineRuns)
       .set({
@@ -1745,7 +1763,12 @@ export function routineService(
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const triggerPayload = {
+      ...(mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables }) ?? {}),
+      ...(input.routine.parentIssueId
+        ? { executionIssue: { parentId: input.routine.parentIssueId } }
+        : {}),
+    };
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
@@ -3169,6 +3192,8 @@ export function routineService(
       const issue = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
           status: issues.status,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
@@ -3183,8 +3208,12 @@ export function routineService(
           status: routineRuns.status,
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
+          parentIssueId: routines.parentIssueId,
+          revisionSnapshot: routineRevisions.snapshot,
         })
         .from(routineRuns)
+        .innerJoin(routines, eq(routines.id, routineRuns.routineId))
+        .leftJoin(routineRevisions, eq(routineRevisions.id, routineRuns.routineRevisionId))
         .where(eq(routineRuns.id, issue.originRunId))
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
@@ -3192,23 +3221,40 @@ export function routineService(
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-        return finalizeRun(issue.originRunId, {
-          status: "completed",
-          failureReason: null,
-          completedAt: new Date(),
-          ...(transientFailureStatus
-            ? {
-              triggerPayload: {
-                ...(run.triggerPayload ?? {}),
-                transientFailure: {
-                  code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
-                  status: transientFailureStatus,
-                  reason: executionIssueTransientFailureReason(transientFailureStatus),
-                  clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
+        const snapshottedParentIssueId = executionIssueParentIdFromPayload(run.triggerPayload);
+        const revisionParentIssueId = routineRevisionParentIssueIdFromSnapshot(run.revisionSnapshot);
+        const standingParentIssueId = snapshottedParentIssueId === undefined
+          ? revisionParentIssueId === undefined ? run.parentIssueId : revisionParentIssueId
+          : snapshottedParentIssueId;
+        return db.transaction(async (tx) => {
+          if (standingParentIssueId !== null) {
+            await tx
+              .delete(issueRelations)
+              .where(and(
+                eq(issueRelations.companyId, issue.companyId),
+                eq(issueRelations.issueId, issue.id),
+                eq(issueRelations.type, "blocks"),
+                eq(issueRelations.relatedIssueId, standingParentIssueId),
+              ));
+          }
+          return finalizeRun(run.id, {
+            status: "completed",
+            failureReason: null,
+            completedAt: new Date(),
+            ...(transientFailureStatus
+              ? {
+                triggerPayload: {
+                  ...(run.triggerPayload ?? {}),
+                  transientFailure: {
+                    code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+                    status: transientFailureStatus,
+                    reason: executionIssueTransientFailureReason(transientFailureStatus),
+                    clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
+                  },
                 },
-              },
-            }
-            : {}),
+              }
+              : {}),
+          }, tx);
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
