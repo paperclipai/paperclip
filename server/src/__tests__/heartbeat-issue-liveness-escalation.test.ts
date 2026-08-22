@@ -630,6 +630,36 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wakes.some((wake) => ["queued", "claimed", "completed"].includes(wake.status))).toBe(true);
   });
 
+  it.each(["paused", "terminated", "pending_approval"] as const)(
+    "skips resolved-dependency backstop candidates whose assignee is %s",
+    async (assigneeStatus) => {
+      await enableAutoRecovery();
+      const { companyId, agentId, blockedIssueId } =
+        await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+      // Flip the assignee into a directly non-invokable state. The backstop
+      // must drop the candidate at the SQL layer — otherwise it enqueues a
+      // wake that always fails with 409 and loops on every heartbeat.
+      await db.update(agents).set({ status: assigneeStatus }).where(eq(agents.id, agentId));
+
+      const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+      expect(result.dependencyWakeBackstopChecked).toBe(0);
+      expect(result.dependencyWakesHealed).toBe(0);
+      expect(result.dependencyWakeIssueIds).not.toContain(blockedIssueId);
+
+      const wakes = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+          ),
+        );
+      expect(wakes).toHaveLength(0);
+    },
+  );
+
   it("waits for workspace finalize before healing a resolved blocked dependent", async () => {
     await enableAutoRecovery();
     const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
