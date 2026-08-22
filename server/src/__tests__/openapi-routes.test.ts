@@ -184,6 +184,32 @@ describe("openapi routes", () => {
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
     expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].get).toMatchObject({
+      summary: "Reject unsupported MCP GET streams by public id",
+      responses: {
+        405: {
+          headers: {
+            Allow: {
+              schema: { type: "string", example: "POST" },
+            },
+          },
+        },
+      },
+    });
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].get.responses["200"]).toBeUndefined();
+    expect(res.body.paths["/api/tool-gateway/gateways/{gatewayId}/mcp"].get).toMatchObject({
+      summary: "Reject unsupported MCP GET streams by gateway id",
+      responses: {
+        405: {
+          headers: {
+            Allow: {
+              schema: { type: "string", example: "POST" },
+            },
+          },
+        },
+      },
+    });
+    expect(res.body.paths["/api/tool-gateway/gateways/{gatewayId}/mcp"].get.responses["200"]).toBeUndefined();
     expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({

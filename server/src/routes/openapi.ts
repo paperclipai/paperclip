@@ -567,6 +567,15 @@ const responses = {
     description: "Not found",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  methodNotAllowed: {
+    description: "GET is not supported for this Streamable HTTP MCP endpoint; use POST",
+    headers: {
+      Allow: {
+        description: "Supported HTTP methods",
+        schema: { type: "string", example: "POST" },
+      },
+    },
+  },
   conflict: {
     description: "Conflict",
     content: { "application/json": { schema: ErrorSchema } },
@@ -7654,7 +7663,8 @@ registerCurrentRoute({
   method: "get",
   path: "/mcp/gateways/{gatewayPublicId}",
   tags: ["tool-gateway"],
-  summary: "Describe a public MCP gateway endpoint",
+  summary: "Reject unsupported MCP GET streams by public id",
+  responses: { 405: r.methodNotAllowed },
 });
 
 registerCurrentRoute({
@@ -7713,7 +7723,8 @@ registerCurrentRoute({
   method: "get",
   path: "/api/tool-gateway/gateways/{gatewayId}/mcp",
   tags: ["tool-gateway"],
-  summary: "Describe a named MCP gateway endpoint",
+  summary: "Reject unsupported MCP GET streams by gateway id",
+  responses: { 405: r.methodNotAllowed },
 });
 
 registerCurrentRoute({
