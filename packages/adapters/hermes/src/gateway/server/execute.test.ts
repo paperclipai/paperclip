@@ -144,6 +144,48 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it("injects the harness-minted Paperclip environment into only the Hermes run", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-env", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "hermes-gateway-key",
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      payloadTemplate: {
+        environment: {
+          PAPERCLIP_API_KEY: "configured-key-must-not-win",
+          UNRELATED_SECRET: "must-not-forward",
+        },
+      },
+      timeoutSec: 5,
+    });
+    ctx.authToken = "short-lived-run-jwt";
+    ctx.context.wakeReason = "issue_assigned";
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String(createCall?.[1]?.body));
+    expect(body.environment).toEqual({
+      PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+      PAPERCLIP_API_KEY: "short-lived-run-jwt",
+      PAPERCLIP_RUN_ID: "pc-run-1",
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
+      PAPERCLIP_TASK_ID: "issue-1",
+      PAPERCLIP_WAKE_REASON: "issue_assigned",
+    });
+  });
+
   it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
     const description = "Update launch-card.svg and change the CTA to Try Team free.";
     const fullTaskMarkdown = [
@@ -306,6 +348,7 @@ describe("execute", () => {
       apiKey: "secret-key",
       timeoutSec: 5,
     });
+    ctx.authToken = "short-lived-paperclip-jwt";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
@@ -316,10 +359,10 @@ describe("execute", () => {
           sseStream(
             [
               "event: message.delta",
-              "data: {\"delta\":\"Authorization: Bearer secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
+              "data: {\"delta\":\"Authorization: Bearer secret-key\\nPaperclip short-lived-paperclip-jwt\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
               "",
               "event: run.completed",
-              "data: {\"status\":\"completed\",\"output\":\"Authorization: Bearer secret-key\\nraw key secret-key\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
+              "data: {\"status\":\"completed\",\"output\":\"Authorization: Bearer secret-key\\nraw key secret-key\\nPaperclip short-lived-paperclip-jwt\\nX-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1\"}",
               "",
             ].join("\n"),
           ),
@@ -338,11 +381,13 @@ describe("execute", () => {
     expect(result.summary).toContain("raw key [redacted len=10]");
     expect(result.summary).toContain("X-Hermes-Session-Key: [redacted]");
     expect(result.summary).not.toContain("secret-key");
+    expect(result.summary).not.toContain("short-lived-paperclip-jwt");
     expect(result.summary).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
     expect(result.resultJson?.output).toBe(result.summary);
     expect(logText).toContain("Bearer [redacted]");
     expect(logText).toContain("X-Hermes-Session-Key: [redacted]");
     expect(logText).not.toContain("secret-key");
+    expect(logText).not.toContain("short-lived-paperclip-jwt");
     expect(logText).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 

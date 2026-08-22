@@ -6,6 +6,7 @@ import type {
 import {
   asNumber,
   asString,
+  buildPaperclipEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
@@ -320,18 +321,41 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
 }
 
 function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
-  const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
+  const basePaperclipEnv = buildPaperclipEnv(ctx.agent);
+  const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl) ?? basePaperclipEnv.PAPERCLIP_API_URL ?? null;
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
+  // The adapter owns the task-local environment. Never forward an environment
+  // supplied through the configurable payload template because it could
+  // override the harness-minted credential or smuggle unrelated secrets into
+  // the remote Hermes process.
+  const { environment: _configuredEnvironment, ...safePayloadTemplate } = payloadTemplate;
   const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
     "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  const authToken = nonEmpty(ctx.authToken);
+  const issueId = issueIdFromContext(ctx);
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
+  const paperclipEnvironment = authToken
+    ? {
+        ...basePaperclipEnv,
+        ...(paperclipApiUrl ? { PAPERCLIP_API_URL: paperclipApiUrl } : {}),
+        PAPERCLIP_API_KEY: authToken,
+        PAPERCLIP_RUN_ID: ctx.runId,
+        ...(issueId ? { PAPERCLIP_TASK_ID: issueId } : {}),
+        ...(nonEmpty(ctx.context.wakeReason)
+          ? { PAPERCLIP_WAKE_REASON: nonEmpty(ctx.context.wakeReason)! }
+          : {}),
+        ...(issueWorkMode ? { PAPERCLIP_ISSUE_WORK_MODE: issueWorkMode } : {}),
+      }
+    : null;
   return {
-    ...payloadTemplate,
+    ...safePayloadTemplate,
     input,
     instructions,
     ...(sessionKey ? { session_id: sessionKey } : {}),
+    ...(paperclipEnvironment ? { environment: paperclipEnvironment } : {}),
   };
 }
 
@@ -848,6 +872,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const redactText = createTextRedactor([
     apiKey,
+    ctx.authToken,
     sessionKey,
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],

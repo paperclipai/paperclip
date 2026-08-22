@@ -142,7 +142,7 @@ describe("server adapter registry", () => {
     expect(builtInLocal?.getConfigSchema).toBeTypeOf("function");
 
     expect(builtInGateway).not.toBeNull();
-    expect(builtInGateway?.supportsLocalAgentJwt).toBe(false);
+    expect(builtInGateway?.supportsLocalAgentJwt).toBe(true);
     expect(builtInGateway?.supportsInstructionsBundle).toBe(false);
     expect(builtInGateway?.requiresMaterializedRuntimeSkills).toBe(false);
     expect(builtInGateway?.getConfigSchema).toBeTypeOf("function");

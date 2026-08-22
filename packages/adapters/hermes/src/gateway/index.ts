@@ -47,12 +47,16 @@ Optional fields:
 Runtime mapping:
 - Creates runs with POST /v1/runs.
 - Sends Idempotency-Key equal to the Paperclip run id for correlation only; Hermes v0.16.0 did not dedupe duplicate creates.
+- Requests a heartbeat-scoped Paperclip agent JWT from the server.
+- Sends that JWT and the Paperclip URL, run id, agent id, company id, task id, and wake reason in the created Hermes run's environment only.
+- Ignores payloadTemplate.environment so configured values cannot override the heartbeat-scoped environment or forward unrelated secrets.
 - Streams GET /v1/runs/{run_id}/events and polls GET /v1/runs/{run_id} as fallback.
 - Calls POST /v1/runs/{run_id}/stop on timeout.
 
 Security guidance:
 - Prefer HTTPS or a private overlay network for non-loopback hosts.
 - Do not put Hermes apiKey or Paperclip bearer tokens in prompts, comments, logs, or result JSON.
+- Treat the injected Paperclip JWT as task-local and short-lived.
 - Keep the default issue-scoped session strategy unless shared agent memory is intentional.
 `;
 
@@ -64,7 +68,9 @@ export function createServerAdapter(): ServerAdapterModule {
     sessionCodec,
     sessionManagement,
     models,
-    supportsLocalAgentJwt: false,
+    // The gateway forwards the heartbeat-scoped JWT into the single remote
+    // Hermes run; it is not inherited by the Paperclip server process.
+    supportsLocalAgentJwt: true,
     supportsInstructionsBundle: false,
     requiresMaterializedRuntimeSkills: false,
     agentConfigurationDoc,
