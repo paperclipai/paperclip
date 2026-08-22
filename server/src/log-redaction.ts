@@ -1,6 +1,10 @@
 import os from "node:os";
 
 export const CURRENT_USER_REDACTION_TOKEN = "*";
+export const REDACTED_JWT_TOKEN = "***JWT_REDACTED***";
+
+const JWT_TEXT_RE =
+  /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{20,})?/g;
 
 export interface CurrentUserRedactionOptions {
   enabled?: boolean;
@@ -104,6 +108,11 @@ function resolveCurrentUserCandidates(opts?: CurrentUserRedactionOptions) {
   return { userNames, homeDirs, replacement };
 }
 
+export function redactJwtTokens(input: string): string {
+  if (!input) return input;
+  return input.replace(JWT_TEXT_RE, REDACTED_JWT_TOKEN);
+}
+
 export function redactCurrentUserText(input: string, opts?: CurrentUserRedactionOptions) {
   if (!input) return input;
   if (opts?.enabled === false) return input;
@@ -125,6 +134,8 @@ export function redactCurrentUserText(input: string, opts?: CurrentUserRedaction
     const pattern = new RegExp(`(?<![A-Za-z0-9._-])${escapeRegExp(userName)}(?![A-Za-z0-9._-])`, "g");
     result = result.replace(pattern, maskUserNameForLogs(userName, replacement));
   }
+
+  result = redactJwtTokens(result);
 
   return result;
 }
