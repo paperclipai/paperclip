@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   withWorktreePortRegistryLock,
   withWorktreePortRegistryLockSync,
@@ -143,5 +143,29 @@ describe("worktree port registry lock", () => {
     });
 
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("survives a rename the platform briefly refuses", () => {
+    // Windows returns EPERM when renaming onto a file another handle has open,
+    // where POSIX just replaces it. The heartbeat worker reads owner.json on an
+    // interval, so the parent's rewrite failed outright on Windows and never on
+    // Linux, which kept it invisible in CI. Acquisition must ride that out.
+    const homeDir = makeTemporaryRoot();
+    const realRename = fs.renameSync.bind(fs);
+    let refusalsLeft = 2;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (refusalsLeft > 0 && String(to).endsWith("owner.json")) {
+        refusalsLeft -= 1;
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+      }
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+
+    try {
+      expect(withWorktreePortRegistryLockSync(homeDir, () => "held")).toBe("held");
+      expect(refusalsLeft).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
