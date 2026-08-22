@@ -210,8 +210,15 @@ export async function openDaytonaDuplexChannelSession(
   // Report a host-to-sandbox write failure one time and end the channel at once.
   // The seam carries only the typed reason; the raw provider error never leaves
   // this scope. The channel end propagates the loss up through the exit.
+  //
+  // `channelTerminated` turns true on the first rejected chunk, before the early
+  // return, so a later queued write reads it and sends no chunk. Without the flag
+  // a queued write runs after the terminal kill and calls `sendInput` on the
+  // closed transport.
+  let channelTerminated = false;
   let writeErrorReported = false;
   const endOnWriteError = (): void => {
+    channelTerminated = true;
     if (writeErrorReported) return;
     writeErrorReported = true;
     options?.onWriteError?.(DAYTONA_DUPLEX_WRITE_ERROR_REASON);
@@ -244,9 +251,18 @@ export async function openDaytonaDuplexChannelSession(
       // a rejected chunk, the chunker ends the channel one time through
       // `endOnWriteError` and sends no later chunk. The raw provider error never
       // reaches a sink.
-      writeChain = writeChain.then(() =>
-        sendPtyInputInChunks((chunk) => handle.sendInput(chunk), data, endOnWriteError),
-      );
+      //
+      // A rejected chunk terminalizes the channel and kills the transport. So this
+      // write skips the send when `channelTerminated` is true, and a queued write
+      // never calls `sendInput` on the closed transport.
+      writeChain = writeChain.then(() => {
+        if (channelTerminated) return;
+        return sendPtyInputInChunks(
+          (chunk) => handle.sendInput(chunk),
+          data,
+          endOnWriteError,
+        );
+      });
     },
     async wait(): Promise<{ exitCode: number | null; transportClosed: boolean }> {
       const result = await handle.wait();

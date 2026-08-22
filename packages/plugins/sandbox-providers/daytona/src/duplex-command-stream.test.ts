@@ -560,6 +560,55 @@ describe("openDaytonaDuplexChannelSession", () => {
     expect(writeErrors).toEqual(["write_error"]);
     expect(killed).toBe(1);
   });
+
+  it("does not send a queued write after a first-send rejection terminalizes the channel", async () => {
+    // Two writes queue on the chain. The launch wrapper write succeeds, then the
+    // first frame write rejects and terminalizes the channel. The second queued
+    // write must not reach `sendInput`, so no write runs on the closed transport.
+    const sends: string[] = [];
+    let killed = 0;
+    const handle: DaytonaPtyHandle = {
+      async waitForConnection(): Promise<void> {},
+      async sendInput(data: string | Uint8Array): Promise<void> {
+        const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+        sends.push(text);
+        // The launch wrapper write (the first send) succeeds. The first frame
+        // write (the second send) rejects and terminalizes the channel.
+        if (sends.length === 1) return;
+        throw new Error("broken");
+      },
+      wait(): Promise<{ exitCode?: number; error?: string }> {
+        return new Promise(() => {});
+      },
+      async kill(): Promise<void> {
+        killed += 1;
+      },
+      async disconnect(): Promise<void> {},
+    };
+    const process: DaytonaPtyProcess = {
+      async createPty(): Promise<DaytonaPtyHandle> {
+        return handle;
+      },
+    };
+    const writeErrors: string[] = [];
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY, {
+      onWriteError: (reason) => writeErrors.push(reason),
+    });
+
+    session.write("first\n");
+    session.write("second\n");
+    // Let the write chain settle both queued writes.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The channel terminalized one time on the first frame write. The second
+    // queued write sent no chunk, so exactly two sends ran: the launch wrapper and
+    // the first frame write. The second frame never reached the transport.
+    expect(writeErrors).toEqual(["write_error"]);
+    expect(killed).toBe(1);
+    expect(sends).toHaveLength(2);
+    expect(sends.some((text) => text.includes("second"))).toBe(false);
+  });
 });
 
 describe("createDaytonaDuplexChannelSessionOpener", () => {
