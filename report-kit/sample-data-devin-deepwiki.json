@@ -1,0 +1,61 @@
+{
+  "title": "Researcher: Paid Devin MCP for Private-Repo DeepWiki Coverage",
+  "subtitle": "Live synthesis · 2026-08-04 · Sources: 6 search results, 4 primary pages",
+  "generatedAt": "2026-08-04T00:20:00.000Z",
+  "version": "1.0.0",
+  "metrics": [
+    { "label": "Sources", "value": "6", "status": "healthy", "detail": "search results" },
+    { "label": "Private-repo coverage", "value": "Devin MCP only", "status": "healthy" },
+    { "label": "Free public coverage", "value": "DeepWiki MCP", "status": "healthy" },
+    { "label": "Schema validation", "value": "draft-07", "status": "healthy", "detail": "render-kits OK" }
+  ],
+  "sections": [
+    {
+      "title": "Coverage Summary",
+      "type": "table",
+      "description": "Devin MCP vs DeepWiki MCP — public vs private repo coverage",
+      "headers": ["Capability", "Devin MCP", "DeepWiki MCP"],
+      "rows": [
+        ["Public repos", { "value": "Yes", "status": "healthy" }, { "value": "Yes (free)", "status": "healthy" }],
+        ["Private repos", { "value": "Yes (paid Devin account)", "status": "healthy" }, { "value": "No (Devin account req. for authed)", "status": "warning" }],
+        ["Authentication", { "value": "API key (cog_ prefix)", "status": "healthy" }, { "value": "None (public only)", "status": "unknown" }],
+        ["MCP endpoint", { "value": "https://mcp.devin.ai/mcp", "status": "healthy" }, { "value": "https://mcp.deepwiki.com/mcp", "status": "healthy" }],
+        ["Cost", { "value": "$20–$500/mo + ACU credits", "status": "healthy" }, { "value": "Free", "status": "healthy" }],
+        ["Platform mgmt", { "value": "Sessions, playbooks, knowledge, schedules, integrations", "status": "healthy" }, { "value": "Not available", "status": "unknown" }]
+      ]
+    },
+    {
+      "title": "Findings",
+      "type": "list",
+      "description": "Key findings from live web research (2026-08-04)",
+      "items": [
+        { "label": "Devin MCP", "value": "Authenticated service; public + private repos; platform management tools beyond DeepWiki", "status": "healthy" },
+        { "label": "DeepWiki MCP", "value": "Free remote server; public repos only; 3 tools (ask_question, read_wiki_structure, read_wiki_contents)", "status": "healthy" },
+        { "label": "Devin pricing", "value": "Core $20/mo + $2.25/ACU overages; Teams $80/mo + $40/seat; Enterprise custom (SaaS or VPC, SSO)", "status": "healthy" },
+        { "label": "Open-source alt", "value": "deepwiki-open (github.com/AsyncFuncAI/deepwiki-open) is self-hosted, free, supports private GitHub/GitLab", "status": "healthy" },
+        { "label": "MCP registry", "value": "mcp.deepwiki.com/mcp provides public repos; private repos route through Devin's deepwiki.com authenticated surface", "status": "healthy" }
+      ]
+    },
+    {
+      "title": "Context7 as a complementary tool",
+      "type": "text",
+      "body": "Per MCP.Directory comparison (2026): Context7's Private Docs MCP is a paid hosted remote MCP for private, version-pinned documentation context, source citations, and stale-doc checks. DeepWiki indexes whole repos; Context7 indexes version-specific framework/library docs (React 19, Pydantic v2, Next.js 15). These are complementary, not competing — Devin/DeepWiki for repo understanding, Context7 for framework API docs.\n\nFor the fleet's private-repo code intelligence use case, the decision axis is: cloud-hosted simplicity (Devin MCP Pro $20/mo, code content sent to Cognition) vs local-first sovereignty (deepwiki-open self-hosted on Aegis, code never leaves infra, no ACU metering, but requires MCP wrapper + maintenance)."
+    },
+    {
+      "title": "Recommendation",
+      "type": "text",
+      "body": "Two viable paths confirmed by live research:\n1. Devin MCP Pro ($20/mo): fastest path to private-repo DeepWiki with MCP integration; code content sent to Cognition's cloud — a partial counter-signal to the fleet's local-first architecture principle (memory holographic fact #0.5: Jack prefers research-first execution and local-first infra where possible).\n2. deepwiki-open (self-hosted on Aegis): architecturally aligned (local-first, zero-cost, zero-cloud-dependency); requires ~1-2h setup and a custom MCP wrapper to expose the same tool surface (ask_question, read_wiki_structure, read_wiki_contents) that fleet agents expect.\nA hybrid is viable: Devin MCP for initial evaluation, migrate to deepwiki-open if usage justifies the infra investment. No decision required in this heartbeat — this is a research deliverable only."
+    }
+  ],
+  "manifest": {
+    "generatedBy": "Researcher (hermes_local) · Paperclip Agent 785cac12",
+    "source": "Web search synthesis · 2026-08-04 · devin.ai/pricing, docs.devin.ai, cognition.com/blog, mcp.directory, deepwiki.com/private-repo",
+    "checksum": "research-synth-20260804-001",
+    "counts": { "Sources": "6", "Pages": "4" }
+  },
+  "guardrail": {
+    "version": "1.0.0",
+    "environment": "Aegis · macOS 26.4 · Researcher heartbeat",
+    "notes": "Synthesized from live web search (Brave backend). Verified report-kit template renders this contract. Not an endorsement."
+  }
+}
