@@ -750,13 +750,15 @@ export function Costs() {
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
-                                {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) ? (
+                                {(row.apiRunCount > 0 || row.subscriptionRunCount > 0 || row.creditRunCount > 0 || row.otherRunCount > 0) ? (
                                   <div className="text-xs text-muted-foreground">
                                     {row.apiRunCount > 0 ? `${row.apiRunCount} api` : "0 api"}
                                     {" · "}
                                     {row.subscriptionRunCount > 0
                                       ? `${row.subscriptionRunCount} subscription`
                                       : "0 subscription"}
+                                    {row.creditRunCount > 0 ? ` · ${row.creditRunCount} credits` : ""}
+                                    {row.otherRunCount > 0 ? ` · ${row.otherRunCount} other` : ""}
                                   </div>
                                 ) : null}
                               </div>

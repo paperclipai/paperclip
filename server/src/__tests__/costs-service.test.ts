@@ -551,6 +551,176 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
+  it("counts credits-billed runs in creditRunCount without inflating apiRunCount/subscriptionRunCount", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Credits Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "completed",
+      startedAt: new Date("2026-05-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-05-01T00:01:00.000Z"),
+    });
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: runId,
+        provider: "openrouter",
+        biller: "openrouter",
+        billingType: "credits",
+        model: "gpt-5",
+        inputTokens: 1_000,
+        cachedInputTokens: 0,
+        outputTokens: 100,
+        costCents: 50,
+        occurredAt: new Date("2026-05-01T00:00:30.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-05-01T00:00:00.000Z"),
+      to: new Date("2026-05-01T23:59:59.999Z"),
+    };
+
+    const [byAgentRow] = await costs.byAgent(companyId, range);
+    const [byProviderRow] = await costs.byProvider(companyId, range);
+    const [byBillerRow] = await costs.byBiller(companyId, range);
+
+    expect(byAgentRow?.creditRunCount).toBe(1);
+    expect(byAgentRow?.apiRunCount).toBe(0);
+    expect(byAgentRow?.subscriptionRunCount).toBe(0);
+
+    expect(byProviderRow?.creditRunCount).toBe(1);
+    expect(byProviderRow?.apiRunCount).toBe(0);
+    expect(byProviderRow?.subscriptionRunCount).toBe(0);
+
+    expect(byBillerRow?.creditRunCount).toBe(1);
+    expect(byBillerRow?.apiRunCount).toBe(0);
+    expect(byBillerRow?.subscriptionRunCount).toBe(0);
+  });
+
+  it("counts fixed/unknown-billed runs in otherRunCount", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const fixedRunId = randomUUID();
+    const unknownRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Other Billing Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: fixedRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-05-02T00:00:00.000Z"),
+        finishedAt: new Date("2026-05-02T00:01:00.000Z"),
+      },
+      {
+        id: unknownRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-05-02T00:05:00.000Z"),
+        finishedAt: new Date("2026-05-02T00:06:00.000Z"),
+      },
+    ]);
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: fixedRunId,
+        provider: "custom",
+        biller: "custom",
+        billingType: "fixed",
+        model: "custom-model",
+        inputTokens: 500,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        costCents: 25,
+        occurredAt: new Date("2026-05-02T00:00:30.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: unknownRunId,
+        provider: "custom",
+        biller: "custom",
+        billingType: "unknown",
+        model: "custom-model",
+        inputTokens: 500,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        costCents: 25,
+        occurredAt: new Date("2026-05-02T00:05:30.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-05-02T00:00:00.000Z"),
+      to: new Date("2026-05-02T23:59:59.999Z"),
+    };
+
+    const [byAgentRow] = await costs.byAgent(companyId, range);
+    const byProviderRows = await costs.byProvider(companyId, range);
+    const [byBillerRow] = await costs.byBiller(companyId, range);
+
+    // both fixed and unknown rows share provider/biller/model but differ by billingType,
+    // so byProvider groups them into two rows; otherRunCount should be 1 on each.
+    expect(byAgentRow?.otherRunCount).toBe(2);
+    expect(byAgentRow?.apiRunCount).toBe(0);
+    expect(byAgentRow?.subscriptionRunCount).toBe(0);
+    expect(byAgentRow?.creditRunCount).toBe(0);
+
+    expect(byProviderRows).toHaveLength(2);
+    for (const row of byProviderRows) {
+      expect(row.otherRunCount).toBe(1);
+    }
+
+    expect(byBillerRow?.otherRunCount).toBe(2);
+  });
+
   it("aggregates issue costs across recursive descendants only", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
