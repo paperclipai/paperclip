@@ -89,6 +89,11 @@ function issueTerminalTimestamp(issue: {
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+// A shared session is archived on issue terminality alone, without the delivery
+// gates, because it owns no branch or directory to have undelivered work in.
+// Recording that separately keeps the two archive routes distinguishable after
+// the fact instead of collapsing them into one indistinguishable reason.
+export const ISSUE_TERMINAL_SHARED_SESSION_CLEANUP_REASON = "issue_terminal_shared_session";
 
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
@@ -1351,10 +1356,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .limit(100);
   }
 
-  async function assessDelivery(
-    workspace: ExecutionWorkspaceRow,
-    git: ExecutionWorkspaceCloseGitReadiness | null,
-  ) {
+  // The issue-tree half of the assessment: which issues this workspace serves,
+  // whether they are all terminal, and when the last of them became terminal.
+  // It reads no git state, so it is the whole assessment for a workspace that
+  // owns no git state of its own.
+  async function assessIssueTreeTerminality(workspace: ExecutionWorkspaceRow) {
     const issueTree = await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
     const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
@@ -1370,6 +1376,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         cooldownAnchor = terminalAt;
       }
     }
+    return { sourceIssueTerminal, subtreeTerminal, cooldownAnchor };
+  }
+
+  async function assessDelivery(
+    workspace: ExecutionWorkspaceRow,
+    git: ExecutionWorkspaceCloseGitReadiness | null,
+  ) {
+    const { sourceIssueTerminal, subtreeTerminal, cooldownAnchor } =
+      await assessIssueTreeTerminality(workspace);
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
     const workspaceHeadSha = git?.repoRoot && git.workspacePath
@@ -1708,10 +1723,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
       await opts.beforeTerminalWorkspaceCleanup?.(workspace);
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      // Scope the service teardown to what this row owns. stopRuntimeServices
+      // matches by cwd prefix as well as by workspace id, and a shared session's
+      // cwd is the project checkout that every other session for that project also
+      // points at -- 526 unclosed rows share a single directory on this deployment.
+      // Passing that cwd would stop a live neighbour's dev server as a side effect
+      // of archiving an unrelated terminal session. A shared session owns only the
+      // services bound to its own id; services it merely inherits from the project
+      // workspace are scoped to the project workspace and must outlive it.
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: workspace.id,
-        workspaceCwd: workspace.cwd,
+        workspaceCwd: workspace.mode === "shared_workspace" ? null : workspace.cwd,
       });
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
@@ -2509,6 +2532,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           checked: 0,
           eligible: 0,
           archived: 0,
+          archivedSharedSession: 0,
           cleanupFailed: 0,
           skippedActiveRun: 0,
           skippedNonTerminalTree: 0,
@@ -2573,6 +2597,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         checked: candidates.length,
         eligible: 0,
         archived: 0,
+        // Of `archived`, how many were shared sessions. The two routes reach the
+        // archive on different evidence, so one counter cannot show whether the
+        // delivery-gated route still works once the shared route starts firing.
+        archivedSharedSession: 0,
         cleanupFailed: 0,
         skippedActiveRun: 0,
         skippedNonTerminalTree: 0,
@@ -2585,12 +2613,48 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        // A shared_workspace row is a session record pointing at project workspace
+        // infrastructure it does not own: no per-issue branch, no per-issue
+        // directory, no exclusive claim on the checkout. The interactive close path
+        // already says so in as many words -- "Archiving it only removes the session
+        // record" -- and treats an open linked issue as a warning there rather than
+        // a blocker.
+        //
+        // The git gates below ask a different model's question: would archiving
+        // destroy unmerged work in a worktree this row owns? For a shared session
+        // that is not just false, it is unanswerable. branch_name and base_ref are
+        // null, so isMergedIntoBase never resolves and no merged PR can match the
+        // branch; deliveryState is therefore pinned at "unknown" and fails the merge
+        // check on every sweep. The dirty check reads a tree whose dirt belongs to
+        // whatever else is using that checkout. So a shared session is rejected
+        // forever, by a gate that can only ever reject it.
+        //
+        // That is why this reaper has archived zero rows: shared_workspace is
+        // 2,616 of the 2,626 rows this deployment has ever created.
+        const sharedSession = workspace.mode === "shared_workspace";
+        // Skip the git inspection entirely for a shared session rather than running
+        // it and discarding the answer. `git status --porcelain -uall` over a large
+        // shared checkout is the expensive part of a sweep tick, and assessDelivery
+        // would additionally resolve pull request state over the network for a
+        // comparison that cannot match.
+        const { git, statusInspectionSucceeded } = sharedSession
+          ? { git: null, statusInspectionSucceeded: true }
+          : await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
           continue;
         }
-        const assessment = await assessDelivery(workspace, git);
+        const assessment = sharedSession
+          ? {
+            ...await assessIssueTreeTerminality(workspace),
+            // Not "unknown" -- these are not applicable to a session record. A
+            // shared session has no delivery to assess and no tree of its own to
+            // be dirty, and the archive below reads neither.
+            deliveryState: null,
+            workspaceDirty: false,
+            workspaceHeadSha: null,
+          }
+          : await assessDelivery(workspace, git);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
         );
@@ -2610,16 +2674,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
-          result.skippedUndelivered += 1;
-          continue;
-        }
-        if (
-          assessment.deliveryState !== "merged_via_pr"
-          && assessment.deliveryState !== "merged_by_ancestry"
-        ) {
-          result.skippedUndelivered += 1;
-          continue;
+        // Delivery gates apply only to a workspace that owns the tree they read.
+        // A shared session skips them for the reasons above; every other gate --
+        // terminal subtree, cooldown, reopen fence, active run, and the full
+        // re-check inside the archive transaction -- still applies to it.
+        if (!sharedSession) {
+          if (assessment.workspaceDirty) {
+            result.skippedUndelivered += 1;
+            continue;
+          }
+          if (
+            assessment.deliveryState !== "merged_via_pr"
+            && assessment.deliveryState !== "merged_by_ancestry"
+          ) {
+            result.skippedUndelivered += 1;
+            continue;
+          }
         }
         // Hold the archive during the cooldown window. The anchor is the most
         // recent terminal timestamp across the issue tree. A person can reopen
@@ -2718,7 +2788,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               status: "archived",
               closedAt,
               cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
-              cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+              cleanupReason: sharedSession
+                ? ISSUE_TERMINAL_SHARED_SESSION_CLEANUP_REASON
+                : ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
               metadata: archivedMetadata,
               updatedAt: closedAt,
             })
@@ -2810,8 +2882,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           details: {
             sourceIssueId: archived.sourceIssueId,
             deliveryState: assessment.deliveryState,
+            sharedSession,
             cleanupEligibleAt: archived.cleanupEligibleAt?.toISOString() ?? null,
-            cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+            cleanupReason: archived.cleanupReason,
           },
         });
 
@@ -2822,7 +2895,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration);
           if (cleanup.skippedReopened) result.skippedReopened += 1;
           else if (!cleanup.cleaned) result.cleanupFailed += 1;
-          else result.archived += 1;
+          else {
+            result.archived += 1;
+            if (sharedSession) result.archivedSharedSession += 1;
+          }
         } catch (error) {
           result.cleanupFailed += 1;
           const failure = error instanceof Error ? error.message : String(error);

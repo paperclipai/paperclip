@@ -4014,6 +4014,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectId: string | null;
     projectWorkspaceId: string | null;
     sourceIssueId: string | null;
+    mode?: string | null;
     metadata?: Record<string, unknown> | null;
   };
   projectWorkspace?: {
@@ -4031,6 +4032,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
+  // Does this row own the directory it points at, or merely reference one? A
+  // shared_workspace session is a session record over a project checkout that
+  // many sessions share. It owns nothing on disk, which decides both whether
+  // cleanup may remove the path and whether cleanup is complete without doing so.
+  const ownsItsDirectory = input.workspace.mode !== "shared_workspace";
   const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
     ? await resolveGitRepoRootForWorkspaceCleanup(
       workspacePath,
@@ -4192,7 +4198,19 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           projectWorkspaceCwd.startsWith(`${resolvedWorkspacePath}${path.sep}`)
         )
       : false;
-    if (containsProjectWorkspace) {
+    // Deleting a shared session's directory destroys the project checkout and
+    // every sibling session's work along with it.
+    //
+    // The createdByRuntime flag above happens to be false on every shared row
+    // today, so this branch is currently unreachable for them -- but that is a
+    // property of the data, not an invariant, and the containsProjectWorkspace
+    // guard below cannot stand in for it: it resolves to false whenever
+    // projectWorkspaceId is null, which is the case for a large share of these
+    // rows. Make the mode itself decide, so ownership is checked rather than
+    // inferred from a flag that something else sets.
+    if (!ownsItsDirectory) {
+      warnings.push(`Refusing to remove path "${workspacePath}" because a shared workspace session does not own its directory.`);
+    } else if (containsProjectWorkspace) {
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
       await input.assertSafeToCleanup?.();
@@ -4216,7 +4234,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // "Cleaned" means this row's disk resources are reclaimed. A shared session has
+  // none, so it is clean the moment it closes. Measuring it by whether the path is
+  // gone would mark every shared session cleanup_failed forever, because the path
+  // is the project checkout and it is supposed to still be there.
   const cleaned =
+    !ownsItsDirectory ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 

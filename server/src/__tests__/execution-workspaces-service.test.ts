@@ -43,6 +43,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import * as workspaceRuntime from "../services/workspace-runtime.ts";
 import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
 
 const execFileAsync = promisify(execFile);
@@ -1934,6 +1935,189 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
     ]));
   });
+
+  // Seeds the shape this deployment actually runs: a shared session pointing at a
+  // project checkout it does not own, with no branch and no base ref, and a dirty
+  // working tree owned by whatever else is using that checkout.
+  async function seedSharedSessionOnTerminalIssue(options: { issueStatus?: "done" | "todo" } = {}) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const sharedCheckout = await createTempRepo();
+    tempDirs.add(sharedCheckout);
+    // Dirt that belongs to other work in the shared checkout, not to this session.
+    await fs.writeFile(path.join(sharedCheckout, "someone-elses-wip.txt"), "wip\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared sessions",
+      status: "in_progress",
+      executionWorkspacePolicy: { enabled: true },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: sharedCheckout,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared session",
+      status: "active",
+      providerType: "local_fs",
+      cwd: sharedCheckout,
+      // The defining shape: no branch of its own, no base ref to compare against.
+      branchName: null,
+      baseRef: null,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      title: "Shared session source issue",
+      status: options.issueStatus ?? "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    return { companyId, projectId, projectWorkspaceId, executionWorkspaceId, sourceIssueId, sharedCheckout };
+  }
+
+  it("archives a shared session on a terminal issue even though it can never satisfy the delivery gate", async () => {
+    const seeded = await seedSharedSessionOnTerminalIssue();
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    const row = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]);
+
+    expect(sweep.archived).toBe(1);
+    expect(sweep.archivedSharedSession).toBe(1);
+    expect(sweep.skippedUndelivered).toBe(0);
+    expect(row).toMatchObject({
+      status: "archived",
+      cleanupReason: "issue_terminal_shared_session",
+    });
+    expect(row?.closedAt).toBeInstanceOf(Date);
+    expect(row?.cleanupEligibleAt).toBeInstanceOf(Date);
+  }, 20_000);
+
+  it("leaves the shared checkout on disk when it archives a shared session", async () => {
+    const seeded = await seedSharedSessionOnTerminalIssue();
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    // The directory is the project checkout. Archiving the session record must not
+    // reclaim it, and "cleaned" must still be true -- measuring cleanliness by the
+    // path being gone would park every shared session in cleanup_failed forever.
+    await expect(fs.stat(seeded.sharedCheckout)).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(seeded.sharedCheckout, "someone-elses-wip.txt")),
+    ).resolves.toBeTruthy();
+    expect(sweep.cleanupFailed).toBe(0);
+    expect(sweep.archived).toBe(1);
+
+    const status = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]?.status);
+    expect(status).toBe("archived");
+  }, 20_000);
+
+  it("does not scope a shared session's service teardown by the shared checkout path", async () => {
+    const seeded = await seedSharedSessionOnTerminalIssue();
+    const teardownCalls: Array<{ executionWorkspaceId: string; workspaceCwd?: string | null }> = [];
+    const teardownSpy = vi
+      .spyOn(workspaceRuntime, "stopRuntimeServicesForExecutionWorkspace")
+      .mockImplementation(async (input) => {
+        teardownCalls.push({
+          executionWorkspaceId: input.executionWorkspaceId,
+          workspaceCwd: input.workspaceCwd,
+        });
+      });
+
+    try {
+      await svc.sweepTerminalWorkspaces();
+    } finally {
+      teardownSpy.mockRestore();
+    }
+
+    // stopRuntimeServicesForExecutionWorkspace matches live service records by cwd
+    // prefix as well as by workspace id. A shared session's cwd is the project
+    // checkout every sibling session also points at, so passing it would kill a
+    // live neighbour's dev server as a side effect of archiving this session.
+    expect(teardownCalls).toEqual([
+      { executionWorkspaceId: seeded.executionWorkspaceId, workspaceCwd: null },
+    ]);
+  }, 20_000);
+
+  it("refuses to delete a shared session's directory even when it is flagged runtime-created", async () => {
+    const seeded = await seedSharedSessionOnTerminalIssue();
+    // Detach the project workspace and flag the row runtime-created. This is the
+    // one combination that reaches the local_fs removal branch: createdByRuntime
+    // opens it, and with no projectWorkspaceId the containsProjectWorkspace guard
+    // resolves to false and stops guarding. No shared row carries this flag today,
+    // but nothing in the schema prevents one, and the directory underneath is a
+    // real checkout shared by every other session for that project.
+    await db
+      .update(executionWorkspaces)
+      .set({ projectWorkspaceId: null, metadata: { createdByRuntime: true } })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    await svc.sweepTerminalWorkspaces();
+
+    await expect(fs.stat(seeded.sharedCheckout)).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(seeded.sharedCheckout, "someone-elses-wip.txt")),
+    ).resolves.toBeTruthy();
+  }, 20_000);
+
+  it("still skips a shared session whose issue is not terminal", async () => {
+    const seeded = await seedSharedSessionOnTerminalIssue({ issueStatus: "todo" });
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    expect(sweep.archived).toBe(0);
+    expect(sweep.archivedSharedSession).toBe(0);
+    expect(sweep.skippedNonTerminalTree).toBe(1);
+
+    const status = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]?.status);
+    expect(status).toBe("active");
+  }, 20_000);
 
   it("clears matching environment selections transactionally without touching other workspaces", async () => {
     const companyId = randomUUID();
