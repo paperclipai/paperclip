@@ -107,6 +107,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { startProcessMemoryMonitor } from "./services/process-memory-monitor.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -803,6 +804,8 @@ export async function startServer(): Promise<StartedServer> {
     managedPluginAutoInstall,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  let stopProcessMemoryMonitor: (() => void) | null = null;
+  server.once("close", () => stopProcessMemoryMonitor?.());
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -1599,6 +1602,7 @@ export async function startServer(): Promise<StartedServer> {
 
     server.once("error", onError);
     server.listen(listenPort, config.host, () => {
+      stopProcessMemoryMonitor = startProcessMemoryMonitor();
       server.off("error", onError);
       logger.info(`Server listening on ${config.host}:${listenPort}`);
       void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {

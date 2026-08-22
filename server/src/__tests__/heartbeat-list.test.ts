@@ -5,7 +5,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { boundHeartbeatRunEventPayloadForStorage, heartbeatService } from "../services/heartbeat.ts";
+import {
+  HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
+  HEARTBEAT_RUN_LIST_MAX_LIMIT,
+  boundHeartbeatRunEventPayloadForStorage,
+  boundHeartbeatRunListLimit,
+  heartbeatService,
+} from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -99,6 +105,13 @@ describeEmbeddedPostgres("heartbeat list", () => {
         delete (heartbeatRuns as Record<string, unknown>).processGroupId;
       }
     }
+  });
+
+  it("applies a default and maximum list bound", () => {
+    expect(boundHeartbeatRunListLimit()).toBe(HEARTBEAT_RUN_LIST_DEFAULT_LIMIT);
+    expect(boundHeartbeatRunListLimit(Number.NaN)).toBe(HEARTBEAT_RUN_LIST_DEFAULT_LIMIT);
+    expect(boundHeartbeatRunListLimit(0)).toBe(1);
+    expect(boundHeartbeatRunListLimit(50_000)).toBe(HEARTBEAT_RUN_LIST_MAX_LIMIT);
   });
 
   it("returns small result json payloads unchanged from getRun", async () => {

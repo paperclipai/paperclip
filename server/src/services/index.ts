@@ -97,7 +97,13 @@ export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
-export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
+export {
+  HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
+  HEARTBEAT_RUN_LIST_MAX_LIMIT,
+  boundHeartbeatRunListLimit,
+  heartbeatService,
+  resolveHeartbeatSchedulingSuppression,
+} from "./heartbeat.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
