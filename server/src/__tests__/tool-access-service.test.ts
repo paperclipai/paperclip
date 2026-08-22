@@ -7007,6 +7007,95 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ targetType: "agent", targetId: agent.id }),
     ]));
   });
+
+  it("reports the missing credential header when only credentialSecretRefs are configured", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `App key ${randomUUID()}`,
+      key: `app.key.${randomUUID()}`,
+      value: "app-key-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Header-less fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      credentialSecretRefs: [{
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: "credentials.authorization",
+        required: true,
+      }],
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: (name: string) => name.toLowerCase() === "www-authenticate" ? "Bearer realm=\"app\"" : null },
+      text: async () => JSON.stringify({ error: "unauthorized" }),
+      json: async () => ({}),
+    } as unknown as Response);
+
+    await expect(service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" }))
+      .rejects.toMatchObject({
+        status: 502,
+        details: expect.objectContaining({ code: "credential_header_missing" }),
+      });
+
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(row!.healthStatus).toBe("error");
+    expect(row!.healthMessage).toContain("no credential header");
+  });
+
+  it("still reports a sign-in challenge when the connection places a credential header", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `App key ${randomUUID()}`,
+      key: `app.key.${randomUUID()}`,
+      value: "app-key-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Header fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+      enabled: true,
+      status: "active",
+      // A distinct config path keeps this fixture independent of the duplicate
+      // binding collision that #11610 reports for a shared path.
+      credentialSecretRefs: [{
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: "credentials.extra",
+        required: true,
+      }],
+      credentialRefs: [{
+        name: "authorization",
+        secretId: secret.id,
+        version: "latest",
+        placement: "header",
+        key: "Authorization",
+        prefix: "Bearer ",
+      }],
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: (name: string) => name.toLowerCase() === "www-authenticate" ? "Bearer realm=\"app\"" : null },
+      text: async () => JSON.stringify({ error: "unauthorized" }),
+      json: async () => ({}),
+    } as unknown as Response);
+
+    await expect(service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" }))
+      .rejects.toMatchObject({
+        status: 502,
+        details: expect.objectContaining({ code: "oauth_challenge" }),
+      });
+  });
+
 });
 
 describe("classifyRisk", () => {
