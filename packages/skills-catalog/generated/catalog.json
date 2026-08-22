@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-07T20:30:29.973Z",
+  "generatedAt": "2026-08-10T19:26:46.965Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -381,6 +381,40 @@
         }
       ],
       "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+    },
+    {
+      "id": "paperclipai:bundled:software-development:github-actions-maintenance",
+      "key": "paperclipai/bundled/software-development/github-actions-maintenance",
+      "kind": "bundled",
+      "category": "software-development",
+      "slug": "github-actions-maintenance",
+      "name": "github-actions-maintenance",
+      "description": "Audit and update GitHub Actions to current versions. Detect deprecated Node.js runtimes, stale action tags, and known-vulnerable action pins in workflow files. When to use: CI warnings about deprecated Node versions, scheduled action audits, or when opening a repo with workflow files.",
+      "path": "catalog/bundled/software-development/github-actions-maintenance",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer"
+      ],
+      "requires": [],
+      "tags": [
+        "github-actions",
+        "ci-cd",
+        "workflow",
+        "nodejs",
+        "maintenance"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4768,
+          "sha256": "537bb17c52d923b1f09536c3b04698dbb075cc55048f7b7343824d8f5087fa58"
+        }
+      ],
+      "contentHash": "sha256:508b797ce1db32aef2cb74b65c1c76d91d6dcaa125e0b403816c8f4a87acb094"
     },
     {
       "id": "paperclipai:bundled:software-development:github-pr-workflow",
