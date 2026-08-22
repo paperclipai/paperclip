@@ -6110,6 +6110,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (issue.status === "todo") {
+          // A todo card with an unresolved blocker relation is WAITING, not
+          // stranded. Every wake enqueued for it is skipped at the heartbeat
+          // gate as issue_dependencies_blocked, and because a skipped wake is
+          // terminal it never counts as "queued" — so this reconciler re-fired
+          // every tick: 1,440 dead wake rows per card per 6h on three cards
+          // (2026-08-22). Skip here and let the blockers-resolved wake dispatch it.
+          const todoReadiness = await issuesSvc
+            .listDependencyReadiness(issue.companyId, [issue.id])
+            .then((rows) => rows.get(issue.id) ?? null);
+          if (todoReadiness && !todoReadiness.isDependencyReady) {
+            result.skipped += 1;
+            continue;
+          }
+
           if (!latestRun) {
             if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
               result.skipped += 1;

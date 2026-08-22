@@ -406,12 +406,23 @@ export type IssueGenerationAdmissionDecision =
   | { decision: "allow"; remainingInputTokens: number }
   | { decision: "deny"; reason: "aggregate_input_ceiling" | "generation_run_ceiling"; remainingInputTokens: number };
 
+// A run handed less residual than this cannot complete a model turn: the
+// issue-scoped clamp below produced live per-run budgets of 12,016 tokens
+// (configured 200,000) that exhausted on the first turn — 39 claude runs on
+// 2026-08-22 died that way, each one a wake + session + fail for nothing. Below
+// the floor the issue is treated as AT the ceiling so it takes the supersede
+// path instead of starting a doomed run.
+export const MIN_USEFUL_RUN_INPUT_TOKENS = 40_000;
+
 export function decideIssueGenerationAdmission(input: {
   aggregateInputTokens: number;
   priorGenerationRuns: number;
 }): IssueGenerationAdmissionDecision {
   const remainingInputTokens = Math.max(0, HIGH_INPUT_TOKEN_RUN_THRESHOLD - Math.max(0, input.aggregateInputTokens));
-  if (input.aggregateInputTokens >= HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+  if (
+    input.aggregateInputTokens >= HIGH_INPUT_TOKEN_RUN_THRESHOLD ||
+    remainingInputTokens < MIN_USEFUL_RUN_INPUT_TOKENS
+  ) {
     return { decision: "deny", reason: "aggregate_input_ceiling", remainingInputTokens };
   }
   if (input.priorGenerationRuns >= ISSUE_GENERATION_RUN_CEILING) {
@@ -14885,7 +14896,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
       reviewParticipant.agentId === run.agentId;
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isCurrentReviewParticipant) {
+    // A user-actor on-demand wake that names this issue is a deliberate board
+    // decision to run THIS agent on THIS card (judge verdicts, reroutes). It is
+    // not a stale queued run whose owner moved on: 46/46 judge wakes over 48h
+    // died here as "assignee changed" on cards whose assignee never changed
+    // (2026-08-22; TSM-5693 sat 9.9 days in_review behind it).
+    const isExplicitUserWakeForIssue =
+      readNonEmptyString(context.wakeSource) === "on_demand" &&
+      readNonEmptyString(context.triggeredBy) === "user";
+    if (
+      issue.assigneeAgentId !== run.agentId &&
+      !isInteractionWake &&
+      !isCurrentReviewParticipant &&
+      !isExplicitUserWakeForIssue
+    ) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",

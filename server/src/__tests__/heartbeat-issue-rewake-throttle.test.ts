@@ -341,7 +341,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       actorId: agentId,
       agentId,
       runId: progressRunId,
-      action: "issue.comment_added",
+      action: "issue.updated",
       entityType: "issue",
       entityId: issueId,
       createdAt: new Date(Date.now() - 11_000),
@@ -349,6 +349,32 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
     const wake = await assignmentWake(agentId, issueId);
     expect(wake).not.toBeNull();
+  });
+
+  it("throttles a run that only left a comment behind (comment-per-run loop)", async () => {
+    // 2026-08-22: BenchmarkOps posted a no-op comment every run and was re-offered
+    // every ~5s because the comment counted as progress. A comment alone does not
+    // move the issue; three comment-only runs must engage the cooldown.
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    for (const secondsAgo of [70, 40, 10]) {
+      const runId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: secondsAgo });
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(Date.now() - secondsAgo * 1000 - 1_000),
+      });
+    }
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
 
   it("does not count progress on another issue toward the current issue", async () => {

@@ -92,7 +92,12 @@ export const IMMEDIATE_NOOP_LIFECYCLE_WAKE_REASONS: ReadonlySet<string> = new Se
  */
 export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
   "issue.updated",
-  "issue.comment_added",
+  // "issue.comment_added" is deliberately NOT progress. A run that only
+  // comments has not moved the issue (Run Disposition Law), and counting it
+  // let a comment-per-run loop reset the streak forever: BenchmarkOps posted a
+  // "no-op" comment every run and was re-offered every ~5s — 1,680 runs/hr,
+  // 5,989 comments on one card (2026-08-22). Comments still count as NEW INPUT
+  // below, so a human or another agent commenting after the run wakes it.
   "issue.created",
   "issue.child_created",
   "issue.assigned",
@@ -122,6 +127,7 @@ export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
  */
 export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   ...ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+  "issue.comment_added",
   "issue.thread_interaction_accepted",
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",

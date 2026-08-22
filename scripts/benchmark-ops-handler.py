@@ -60,9 +60,14 @@ def main() -> int:
     operation = OP.search(text)
     run = RUN.search(text)
     if not operation or not run:
-        comment(issue_id, "## BenchmarkOps — no-op\n\n"
+        # A card without a directive can never be completed by this handler. It
+        # must leave in_progress, or the platform re-offers it as
+        # issue_continuation_needed and every run posts another comment
+        # (measured: 1,680 runs/hr and 5,989 comments on one card, 2026-08-22).
+        comment(issue_id, "## BenchmarkOps — blocked: no directive\n\n"
                 "Requires `benchmark-op: report|aggregate|package` and a safe "
-                "`benchmark-run-id: <run-id>` directive. No model was invoked.")
+                "`benchmark-run-id: <run-id>` directive. No model was invoked. "
+                "Add the directive to the card and return it to todo.", "blocked")
         return 0
     run_id = run.group(1)
     root = Path(__file__).resolve().parent.parent
