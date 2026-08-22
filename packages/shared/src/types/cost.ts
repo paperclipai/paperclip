@@ -13,6 +13,7 @@ export interface CostEvent {
   biller: string;
   billingType: BillingType;
   costStatus: CostStatus;
+  pricingCatalogVersion: string | null;
   model: string;
   inputTokens: number;
   cachedInputTokens: number;

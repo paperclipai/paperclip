@@ -5,6 +5,7 @@ import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, proj
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { classifyCost } from "./pricing-catalog.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -64,6 +65,17 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw unprocessable("Agent does not belong to company");
       }
 
+      const attribution = classifyCost({
+        provider: data.provider,
+        biller: data.biller,
+        model: data.model,
+        inputTokens: data.inputTokens ?? 0,
+        cachedInputTokens: data.cachedInputTokens ?? 0,
+        outputTokens: data.outputTokens ?? 0,
+        costCents: data.costCents,
+        billingType: data.billingType,
+        costStatus: data.costStatus,
+      });
       const event = await db
         .insert(costEvents)
         .values({
@@ -72,6 +84,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           biller: data.biller ?? data.provider,
           billingType: data.billingType ?? "unknown",
           cachedInputTokens: data.cachedInputTokens ?? 0,
+          costStatus: attribution.costStatus,
+          costCents: attribution.costCents,
+          pricingCatalogVersion: attribution.pricingCatalogVersion,
         })
         .returning()
         .then((rows) => rows[0]);
