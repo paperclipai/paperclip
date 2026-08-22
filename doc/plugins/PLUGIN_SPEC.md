@@ -1654,6 +1654,8 @@ The test harness provides:
 - ability to simulate `executeTool` calls as if coming from an agent run
 - in-memory state and entity stores for assertions
 - configurable capability sets for testing capability denial paths
+- concurrent event delivery that matches the host event bus, so that read-modify-write races against `ctx.state` reproduce in tests instead of being hidden by a strictly serialized harness
+- host-call fault injection, so that a test can make one `ctx` call throw before its effect, throw after its effect, or park while another call proceeds
 
 Example usage:
 

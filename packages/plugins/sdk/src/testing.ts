@@ -73,6 +73,39 @@ import type {
   PluginPerformActionContext,
 } from "./protocol.js";
 
+/**
+ * How `emit` dispatches to matching handlers. See `TestHarnessOptions.eventDispatch`.
+ */
+export type TestHarnessEventDispatch = "sequential" | "concurrent";
+
+/** One host call intercepted through `ctx`. See `TestHarnessOptions.hostCallInterceptor`. */
+export interface TestHarnessHostCall {
+  /** Dotted path of the intercepted host call, e.g. `"issues.update"`. */
+  path: string;
+  args: unknown[];
+  /** Monotonic sequence number across every host call on this harness. */
+  seq: number;
+}
+
+/**
+ * Wraps a host call. Call `proceed()` to run the real in-memory implementation.
+ * Throwing without calling it models a host call that failed before its effect
+ * landed; awaiting it and then throwing models an effect that landed but was
+ * never acknowledged.
+ */
+export type TestHarnessHostCallInterceptor = (
+  call: TestHarnessHostCall,
+  proceed: () => Promise<unknown>,
+) => Promise<unknown>;
+
+/** Handle returned by `harness.faults.parkOn(...)`. */
+export interface TestHarnessParkHandle {
+  /** Resolves once the parked call has actually been entered. */
+  reached: Promise<void>;
+  /** Let the parked call proceed. */
+  release: () => void;
+}
+
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
   manifest: PaperclipPluginManifestV1;
@@ -80,6 +113,28 @@ export interface TestHarnessOptions {
   capabilities?: PluginCapability[];
   /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
+  /**
+   * How `emit` dispatches to matching handlers.
+   *
+   * - `"sequential"` (default) awaits each handler before starting the next.
+   * - `"concurrent"` starts every matching handler and awaits them together,
+   *   mirroring the production event bus, which fans out with `Promise.all`
+   *   and whose worker bridge dispatches `onEvent` without awaiting it. Under
+   *   this mode handlers interleave at every `await`, so read-modify-write
+   *   races against `ctx.state` are reproducible in tests.
+   */
+  eventDispatch?: TestHarnessEventDispatch;
+  /**
+   * Intercept the asynchronous host calls made through `ctx` (any
+   * `ctx.<namespace>.<method>(...)` declared `async`). Runs outermost around
+   * the queued-fault layer registered via `harness.faults`.
+   *
+   * The synchronous parts of `ctx` are not intercepted, because interception
+   * is promise-based and those callers rely on a synchronous return value.
+   * `ctx.events.on`, for example, returns an unsubscribe callback directly.
+   * Such calls are still recorded in `harness.hostCalls`.
+   */
+  hostCallInterceptor?: TestHarnessHostCallInterceptor;
 }
 
 export interface TestHarnessLogEntry {
@@ -123,7 +178,21 @@ export interface TestHarness {
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
-  emit(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): Promise<void>;
+  emit(
+    eventType: PluginEventType | `plugin.${string}`,
+    payload: unknown,
+    base?: Partial<PluginEvent>,
+    options?: { dispatch?: TestHarnessEventDispatch },
+  ): Promise<void>;
+  /**
+   * Deliver several events whose handlers interleave with each other, as the
+   * production bus does when two events arrive close together.
+   */
+  emitConcurrent(events: Array<{
+    eventType: PluginEventType | `plugin.${string}`;
+    payload: unknown;
+    base?: Partial<PluginEvent>;
+  }>): Promise<void>;
   /** Execute a previously-registered scheduled job handler. */
   runJob(jobKey: string, partial?: Partial<PluginJobContext>): Promise<void>;
   /** Invoke a `ctx.data.register(...)` handler by key. */
@@ -146,6 +215,19 @@ export interface TestHarness {
   telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
   dbQueries: Array<{ sql: string; params?: unknown[] }>;
   dbExecutes: Array<{ sql: string; params?: unknown[] }>;
+  /** Ordered log of every host call made through `ctx`. */
+  hostCalls: TestHarnessHostCall[];
+  /** Ergonomic fault injection for host calls made through `ctx`. See `TestHarnessOptions.hostCallInterceptor` for the general-purpose escape hatch. */
+  faults: {
+    /** Fail the next matching call to `path`. */
+    throwOn(path: string, error: Error, options?: { when?: (args: unknown[]) => boolean; times?: number }): void;
+    /** Run the real effect for the next matching call, then throw. */
+    throwAfterOn(path: string, error: Error, options?: { when?: (args: unknown[]) => boolean; times?: number }): void;
+    /** Park the next matching call until the returned handle is released. */
+    parkOn(path: string, options?: { when?: (args: unknown[]) => boolean }): TestHarnessParkHandle;
+    /** Drop all queued faults. */
+    clear(): void;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +550,12 @@ function isInCompany<T extends { companyId: string | null | undefined }>(
 ): record is T {
   return Boolean(record && record.companyId === companyId);
 }
+
+/**
+ * Constructor of `async function`, used to tell the asynchronous host calls on
+ * `ctx` apart from its synchronous registration APIs. See `interceptCall`.
+ */
+const ASYNC_FUNCTION_CTOR = Object.getPrototypeOf(async () => {}).constructor as FunctionConstructor;
 
 /**
  * Create an in-memory host harness for plugin worker tests.
@@ -2529,8 +2617,205 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     tracer: NOOP_PLUGIN_TRACER,
   };
 
+  // ---------------------------------------------------------------------------
+  // Host call interception: every function reachable on `ctx` is routed through
+  // `interceptCall` so tests can record calls (`hostCalls`) and inject faults
+  // (`harness.faults`) without the harness hand-enumerating ~30 namespaces.
+  // ---------------------------------------------------------------------------
+
+  const hostCalls: TestHarness["hostCalls"] = [];
+  let hostCallSeq = 0;
+
+  type QueuedFault = {
+    kind: "throw" | "throwAfter" | "park";
+    error?: Error;
+    when?: (args: unknown[]) => boolean;
+    timesRemaining: number;
+    onReached?: () => void;
+    released?: Promise<void>;
+  };
+  const faultsByPath = new Map<string, QueuedFault[]>();
+
+  function queueFault(path: string, fault: QueuedFault) {
+    const queue = faultsByPath.get(path) ?? [];
+    queue.push(fault);
+    faultsByPath.set(path, queue);
+  }
+
+  /** Consume (FIFO, per path) the first queued fault whose `when` accepts `args`, if any. */
+  function takeMatchingFault(path: string, args: unknown[]): QueuedFault | undefined {
+    const queue = faultsByPath.get(path);
+    if (!queue) return undefined;
+    const index = queue.findIndex((fault) => !fault.when || fault.when(args));
+    if (index === -1) return undefined;
+    const fault = queue[index];
+    fault.timesRemaining -= 1;
+    if (fault.timesRemaining <= 0) queue.splice(index, 1);
+    return fault;
+  }
+
+  /**
+   * True if any value reachable from `value` (without crossing arrays) exposes
+   * a function — i.e. `value` is a namespace of host calls (like `ctx.issues`
+   * or `ctx.issues.documents`) rather than a plain data value (like
+   * `ctx.manifest`). Used to decide what the ctx proxy should recurse into.
+   */
+  function isHostNamespace(value: unknown, seen: Set<unknown> = new Set()): boolean {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      const nested = (value as Record<string, unknown>)[key];
+      if (typeof nested === "function") return true;
+      if (isHostNamespace(nested, seen)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Wrap one host method. Every call is logged to `hostCalls` regardless of
+   * whether anything is intercepting it.
+   *
+   * Only `async` methods are ever routed through the fault/interceptor
+   * pipeline, because that pipeline is inherently promise-returning. The
+   * synchronous parts of `ctx` are registration and observation APIs —
+   * `ctx.events.on`, the `register` methods, `ctx.streams.open/emit/close`,
+   * `ctx.logger.*` — not host round trips, and callers depend on their
+   * synchronous return values. `ctx.events.on` in particular returns an
+   * unsubscribe callback that plugin cleanup code invokes directly, so
+   * turning it into a `Promise` would break real plugins. Those methods are
+   * still recorded in `hostCalls`; they are simply never faulted.
+   */
+  function interceptCall(fn: (...args: unknown[]) => unknown, thisArg: unknown, path: string) {
+    const isAsyncHostCall = fn instanceof ASYNC_FUNCTION_CTOR;
+    return (...args: unknown[]) => {
+      const call: TestHarnessHostCall = { path, args, seq: hostCallSeq++ };
+      hostCalls.push(call);
+
+      const fault = isAsyncHostCall ? takeMatchingFault(path, args) : undefined;
+      const userInterceptor = isAsyncHostCall ? options.hostCallInterceptor : undefined;
+      if (!fault && !userInterceptor) {
+        return fn.apply(thisArg, args);
+      }
+
+      const proceed = async (): Promise<unknown> => {
+        if (!fault) return fn.apply(thisArg, args);
+        if (fault.kind === "throw") throw fault.error;
+        if (fault.kind === "throwAfter") {
+          await fn.apply(thisArg, args);
+          throw fault.error;
+        }
+        // fault.kind === "park": announce we've been entered, then wait to be released.
+        fault.onReached?.();
+        await fault.released;
+        return fn.apply(thisArg, args);
+      };
+
+      return userInterceptor ? userInterceptor(call, proceed) : proceed();
+    };
+  }
+
+  /**
+   * Recursively wrap a ctx namespace in a `Proxy` so every function it exposes
+   * — at any depth — is routed through `interceptCall`. Non-function
+   * properties (e.g. `ctx.manifest`, `ctx.db.namespace`) pass through
+   * untouched and keep their identity, since `isHostNamespace` only recurses
+   * into values that actually expose functions.
+   */
+  function wrapNamespace<T extends object>(target: T, path: string): T {
+    const wrapperCache = new Map<string, { source: unknown; wrapped: unknown }>();
+    return new Proxy(target, {
+      get(obj, prop, receiver) {
+        const value = Reflect.get(obj, prop, receiver);
+        if (typeof prop !== "string") return value;
+
+        // Wrappers are memoized so that repeated reads are reference-stable
+        // (`ctx.issues === ctx.issues`, `ctx.issues.update === ctx.issues.update`),
+        // which keeps `toBe`/`vi.spyOn` assertions and the `isHostNamespace`
+        // scan below from being re-done on every property access. The cached
+        // entry records the value it wrapped, so reassigning a method through
+        // the proxy still re-wraps rather than returning a stale wrapper.
+        const cached = wrapperCache.get(prop);
+        if (cached && cached.source === value) return cached.wrapped;
+
+        const childPath = path ? `${path}.${prop}` : prop;
+        if (typeof value === "function") {
+          const wrapped = interceptCall(value as (...args: unknown[]) => unknown, obj, childPath);
+          wrapperCache.set(prop, { source: value, wrapped });
+          return wrapped;
+        }
+        if (isHostNamespace(value)) {
+          const wrapped = wrapNamespace(value as object, childPath);
+          wrapperCache.set(prop, { source: value, wrapped });
+          return wrapped;
+        }
+        // Plain data (e.g. `ctx.manifest`) is passed through live and uncached.
+        return value;
+      },
+    }) as T;
+  }
+
+  const wrappedCtx = wrapNamespace(ctx, "");
+
+  const faults: TestHarness["faults"] = {
+    throwOn(path, error, faultOptions) {
+      queueFault(path, { kind: "throw", error, when: faultOptions?.when, timesRemaining: faultOptions?.times ?? 1 });
+    },
+    throwAfterOn(path, error, faultOptions) {
+      queueFault(path, { kind: "throwAfter", error, when: faultOptions?.when, timesRemaining: faultOptions?.times ?? 1 });
+    },
+    parkOn(path, faultOptions) {
+      let resolveReached!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        resolveReached = resolve;
+      });
+      let resolveReleased!: () => void;
+      const released = new Promise<void>((resolve) => {
+        resolveReleased = resolve;
+      });
+      queueFault(path, {
+        kind: "park",
+        when: faultOptions?.when,
+        timesRemaining: 1,
+        onReached: () => resolveReached(),
+        released,
+      });
+      return { reached, release: () => resolveReleased() };
+    },
+    clear() {
+      faultsByPath.clear();
+    },
+  };
+
+  /** Build a fully-populated event envelope from `emit`/`emitConcurrent` inputs. */
+  function buildEvent(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): PluginEvent {
+    return {
+      eventId: base?.eventId ?? randomUUID(),
+      eventType,
+      companyId: base?.companyId ?? "test-company",
+      occurredAt: base?.occurredAt ?? new Date().toISOString(),
+      actorId: base?.actorId,
+      actorType: base?.actorType,
+      entityId: base?.entityId,
+      entityType: base?.entityType,
+      payload,
+    };
+  }
+
+  /** Registered handlers whose name/filter match `event`, in registration order. */
+  function matchingHandlers(event: PluginEvent): EventRegistration[] {
+    return events.filter((handler) => {
+      const exactMatch = handler.name === event.eventType;
+      const wildcardPluginAll = handler.name === "plugin.*" && String(event.eventType).startsWith("plugin.");
+      const wildcardPluginOne = String(handler.name).endsWith(".*")
+        && String(event.eventType).startsWith(String(handler.name).slice(0, -1));
+      if (!exactMatch && !wildcardPluginAll && !wildcardPluginOne) return false;
+      return allowsEvent(handler.filter, event);
+    });
+  }
+
   const harness: TestHarness = {
-    ctx,
+    ctx: wrappedCtx,
     seed(input) {
       for (const row of input.companies ?? []) companies.set(row.id, row);
       for (const row of input.projects ?? []) projects.set(row.id, row);
@@ -2576,28 +2861,24 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     setConfig(config) {
       currentConfig = { ...config };
     },
-    async emit(eventType, payload, base) {
-      const event: PluginEvent = {
-        eventId: base?.eventId ?? randomUUID(),
-        eventType,
-        companyId: base?.companyId ?? "test-company",
-        occurredAt: base?.occurredAt ?? new Date().toISOString(),
-        actorId: base?.actorId,
-        actorType: base?.actorType,
-        entityId: base?.entityId,
-        entityType: base?.entityType,
-        payload,
-      };
-
-      for (const handler of events) {
-        const exactMatch = handler.name === event.eventType;
-        const wildcardPluginAll = handler.name === "plugin.*" && String(event.eventType).startsWith("plugin.");
-        const wildcardPluginOne = String(handler.name).endsWith(".*")
-          && String(event.eventType).startsWith(String(handler.name).slice(0, -1));
-        if (!exactMatch && !wildcardPluginAll && !wildcardPluginOne) continue;
-        if (!allowsEvent(handler.filter, event)) continue;
-        await handler.fn(event);
+    async emit(eventType, payload, base, callOptions) {
+      const event = buildEvent(eventType, payload, base);
+      const dispatch = callOptions?.dispatch ?? options.eventDispatch ?? "sequential";
+      const handlers = matchingHandlers(event);
+      if (dispatch === "concurrent") {
+        await Promise.all(handlers.map((handler) => handler.fn(event)));
+      } else {
+        for (const handler of handlers) {
+          await handler.fn(event);
+        }
       }
+    },
+    async emitConcurrent(eventInputs) {
+      const dispatches = eventInputs.flatMap(({ eventType, payload, base }) => {
+        const event = buildEvent(eventType, payload, base);
+        return matchingHandlers(event).map((handler) => handler.fn(event));
+      });
+      await Promise.all(dispatches);
     },
     async runJob(jobKey, partial = {}) {
       const handler = jobs.get(jobKey);
@@ -2649,6 +2930,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     telemetry,
     dbQueries,
     dbExecutes,
+    hostCalls,
+    faults,
   };
 
   return harness;
