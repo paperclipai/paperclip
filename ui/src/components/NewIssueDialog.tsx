@@ -37,6 +37,16 @@ import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
@@ -501,6 +511,8 @@ export function NewIssueDialog() {
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [expanded, setExpanded] = useState(false);
+  const [subIssueParentCleared, setSubIssueParentCleared] = useState(false);
+  const [clearSubIssueConfirmOpen, setClearSubIssueConfirmOpen] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
@@ -510,7 +522,7 @@ export function NewIssueDialog() {
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
-  const isSubIssueMode = Boolean(newIssueDefaults.parentId);
+  const isSubIssueMode = Boolean(newIssueDefaults.parentId) && !subIssueParentCleared;
   const parentIssueLabel = newIssueDefaults.parentIdentifier
     ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
   const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
@@ -800,11 +812,15 @@ export function NewIssueDialog() {
   useEffect(() => {
     if (!newIssueOpen) {
       initializationKeyRef.current = null;
+      setSubIssueParentCleared(false);
+      setClearSubIssueConfirmOpen(false);
       return;
     }
     const initializationKey = `${selectedCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
     if (initializationKeyRef.current === initializationKey) return;
     initializationKeyRef.current = initializationKey;
+    setSubIssueParentCleared(false);
+    setClearSubIssueConfirmOpen(false);
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
 
@@ -1080,7 +1096,7 @@ export function NewIssueDialog() {
       workMode,
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
-      ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
+      ...(isSubIssueMode && newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
       ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
@@ -1875,6 +1891,15 @@ export function NewIssueDialog() {
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
                 <span className="shrink-0">Sub-task of</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
+                <button
+                  type="button"
+                  className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
+                  onClick={() => setClearSubIssueConfirmOpen(true)}
+                  aria-label={`Clear sub-task parent ${parentIssueLabel}`}
+                  title="Clear sub-task parent"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
               {newIssueDefaults.parentTitle ? (
                 <div className="pl-5 text-foreground/80 truncate">
@@ -2375,6 +2400,27 @@ export function NewIssueDialog() {
           </div>
         </div>
       </DialogContent>
+      <AlertDialog open={clearSubIssueConfirmOpen} onOpenChange={setClearSubIssueConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear sub-task parent?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This task will be created without {parentIssueLabel} as its parent. Other prefilled fields will stay unchanged.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setSubIssueParentCleared(true);
+                setClearSubIssueConfirmOpen(false);
+              }}
+            >
+              Clear parent
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

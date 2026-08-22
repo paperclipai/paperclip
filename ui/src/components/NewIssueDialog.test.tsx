@@ -224,6 +224,7 @@ vi.mock("@/components/ui/dialog", () => ({
 }));
 
 vi.mock("@/components/ui/button", () => ({
+  buttonVariants: () => "",
   Button: ({ children, onClick, type = "button", ...props }: ComponentProps<"button">) => (
     <button type={type} onClick={onClick} {...props}>{children}</button>
   ),
@@ -412,6 +413,78 @@ describe("NewIssueDialog", () => {
     expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
+  });
+
+  it("confirms before clearing the prefilled sub-task parent", async () => {
+    dialogState.newIssueDefaults = {
+      parentId: "issue-1",
+      parentIdentifier: "PAP-1",
+      parentTitle: "Parent issue",
+      title: "Standalone issue",
+      projectId: "project-1",
+      goalId: "goal-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const clearParentButton = container.querySelector('button[aria-label="Clear sub-task parent PAP-1"]');
+    expect(clearParentButton).not.toBeNull();
+
+    await act(async () => {
+      clearParentButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(document.body.textContent).toContain("Clear sub-task parent?");
+    expect(document.body.textContent).toContain(
+      "This task will be created without PAP-1 as its parent. Other prefilled fields will stay unchanged.",
+    );
+
+    const cancelButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Cancel");
+    expect(cancelButton).not.toBeUndefined();
+    await act(async () => {
+      cancelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Sub-task of");
+    expect(container.textContent).toContain("Create Sub-Task");
+
+    await act(async () => {
+      clearParentButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Clear parent");
+    expect(confirmButton).not.toBeUndefined();
+    await act(async () => {
+      confirmButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Sub-task of");
+    expect(container.textContent).toContain("New task");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Create Task");
+    expect(submitButton).not.toBeUndefined();
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const createPayload = mockIssuesApi.create.mock.calls.at(-1)?.[1];
+    expect(createPayload).not.toHaveProperty("parentId");
+    expect(createPayload).toEqual(expect.objectContaining({
+      title: "Standalone issue",
+      projectId: "project-1",
+      goalId: "goal-1",
+    }));
+
+    act(() => root.unmount());
   });
 
   it("submits parent and goal context for sub-issues", async () => {
@@ -1335,9 +1408,14 @@ describe("NewIssueDialog", () => {
     // The watchdog row is hidden until the menu item is toggled on.
     expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).toBeNull();
 
+    await waitForAssertion(() => {
+      expect(
+        Array.from(container.querySelectorAll("button"))
+          .find((button) => button.textContent?.trim() === "Watchdog"),
+      ).not.toBeUndefined();
+    });
     const watchdogMenuItem = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Watchdog");
-    expect(watchdogMenuItem).not.toBeUndefined();
 
     await act(async () => {
       watchdogMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1378,7 +1456,9 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("Keep it moving");
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Keep it moving");
+    });
 
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Task"));
