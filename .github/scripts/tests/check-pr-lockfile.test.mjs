@@ -17,6 +17,26 @@ test('passes when lockfile changed by refresh bot on correct branch', () => {
   assert.equal(result.passed, true);
 });
 
+// refresh-lockfile.yml opens the heal PR as the commitperclip app so its
+// required checks actually trigger; the gate must let that author through.
+test('passes when lockfile changed by commitperclip app on correct branch', () => {
+  const result = checkLockfile(
+    makeFiles(['pnpm-lock.yaml']),
+    'commitperclip[bot]',
+    'chore/refresh-lockfile'
+  );
+  assert.equal(result.passed, true);
+});
+
+test('fails when lockfile changed by commitperclip app on wrong branch', () => {
+  const result = checkLockfile(
+    makeFiles(['pnpm-lock.yaml']),
+    'commitperclip[bot]',
+    'fix/something-else'
+  );
+  assert.equal(result.passed, false);
+});
+
 test('fails when lockfile changed by regular user', () => {
   const result = checkLockfile(makeFiles(['pnpm-lock.yaml']), 'someuser', 'fix/bug');
   assert.equal(result.passed, false);
