@@ -233,7 +233,11 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
-import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import {
+  agentUnblockOwnerDeniedReason,
+  deliverAgentUnblockNotification,
+  resolveRequestedUnblockDescriptor,
+} from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -9688,24 +9692,18 @@ export function issueRoutes(
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
-    if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
+    const descriptor = resolveRequestedUnblockDescriptor(updateFields, req.body);
+    if (descriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }
-    const descriptor = updateFields.unblockDescriptor ?? null;
-    if (descriptor && typeof descriptor === "object") {
+    if (descriptor) {
       const owner = descriptor.owner;
-      if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
-        throw forbidden("Agents may only name themselves as an unblock owner");
-      }
       if (owner !== "board" && "agentId" in owner) {
         const target = await db.select({ id: agents.id }).from(agents).where(and(
           eq(agents.id, owner.agentId),
           eq(agents.companyId, existing.companyId),
         )).limit(1).then((rows) => rows[0] ?? null);
         if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
-        if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
-          throw forbidden("Agents may only name themselves as an unblock owner");
-        }
       } else if (owner !== "board" && "userId" in owner) {
         const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
           eq(companyMemberships.companyId, existing.companyId),
@@ -9715,6 +9713,46 @@ export function issueRoutes(
         )).limit(1).then((rows) => rows[0] ?? null);
         if (!member) throw unprocessable("Unblock owner user must be an active company member");
       }
+
+      let parentAssigneeAgentId: string | null = null;
+      let parentBlockedByChild = false;
+      if (
+        req.actor.type === "agent" &&
+        existing.parentId &&
+        "agentId" in owner &&
+        req.actor.agentId !== owner.agentId
+      ) {
+        const parent = await db
+          .select({ assigneeAgentId: issueRows.assigneeAgentId })
+          .from(issueRows)
+          .where(and(eq(issueRows.id, existing.parentId), eq(issueRows.companyId, existing.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        parentAssigneeAgentId = parent?.assigneeAgentId ?? null;
+        if (parentAssigneeAgentId) {
+          parentBlockedByChild = await db
+            .select({ id: issueRelations.id })
+            .from(issueRelations)
+            .where(and(
+              eq(issueRelations.companyId, existing.companyId),
+              eq(issueRelations.issueId, existing.id),
+              eq(issueRelations.relatedIssueId, existing.parentId),
+              eq(issueRelations.type, "blocks"),
+            ))
+            .limit(1)
+            .then((rows) => rows.length > 0);
+        }
+      }
+
+      const deniedReason = agentUnblockOwnerDeniedReason({
+        actorType: req.actor.type,
+        actorAgentId: req.actor.agentId,
+        issueAssigneeAgentId: existing.assigneeAgentId,
+        owner,
+        parentAssigneeAgentId,
+        parentBlockedByChild,
+      });
+      if (deniedReason) throw forbidden(deniedReason);
     }
     const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
     if (enteringBlocked) {
