@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -47,6 +47,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { readPiAuthCredentialKinds, resolvePiBiller, resolvePiBillingType } from "./billing.js";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
@@ -130,10 +131,6 @@ async function buildPiSkillsDir(config: Record<string, unknown>): Promise<string
     await fs.symlink(entry.source, path.join(target, entry.runtimeName));
   }
   return target;
-}
-
-function resolvePiBiller(env: Record<string, string>, provider: string | null): string {
-  return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
 async function ensureSessionsDir(): Promise<string> {
@@ -666,6 +663,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    // Credential kinds pi stored locally, used to tell a metered API key apart
+    // from an OAuth subscription for providers that support both. The auth file
+    // lives on the machine that runs pi, so it is only readable for local
+    // execution targets; remote runs fall back to the environment heuristic.
+    const piAuthCredentialKinds = executionTargetIsRemote
+      ? {}
+      : await readPiAuthCredentialKinds(runtimeEnv.HOME ?? null);
+
     const runAttempt = async (sessionFile: string) => {
       const args = buildArgs(sessionFile);
       if (onMeta) {
@@ -784,7 +789,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: provider,
         biller: resolvePiBiller(runtimeEnv, provider),
         model: model,
-        billingType: "unknown",
+        billingType: resolvePiBillingType(runtimeEnv, provider, piAuthCredentialKinds),
         costUsd: attempt.parsed.usage.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
