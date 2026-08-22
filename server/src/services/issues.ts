@@ -8144,6 +8144,46 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
+      const attachCheckoutRunContext = async <T>(checkedOutIssue: T): Promise<T> => {
+        if (!checkoutRunId) return checkedOutIssue;
+        await db.transaction(async (tx) => {
+          const run = await tx
+            .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, checkoutRunId),
+              eq(heartbeatRuns.companyId, issueCompany.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+            ))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          // Authentication normally guarantees this match. Keep legacy board/test
+          // checkout behavior intact, but never attach context to a mismatched run.
+          if (!run) return;
+
+          const context = parseObject(run.contextSnapshot);
+          const sourceIssueId = [context.issueId, context.taskId]
+            .find((candidate) => typeof candidate === "string" && candidate.trim());
+          if (sourceIssueId) return;
+
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: {
+                ...context,
+                issueId: id,
+                taskId: id,
+                checkoutContextSource: "issue.checkout",
+              },
+            })
+            .where(and(
+              eq(heartbeatRuns.id, checkoutRunId),
+              eq(heartbeatRuns.companyId, issueCompany.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+            ));
+        });
+        return checkedOutIssue;
+      };
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
         activePauseHold &&
@@ -8210,7 +8250,7 @@ export function issueService(db: Db) {
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
-        return enriched;
+        return attachCheckoutRunContext(enriched);
       }
 
       const current = await db
@@ -8252,7 +8292,7 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) return attachCheckoutRunContext(adopted);
       }
 
       if (
@@ -8272,7 +8312,7 @@ export function issueService(db: Db) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
-          return enriched;
+          return attachCheckoutRunContext(enriched);
         }
       }
 
@@ -8315,7 +8355,7 @@ export function issueService(db: Db) {
             .then((rows) => rows[0] ?? null);
           if (adopted) {
             const [enriched] = await withIssueLabels(db, [adopted]);
-            return enriched;
+            return attachCheckoutRunContext(enriched);
           }
         }
       }
@@ -8329,7 +8369,7 @@ export function issueService(db: Db) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
-        return enriched;
+        return attachCheckoutRunContext(enriched);
       }
 
       throw conflict("Issue checkout conflict", {
