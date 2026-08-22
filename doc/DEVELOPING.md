@@ -869,6 +869,10 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+- `PAPERCLIP_DB_BACKUP_TIMEOUT_MINUTES=<minutes>` hard-caps a single backup's
+  pg_dump phase (default `30`, minimum `1`). On expiry pg_dump is killed and
+  the backup fails loudly, so a wedged dump can never silently skip later
+  scheduled backups
 - `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`
   stale-backup warning threshold
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron

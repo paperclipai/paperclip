@@ -20,6 +20,13 @@ export type RunDatabaseBackupOptions = {
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
+   * Hard timeout (ms) for the pg_dump dump/stream phase. When it expires the
+   * pg_dump child is killed and the backup rejects, so callers holding an
+   * in-flight guard (e.g. the server's scheduled-backup flag) always settle.
+   * Defaults to 30 minutes; set to 0 to disable.
+   */
+  dumpTimeoutMs?: number;
+  /**
    * @deprecated Migration-journal schemas are included with the normal backup
    * scope. This option is kept for compatibility and no longer changes backup
    * engine selection.
@@ -70,6 +77,13 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const DEFAULT_BACKUP_DUMP_TIMEOUT_MS = 30 * 60 * 1000;
+// After pg_dump exits, its stdout must hit EOF as soon as the kernel pipe
+// buffer drains (at most one pipe buffer of unread data can remain). A stream
+// that stays open past this grace period means another process inherited the
+// write end — observed in production as PID 1 holding the fd for hours.
+const PG_DUMP_STREAM_DRAIN_GRACE_MS = 10_000;
+const PG_DUMP_KILL_GRACE_MS = 10_000;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -321,6 +335,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  dumpTimeoutMs: number;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -342,14 +357,92 @@ async function runPgDumpBackup(opts: {
     },
   );
 
-  if (!child.stdout) {
+  const stdout = child.stdout;
+  if (!stdout) {
+    child.kill("SIGKILL");
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  let stderr = "";
+  child.stderr?.on("data", (chunk) => {
+    stderr = appendCapturedStderr(stderr, chunk);
+  });
+  const stderrSuffix = () => (stderr.trim() ? `: ${stderr.trim()}` : "");
+
+  let childExited = false;
+  let stdoutEnded = false;
+  child.once("exit", () => {
+    childExited = true;
+  });
+  stdout.once("end", () => {
+    stdoutEnded = true;
+  });
+
+  // When a watchdog below fails the backup, prefer its error: it names the
+  // root cause (timeout / wedged stream) while the promise race otherwise
+  // surfaces downstream symptoms (SIGTERM exit, destroyed pipeline).
+  let watchdogError: Error | null = null;
+  const failOutputStream = (err: Error) => {
+    watchdogError ??= err;
+    stdout.destroy(err);
+  };
+
+  const timers = new Set<NodeJS.Timeout>();
+  const later = (fn: () => void, ms: number) => {
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      fn();
+    }, ms);
+    // A backup watchdog must never keep the process alive on its own.
+    timer.unref?.();
+    timers.add(timer);
+  };
+  const clearWatchdogs = () => {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+  };
+
+  // Hard timeout: ask pg_dump to stop, escalate to SIGKILL, and fail the
+  // output stream so the pipeline settles instead of waiting forever.
+  if (opts.dumpTimeoutMs > 0) {
+    later(() => {
+      child.kill("SIGTERM");
+      later(() => {
+        child.kill("SIGKILL");
+      }, PG_DUMP_KILL_GRACE_MS);
+      failOutputStream(new Error(
+        `${pgDumpBin} exceeded the hard database backup timeout of ${Math.round(opts.dumpTimeoutMs / 1000)}s and was killed${stderrSuffix()}`,
+      ));
+    }, opts.dumpTimeoutMs);
+  }
+
+  // Wedge watchdog: once pg_dump exits, EOF on stdout follows as soon as the
+  // kernel pipe buffer drains. If another process inherited the write end the
+  // EOF never arrives and the pipeline promise would never settle, which in
+  // turn wedges the server's scheduled-backup in-flight flag — fail instead.
+  child.once("exit", () => {
+    later(() => {
+      if (!stdoutEnded && !stdout.destroyed) {
+        failOutputStream(new Error(
+          `${pgDumpBin} exited but its output stream never closed; treating the backup as failed instead of waiting forever${stderrSuffix()}`,
+        ));
+      }
+    }, PG_DUMP_STREAM_DRAIN_GRACE_MS);
+  });
+
+  try {
+    await Promise.all([
+      pipeline(stdout, createGzip(), createWriteStream(opts.backupFile)),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+  } catch (error) {
+    throw watchdogError ?? error;
+  } finally {
+    clearWatchdogs();
+    if (!childExited) {
+      child.kill("SIGKILL");
+    }
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -528,6 +621,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  const dumpTimeoutMs = Math.max(0, Math.trunc(opts.dumpTimeoutMs ?? DEFAULT_BACKUP_DUMP_TIMEOUT_MS));
   const backupEngine = opts.backupEngine ?? "auto";
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
@@ -553,6 +647,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          dumpTimeoutMs,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
