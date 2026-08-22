@@ -266,13 +266,14 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain("Resolved as restored");
   });
 
-  it("calls resolve with todo and does not offer delegated recovery", () => {
+  it("offers intentional deferral, calls resolve with todo, and does not offer delegated recovery", () => {
     const onResolve = vi.fn();
     const node = render(
       <IssueRecoveryActionCard action={buildAction()} onResolve={onResolve} />,
     );
     click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
 
+    expect(document.body.textContent).toContain("Park in backlog");
     expect(document.body.textContent).toContain("Try again");
     expect(document.body.textContent).toContain("Mark task done");
     expect(document.body.textContent).not.toContain("Mark blocked");
@@ -280,6 +281,36 @@ describe("IssueRecoveryActionCard", () => {
     click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Try again")) ?? null);
 
     expect(onResolve).toHaveBeenCalledWith("todo");
+  });
+
+  it("calls resolve with backlog when the operator intentionally defers recovery", () => {
+    const onResolve = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard action={buildAction()} onResolve={onResolve} />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    click(
+      [...document.body.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Park in backlog"),
+      ) ?? null,
+    );
+
+    expect(onResolve).toHaveBeenCalledWith("backlog");
+  });
+
+  it("renders the intentionally deferred resolution outcome", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          status: "resolved",
+          outcome: "intentionally_deferred",
+          resolvedAt: "2026-05-09T19:35:00.000Z",
+        })}
+      />,
+    );
+
+    expect(node.textContent).toContain("Recovery resolved as intentionally deferred.");
+    expect(node.textContent).toContain("Resolved as intentionally deferred");
   });
 
   it("does not offer blocked recovery resolution without a blocker selection flow", () => {

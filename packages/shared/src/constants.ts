@@ -412,6 +412,7 @@ export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "delegated",
   "false_positive",
   "blocked",
+  "intentionally_deferred",
   "escalated",
   "cancelled",
 ] as const;

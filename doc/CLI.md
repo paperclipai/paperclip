@@ -369,7 +369,10 @@ npx paperclipai issue archive <issue-id>
 npx paperclipai issue unarchive <issue-id>
 npx paperclipai issue recovery-actions <issue-id>
 npx paperclipai issue recovery:resolve <issue-id> --outcome restored --source-issue-status todo
+npx paperclipai issue recovery:resolve <issue-id> --outcome intentionally_deferred --source-issue-status backlog
 ```
+
+Use `intentionally_deferred` with `backlog` to atomically clear the active recovery action and park the issue without scheduling a continuation wake. No other recovery outcome accepts `backlog`.
 
 ```sh
 npx paperclipai issue documents <issue-id> [--include-system]

@@ -516,8 +516,14 @@ export function registerIssueCommands(program: Command): void {
       .command("recovery:resolve")
       .description("Resolve an issue recovery action")
       .argument("<issueId>", "Issue ID")
-      .requiredOption("--outcome <outcome>", "restored, false_positive, blocked, or cancelled")
-      .requiredOption("--source-issue-status <status>", "todo, done, or in_review for restored outcomes; blocked is only valid for blocked outcomes")
+      .requiredOption(
+        "--outcome <outcome>",
+        "restored, false_positive, blocked, intentionally_deferred, or cancelled",
+      )
+      .requiredOption(
+        "--source-issue-status <status>",
+        "todo, done, or in_review for restored outcomes; blocked requires blocked; backlog requires intentionally_deferred",
+      )
       .option("--action-id <id>", "Specific recovery action ID")
       .option("--resolution-note <text>", "Resolution note")
       .action(async (issueId: string, opts: IssueRecoveryResolveOptions) => {

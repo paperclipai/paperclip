@@ -1582,6 +1582,64 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("resolves an active recovery action by intentionally deferring the source issue to backlog", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:intentionally-deferred",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Choose whether to resume or intentionally defer the source issue.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+
+    const resolved = await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup,
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "intentionally_deferred",
+        sourceIssueStatus: "backlog",
+        resolutionNote: "Operator intentionally parked this work for later scheduling.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "backlog",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "intentionally_deferred",
+      resolutionNote: "Operator intentionally parked this work for later scheduling.",
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.map((row) => row.action)).toEqual(
+      expect.arrayContaining(["issue.updated", "issue.recovery_action_resolved"]),
+    );
+    expect(
+      activityRows.find((row) => row.action === "issue.recovery_action_resolved")?.details,
+    ).toMatchObject({
+      outcome: "intentionally_deferred",
+      sourceIssueStatus: "backlog",
+    });
+  });
+
   it("hands restored work back to the recorded return owner and records the outcome", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db

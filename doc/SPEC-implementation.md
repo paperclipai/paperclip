@@ -521,6 +521,7 @@ V1 non-terminal liveness rule:
 - recovery-action ownership is separate from source-task ownership: automatic repair and manager escalation preserve the source `assigneeAgentId`; reassignment requires an explicit decision or a policy-defined serious failure
 - source-scoped recovery routing is cause-keyed: lost processes, missing successful-run dispositions, and output-inactivity terminations retry the original agent when invokable; provider-quota failures create/reuse a scheduled wait-recovery monitor without a takeover wake; workspace validation and unknown causes route to the manager ladder
 - recovery-scoped wakes replace the normal deliverable execution contract with a cause-specific recovery contract, and successful repair returns the issue to the recorded original owner by default while recording `handed_back` versus `owner_completed`
+- a recovery owner may intentionally defer an issue by resolving the recovery with `outcome: intentionally_deferred` and `sourceIssueStatus: backlog`; the atomic resolution clears the active recovery without enqueueing a continuation wake, and no other recovery outcome may target `backlog`
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 

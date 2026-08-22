@@ -47,6 +47,7 @@ export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
 
 export type RecoveryResolveOutcome =
+  | "backlog"
   | "todo"
   | "done"
   | "in_review"
@@ -226,6 +227,7 @@ const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   delegated: "delegated to follow-up",
   false_positive: "false positive",
   blocked: "blocked",
+  intentionally_deferred: "intentionally deferred",
   escalated: "escalated",
   cancelled: "cancelled",
 };
@@ -943,6 +945,12 @@ const RESOLVE_OPTIONS: Array<{
   destructive?: boolean;
   boardOnly?: boolean;
 }> = [
+  {
+    outcome: "backlog",
+    label: "Park in backlog",
+    description:
+      "Resolve recovery and intentionally defer the source task without scheduling a retry.",
+  },
   {
     outcome: "todo",
     label: "Try again",

@@ -211,6 +211,32 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("allows intentional deferral only when parking the source issue in backlog", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "intentionally_deferred",
+        sourceIssueStatus: "backlog",
+      }),
+    ).toMatchObject({
+      outcome: "intentionally_deferred",
+      sourceIssueStatus: "backlog",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "intentionally_deferred",
+        sourceIssueStatus: "todo",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "restored",
+        sourceIssueStatus: "backlog",
+      }).success,
+    ).toBe(false);
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

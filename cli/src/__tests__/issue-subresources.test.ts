@@ -80,8 +80,8 @@ describe("issue subresource commands", () => {
     await run(["issue", "recovery-actions", ISSUE_ID]);
     await run([
       "issue", "recovery:resolve", ISSUE_ID,
-      "--outcome", "restored",
-      "--source-issue-status", "todo",
+      "--outcome", "intentionally_deferred",
+      "--source-issue-status", "backlog",
       "--action-id", APPROVAL_ID,
     ]);
 

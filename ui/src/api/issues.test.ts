@@ -110,6 +110,23 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("posts intentional recovery deferral to backlog", async () => {
+    await issuesApi.resolveRecoveryAction("issue-1", {
+      actionId: "00000000-0000-0000-0000-0000000000aa",
+      outcome: "intentionally_deferred",
+      sourceIssueStatus: "backlog",
+    });
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/issues/issue-1/recovery-actions/resolve",
+      {
+        actionId: "00000000-0000-0000-0000-0000000000aa",
+        outcome: "intentionally_deferred",
+        sourceIssueStatus: "backlog",
+      },
+    );
+  });
+
   it("posts stalled review decisions to the dedicated endpoint", async () => {
     await issuesApi.decideStalledReview("issue-1", {
       action: "request_changes",

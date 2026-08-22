@@ -387,9 +387,11 @@ A valid recovery action must name:
 - the recovery owner, plus previous or return owner when ownership may temporarily shift
 - the cause, bounded evidence, and next action
 - the wake, monitor, timeout, retry, or escalation policy that will move the action forward
-- the resolution outcome when closed, such as restored, delegated, false positive, blocked, escalated, or cancelled
+- the resolution outcome when closed, such as restored, intentionally deferred, delegated, false positive, blocked, escalated, or cancelled
 
-A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: move the source issue back to `todo` so it can be retried, clarify disposition, re-establish a monitor, record a false positive, or delegate real follow-up work from the source issue.
+A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: move the source issue back to `todo` so it can be retried, clarify disposition, re-establish a monitor, record a false positive, intentionally defer the source issue to `backlog`, or delegate real follow-up work from the source issue.
+
+Intentional deferral is a first-class recovery resolution, not a restored, blocked, or cancelled alias. The resolution endpoint accepts `outcome: intentionally_deferred` only with `sourceIssueStatus: backlog`; it atomically parks the source issue and resolves the active recovery action without enqueueing a continuation wake. Other recovery outcomes cannot target `backlog`. This preserves the operator's scheduling decision and prevents a resolved park from resurfacing as an active recovery.
 
 Recovery-action ownership and source-task ownership are separate contracts. Assigning a manager or board owner to a recovery action authorizes that owner to repair or route the recovery action; it does not write that owner into the source issue's `assigneeAgentId`. Automatic retry and escalation preserve the source assignee. Reassignment requires an explicit source-task decision or a policy-defined serious-failure path, with the normal company, authorization, budget, checkout, active-run-lock, governed-action, and activity-log checks.
 
