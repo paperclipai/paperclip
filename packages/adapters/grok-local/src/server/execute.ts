@@ -3,6 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
+  detectSandboxExecTimeout,
+  extractSandboxExecTimeoutMessage,
+} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
@@ -504,11 +509,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       isRetry = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorMessage: sandboxExecTimedOut
+            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
+            : `Timed out after ${timeoutSec}s`,
+          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
           clearSession: clearSessionOnMissingSession,
         };
       }

@@ -1,5 +1,10 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
+  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
+  detectSandboxExecTimeout,
+  extractSandboxExecTimeoutMessage,
+} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import {
   asString,
   asNumber,
   asStringArray,
@@ -70,11 +75,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   if (proc.timedOut) {
+    const sandboxExecTimedOut = detectSandboxExecTimeout(proc.stderr);
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: true,
-      errorMessage: `Timed out after ${timeoutSec}s`,
+      errorMessage: sandboxExecTimedOut
+        ? extractSandboxExecTimeoutMessage(proc.stderr) ?? "Sandbox exec channel timed out"
+        : `Timed out after ${timeoutSec}s`,
+      errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
     };
   }
 

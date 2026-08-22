@@ -56,6 +56,11 @@ import {
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
+  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
+  detectSandboxExecTimeout,
+  extractSandboxExecTimeoutMessage,
+} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -961,12 +966,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
 
     if (proc.timedOut) {
+      const sandboxExecTimedOut = detectSandboxExecTimeout(proc.stderr);
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: "timeout",
+        errorMessage: sandboxExecTimedOut
+          ? extractSandboxExecTimeoutMessage(proc.stderr) ?? "Sandbox exec channel timed out"
+          : `Timed out after ${timeoutSec}s`,
+        errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
