@@ -18,6 +18,10 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockTx = vi.hoisted(() => ({}));
+const mockDb = vi.hoisted(() => ({
+  transaction: vi.fn(async (callback: (tx: typeof mockTx) => Promise<unknown>) => callback(mockTx)),
+}));
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => false),
   hasPermission: vi.fn(async () => false),
@@ -126,7 +130,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: unknown = {}) {
+async function createApp(db: unknown = mockDb) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),

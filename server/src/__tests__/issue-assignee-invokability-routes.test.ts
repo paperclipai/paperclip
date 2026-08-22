@@ -15,6 +15,7 @@ const agentStatusById: Record<string, string> = {
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   findOpenAncestorCreatedByAgent: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
@@ -164,7 +165,11 @@ function stubDb(): any {
     query[method] = () => query;
   }
   query.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([]));
-  return { select: () => query };
+  const tx = {};
+  return {
+    select: () => query,
+    transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+  };
 }
 
 function createApp(actor: Actor) {
@@ -203,6 +208,8 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 describe("issue assignee invokability guard", () => {
   beforeEach(() => {
     mockIssueService.getById.mockReset();
+    mockIssueService.getByIdForUpdate.mockReset();
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findOpenAncestorCreatedByAgent.mockReset();
     mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(null);
     mockIssueService.update.mockReset();
