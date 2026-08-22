@@ -247,6 +247,85 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(admittedWake).not.toBeNull();
   });
 
+  it("skips issue wakes when card activity has not advanced since the last wake marker", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    const [issue] = await db
+      .select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    const lastActivityAt = issue!.updatedAt;
+
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId,
+        _paperclipIssueLastActivityAt: lastActivityAt.toISOString(),
+      },
+      status: "completed",
+      finishedAt: new Date(lastActivityAt.getTime() - 100),
+      requestedAt: new Date(lastActivityAt.getTime() - 100),
+    });
+
+    const skippedWake = await assignmentWake(agentId, issueId);
+    expect(skippedWake).toBeNull();
+
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.status).toBe("skipped");
+    expect(skipped?.reason).toBe("issue_wake_no_new_activity");
+    expect((skipped?.payload as Record<string, unknown> | null)?.heartbeatSkip).toMatchObject({
+      reason: "issue_wake_no_new_activity",
+      issueId,
+      currentIssueLastActivityAt: lastActivityAt.toISOString(),
+      lastWakeIssueLastActivityAt: lastActivityAt.toISOString(),
+    });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date(lastActivityAt.getTime() + 1_000),
+    });
+
+    const admittedWake = await assignmentWake(agentId, issueId);
+    expect(admittedWake).not.toBeNull();
+  });
+
+  it("skips a duplicate assignment wake after only run finalization bookkeeping changed activity", async () => {
+    const { agentId, issueId } = await seedCompanyAgentIssue();
+
+    const firstWake = await assignmentWake(agentId, issueId);
+    expect(firstWake).not.toBeNull();
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const [finalizedRun] = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, firstWake!.id))
+      .limit(1);
+    expect(finalizedRun?.status).toBe("succeeded");
+    expect(
+      typeof (finalizedRun?.contextSnapshot as Record<string, unknown> | null)?._paperclipIssueLastActivityAt,
+    ).toBe("string");
+
+    const duplicateWake = await assignmentWake(agentId, issueId);
+    expect(duplicateWake).toBeNull();
+
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.status).toBe("skipped");
+    expect(skipped?.reason).toBe("issue_wake_no_new_activity");
+  });
+
   it("does not throttle system comment-driven wakes even during a no-progress streak", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
