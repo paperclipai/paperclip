@@ -18075,6 +18075,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // A card that reached a terminal status is not work. Every wake path
+        // (comment, mention, dependency-resolved, child-completion, recovery,
+        // timer) funnels through here, so one guard covers all of them — the
+        // callers that already pre-filter on `["backlog","done","cancelled"]`
+        // are belt-and-braces, not the enforcement point. Reopen/resume writes
+        // the issue back to `todo` before dispatching its wake, so this does
+        // not strand the revive path.
+        //
+        // ponytail: this returns before `cancelStaleScheduledRetry`, so a
+        // pending scheduled_retry on a cancelled issue is no longer torn down
+        // eagerly here. It is still suppressed when it becomes due
+        // (`shouldStartScheduledRetry` rejects terminal statuses), so no wake
+        // fires either way — only the tombstone row is written later.
+        if (issue.status === "done" || issue.status === "cancelled") {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_terminal_status",
+            payload: { ...(payload ?? {}), issueId, issueStatus: issue.status },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
