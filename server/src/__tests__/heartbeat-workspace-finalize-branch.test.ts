@@ -50,6 +50,8 @@ const adapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+const finalizeRepairFault = vi.hoisted(() => ({ armed: false, error: null as Error | null }));
+const workspaceCleanupFault = vi.hoisted(() => ({ error: null as Error | null, calls: 0 }));
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
@@ -66,6 +68,30 @@ vi.mock("../adapters/index.js", () => ({
   runningProcesses: new Map(),
 }));
 
+vi.mock("../services/workspace-runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/workspace-runtime.js")>(
+    "../services/workspace-runtime.js",
+  );
+  return {
+    ...actual,
+    cleanupExecutionWorkspaceArtifacts: async (
+      ...args: Parameters<typeof actual.cleanupExecutionWorkspaceArtifacts>
+    ) => {
+      workspaceCleanupFault.calls += 1;
+      if (workspaceCleanupFault.error) throw workspaceCleanupFault.error;
+      return actual.cleanupExecutionWorkspaceArtifacts(...args);
+    },
+    ensureGitWorktreeBranchCoherent: async (
+      ...args: Parameters<typeof actual.ensureGitWorktreeBranchCoherent>
+    ) => {
+      if (finalizeRepairFault.armed && finalizeRepairFault.error) {
+        throw finalizeRepairFault.error;
+      }
+      return actual.ensureGitWorktreeBranchCoherent(...args);
+    },
+  };
+});
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -77,6 +103,39 @@ if (!embeddedPostgresSupport.supported) {
 
 type Db = ReturnType<typeof createDb>;
 type Heartbeat = ReturnType<typeof heartbeatService>;
+
+function rejectMatchingQueryOnce(db: Db, pattern: RegExp, error: Error) {
+  let triggered = false;
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+    const objectValue = value as object;
+    const cached = wrapped.get(objectValue);
+    if (cached) return cached;
+    const proxy = new Proxy(objectValue, {
+      get(target, property, receiver) {
+        if (property === "then") {
+          return (onFulfilled?: (result: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+            const query = "toSQL" in target
+              ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+              : "";
+            const promise = !triggered && pattern.test(query)
+              ? (triggered = true, Promise.reject(error))
+              : Promise.resolve(target as PromiseLike<unknown>);
+            return promise.then(onFulfilled, onRejected);
+          };
+        }
+        const nested = Reflect.get(target, property, receiver);
+        return typeof nested === "function"
+          ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+          : wrap(nested);
+      },
+    });
+    wrapped.set(objectValue, proxy);
+    return proxy;
+  };
+  return { db: wrap(db) as Db, wasTriggered: () => triggered };
+}
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
@@ -276,6 +335,10 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     // poll cannot see.
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     adapterExecute.mockReset();
+    finalizeRepairFault.armed = false;
+    finalizeRepairFault.error = null;
+    workspaceCleanupFault.error = null;
+    workspaceCleanupFault.calls = 0;
     adapterExecute.mockImplementation(async () => ({
       exitCode: 0,
       signal: null,
@@ -533,6 +596,75 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
         expectedBranchName: publishBranch,
         actualBranchName: publishBranch,
       },
+    });
+  }, 20_000);
+
+  it("records a failed finalization operation when branch repair throws", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    const publishBranch = `publish-${issueId.slice(0, 8)}`;
+    let executionWorkspaceId: string | null = null;
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      executionWorkspaceId = workspace.executionWorkspaceId;
+      await runGit(workspace.cwd, ["checkout", "-b", publishBranch]);
+      finalizeRepairFault.error = new Error("synthetic finalization branch repair fault");
+      finalizeRepairFault.armed = true;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed before branch repair failed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finishedRun).toMatchObject({
+      status: "failed",
+      error: "synthetic finalization branch repair fault",
+    });
+    expect(executionWorkspaceId).toBeTruthy();
+
+    const finalizeOps = await listFinalizeOperations(db, run!.id);
+    expect(finalizeOps).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: "failed",
+        executionWorkspaceId,
+        stderrExcerpt: expect.stringContaining("synthetic finalization branch repair fault"),
+      }),
+    ]));
+  }, 20_000);
+
+  it("contains cleanup failure after a newly realized workspace cannot be persisted", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    workspaceCleanupFault.error = new Error("synthetic realized-workspace cleanup fault");
+    const persistenceFault = rejectMatchingQueryOnce(
+      db,
+      /insert into "execution_workspaces"/,
+      new Error("synthetic execution-workspace persistence fault"),
+    );
+    const heartbeat = heartbeatService(persistenceFault.db);
+
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(persistenceFault.wasTriggered()).toBe(true);
+    expect(workspaceCleanupFault.calls).toBe(1);
+    expect(finishedRun).toMatchObject({
+      status: "failed",
+      error: "synthetic execution-workspace persistence fault",
     });
   }, 20_000);
 });

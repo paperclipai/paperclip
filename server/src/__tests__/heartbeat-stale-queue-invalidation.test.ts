@@ -1475,6 +1475,39 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
   });
 
+  it("cancels queued runs whose target issue was deleted before claim", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const missingIssueId = randomUUID();
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: missingIssueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_found" });
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      error: expect.stringContaining("target issue no longer exists"),
+    });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("baseline: runs queued runs when the issue is in_progress with the same assignee", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

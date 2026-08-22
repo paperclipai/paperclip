@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -41,6 +41,23 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
 
 async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
+}
+
+async function waitForAgentRunsSettled(
+  db: ReturnType<typeof createDb>,
+  agentId: string,
+  timeoutMs = 20_000,
+) {
+  await waitFor(async () => {
+    const active = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      ));
+    return active.length === 0;
+  }, timeoutMs);
 }
 
 async function createControlledGatewayServer() {
@@ -2181,4 +2198,146 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("marks comment policy not applicable for unscoped and explicitly skipped wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Comment policy coverage",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Comment policy process agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", "setTimeout(() => {}, 250)"] },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Explicitly skip comment",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const unscopedRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+    });
+    expect(unscopedRun).not.toBeNull();
+    await db.update(heartbeatRuns).set({ issueCommentStatus: "pending" }).where(eq(heartbeatRuns.id, unscopedRun!.id));
+    await waitForAgentRunsSettled(db, agentId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const skippedRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_commented",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_commented", skipIssueComment: true },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+    });
+    expect(skippedRun).not.toBeNull();
+    await db.update(heartbeatRuns).set({ issueCommentStatus: "pending" }).where(eq(heartbeatRuns.id, skippedRun!.id));
+    await waitForAgentRunsSettled(db, agentId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const finalizedRuns = await db
+      .select({ id: heartbeatRuns.id, issueCommentStatus: heartbeatRuns.issueCommentStatus })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(finalizedRuns.find((run) => run.id === unscopedRun!.id)?.issueCommentStatus).toBe("not_applicable");
+    expect(finalizedRuns.find((run) => run.id === skippedRun!.id)?.issueCommentStatus).toBe("not_applicable");
+  }, 20_000);
+
+  it("recognizes an existing deferred comment wake when finalizing a run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Deferred comment policy coverage",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Deferred comment process agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", "process.exit(1)"] },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Deferred comment exists",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, commentId: randomUUID() },
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+    expect(run).not.toBeNull();
+    await waitForAgentRunsSettled(db, agentId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const finalized = await db
+      .select({ issueCommentStatus: heartbeatRuns.issueCommentStatus })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0]);
+    expect(finalized?.issueCommentStatus).toBe("not_applicable");
+  }, 20_000);
+
 });
