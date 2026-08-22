@@ -719,7 +719,6 @@ export function evaluateWorktree(
   const branch = getBranch(dir);
   const statusPorcelain = getGitStatusPorcelain(dir);
   const gitClean = isGitStatusClean(statusPorcelain);
-  const aheadOfRemote = isAheadOfRemote(dir, branch);
   const remoteUrl = getRemoteOriginUrl(dir);
   const ownerRepo = remoteUrl ? parseGitHubOwnerRepo(remoteUrl) : null;
   const prState = ownerRepo ? resolvePrState(ownerRepo.owner, ownerRepo.repo, branch, env) : "unknown";
@@ -736,19 +735,31 @@ export function evaluateWorktree(
 
   // The stash/other-branch/local-tag/reflog checks below cost 3-4 extra
   // `git` subprocess calls. Only pay that cost — including the network
-  // `fetch --prune` refresh a correct other-branch/tag check now requires
-  // (Greptile review, PR #11936: cached `refs/remotes/**` can be stale on an
-  // inactive worktree) — when every OTHER worktree-removal gate already
-  // holds — i.e. exactly when `decideAction` would otherwise choose
-  // "reap-worktree" — so the default (or a node_modules-only) run never
-  // pays for it.
+  // `fetch --prune` refresh a correct check now requires (Greptile review,
+  // PR #11936: cached `refs/remotes/**` can be stale on an inactive
+  // worktree) — when every OTHER worktree-removal gate already holds. This
+  // gate deliberately excludes `aheadOfRemote` itself: that check is exactly
+  // what the refresh below must run BEFORE, so it cannot be used to decide
+  // whether to refresh in the first place (that would refresh only when a
+  // stale cache had already, possibly wrongly, said "not ahead").
   const prSaysMergedOrClosed = prState === "merged" || prState === "closed";
-  const wouldOtherwiseReapWorktree =
-    Boolean(allowWorktreeRemoval) && gitClean && !aheadOfRemote && prSaysMergedOrClosed && !sharedParent;
+  const wouldPotentiallyReapWorktree =
+    Boolean(allowWorktreeRemoval) && gitClean && prSaysMergedOrClosed && !sharedParent;
   // Fail closed if the refresh itself fails (offline, remote deleted, auth
-  // revoked, etc.): the other-branch/tag checks below MUST NOT trust a cache
-  // we just failed to confirm is current, so both become null (unsafe).
-  const remoteRefsFresh = wouldOtherwiseReapWorktree ? refreshRemoteTrackingRefs(dir) : false;
+  // revoked, etc.): none of the checks below — including the checked-out
+  // branch's own ahead-of-remote check — may trust a cache we just failed
+  // to confirm is current.
+  const remoteRefsFresh = wouldPotentiallyReapWorktree ? refreshRemoteTrackingRefs(dir) : false;
+  // `isAheadOfRemote` reads `refs/remotes/**` too (via `<branch>@{upstream}`),
+  // so it must run AFTER the refresh above, not before it (Greptile review,
+  // PR #11936: "stale refs authorize repository deletion" — this same
+  // staleness gap applies to the CHECKED-OUT branch's own ahead check, not
+  // just the other-branch/tag checks). If a refresh was warranted but
+  // failed, treat this worktree as ahead (unsafe / not confirmed mirrored)
+  // rather than trusting whatever was cached before the failed attempt.
+  const aheadOfRemote =
+    wouldPotentiallyReapWorktree && !remoteRefsFresh ? true : isAheadOfRemote(dir, branch);
+  const wouldOtherwiseReapWorktree = wouldPotentiallyReapWorktree && !aheadOfRemote;
   const unsafeExtraGitState = wouldOtherwiseReapWorktree
     ? hasUnsafeExtraGitState({
         hasUnpushedOtherBranch: remoteRefsFresh ? hasUnpushedOtherLocalBranch(dir, branch) : null,
@@ -832,18 +843,30 @@ export function revalidateBeforeDelete(
       return { safe: false, reason: "revalidation-before-delete: the tree became dirty since evaluation" };
     }
     const branch = getBranch(dir);
+    // Refresh BEFORE either the ahead-of-remote check immediately below or
+    // the other-branch/tag checks after it: none of them may trust whatever
+    // `refs/remotes/**` happened to be cached at evaluation time (Greptile
+    // review, PR #11936: this same staleness gap applies to the
+    // checked-out branch's own `isAheadOfRemote` — which reads
+    // `<branch>@{upstream}` — not just the other-branch/tag checks). Fail
+    // closed on the whole delete if the refresh itself fails: this is the
+    // last checkpoint before an irreversible `rmSync`, so there is no
+    // "proceed with a stale cache" fallback here as there is in
+    // `evaluateWorktree` (which only produces a plan, not a deletion).
+    const remoteRefsFresh = refreshRemoteTrackingRefs(dir);
+    if (!remoteRefsFresh) {
+      return {
+        safe: false,
+        reason: "revalidation-before-delete: could not refresh remote-tracking refs to confirm HEAD is still safely mirrored",
+      };
+    }
     if (isAheadOfRemote(dir, branch)) {
       return { safe: false, reason: "revalidation-before-delete: HEAD is now ahead of the remote branch" };
     }
-    // Refresh again: this second, close-to-delete-time check must not trust
-    // whatever `refs/remotes/**` happened to be cached at evaluation time
-    // either — the same staleness gap applies here (Greptile review, PR
-    // #11936). Fail closed if the refresh itself fails.
-    const remoteRefsFresh = refreshRemoteTrackingRefs(dir);
     const unsafeExtraGitState = hasUnsafeExtraGitState({
-      hasUnpushedOtherBranch: remoteRefsFresh ? hasUnpushedOtherLocalBranch(dir, branch) : null,
+      hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
       stashCount: getStashCount(dir),
-      localOnlyTags: remoteRefsFresh ? getLocalOnlyTags(dir, getUpstreamRef(dir, branch)) : null,
+      localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
       reflogOnlyCommits: hasReflogOnlyCommits(dir),
     });
     if (unsafeExtraGitState) {

@@ -19,6 +19,8 @@
 #   PAPERCLIP_RETENTION_INTERVAL_SECS   run interval in seconds (default: 3600)
 #   PAPERCLIP_RETENTION_APPLY           "1" to pass --apply (default: "1" — see note below)
 #   PAPERCLIP_RETENTION_REMOVE_MERGED_WORKTREES  "1" to also pass --remove-merged-worktrees (default: "0")
+#   PAPERCLIP_RETENTION_MAX_LOG_BYTES   bound each of stdout.log/stderr.log to this many bytes,
+#                                       keeping one rotated backup (default: 5242880, i.e. 5 MiB)
 #   PAPERCLIP_RUN_LOGS_PRUNE_SCRIPT      path to an existing run-log pruning script to also invoke, if any
 #   PAPERCLIP_BACKUP_RETENTION_SCRIPT    path to an existing backup retention script to also invoke, if any
 #
@@ -30,6 +32,13 @@
 # itself only fires on git-clean, fully-pushed, merged/closed, inactive
 # worktrees. Set PAPERCLIP_RETENTION_APPLY=0 to install in report-only mode
 # instead.
+#
+# Note on PAPERCLIP_RETENTION_MAX_LOG_BYTES: launchd's StandardOutPath/
+# StandardErrorPath just append forever with no cap of their own — an
+# hourly, indefinitely-running disk-retention agent with an unbounded log of
+# its own would eventually recreate the exact problem it exists to fix. The
+# generated runner rotates each log in place (copytruncate, not rename) the
+# moment it exceeds this size, right before invoking the reaper each run.
 
 set -euo pipefail
 
@@ -37,6 +46,7 @@ LABEL="${PAPERCLIP_RETENTION_LABEL:-ai.paperclip.disk-retention}"
 INTERVAL_SECS="${PAPERCLIP_RETENTION_INTERVAL_SECS:-3600}"
 APPLY="${PAPERCLIP_RETENTION_APPLY:-1}"
 REMOVE_MERGED_WORKTREES="${PAPERCLIP_RETENTION_REMOVE_MERGED_WORKTREES:-0}"
+MAX_LOG_BYTES="${PAPERCLIP_RETENTION_MAX_LOG_BYTES:-5242880}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -138,6 +148,34 @@ NODE_BIN="$node_bin_resolved"
 if [[ ! -x "\$NODE_BIN" ]]; then
   NODE_BIN="\$(command -v node || echo "$node_bin_resolved")"
 fi
+
+# Bound this agent's OWN stdout/stderr logs before doing anything else.
+# launchd redirects this process's fd 1/2 into these exact paths, in append
+# mode, before this script ever starts — an unbounded log here would be the
+# disk-retention agent itself quietly recreating the disk problem it exists
+# to fix.
+LOG_DIR="$LOG_DIR"
+MAX_LOG_BYTES="$MAX_LOG_BYTES"
+rotate_log_if_large() {
+  local log_file="\$1"
+  [[ -f "\$log_file" ]] || return 0
+  local size
+  size="\$(wc -c < "\$log_file" 2>/dev/null | tr -d '[:space:]')"
+  [[ "\$size" =~ ^[0-9]+\$ ]] || return 0
+  if (( size > MAX_LOG_BYTES )); then
+    # copytruncate, not rename+recreate: launchd already holds an open file
+    # descriptor for this exact path (this process's own stdout/stderr), in
+    # O_APPEND mode. Renaming the file out from under that fd would silently
+    # redirect the REST of this run's own output into the renamed file
+    # instead of a fresh one — the fd follows the inode, not the path.
+    # Truncating IN PLACE keeps the same inode, so the next append write
+    # correctly starts at offset 0 in the (now-empty) live file.
+    cp -f "\$log_file" "\$log_file.1" 2>/dev/null || true
+    : > "\$log_file"
+  fi
+}
+rotate_log_if_large "\$LOG_DIR/stdout.log"
+rotate_log_if_large "\$LOG_DIR/stderr.log"
 
 echo "=== \$(date -u +%FT%TZ) reap-stale-workspaces ==="
 "\$NODE_BIN" "$REAPER_SCRIPT" $apply_flag $remove_flag

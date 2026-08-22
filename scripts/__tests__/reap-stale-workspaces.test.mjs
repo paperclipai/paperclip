@@ -760,6 +760,49 @@ test("CLI --apply --remove-merged-worktrees: a local branch whose remote copy wa
   assert.equal(entry.action, "reap-node-modules"); // falls back to tier 1, same as the stash/reflog cases
 });
 
+test("CLI dry-run --remove-merged-worktrees: the checked-out branch's own remote copy deleted after the last fetch blocks a 'reap-worktree' plan (independent review, PR #11936: aheadOfRemote must be computed from freshly-fetched refs, not just the other-branch/tag checks)", () => {
+  const { remoteDir, workDir, branchName } = makeRepoFixture();
+  // Simulate the real remote deleting (e.g. squash-merge-and-delete) or
+  // rewriting the CHECKED-OUT branch itself since the last fetch. workDir's
+  // own cached `refs/remotes/origin/<branchName>` still points at the
+  // pushed commit, matching local HEAD exactly — so `isAheadOfRemote`,
+  // reading `<branchName>@{upstream}` against that stale cache, would
+  // (wrongly) still say "not ahead, already fully mirrored" unless
+  // something refreshes `refs/remotes/**` before that check runs.
+  git(remoteDir, ["--git-dir=.", "update-ref", "-d", `refs/heads/${branchName}`]);
+
+  const home = makeTempDir("reap-home-checked-out-stale-ref-");
+  fs.mkdirSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1"), { recursive: true });
+  fs.renameSync(workDir, path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+  const finalWorkDir = fs.realpathSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+
+  // Dry run (no --apply): the PLAN itself, not just the eventual delete,
+  // must reflect the refreshed state — a stale pre-refresh `aheadOfRemote`
+  // must never even be reported as "reap-worktree" in a dry-run preview.
+  const result = runScript(["--remove-merged-worktrees", "--json", "--recent-commit-minutes", "0"], {
+    REAP_HOME: home,
+    REAP_PR_LOOKUP_CMD: path.join(fixtureBin(), "pr-lookup-merged.sh"),
+    REAP_ACTIVE_SESSION_CMD: path.join(fixtureBin(), "always-inactive.sh"),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.apply, false, "this is a dry run — nothing on disk should change");
+  const entry = parsed.results.find((r) => r.dir === finalWorkDir);
+  assert.ok(entry, "expected an evaluation entry for the fixture worktree");
+  assert.equal(
+    entry.aheadOfRemote,
+    true,
+    "once refs/remotes/** is refreshed, the deleted upstream ref must no longer resolve as 'not ahead'",
+  );
+  assert.equal(
+    entry.action,
+    "reap-node-modules",
+    "the checked-out branch's own stale-looking-safe remote ref must not authorize a 'reap-worktree' plan",
+  );
+  assert.ok(fs.existsSync(path.join(finalWorkDir, ".git")), "a dry run must never touch disk");
+  assert.ok(fs.existsSync(path.join(finalWorkDir, "node_modules")), "a dry run must never touch disk");
+});
+
 test("CLI --apply: a git-tracked (force-added) file under node_modules blocks reclaim even with a clean, committed lockfile (Greptile review, PR #11936)", () => {
   const { workDir } = makeRepoFixture({ branchName: "feature/tracked-node-modules" });
   fs.writeFileSync(path.join(workDir, "node_modules", "patched-dep.js"), "// hand patch, force-added\n");

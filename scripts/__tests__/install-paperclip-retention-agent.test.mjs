@@ -155,3 +155,85 @@ test("report-only mode (PAPERCLIP_RETENTION_APPLY=0) omits --apply from the gene
   const runnerContent = fs.readFileSync(runnerPath, "utf8");
   assert.doesNotMatch(runnerContent, /reap-stale-workspaces\.mjs.*--apply/);
 });
+
+test("PAPERCLIP_RETENTION_MAX_LOG_BYTES defaults to 5 MiB and is baked into the runner's rotation logic", () => {
+  const home = makeTempDir("retention-agent-logdefault-");
+  const label = "ai.paperclip.test-logdefault";
+  const runnerPath = path.join(home, ".paperclip", "retention-agent", "run.sh");
+  const result = run(["--install"], { PAPERCLIP_RETENTION_LABEL: label }, home);
+  assert.equal(result.status, 0, result.stderr);
+  const runnerContent = fs.readFileSync(runnerPath, "utf8");
+  assert.match(runnerContent, /MAX_LOG_BYTES="5242880"/);
+  assert.match(runnerContent, /rotate_log_if_large/);
+});
+
+test("the generated runner rotates an oversized stdout.log in place (copytruncate), preserving both the old content and this run's own output (regression guard: an unbounded launchd log would recreate the disk crisis this agent exists to fix)", () => {
+  const home = makeTempDir("retention-agent-logrotate-");
+  const label = "ai.paperclip.test-logrotate";
+  const logDir = path.join(home, ".paperclip", "retention-agent", "logs");
+  const runnerPath = path.join(home, ".paperclip", "retention-agent", "run.sh");
+
+  const install = run(["--install"], { PAPERCLIP_RETENTION_LABEL: label, PAPERCLIP_RETENTION_MAX_LOG_BYTES: "200" }, home);
+  assert.equal(install.status, 0, install.stderr);
+  const runnerContent = fs.readFileSync(runnerPath, "utf8");
+  assert.match(runnerContent, /MAX_LOG_BYTES="200"/);
+
+  // Pre-seed an oversized stdout.log, as if several prior hourly runs had
+  // accumulated output with no cap at all.
+  fs.mkdirSync(logDir, { recursive: true });
+  const oldContent = `OLD-RUN-OUTPUT-${"x".repeat(500)}\n`;
+  const stdoutLog = path.join(logDir, "stdout.log");
+  const stderrLog = path.join(logDir, "stderr.log");
+  fs.writeFileSync(stdoutLog, oldContent);
+
+  // Invoke the runner the way launchd actually does: fd 1/2 opened in
+  // APPEND mode on these exact paths before the script starts, and held
+  // open for the runner's entire lifetime. A naive test that instead pipes
+  // /captures the child's output (rather than pre-opening these exact
+  // files) would not catch a rename-based rotation bug, since the
+  // vulnerability is specifically about an already-open fd on THIS path.
+  const invoke = spawnSync("bash", ["-c", 'exec "$1" >>"$2" 2>>"$3"', "_", runnerPath, stdoutLog, stderrLog], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home },
+  });
+  assert.equal(invoke.status, 0, invoke.stderr);
+
+  assert.equal(
+    fs.readFileSync(path.join(logDir, "stdout.log.1"), "utf8"),
+    oldContent,
+    "the oversized prior content must be preserved in a single rotated .1 backup, not silently discarded",
+  );
+  const liveLog = fs.readFileSync(stdoutLog, "utf8");
+  assert.doesNotMatch(
+    liveLog,
+    /OLD-RUN-OUTPUT/,
+    "the live log must have been truncated, not left growing forever",
+  );
+  assert.match(
+    liveLog,
+    /reap-stale-workspaces/,
+    "THIS run's own output must land in the live (rotated) log file, not be lost or misdirected into the renamed-away old file",
+  );
+});
+
+test("the generated runner's log rotation is a no-op while a log stays under the configured size cap", () => {
+  const home = makeTempDir("retention-agent-logrotate-noop-");
+  const label = "ai.paperclip.test-logrotate-noop";
+  const logDir = path.join(home, ".paperclip", "retention-agent", "logs");
+  const runnerPath = path.join(home, ".paperclip", "retention-agent", "run.sh");
+
+  const install = run(["--install"], { PAPERCLIP_RETENTION_LABEL: label, PAPERCLIP_RETENTION_MAX_LOG_BYTES: "1000000" }, home);
+  assert.equal(install.status, 0, install.stderr);
+
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(path.join(logDir, "stdout.log"), "small prior line\n");
+
+  const invoke = spawnSync("bash", [runnerPath], { encoding: "utf8", env: { ...process.env, HOME: home } });
+  assert.equal(invoke.status, 0, invoke.stderr);
+  assert.equal(
+    fs.existsSync(path.join(logDir, "stdout.log.1")),
+    false,
+    "must not rotate (or otherwise touch) a log that is still under the size cap",
+  );
+  assert.match(fs.readFileSync(path.join(logDir, "stdout.log"), "utf8"), /small prior line/);
+});

@@ -1,6 +1,6 @@
 ---
 title: Disk Retention
-summary: Reclaiming disk from run logs, backups, and stale agent workspaces
+summary: Reclaiming disk from stale agent workspaces via a scheduled LaunchAgent
 ---
 
 A long-running local instance accumulates disk usage in three places that are
@@ -15,6 +15,13 @@ never automatically bounded by default:
 See also [Backup & Restore](/deploy/database) for the backup timer itself and
 [#2022](https://github.com/paperclipai/paperclip/issues/2022) for the broader
 run-log/server-log retention request this page complements.
+
+**Scope of this page:** the table above lists all three growth points for
+context, but the tooling this page documents (`reap-stale-workspaces.mjs` and
+the LaunchAgent installer) only reclaims `instances/*/workspaces/`. Run-log
+and backup retention are separate, host-local concerns — the LaunchAgent
+installer can optionally invoke your own existing scripts for those (see
+"Wiring it in" below) but does not ship or implement that reclaim itself.
 
 ## Workspace / `node_modules` reclaim
 
