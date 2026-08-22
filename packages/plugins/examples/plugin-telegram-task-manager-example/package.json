@@ -1,0 +1,29 @@
+{
+  "name": "@paperclipai/plugin-telegram-task-manager-example",
+  "version": "0.1.0",
+  "description": "Reference Telegram connector plugin for managing Paperclip tasks from a chat-based workflow",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/node-telegram-bot-api": "^0.64.0",
+    "typescript": "^5.7.3"
+  }
+}
