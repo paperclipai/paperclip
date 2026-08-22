@@ -703,6 +703,19 @@ function isPathWithin(root: string, target: string): boolean {
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
+/**
+ * True when a plugin package path is inside this repository.
+ *
+ * The dev tsx loader is only applied to repo-local packages, because
+ * external plugins ship prebuilt JS and tsx's `--import` loader crashes
+ * on Windows when the worker entry is an absolute drive-letter path
+ * (ERR_UNSUPPORTED_ESM_URL_SCHEME, protocol 'e:').
+ */
+export function isRepoLocalPluginPath(packagePath: string | null | undefined): boolean {
+  if (!packagePath) return false;
+  return isPathWithin(REPO_ROOT, path.resolve(packagePath));
+}
+
 export function isRepoBundledPluginPath(
   packageRoot: string,
   options: { repoRoot?: string } = {},
@@ -2287,13 +2300,24 @@ export function pluginLoader(
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      // The tsx loader is only needed for repo-local packages that may
+      // import workspace TypeScript sources (e.g. @paperclipai/shared)
+      // at runtime. Restricting it to packages inside this repo also fixes
+      // a Windows crash for external local-path plugin installs: with
+      // `--import <tsx-loader>`, Node's ESM loader receives the worker
+      // entry as a raw drive-letter path (e.g. `E:\plugins\dist\worker.js`)
+      // and fails with ERR_UNSUPPORTED_ESM_URL_SCHEME (protocol 'e:').
+      // External plugins ship prebuilt JS and do not need the tsx loader.
+      const resolvedPkgPath = activePlugin.packagePath
+        ? path.resolve(activePlugin.packagePath)
+        : null;
+      if (
+        resolvedPkgPath !== null &&
+        isRepoLocalPluginPath(resolvedPkgPath) &&
+        existsSync(DEV_TSX_LOADER_PATH)
+      ) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
-
       await workerManager.startWorker(pluginId, workerOptions);
       registered.worker = true;
 
