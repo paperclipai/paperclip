@@ -180,6 +180,18 @@ describe("IssueRecoveryActionCard", () => {
     );
   });
 
+  it("explains feedback delivery recovery in plain language", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "feedback_delivery", cause: "feedback_delivery_exhausted" })}
+      />,
+    );
+    expect(node.textContent).toContain("Feedback Delivery");
+    expect(node.textContent).toContain(
+      "Paperclip could not confirm that the latest human feedback reached the task's assignee.",
+    );
+  });
+
   it("falls back to an em dash when no evidence summary is available", () => {
     const node = render(<IssueRecoveryActionCard action={buildAction({ evidence: {} })} />);
     expect(node.textContent).toContain("—");

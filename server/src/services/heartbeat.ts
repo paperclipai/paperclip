@@ -154,6 +154,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
@@ -504,6 +505,10 @@ export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
+export const FEEDBACK_DELIVERY_RETRY_REASON = "feedback_delivery_retry";
+export const FEEDBACK_DELIVERY_RETRY_WAKE_REASON = "feedback_delivery_retry";
+const FEEDBACK_DELIVERY_RECOVERY_CAUSE = "feedback_delivery_exhausted";
+const FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES = 1;
 // A running run stops counting as a shared-workspace holder once it has been
 // silent this long. This is recovery's own "suspicious silence" bar for active
 // runs (scanSilentActiveRuns escalates such runs), so a zombie holder cannot
@@ -6825,6 +6830,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+  const recoveryActions = issueRecoveryActionService(db);
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -10168,7 +10174,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "satisfied" as const, queuedRun: null };
     }
 
-    if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
+    const issueCommentRetryReason = readNonEmptyString(contextSnapshot.retryReason);
+    if (
+      issueCommentRetryReason === "missing_issue_comment" ||
+      issueCommentRetryReason === FEEDBACK_DELIVERY_RETRY_REASON
+    ) {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "retry_exhausted",
         issueCommentSatisfiedByCommentId: null,
@@ -10177,7 +10187,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+        message:
+          issueCommentRetryReason === FEEDBACK_DELIVERY_RETRY_REASON
+            ? "Recovered feedback run ended without handling evidence; no separate missing-comment retry will be queued"
+            : "Run ended without an issue comment after one retry; no further comment wake will be queued",
       });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
@@ -10224,6 +10237,674 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueCommentSatisfiedByCommentId: null,
     });
     return { outcome: "retry_exhausted" as const, queuedRun: null };
+  }
+
+  type FeedbackDeliveryContext = {
+    issueId: string;
+    rootWakeupRequestId: string;
+    commentIds: string[];
+    generation: number;
+    fingerprint: string;
+  };
+
+  async function readFeedbackDeliveryContext(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<FeedbackDeliveryContext | null> {
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const rootWakeupRequestId =
+      readNonEmptyString(context.feedbackDeliveryRootWakeupRequestId) ?? run.wakeupRequestId;
+    if (!issueId || !rootWakeupRequestId) return null;
+
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    const commentIds = mergeWakeCommentIds(context, deriveCommentId(context, null));
+    const carriesExplicitResume = context.resumeIntent === true || context.followUpRequested === true;
+    const eligibleWake =
+      wakeReason === "issue_commented" ||
+      wakeReason === "issue_reopened_via_comment" ||
+      wakeReason === FEEDBACK_DELIVERY_RETRY_WAKE_REASON ||
+      (carriesExplicitResume && (
+        wakeReason === "issue_assigned" ||
+        wakeReason === "issue_status_changed" ||
+        wakeReason === "issue_commented" ||
+        wakeReason === "issue_reopened_via_comment"
+      ));
+    if (!eligibleWake || (commentIds.length === 0 && !carriesExplicitResume)) return null;
+
+    const rootWake = await db
+      .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, rootWakeupRequestId),
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    // Durable feedback delivery is a human-input contract. System-created
+    // generation-1 wakes retain their original user wake id in context.
+    if (rootWake?.requestedByActorType !== "user") return null;
+
+    const generation = Math.max(
+      0,
+      Math.floor(
+        typeof context.feedbackDeliveryRetryGeneration === "number"
+          ? context.feedbackDeliveryRetryGeneration
+          : run.scheduledRetryReason === FEEDBACK_DELIVERY_RETRY_REASON
+            ? run.scheduledRetryAttempt ?? 0
+            : 0,
+      ),
+    );
+    return {
+      issueId,
+      rootWakeupRequestId,
+      commentIds,
+      generation,
+      fingerprint: [
+        "feedback_delivery",
+        run.companyId,
+        issueId,
+        run.agentId,
+        rootWakeupRequestId,
+      ].join(":"),
+    };
+  }
+
+  async function findFeedbackHandlingEvidence(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const [comment, documentRevision, workProduct, issueActivity] = await Promise.all([
+      findRunIssueComment(run.id, run.companyId, issueId),
+      db
+        .select({ id: documentRevisions.id })
+        .from(documentRevisions)
+        .innerJoin(issueDocuments, eq(issueDocuments.documentId, documentRevisions.documentId))
+        .where(and(
+          eq(documentRevisions.companyId, run.companyId),
+          eq(documentRevisions.createdByRunId, run.id),
+          eq(issueDocuments.companyId, run.companyId),
+          eq(issueDocuments.issueId, issueId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, run.companyId),
+          eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.createdByRunId, run.id),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: activityLog.id, action: activityLog.action })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, run.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.runId, run.id),
+          inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    if (comment) return { kind: "comment", id: comment.id } as const;
+    if (documentRevision) return { kind: "document_revision", id: documentRevision.id } as const;
+    if (workProduct) return { kind: "work_product", id: workProduct.id } as const;
+    if (issueActivity) return { kind: "issue_activity", id: issueActivity.id, action: issueActivity.action } as const;
+    return null;
+  }
+
+  async function logFeedbackRetryQueuedOnce(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    delivery: FeedbackDeliveryContext;
+    retryRunId: string | null;
+    retryWakeupRequestId: string | null;
+    disposition: "queued" | "coalesced" | "deferred";
+  }) {
+    const existing = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.run.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.delivery.issueId),
+        eq(activityLog.action, "issue.feedback_retry_queued"),
+        sql`${activityLog.details} ->> 'rootWakeupRequestId' = ${input.delivery.rootWakeupRequestId}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return;
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "issue.feedback_retry_queued",
+      entityType: "issue",
+      entityId: input.delivery.issueId,
+      details: {
+        sourceRunId: input.run.id,
+        sourceWakeupRequestId: input.run.wakeupRequestId,
+        rootWakeupRequestId: input.delivery.rootWakeupRequestId,
+        sourceCommentIds: input.delivery.commentIds,
+        retryRunId: input.retryRunId,
+        retryWakeupRequestId: input.retryWakeupRequestId,
+        retryGeneration: 1,
+        disposition: input.disposition,
+      },
+    });
+  }
+
+  async function ensureFeedbackDeliveryRecovery(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    delivery: FeedbackDeliveryContext;
+    gateReason?: string | null;
+    gateErrorCode?: string | null;
+  }) {
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.delivery.issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return { kind: "suppressed" as const, reason: "issue_not_found" };
+    if (issue.status === "done" || issue.status === "cancelled") {
+      return { kind: "suppressed" as const, reason: "issue_terminal" };
+    }
+    if (issue.assigneeAgentId !== input.run.agentId || issue.assigneeUserId) {
+      return { kind: "suppressed" as const, reason: "ownership_changed" };
+    }
+
+    const existing = await recoveryActions.getActiveForIssue(input.run.companyId, issue.id);
+    if (
+      existing?.kind === "feedback_delivery"
+      && existing.cause === FEEDBACK_DELIVERY_RECOVERY_CAUSE
+      && existing.fingerprint === input.delivery.fingerprint
+    ) {
+      return { kind: "recovery" as const, action: existing, reusedExisting: true };
+    }
+
+    const action = await recoveryActions.upsertSourceScoped({
+      companyId: input.run.companyId,
+      sourceIssueId: issue.id,
+      kind: "feedback_delivery",
+      ownerType: "agent",
+      ownerAgentId: input.agent.id,
+      previousOwnerAgentId: input.agent.id,
+      returnOwnerAgentId: input.agent.id,
+      cause: FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+      fingerprint: input.delivery.fingerprint,
+      evidence: {
+        sourceRunId: input.run.id,
+        sourceWakeupRequestId: input.run.wakeupRequestId,
+        rootWakeupRequestId: input.delivery.rootWakeupRequestId,
+        outstandingCommentIds: input.delivery.commentIds,
+        retryGeneration: input.delivery.generation,
+        lastFailureCode: input.run.errorCode,
+        lastFailureReason: input.run.error,
+        gateErrorCode: input.gateErrorCode ?? null,
+        gateReason: input.gateReason ?? null,
+      },
+      nextAction: [
+        input.gateReason,
+        "Restore an invokable current assignee and valid workspace, then retry delivery explicitly or record a valid manual issue disposition.",
+      ].filter(Boolean).join(" "),
+      wakePolicy: {
+        type: "manual_repair_required",
+        reason: FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+        ownerAgentId: input.agent.id,
+      },
+      maxAttempts: FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+      lastAttemptAt: new Date(),
+    });
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "issue.feedback_recovery_exhausted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        recoveryActionId: action.id,
+        sourceRunId: input.run.id,
+        sourceWakeupRequestId: input.run.wakeupRequestId,
+        rootWakeupRequestId: input.delivery.rootWakeupRequestId,
+        sourceCommentIds: input.delivery.commentIds,
+        retryGeneration: input.delivery.generation,
+        errorCode: input.run.errorCode,
+        gateErrorCode: input.gateErrorCode ?? null,
+      },
+    });
+    return { kind: "recovery" as const, action, reusedExisting: false };
+  }
+
+  async function enqueueFeedbackDeliveryRetry(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    delivery: FeedbackDeliveryContext;
+  }) {
+    const now = new Date();
+    const sourceContext = parseObject(input.run.contextSnapshot);
+    const retryContext = withRecoveryModelProfileHint({
+      ...sourceContext,
+      issueId: input.delivery.issueId,
+      taskId: input.delivery.issueId,
+      wakeReason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+      retryOfRunId: input.run.id,
+      feedbackDeliveryRootWakeupRequestId: input.delivery.rootWakeupRequestId,
+      feedbackDeliverySourceRunId: input.run.id,
+      feedbackDeliveryRetryGeneration: 1,
+      [WAKE_COMMENT_IDS_KEY]: input.delivery.commentIds,
+      ...(input.delivery.commentIds.length > 0
+        ? {
+            commentId: input.delivery.commentIds.at(-1),
+            wakeCommentId: input.delivery.commentIds.at(-1),
+          }
+        : {}),
+    }, "normal_model");
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(retryContext, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(input.agent, taskKey);
+    const responsibleUserId = await resolveResponsibleUserIdForRunContext(input.run, retryContext);
+    const idempotencyKey = `${input.delivery.fingerprint}:generation:1`;
+
+    const result = await db.transaction(async (tx) => {
+      const companyIsActive = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, input.run.companyId))
+        .then((rows) => rows[0]?.status === "active");
+      if (!companyIsActive) return { kind: "suppressed" as const };
+
+      await tx.execute(sql`
+        select id from issues
+        where id = ${input.delivery.issueId} and company_id = ${input.run.companyId}
+        for update
+      `);
+      const issue = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.delivery.issueId),
+          eq(issues.companyId, input.run.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (
+        !issue ||
+        issue.assigneeAgentId !== input.run.agentId ||
+        issue.assigneeUserId ||
+        issue.status === "done" ||
+        issue.status === "cancelled"
+      ) {
+        return { kind: "suppressed" as const };
+      }
+
+      const liveRun = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, input.run.companyId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.delivery.issueId}`,
+          ne(heartbeatRuns.id, input.run.id),
+        ))
+        .orderBy(
+          sql`case when ${heartbeatRuns.id} = ${issue.executionRunId} then 0 when ${heartbeatRuns.status} = 'running' then 1 else 2 end`,
+          desc(heartbeatRuns.createdAt),
+          desc(heartbeatRuns.id),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      const orderCommentIds = async (ids: string[]) => {
+        if (ids.length === 0) return ids;
+        const rows = await tx
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.companyId, input.run.companyId),
+            eq(issueComments.issueId, input.delivery.issueId),
+            inArray(issueComments.id, ids),
+          ))
+          .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+        const ordered = rows.map((row) => row.id);
+        return [...ordered, ...ids.filter((id) => !ordered.includes(id))];
+      };
+
+      const liveContext = parseObject(liveRun?.contextSnapshot);
+      if (
+        liveRun &&
+        readNonEmptyString(liveContext.feedbackDeliveryRootWakeupRequestId) ===
+          input.delivery.rootWakeupRequestId &&
+        Number(liveContext.feedbackDeliveryRetryGeneration) >= 1
+      ) {
+        return {
+          kind: "coalesced" as const,
+          run: liveRun,
+          wakeupRequestId: liveRun.wakeupRequestId,
+        };
+      }
+
+      if (
+        liveRun &&
+        liveRun.agentId === input.run.agentId &&
+        liveRun.status !== "running"
+      ) {
+        const mergedContext = mergeCoalescedContextSnapshot(retryContext, parseObject(liveRun.contextSnapshot));
+        const orderedCommentIds = await orderCommentIds(mergeWakeCommentIds(retryContext, liveRun.contextSnapshot));
+        if (orderedCommentIds.length > 0) {
+          mergedContext[WAKE_COMMENT_IDS_KEY] = orderedCommentIds;
+          mergedContext.commentId = orderedCommentIds.at(-1);
+          mergedContext.wakeCommentId = orderedCommentIds.at(-1);
+        }
+        mergedContext.feedbackDeliveryRootWakeupRequestId = input.delivery.rootWakeupRequestId;
+        mergedContext.feedbackDeliverySourceRunId = input.run.id;
+        mergedContext.feedbackDeliveryRetryGeneration = 1;
+        const mergedRun = await tx
+          .update(heartbeatRuns)
+          .set({ contextSnapshot: mergedContext, updatedAt: now })
+          .where(eq(heartbeatRuns.id, liveRun.id))
+          .returning()
+          .then((rows) => rows[0] ?? liveRun);
+        return {
+          kind: "coalesced" as const,
+          run: mergedRun,
+          wakeupRequestId: mergedRun.wakeupRequestId,
+        };
+      }
+
+      const existingDeferred = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.run.companyId),
+          eq(agentWakeupRequests.agentId, input.run.agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.delivery.issueId}`,
+        ))
+        .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (liveRun) {
+        const existingPayload = parseObject(existingDeferred?.payload);
+        const existingDeferredContext = parseObject(existingPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+        const mergedDeferredContext = mergeCoalescedContextSnapshot(retryContext, existingDeferredContext);
+        const orderedCommentIds = await orderCommentIds(
+          mergeWakeCommentIds(retryContext, existingDeferredContext),
+        );
+        if (orderedCommentIds.length > 0) {
+          mergedDeferredContext[WAKE_COMMENT_IDS_KEY] = orderedCommentIds;
+          mergedDeferredContext.commentId = orderedCommentIds.at(-1);
+          mergedDeferredContext.wakeCommentId = orderedCommentIds.at(-1);
+        }
+        mergedDeferredContext.feedbackDeliveryRootWakeupRequestId = input.delivery.rootWakeupRequestId;
+        mergedDeferredContext.feedbackDeliverySourceRunId = input.run.id;
+        mergedDeferredContext.feedbackDeliveryRetryGeneration = 1;
+        const payload = {
+          ...existingPayload,
+          issueId: input.delivery.issueId,
+          retryOfRunId: input.run.id,
+          retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+          [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+        };
+        if (existingDeferred) {
+          const updated = await tx
+            .update(agentWakeupRequests)
+            .set({
+              payload,
+              coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, existingDeferred.id))
+            .returning()
+            .then((rows) => rows[0] ?? existingDeferred);
+          return { kind: "deferred" as const, run: liveRun, wakeupRequestId: updated.id };
+        }
+        const deferred = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: input.run.companyId,
+            agentId: input.run.agentId,
+            source: "automation",
+            triggerDetail: "system",
+            reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+            payload,
+            status: "deferred_issue_execution",
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            idempotencyKey,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        return { kind: "deferred" as const, run: liveRun, wakeupRequestId: deferred.id };
+      }
+
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.run.companyId,
+          agentId: input.run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+          payload: {
+            issueId: input.delivery.issueId,
+            retryOfRunId: input.run.id,
+            retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+            rootWakeupRequestId: input.delivery.rootWakeupRequestId,
+            commentIds: input.delivery.commentIds,
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          idempotencyKey,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: input.run.companyId,
+          agentId: input.run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContext,
+          responsibleUserId,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: input.run.id,
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: retryRun.id, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: retryRun.id,
+          executionAgentNameKey: normalizeAgentNameKey(input.agent.name),
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, input.run.companyId)));
+      return { kind: "queued" as const, run: retryRun, wakeupRequestId: wakeupRequest.id };
+    });
+
+    if (result.kind === "queued") {
+      publishLiveEvent({
+        companyId: result.run.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: result.run.id,
+          agentId: result.run.agentId,
+          invocationSource: result.run.invocationSource,
+          triggerDetail: result.run.triggerDetail,
+          wakeupRequestId: result.run.wakeupRequestId,
+        },
+      });
+      await startNextQueuedRunForAgent(result.run.agentId);
+    }
+    return result;
+  }
+
+  async function handleFeedbackDeliveryDisposition(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    existingRetryRun?: typeof heartbeatRuns.$inferSelect | null;
+  }) {
+    const delivery = await readFeedbackDeliveryContext(input.run);
+    if (!delivery) return { kind: "not_applicable" as const };
+
+    const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery.issueId);
+    if (handlingEvidence) {
+      return { kind: "handled" as const, delivery, handlingEvidence };
+    }
+
+    const preLaunchProcessLoss =
+      input.run.errorCode === "process_lost" &&
+      !input.run.processPid &&
+      !input.run.processGroupId;
+    const automaticReplayExhausted = delivery.generation >= FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES;
+    if (automaticReplayExhausted) {
+      const recovery = await ensureFeedbackDeliveryRecovery({
+        run: input.run,
+        agent: input.agent,
+        delivery,
+      });
+      return { kind: "recovery" as const, delivery, recovery };
+    }
+    if (!preLaunchProcessLoss && !input.existingRetryRun) {
+      return { kind: "not_applicable" as const };
+    }
+
+    const gate = await evaluateScheduledRetryGate({
+      run: input.run,
+      agent: input.agent,
+      contextSnapshot: parseObject(input.run.contextSnapshot),
+      retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+    });
+    if (!gate.allowed) {
+      if (
+        gate.errorCode === "issue_not_found" ||
+        gate.errorCode === "issue_reassigned" ||
+        gate.errorCode === "issue_cancelled" ||
+        gate.errorCode === "issue_terminal_status"
+      ) {
+        return { kind: "suppressed" as const, delivery, reason: gate.errorCode };
+      }
+      const recovery = await ensureFeedbackDeliveryRecovery({
+        run: input.run,
+        agent: input.agent,
+        delivery,
+        gateReason: gate.reason,
+        gateErrorCode: gate.errorCode,
+      });
+      return { kind: "recovery" as const, delivery, recovery };
+    }
+
+    if (input.existingRetryRun) {
+      const retryContext: Record<string, unknown> = {
+        ...parseObject(input.existingRetryRun.contextSnapshot),
+        feedbackDeliveryRootWakeupRequestId: delivery.rootWakeupRequestId,
+        feedbackDeliverySourceRunId: input.run.id,
+        feedbackDeliveryRetryGeneration: 1,
+        [WAKE_COMMENT_IDS_KEY]: delivery.commentIds,
+      };
+      if (delivery.commentIds.length > 0) {
+        retryContext.commentId = delivery.commentIds.at(-1);
+        retryContext.wakeCommentId = delivery.commentIds.at(-1);
+      }
+      const updatedRetry = await db
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: retryContext, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, input.existingRetryRun.id))
+        .returning()
+        .then((rows) => rows[0] ?? input.existingRetryRun!);
+      await logFeedbackRetryQueuedOnce({
+        run: input.run,
+        delivery,
+        retryRunId: updatedRetry.id,
+        retryWakeupRequestId: updatedRetry.wakeupRequestId,
+        disposition: "queued",
+      });
+      return { kind: "retry" as const, delivery, run: updatedRetry, disposition: "queued" as const };
+    }
+
+    const retry = await enqueueFeedbackDeliveryRetry({ run: input.run, agent: input.agent, delivery });
+    if (retry.kind === "suppressed") {
+      return { kind: "suppressed" as const, delivery, reason: "state_changed" };
+    }
+    await logFeedbackRetryQueuedOnce({
+      run: input.run,
+      delivery,
+      retryRunId: retry.run.id,
+      retryWakeupRequestId: retry.wakeupRequestId,
+      disposition: retry.kind,
+    });
+    return { kind: "retry" as const, delivery, run: retry.run, disposition: retry.kind };
+  }
+
+  async function applyPostRunDisposition(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    existingRetryRun?: typeof heartbeatRuns.$inferSelect | null;
+    scheduleInteractionRetry?: boolean;
+    suppressImmediateRecovery?: boolean;
+  }) {
+    const feedback = await handleFeedbackDeliveryDisposition({
+      run: input.run,
+      agent: input.agent,
+      existingRetryRun: input.existingRetryRun,
+    });
+    let interactionRetry = null;
+    if (
+      input.scheduleInteractionRetry !== false &&
+      feedback.kind === "not_applicable" &&
+      UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+        input.run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+      )
+    ) {
+      interactionRetry = await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+        input.run,
+        input.agent,
+      );
+    }
+    await releaseIssueExecutionAndPromote(input.run, {
+      suppressImmediateRecovery:
+        input.suppressImmediateRecovery === true ||
+        feedback.kind === "retry" ||
+        feedback.kind === "recovery" ||
+        interactionRetry?.outcome === "scheduled",
+    });
+    await handleIssueReviewPathDisposition(input.run);
+    return { feedback, interactionRetry };
   }
 
   async function enqueueProcessLossRetry(
@@ -10557,6 +11238,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .select({
           run: heartbeatRuns,
           adapterType: agents.adapterType,
+          agent: agents,
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -10714,6 +11396,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       classify(candidate, "adopted", processPidAlive ? "process_pid_alive" : "process_group_alive", patch);
     }
 
+    // A run can finalize while the server is down (for example through an
+    // external callback). Re-run the same idempotent disposition pipeline used
+    // by live execution and startup reaping so restart reconciliation cannot
+    // strand feedback or a consumed review path.
+    for (const runId of new Set(finalizedWhileDownRunIds)) {
+      const current = currentByRunId.get(runId);
+      if (!current || !isHeartbeatRunTerminalStatus(current.run.status)) continue;
+      await applyPostRunDisposition({
+        run: current.run,
+        agent: current.agent,
+      }).catch((error) => {
+        logger.error(
+          { err: error, runId },
+          "failed to apply post-run disposition during hot-restart reconciliation",
+        );
+      });
+    }
+
     const report = await writeHotRestartReport({
       version: 1,
       requestedAt: intent.requestedAt,
@@ -10830,11 +11530,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const retry = await enqueueProcessLossRetry(interrupted, agent, now);
-      if (!retry) {
-        await releaseIssueExecutionAndPromote(interrupted);
-      } else {
+      if (retry) {
         retryRunIds.push(retry.id);
       }
+      await applyPostRunDisposition({
+        run: interrupted,
+        agent,
+        existingRetryRun: retry,
+        scheduleInteractionRetry: false,
+      });
 
       await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
         eventType: "lifecycle",
@@ -13781,13 +14485,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (retryAgent) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
         }
-      } else if (retryAgent) {
-        const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
-        retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
       }
 
-      if (!retriedRun) {
+      if (retryAgent) {
+        const disposition = await applyPostRunDisposition({
+          run: finalizedRun,
+          agent: retryAgent,
+          existingRetryRun: retriedRun,
+          scheduleInteractionRetry: !shouldRetry,
+        });
+        if (!retriedRun && disposition.feedback.kind === "retry") {
+          retriedRun = disposition.feedback.run;
+        } else if (!retriedRun && disposition.interactionRetry?.outcome === "scheduled") {
+          retriedRun = disposition.interactionRetry.run;
+        }
+      } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
+        await handleIssueReviewPathDisposition(finalizedRun);
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -16544,9 +17258,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
+        await applyPostRunDisposition({ run: livenessRun, agent });
         await handleRunLivenessContinuation(livenessRun);
-        await handleIssueReviewPathDisposition(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
@@ -16717,9 +17430,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
-        await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
-        await handleIssueReviewPathDisposition(livenessRun);
+        await applyPostRunDisposition({ run: livenessRun, agent });
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
@@ -16855,25 +17566,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
-              await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent).catch((retryError) => {
-                logger.warn(
-                  { err: retryError, runId: livenessRun.id },
-                  "failed to schedule interaction continuation retry after setup failure",
+              await applyPostRunDisposition({ run: livenessRun, agent: failedAgent }).catch((dispositionError) => {
+                logger.error(
+                  { err: dispositionError, runId: livenessRun.id },
+                  "failed to apply post-run disposition after setup failure",
                 );
               });
             }
-            await releaseIssueExecutionAndPromote(livenessRun).catch((releaseError) => {
-              logger.error(
-                { err: releaseError, runId },
-                "failed to release issue execution after heartbeat setup failure",
-              );
-            });
-            await handleIssueReviewPathDisposition(livenessRun).catch((reviewPathError) => {
-              logger.error(
-                { err: reviewPathError, runId },
-                "failed to evaluate review-path disposition after heartbeat setup failure",
-              );
-            });
+            if (!failedAgent) {
+              await releaseIssueExecutionAndPromote(livenessRun).catch((releaseError) => {
+                logger.error(
+                  { err: releaseError, runId },
+                  "failed to release issue execution after heartbeat setup failure",
+                );
+              });
+              await handleIssueReviewPathDisposition(livenessRun).catch((reviewPathError) => {
+                logger.error(
+                  { err: reviewPathError, runId },
+                  "failed to evaluate review-path disposition after heartbeat setup failure",
+                );
+              });
+            }
           }
           // Ensure the agent is not left stuck in "running" if the setup-failure
           // path owned the terminal transition. If another path already finalized
@@ -16886,6 +17599,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         } finally {
           let latestRun = await getRun(run.id).catch(() => null);
+          const dispositionNeededAfterLeaseTerminalization =
+            latestRun?.status === "running" || latestRun?.status === "queued";
           // Close the invariant "environment lease released implies the run is
           // terminal". When the teardown reaches this point with the run still
           // running or queued, force a terminal status before the lease is
@@ -16898,6 +17613,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
               return latestRun;
             });
+          }
+          if (
+            dispositionNeededAfterLeaseTerminalization
+            && latestRun
+            && isHeartbeatRunTerminalStatus(latestRun.status)
+          ) {
+            const dispositionAgent = await getAgent(latestRun.agentId).catch(() => null);
+            if (dispositionAgent) {
+              await applyPostRunDisposition({ run: latestRun, agent: dispositionAgent }).catch((dispositionError) => {
+                logger.error(
+                  { err: dispositionError, runId: latestRun.id },
+                  "failed to apply post-run disposition after lease-release terminalization",
+                );
+              });
+            }
           }
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
