@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.whitestag.backup-abnahme</string>
+
+    <!-- EINMALIGE Wiedervorlage am 29.08.2026, eine Woche nach dem Aufbau.
+         launchd kennt keinen echten Einmal-Termin: Tag+Monat feuern einmal
+         im Jahr. Nach der Durchsicht entladen:
+           launchctl bootout gui/$UID/de.whitestag.backup-abnahme -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/backup-waechter/run-abnahme.js</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key><integer>8</integer>
+        <key>Day</key><integer>29</integer>
+        <key>Hour</key><integer>9</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/backup-abnahme.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/backup-abnahme.log</string>
+    <key>RunAtLoad</key><false/>
+</dict>
+</plist>

@@ -155,6 +155,21 @@ AUFFANG="$(dirname "$ZIEL")/_vault-geloescht/$(date '+%Y-%m-%d')"
 RSYNC_ARGS=(
   -a --delete
   --backup
+  # --checksum vergleicht den INHALT statt Groesse und Zeit. Ohne das
+  # konvergiert der Spiegel nie: die SMB-Freigabe verwirft rsyncs Zeitstempel
+  # beim Schliessen der Datei (`touch` danach geht, rsyncs eigener Versuch
+  # nicht) und erzwingt Modus 700 statt 644. rsync hielt deshalb bei JEDEM
+  # Lauf alle Dateien fuer veraendert — am 22.08.2026 gemessen: 7.040
+  # uebertragen und 46.983 in den Auffangordner geschoben, auf einem bereits
+  # vollstaendigen Stand.
+  #
+  # Kosten: rsync liest beide Seiten. Nutzen: identische Dateien werden nicht
+  # uebertragen und landen damit auch nicht im Auffangordner, waehrend eine
+  # echte Inhaltsaenderung weiterhin sicher erkannt wird.
+  --checksum
+  # Die Freigabe nimmt Rechte und Eigentuemer ohnehin nicht an; der Versuch
+  # erzeugt nur Rauschen und laesst jede Datei als veraendert erscheinen.
+  --no-perms --no-owner --no-group
   --exclude ".DS_Store"
   --exclude "._*"
   --exclude ".trash/"

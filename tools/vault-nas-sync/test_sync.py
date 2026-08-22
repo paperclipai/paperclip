@@ -259,3 +259,40 @@ def test_git_historie_bleibt_erhalten(tmp_path):
     q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas"; z.mkdir()
     lauf(q, z)
     assert (z / "projekte" / "code" / ".git" / "config").read_text() == "historie"
+
+
+def test_zweiter_lauf_uebertraegt_nichts_obwohl_die_zeitstempel_abweichen(tmp_path):
+    """Der teuerste Fund des 22.08.2026.
+
+    Die SMB-Freigabe verwirft rsyncs Zeitstempel beim Schliessen der Datei —
+    `touch` danach funktioniert, rsyncs eigener Versuch nicht — und erzwingt
+    Modus 700 statt 644. rsync hielt deshalb bei JEDEM Lauf alle Dateien fuer
+    veraendert: 7.040 uebertragen und 46.983 in den Auffangordner geschoben,
+    auf einem Stand, der bereits vollstaendig war. Der Spiegel konvergierte nie.
+
+    Antwort: `--checksum` (Vergleich ueber den Inhalt statt ueber die Zeit)
+    plus `--no-perms/--no-owner/--no-group`.
+
+    Dieser Test stellt das Verhalten der Freigabe nach: nach dem ersten Lauf
+    werden die Zeitstempel am Ziel verbogen und die Rechte veraendert. Ein
+    zweiter Lauf darf trotzdem NICHTS uebertragen."""
+    import os, time
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas"; z.mkdir()
+    lauf(q, z)
+    fremd = time.time() - 12345
+    for w, ds, fs in os.walk(z):
+        for f in fs:
+            p = os.path.join(w, f)
+            os.utime(p, (fremd, fremd))      # Zeitstempel wie von der Freigabe verworfen
+            os.chmod(p, 0o700)               # Modus wie von der Freigabe erzwungen
+
+    vorher = sum(len(fs) for _, _, fs in os.walk(z.parent / "_vault-geloescht")) \
+        if (z.parent / "_vault-geloescht").exists() else 0
+    r = lauf(q, z)
+    nachher = sum(len(fs) for _, _, fs in os.walk(z.parent / "_vault-geloescht")) \
+        if (z.parent / "_vault-geloescht").exists() else 0
+
+    assert "Uebertragen: 0" in r.stdout, \
+        f"zweiter Lauf hat uebertragen:\n{r.stdout[-600:]}"
+    assert nachher == vorher, \
+        f"Auffangordner gewachsen: {vorher} -> {nachher}"
