@@ -158,7 +158,13 @@ describeEmbeddedPostgres("meta-issue dedup", () => {
       expect(comments[0]?.authorType).toBe("system");
     });
 
-    it("distinct blockers still mint distinct cards", async () => {
+    it("a reworded blocker from the same source reuses the one open Unblock card", async () => {
+      // 2026-08-22: this test previously asserted the pre-6e86af2c1 behavior
+      // (distinct blocker wording => distinct cards). The standing policy is
+      // ONE open Unblock per source issue, ever — free-prose blocker text
+      // never repeats, so title-keyed minting produced 49 sibling cards in a
+      // single morning once blocked dispositions were honored. A new blocker
+      // statement lands as a comment on the existing card.
       const seed = await seedCompany();
 
       const first = await ensureUnblockBlockerCard(db, issuesSvc, {
@@ -171,8 +177,8 @@ describeEmbeddedPostgres("meta-issue dedup", () => {
       });
 
       expect(first.outcome).toBe("created");
-      expect(second.outcome).toBe("created");
-      expect(mintedCardId(second)).not.toBe(mintedCardId(first));
+      expect(second.outcome).toBe("reused");
+      expect(mintedCardId(second)).toBe(mintedCardId(first));
     });
 
     it("suppresses re-creation while an identical card is freshly cancelled, then remints after the window", async () => {

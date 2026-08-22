@@ -589,6 +589,13 @@ export function buildStatedDispositionBlockerIssueInput(input: {
     workMode: input.workMode === "plan" || input.workMode === "execute" ? input.workMode : "standard",
     assigneeAgentId: input.assigneeAgentId,
     assigneeUserId: input.assigneeUserId,
+    // 2026-08-22: without originId on the CREATED card, the issue-scoped
+    // Unblock reuse (one open Unblock per source issue, 6e86af2c1) can never
+    // match it — measured live within hours of blocked dispositions being
+    // honored: 49 Unblock cards in one morning, every origin_id NULL, zero
+    // reuse. The origin binds the card to its source issue for dedup.
+    originKind: "stated_blocker",
+    originId: input.sourceId,
   };
 }
 
@@ -638,6 +645,11 @@ export async function ensureUnblockBlockerCard(
     companyId: input.sourceIssue.companyId,
     title: issueInput.title,
     excludeIssueId: input.sourceIssue.id,
+    // 2026-08-22: the issue-scoped reuse path (ONE open Unblock per source
+    // issue regardless of blocker wording) only activates when originId is
+    // supplied — this caller omitted it, so only exact-title identity ran and
+    // every reworded blocker minted a sibling.
+    originId: input.sourceIssue.id,
     terminalSuppressionMs: UNBLOCK_CARD_TERMINAL_SUPPRESSION_MS,
     now: input.now,
   });
