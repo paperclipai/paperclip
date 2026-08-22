@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
+  detectClaudeOverflowHold,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -147,6 +148,26 @@ describe("detectClaudeLoginRequired", () => {
   });
 });
 
+describe("detectClaudeOverflowHold", () => {
+  it("recognizes only the wrapper stderr sentinel and preserves its reset epoch", () => {
+    const message =
+      "[claude-overflow] HOLD: subscription session limit active; skipping launch until reset; resetEpoch=1900000000 (this run is a zero-token no-op).";
+
+    expect(detectClaudeOverflowHold(`${message}\n`)).toEqual({
+      message,
+      retryNotBefore: new Date(1_900_000_000 * 1_000),
+    });
+    expect(detectClaudeOverflowHold("Docs mention a subscription session limit.")).toBeNull();
+  });
+
+  it("still recognizes the historical sentinel when reset metadata is absent", () => {
+    const message =
+      "[claude-overflow] HOLD: subscription session limit active; skipping launch until reset (this run is a zero-token no-op).";
+
+    expect(detectClaudeOverflowHold(message)).toEqual({ message, retryNotBefore: null });
+  });
+});
+
 describe("isClaudeModelNotFoundError", () => {
   it("detects model resolution failures from structured and fallback output", () => {
     expect(isClaudeModelNotFoundError({
@@ -196,6 +217,21 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
     expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-04-22T21:00:00.000Z",
+    );
+  });
+
+  it("classifies a success-envelope weekly limit and extracts its calendar reset", () => {
+    const now = new Date("2026-08-01T12:00:00.000Z");
+    const parsed = {
+      subtype: "success",
+      is_error: false,
+      result: "You've hit your weekly limit - resets Aug 5, 7am (America/New_York)",
+    };
+
+    expect(isClaudeProviderQuotaError({ parsed })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ parsed })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ parsed }, now)?.toISOString()).toBe(
+      "2026-08-05T11:00:00.000Z",
     );
   });
 
@@ -471,6 +507,17 @@ describe("extractClaudeRetryNotBefore", () => {
       now,
     );
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
+  });
+
+  it("does not roll a stale calendar reset into the following year", () => {
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage:
+          "You've hit your weekly limit - resets Aug 5, 7am (America/New_York)",
+      },
+      new Date("2026-08-05T11:01:00.000Z"),
+    );
+    expect(extracted).toBeNull();
   });
 
   it("returns null when no reset hint is present", () => {

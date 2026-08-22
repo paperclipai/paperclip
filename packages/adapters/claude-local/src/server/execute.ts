@@ -59,6 +59,7 @@ import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
+  detectClaudeOverflowHold,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
@@ -972,17 +973,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
+    const overflowHold = detectClaudeOverflowHold(proc.stderr);
+
     if (!parsed) {
-      const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const fallbackErrorMessage = overflowHold?.message ?? parseFallbackErrorMessage(proc);
       const providerQuota =
         !loginMeta.requiresLogin &&
-        (proc.exitCode ?? 0) !== 0 &&
-        isClaudeProviderQuotaError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
+        (overflowHold !== null ||
+          ((proc.exitCode ?? 0) !== 0 &&
+            isClaudeProviderQuotaError({
+              parsed: null,
+              stdout: proc.stdout,
+              stderr: proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })));
       const transientUpstream =
         !loginMeta.requiresLogin &&
         !providerQuota &&
@@ -993,14 +997,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const transientRetryNotBefore = providerQuota || transientUpstream
-        ? extractClaudeRetryNotBefore({
-            parsed: null,
-            stdout: proc.stdout,
-            stderr: proc.stderr,
-            errorMessage: fallbackErrorMessage,
-          })
-        : null;
+      const transientRetryNotBefore = overflowHold?.retryNotBefore ??
+        (providerQuota || transientUpstream
+          ? extractClaudeRetryNotBefore({
+              parsed: null,
+              stdout: proc.stdout,
+              stderr: proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null);
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
@@ -1073,8 +1078,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const claudeRefusal = isClaudeRefusalResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
-    const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
-    const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
+    const zeroTokenResult =
+      usage.inputTokens === 0 && usage.cachedInputTokens === 0 && usage.outputTokens === 0;
+    // Claude can wrap a subscription refusal in subtype=success. Keep the guard
+    // narrow so ordinary successful output that discusses quotas remains valid.
+    const successfulQuotaRefusal =
+      parsedSubtype === "success" &&
+      !parsedIsError &&
+      zeroTokenResult &&
+      isClaudeProviderQuotaError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+      });
+    const parsedSucceeded =
+      parsedSubtype === "success" && !parsedIsError && !successfulQuotaRefusal;
+    const failed =
+      overflowHold !== null ||
+      successfulQuotaRefusal ||
+      (!parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError));
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -1101,19 +1123,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const errorMessage = failed
-      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+      ? overflowHold?.message ?? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
-      isClaudeProviderQuotaError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage,
-      });
+      (overflowHold !== null ||
+        isClaudeProviderQuotaError({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        }));
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
@@ -1126,14 +1149,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: proc.stderr,
         errorMessage,
       });
-    const transientRetryNotBefore = providerQuota || transientUpstream
-      ? extractClaudeRetryNotBefore({
-          parsed,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage,
-        })
-      : null;
+    const transientRetryNotBefore = overflowHold?.retryNotBefore ??
+      (providerQuota || transientUpstream
+        ? extractClaudeRetryNotBefore({
+            parsed,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage,
+          })
+        : null);
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
