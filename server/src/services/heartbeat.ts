@@ -3311,6 +3311,14 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export function getMissingIssueExecutionFailure(issueId: string | null, issueContext: unknown) {
+  if (!issueId || issueContext) return null;
+  return {
+    error: "Issue not found at execution time",
+    errorCode: "issue_not_found" as const,
+  };
+}
+
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
   if (!text) return null;
@@ -14153,6 +14161,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    const missingIssueExecutionFailure = getMissingIssueExecutionFailure(issueId, issueContext);
+    if (missingIssueExecutionFailure) {
+      await setRunStatus(run.id, "failed", {
+        error: missingIssueExecutionFailure.error,
+        errorCode: missingIssueExecutionFailure.errorCode,
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: missingIssueExecutionFailure.error,
+      });
+      const failedRun = await getRun(run.id);
+      if (failedRun) {
+        await appendRunEvent(failedRun, await nextRunEventSeq(failedRun.id), {
+          eventType: "error",
+          stream: "system",
+          level: "error",
+          message: missingIssueExecutionFailure.error,
+        });
+        await releaseIssueExecutionAndPromote(failedRun);
+      }
+      await finalizeAgentStatus(agent.id, "failed");
+      return;
+    }
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
