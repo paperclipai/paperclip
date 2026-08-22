@@ -108,6 +108,7 @@ import type {
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
 import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { isForeignKeyViolation } from "../db-errors.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
@@ -7053,7 +7054,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       }
 
-      const [deleted] = await db.delete(toolProfiles).where(eq(toolProfiles.id, existing.id)).returning();
+      let deleted: typeof toolProfiles.$inferSelect | undefined;
+      try {
+        [deleted] = await db.delete(toolProfiles).where(eq(toolProfiles.id, existing.id)).returning();
+      } catch (err) {
+        // tool_mcp_gateways.profile_id references tool_profiles.id with
+        // onDelete: "restrict", including for archived gateways whose config
+        // is otherwise inert. Map the raw FK violation to a clear 409 that
+        // tells the caller to reassign the referencing gateway to a
+        // different profile first (the only supported recovery path;
+        // gateways cannot be deleted through the API), instead of a bare 500.
+        if (isForeignKeyViolation(err)) {
+          throw conflict(
+            "Tool profile cannot be deleted because a gateway (including archived gateways) still references it. Reassign that gateway to a different tool profile first.",
+            { summary: details.summary },
+          );
+        }
+        throw err;
+      }
       if (!deleted) throw notFound("Tool profile not found");
       return {
         profile: toProfile(deleted),
