@@ -12,6 +12,7 @@ import {
   createAgentKeySchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
+  claimRoutineSummaryRefreshSlotsSchema,
   generateSummarySlotSchema,
   writeSummarySlotSchema,
   createStatusCardSchema,
@@ -1581,6 +1582,25 @@ registry.registerPath({
   summary: "List dated revisions for a summary slot",
   request: { params: summarySlotParams },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/routine-refresh/claim",
+  tags: ["summaries"],
+  summary: "Claim changed stale summary slots for the checked-out Summarizer routine task",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(claimRoutineSummaryRefreshSlotsSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
