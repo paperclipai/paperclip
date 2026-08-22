@@ -402,6 +402,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
+  it("returns null for routine and trigger lookups with non-UUID ids instead of crashing the uuid query", async () => {
+    const { svc } = await seedFixture();
+
+    await expect(svc.get("1188e836")).resolves.toBeNull();
+    await expect(svc.getDetail("1188e836")).resolves.toBeNull();
+    await expect(svc.getTrigger("1188e836")).resolves.toBeNull();
+  });
+
   it("does not reveal folders owned by another company", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const otherCompanyId = randomUUID();
