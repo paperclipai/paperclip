@@ -27,6 +27,31 @@ export function useKeyboardShortcuts({
   onShowShortcuts,
   onGoToInbox,
 }: ShortcutHandlers) {
+  // With shortcuts disabled, `?` is the one key that still works. Everything
+  // else about the feature is invisible when the flag is off — the cheatsheet
+  // was reachable only through `?`, which the flag also gated, so there was no
+  // trace in the UI of shortcuts existing or of the setting that turns them on
+  // at all. The cheatsheet itself explains how to enable them.
+  useEffect(() => {
+    if (enabled) return;
+    // Bound to a const, and an arrow rather than a hoisted declaration, so the
+    // null check above still narrows at the call site.
+    const showShortcuts = onShowShortcuts;
+    if (!showShortcuts) return;
+
+    const handleHelpKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.key !== "?" || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isKeyboardShortcutTextInputTarget(e.target)) return;
+      if (hasBlockingShortcutDialog()) return;
+      e.preventDefault();
+      showShortcuts();
+    };
+
+    document.addEventListener("keydown", handleHelpKeyDown);
+    return () => document.removeEventListener("keydown", handleHelpKeyDown);
+  }, [enabled, onShowShortcuts]);
+
   useEffect(() => {
     if (!enabled) return;
 

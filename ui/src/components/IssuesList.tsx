@@ -12,6 +12,7 @@ import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { usePointerMovedSinceKeyNav } from "../hooks/usePointerMovedSinceKeyNav";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -716,14 +717,7 @@ export function IssuesList({
   // selection only after real pointer movement, so keyboard-driven scrolling
   // doesn't hand the selection to whatever row lands under the cursor.
   const [selectedNavKey, setSelectedNavKey] = useState<string | null>(null);
-  const pointerMovedSinceKeyNavRef = useRef(true);
-  useEffect(() => {
-    const handlePointerMove = () => {
-      pointerMovedSinceKeyNavRef.current = true;
-    };
-    window.addEventListener("mousemove", handlePointerMove, { passive: true });
-    return () => window.removeEventListener("mousemove", handlePointerMove);
-  }, []);
+  const pointerMovedSinceKeyNavRef = usePointerMovedSinceKeyNav();
   // Which entry the cursor is over, tracked WITHOUT React state so scrubbing the
   // list costs zero re-renders (hover paints via CSS `:hover`). Keyboard nav
   // reads this to continue from the hovered row. Key-based, so it self-heals if
