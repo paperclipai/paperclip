@@ -72,6 +72,7 @@ describe("hermes execute", () => {
         "session_id: sess-1",
         "Warning: Unknown toolsets: messaging",
         "OK",
+        'PAPERCLIP_DISPOSITION {"status":"done","hasBlocker":false}',
       ].join("\n"),
       stderr: "",
     });
@@ -257,7 +258,7 @@ describe("hermes execute", () => {
       exitCode: 0,
       signal: null,
       timedOut: false,
-      stdout: "session_id: sess-isolated\nOK",
+      stdout: 'session_id: sess-isolated\nOK\nPAPERCLIP_DISPOSITION {"status":"done","hasBlocker":false}',
       stderr: "",
     });
 
@@ -567,4 +568,39 @@ describe("hermes execute", () => {
       session_id: "sess-live-cap",
     });
   });
+
+  it("re-asks once in the same session when the main turn states no disposition", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    runChildProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "session_id: sess-reask\nDid the work, forgot the line.",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: 'PAPERCLIP_DISPOSITION {"status":"done","hasBlocker":false}',
+        stderr: "",
+      });
+    const result = await execute({
+      runId: "run-reask",
+      agent: { id: "agent-1", companyId: "company-1", name: "Hermes Agent", adapterType: "hermes_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    } as AdapterExecutionContext);
+    expect(runChildProcessMock).toHaveBeenCalledTimes(2);
+    const reaskArgs = (runChildProcessMock.mock.calls[1] as [string, string, string[]])[2];
+    expect(reaskArgs).toContain("--resume");
+    expect(reaskArgs[reaskArgs.indexOf("--resume") + 1]).toBe("sess-reask");
+    expect(reaskArgs).toContain("--max-turns");
+    expect(JSON.stringify(result)).toContain('"status":"done"');
+  });
+
 });

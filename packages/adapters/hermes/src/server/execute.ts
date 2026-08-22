@@ -825,6 +825,47 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+
+  // Fork (2026-08-22): in-run disposition re-ask, mirroring the acpx engine.
+  // Hermes lanes ended ~99% of runs without a PAPERCLIP_DISPOSITION line
+  // (3 of 227 succeeded runs captured one on 2026-08-22) even though the law is
+  // in their instructions — every such run costs a continuation wake and a
+  // re-run. One bounded follow-up turn in the SAME session asks for the line
+  // only when the main turn completed cleanly and stated nothing.
+  if (
+    !result.timedOut &&
+    result.exitCode === 0 &&
+    parsed.sessionId &&
+    !extractPaperclipDisposition(parsed.response || "").disposition
+  ) {
+    const reaskPrompt =
+      "Your previous reply did not end with the required PAPERCLIP_DISPOSITION line. " +
+      "Reply with exactly ONE line and nothing else, reflecting the work you just did on this issue: " +
+      'PAPERCLIP_DISPOSITION {"status":"<done|in_review|blocked|continuing>","hasBlocker":<true|false>,"blocker":"<named blocker, or empty>"}';
+    const reaskArgs: string[] = ["chat", "-q", reaskPrompt, "-Q"];
+    if (model) reaskArgs.push("-m", model);
+    if (resolvedProvider !== "auto") reaskArgs.push("--provider", resolvedProvider);
+    reaskArgs.push("--max-turns", "2", "--source", runSource, "--yolo");
+    if (ignoreRules) reaskArgs.push("--ignore-rules");
+    reaskArgs.push("--resume", parsed.sessionId);
+    await wrappedOnLog("stdout", "[hermes] disposition re-ask: one bounded turn in the same session\n");
+    const reask = await runChildProcess(ctx.runId, hermesCmd, reaskArgs, {
+      cwd,
+      env,
+      timeoutSec: 90,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+    const reaskParsed = parseHermesOutput(reask.stdout || "", reask.stderr || "");
+    const reaskDisposition = extractPaperclipDisposition(reaskParsed.response || "").disposition;
+    if (reaskDisposition) {
+      parsed.response = `${parsed.response || ""}\n${reaskParsed.response || ""}`;
+      await wrappedOnLog("stdout", `[hermes] disposition re-ask: captured ${reaskDisposition.status}\n`);
+    } else {
+      await wrappedOnLog("stdout", "[hermes] disposition re-ask: no disposition stated\n");
+    }
+  }
   const resolvedSessionId = parsed.sessionId ?? monitoredSessionId;
   const sessionUsage = resolvedSessionId
     ? await readHermesSessionUsage(resolvedSessionId) ?? monitoredUsage
