@@ -46,6 +46,26 @@ function bearerToken(req: { header(name: string): string | undefined }) {
   return match?.[1]?.trim() || null;
 }
 
+/**
+ * Transport contract for the `pcgt_` session credential on the session data
+ * plane. `X-Paperclip-Tool-Gateway-Token` stays canonical (it is what
+ * doc/MCP-ACCESS-GOVERNANCE.md documents and what the agent runtime sends) and
+ * wins when both are present.
+ *
+ * Clients with a single credential slot — MCP clients, generated OpenAPI/SDK
+ * callers — send the same product-minted token as `Authorization: Bearer`, so
+ * accept that too, but only for a `pcgt_`-shaped value. Any other bearer
+ * belongs to a global actor family and must not be mistaken for a session
+ * token; leaving it unrecognised here keeps the "session token is required"
+ * answer these routes already gave it.
+ */
+function sessionToken(req: { header(name: string): string | undefined }) {
+  const headerToken = gatewayToken(req);
+  if (headerToken) return headerToken;
+  const bearer = bearerToken(req);
+  return bearer?.startsWith("pcgt_") ? bearer : null;
+}
+
 function callerHeaders(req: { headers: Record<string, string | string[] | undefined> }): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(req.headers)) {
@@ -468,7 +488,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.get("/tool-gateway/tools", async (req, res) => {
     try {
-      const token = gatewayToken(req);
+      const token = sessionToken(req);
       if (!token) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;
@@ -482,7 +502,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/tools/call", async (req, res) => {
     try {
-      const token = gatewayToken(req);
+      const token = sessionToken(req);
       if (!token) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;

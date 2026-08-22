@@ -16,6 +16,7 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { isRouteOwnedAuthPath } from "./route-owned-auth.js";
 import { boardAuthService } from "../services/board-auth.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
@@ -222,6 +223,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
+
+    // Route-owned authentication surfaces (named MCP gateway protocol,
+    // tool-gateway session data plane) validate their own credential family.
+    // Leave their bearer untouched and hand the request to the route with the
+    // default actor: consuming it here answered a generic actor-token 401 for
+    // product-minted `pcgw_`/`pcgt_` tokens. Management endpoints
+    // are not on the allowlist and keep the checks below.
+    if (hasBearerCredentials && isRouteOwnedAuthPath(req.path)) {
+      if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
     if (!hasBearerCredentials) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
