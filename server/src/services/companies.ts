@@ -11,6 +11,8 @@ import {
   agentWakeupRequests,
   issues,
   issueComments,
+  issueInboxArchives,
+  issueThreadInteractions,
   projects,
   goals,
   heartbeatRuns,
@@ -21,7 +23,12 @@ import {
   approvalComments,
   approvals,
   activityLog,
+  budgetIncidents,
+  budgetPolicies,
   companySecrets,
+  feedbackVotes,
+  folders,
+  inboxDismissals,
   joinRequests,
   invites,
   principalPermissionGrants,
@@ -32,12 +39,16 @@ import {
   routineTriggers,
   routineRevisions,
   routines,
+  secretAccessEvents,
+  toolMcpGateways,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { stopRuntimeServicesForCompany } from "./workspace-runtime.js";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -437,9 +448,13 @@ export function companyService(db: Db) {
       return result.company;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
+    remove: async (id: string) => {
+      // Kill live managed runtime processes before their rows disappear, so
+      // the hard delete cannot leave orphaned processes behind.
+      await stopRuntimeServicesForCompany({ db, companyId: id });
+      return db.transaction(async (tx) => {
+        // Delete from child tables in dependency order: tables whose FKs have
+        // no ON DELETE action must be emptied before the rows they reference.
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })
           .from(heartbeatRuns)
@@ -453,39 +468,64 @@ export function companyService(db: Db) {
         }
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+        // finance_events reference cost_events; both reference heartbeat_runs
+        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        // budget_incidents reference approvals and budget_policies
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
+        // secret_access_events may have secret_id NULL, so the company_secrets
+        // cascade alone does not clear them
+        await tx.delete(secretAccessEvents).where(eq(secretAccessEvents.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
+        // company_skills must go before issues/agents: the cascade to
+        // company_skill_test_runs clears their RESTRICT references to both
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
         await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
         await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
         await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
+        // these reference issues (issue_thread_interactions also agents)
+        // without a delete action
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, id));
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
+        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
-        await tx.delete(goals).where(eq(goals.companyId, id));
+        // projects reference goals via goal_id, so projects go first
         await tx.delete(projects).where(eq(projects.companyId, id));
+        await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
+        await tx.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, id));
+        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
+        // tool_mcp_gateways hold a RESTRICT reference to tool_profiles, which
+        // would make the companies ON DELETE CASCADE order-dependent
+        await tx.delete(toolMcpGateways).where(eq(toolMcpGateways.companyId, id));
+        // folders self-reference via parent_id with RESTRICT; detach children
+        // first so the delete cannot trip over parent/child ordering
+        await tx.update(folders).set({ parentId: null }).where(eq(folders.companyId, id));
+        await tx.delete(folders).where(eq(folders.companyId, id));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
-      }),
+      });
+    },
 
     stats: () =>
       Promise.all([

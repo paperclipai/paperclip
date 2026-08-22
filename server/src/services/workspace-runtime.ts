@@ -7885,6 +7885,40 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
   }
 }
 
+// Terminates every live runtime service of a company. Callers that delete the
+// company afterwards drop the persisted rows themselves, so no db update here.
+export async function stopRuntimeServicesForCompany(input: { db: Db; companyId: string }) {
+  const matchingServiceIds = Array.from(runtimeServicesById.values())
+    .filter((record) => record.companyId === input.companyId)
+    .map((record) => record.id);
+
+  for (const serviceId of matchingServiceIds) {
+    await stopRuntimeService(serviceId);
+  }
+
+  // Services started before the last server restart live only in the on-disk
+  // registry until startup reconciliation adopts them; terminate those too.
+  const persistedRows = await input.db
+    .select({ id: workspaceRuntimeServices.id })
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.companyId, input.companyId),
+        eq(workspaceRuntimeServices.provider, "local_process"),
+        inArray(workspaceRuntimeServices.status, ["starting", "running", "stopped"]),
+      ),
+    );
+  for (const row of persistedRows) {
+    const registryRecord = await findLocalServiceRegistryRecordByRuntimeServiceId({
+      runtimeServiceId: row.id,
+      profileKind: "workspace-runtime",
+    });
+    if (!registryRecord) continue;
+    await terminateLocalService(registryRecord);
+    await removeLocalServiceRegistryRecord(registryRecord.serviceKey);
+  }
+}
+
 export async function listWorkspaceRuntimeServicesForProjectWorkspaces(
   db: Db,
   companyId: string,
