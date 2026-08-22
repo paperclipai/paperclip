@@ -24,6 +24,16 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+async function waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Condition was not met within ${timeoutMs}ms`);
+    }
+    await delay(25);
+  }
+}
+
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -39,6 +49,8 @@ describe("worktree port registry lock", () => {
     let secondEntered = false;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
+      const leaseHeartbeatMtime = fs.statSync(lockPath).mtimeMs;
+      await waitForCondition(() => fs.statSync(lockPath).mtimeMs > leaseHeartbeatMtime);
       fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner.unavailable.json"));
       const backupOwnerPath = path.join(lockPath, "owner.backup.json");
       const owner = JSON.parse(fs.readFileSync(backupOwnerPath, "utf8"));
@@ -46,6 +58,8 @@ describe("worktree port registry lock", () => {
         ...owner,
         processIdentity: "unavailable-process-identity",
       })}\n`);
+      // Backdate immediately after a heartbeat tick so the contender sees a
+      // stale lease before the next background refresh can run.
       const oldTimestamp = new Date(Date.now() - 10_000);
       fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
       firstEntered.resolve();
