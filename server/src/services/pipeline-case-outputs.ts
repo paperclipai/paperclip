@@ -3,6 +3,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   assets,
+  caseDocuments,
   companies,
   documents,
   documentRevisions,
@@ -11,8 +12,10 @@ import {
   issueDocuments,
   issues,
   issueWorkProducts,
+  pipelineCaseCaseLinks,
   pipelineCaseIssueLinks,
   pipelineCases,
+  cases,
 } from "@paperclipai/db";
 import {
   SYSTEM_ISSUE_DOCUMENT_KEYS,
@@ -312,8 +315,9 @@ export function pipelineCaseOutputsService(db: Db) {
       const sourceIssueIds = sources.map((source) => source.issueId);
       const items: PipelineCaseOutputItem[] = [];
 
+      const latestRevision = alias(documentRevisions, "case_output_latest_revision");
+
       if (sourceIssueIds.length > 0) {
-        const latestRevision = alias(documentRevisions, "case_output_latest_revision");
         const workProductRun = alias(heartbeatRuns, "case_output_work_product_run");
 
         const documentRows = await db
@@ -494,6 +498,89 @@ export function pipelineCaseOutputsService(db: Db) {
             contentPath: path,
             openPath: path,
             downloadPath: downloadPath(row.attachmentId),
+          });
+        }
+      }
+
+      // --- Case documents from linked Cases (experimental Cases system) ---
+      const caseLinkRows = await db
+        .select({
+          linkId: pipelineCaseCaseLinks.id,
+          role: pipelineCaseCaseLinks.role,
+          linkedCaseId: pipelineCaseCaseLinks.linkedCaseId,
+        })
+        .from(pipelineCaseCaseLinks)
+        .where(and(
+          eq(pipelineCaseCaseLinks.companyId, companyId),
+          eq(pipelineCaseCaseLinks.caseId, caseId),
+          isNull(pipelineCaseCaseLinks.retiredAt),
+        ));
+
+      if (caseLinkRows.length > 0) {
+        const linkedCaseIds = caseLinkRows.map((r) => r.linkedCaseId);
+        const caseDocRows = await db
+          .select({
+            caseId: caseDocuments.caseId,
+            key: caseDocuments.key,
+            documentId: documents.id,
+            title: documents.title,
+            format: documents.format,
+            latestBody: documents.latestBody,
+            latestRevisionId: documents.latestRevisionId,
+            latestRevisionNumber: documents.latestRevisionNumber,
+            sourceTrust: documents.sourceTrust,
+            createdByAgentId: documents.createdByAgentId,
+            updatedByAgentId: documents.updatedByAgentId,
+            createdAt: caseDocuments.createdAt,
+            updatedAt: caseDocuments.updatedAt,
+            linkedCaseIdentifier: cases.identifier,
+            linkedCaseTitle: cases.title,
+            linkedCaseStatus: cases.status,
+          })
+          .from(caseDocuments)
+          .innerJoin(documents, and(
+            eq(caseDocuments.documentId, documents.id),
+            eq(documents.companyId, caseDocuments.companyId),
+          ))
+          .innerJoin(cases, and(
+            eq(cases.id, caseDocuments.caseId),
+            eq(cases.companyId, caseDocuments.companyId),
+          ))
+          .leftJoin(latestRevision, and(
+            eq(latestRevision.id, documents.latestRevisionId),
+            eq(latestRevision.companyId, documents.companyId),
+          ))
+          .where(and(
+            eq(caseDocuments.companyId, companyId),
+            inArray(caseDocuments.caseId, linkedCaseIds),
+          ));
+
+        for (const row of caseDocRows) {
+          const link = caseLinkRows.find((l) => l.linkedCaseId === row.caseId);
+          items.push({
+            id: `case_document:${row.documentId}`,
+            kind: "document",
+            title: row.title ?? row.key,
+            sourceIssueId: row.caseId,
+            sourceIssueIdentifier: row.linkedCaseIdentifier,
+            sourceIssuePath: `/cases/${encodeURIComponent(row.linkedCaseIdentifier)}`,
+            sourceIssueTitle: row.linkedCaseTitle,
+            sourceIssueStatus: row.linkedCaseStatus,
+            sourceKind: "case",
+            sourceRole: (link?.role ?? "reference") as PipelineCaseOutputSourceRole,
+            sourceTrust: row.sourceTrust ?? null,
+            sourceRunId: null,
+            sourceAgentId: row.updatedByAgentId ?? row.createdByAgentId,
+            preview: previewFor({ body: row.latestBody, sourceTrust: row.sourceTrust }),
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            documentId: row.documentId,
+            documentKey: row.key,
+            documentTitle: row.title,
+            format: row.format,
+            latestRevisionId: row.latestRevisionId,
+            latestRevisionNumber: row.latestRevisionNumber,
+            documentPath: `/api/cases/${row.caseId}/documents/${encodeURIComponent(row.key)}`,
           });
         }
       }

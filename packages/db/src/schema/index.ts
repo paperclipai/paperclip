@@ -60,6 +60,7 @@ export {
 } from "./cases.js";
 export {
   pipelineCases,
+  pipelineCaseCaseLinks,
   pipelineCaseIssueLinks,
   pipelineCaseBlockers,
   pipelineDocuments,

@@ -41,6 +41,7 @@ export const pipelineCaseEvents = pgTable(
         'conversation_opened',
         'issue_linked',
         'issue_unlinked',
+        'case_linked',
         'automation_executed',
         'automation_failed',
         'automation_retry_requested',
