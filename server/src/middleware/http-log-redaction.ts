@@ -9,5 +9,11 @@ export const HTTP_LOG_REDACT_PATHS = [
   // Credential- and session-paired headers with no debugging value.
   'req.headers["x-csrf-token"]',
   'req.headers["x-xsrf-token"]',
+  // Auth-shaped headers the server does not accept as credentials. They are
+  // still logged with the request, including on the rejected response, so a
+  // credential a caller put in the wrong header would otherwise be written
+  // out in clear text.
   'req.headers["x-api-key"]',
+  'req.headers["api-key"]',
+  'req.headers["x-auth-token"]',
 ] as const;
