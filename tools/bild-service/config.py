@@ -117,6 +117,15 @@ MODEL_JOB_TIMEOUT_SEC = {"qwen360": 900, "qwenedit": 600}
 
 UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
 
+# Dasselbe fuer Paperclip selbst (:3100). Eigener Wert, weil es ein anderer
+# Ausfall ist: faellt der Renderknoten aus, laeuft der Dienst weiter und
+# sammelt nur nichts ein -- faellt :3100 aus, geht GAR NICHTS mehr, und jeder
+# Zyklus scheitert sofort. Vorfall 21.08.: :3100 lag im Crashloop, und der
+# Dienst mailte ungedaempft im Minutentakt "Zyklus abgebrochen".
+# :3100 laeuft als Dev-Server unter launchd und ist bei jedem Neustart ein
+# paar Minuten weg -- die Schwelle muss deutlich darueber liegen.
+PAPERCLIP_UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
+
 # Befund 2 + 3: Absende- bzw. Hochladeversuche, die je Issue hintereinander
 # scheitern, OBWOHL der Knoten/Paperclip grundsaetzlich reagiert (kein
 # 'unreachable' im Sinne von UNREACHABLE_ALERT_CYCLES). Absichtlich deutlich

@@ -16,6 +16,16 @@ class PaperclipError(RuntimeError):
     """
 
 
+class PaperclipUnreachable(PaperclipError):
+    """Paperclip antwortet ueberhaupt nicht (Verbindung abgelehnt, DNS, Timeout).
+
+    Eigener Typ, weil der Aufrufer diesen Fall daempfen muss: :3100 laeuft im
+    Dev-Modus unter launchd und ist bei jedem Neustart fuer ein paar Minuten
+    weg. Ein HTTP-Status (auch 500) ist ausdruecklich KEIN Fall hierfuer --
+    da antwortet der Server ja, und ein solcher Fehler soll sofort auffallen.
+    """
+
+
 def _token():
     with open(AUTH_JSON) as f:
         return json.load(f)["credentials"][PAPERCLIP_BASE]["token"]
@@ -53,9 +63,9 @@ def _request(method, path, *, json_body=None, multipart=None, base=PAPERCLIP_BAS
             "Paperclip %s %s: HTTP %s: %s"
             % (method, path, e.code, e.read().decode(errors="replace")[:300]))
     except urllib.error.URLError as e:
-        raise PaperclipError("Paperclip %s %s: nicht erreichbar: %s" % (method, path, e))
+        raise PaperclipUnreachable("Paperclip %s %s: nicht erreichbar: %s" % (method, path, e))
     except OSError as e:
-        raise PaperclipError("Paperclip %s %s: OS-Fehler: %s" % (method, path, e))
+        raise PaperclipUnreachable("Paperclip %s %s: OS-Fehler: %s" % (method, path, e))
 
 def list_issues(company_id, status, label_id, limit=100):
     return _request("GET",
@@ -86,11 +96,11 @@ def fetch_attachment(attachment_id):
                              % (attachment_id, e.code,
                                 e.read().decode(errors="replace")[:300]))
     except urllib.error.URLError as e:
-        raise PaperclipError("Paperclip GET Anhang %s: nicht erreichbar: %s"
-                             % (attachment_id, e))
+        raise PaperclipUnreachable("Paperclip GET Anhang %s: nicht erreichbar: %s"
+                                   % (attachment_id, e))
     except OSError as e:
-        raise PaperclipError("Paperclip GET Anhang %s: OS-Fehler: %s"
-                             % (attachment_id, e))
+        raise PaperclipUnreachable("Paperclip GET Anhang %s: OS-Fehler: %s"
+                                   % (attachment_id, e))
 
 def patch_status(issue_id, status):
     return _request("PATCH", f"/api/issues/{issue_id}", json_body={"status": status})

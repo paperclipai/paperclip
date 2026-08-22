@@ -172,6 +172,13 @@ def render_edit(company, issue, brief, now):
         namen, fehler = upload_sources(iid)
     except comfy_client.ComfyError:
         return          # Knoten weg: Auftrag bleibt liegen, naechster Zyklus versucht erneut
+    except api.PaperclipUnreachable:
+        # Ist :3100 als Ganzes weg, ist das KEIN Fehlversuch dieses Auftrags,
+        # sondern Sache der zentralen Daempfung (note_paperclip_unreachable) --
+        # genau wie ein komplett weggefallener Renderknoten in
+        # _submit_local_job. Wuerde es hier zaehlen, kaeme ein 10-minuetiger
+        # Neustart von :3100 einem Abbruch des Auftrags gleich.
+        raise
     except api.PaperclipError:
         # Befund 3: list_attachments()/fetch_attachment() koennen genauso an
         # Paperclip scheitern (Asset geloescht, Storage antwortet 500) wie
@@ -391,13 +398,52 @@ def note_unreachable():
     job_state.set_unreachable_alerted(True)
 
 
+def note_paperclip_unreachable(err):
+    """Zyklus an einem toten :3100 gescheitert -- gedaempft melden.
+
+    Ohne Daempfung mailt der Dienst im Minutentakt (Vorfall 21.08.: :3100 lag
+    stundenlang im Crashloop). Zaehler und Alarmiert-Flag liegen aus demselben
+    Grund wie beim Renderknoten im State-File und nicht in Modul-Globals:
+    launchd startet jeden Zyklus als frischen Prozess.
+    """
+    cycles = job_state.increment_paperclip_unreachable_cycles()
+    if cycles < config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES:
+        return
+    if job_state.is_paperclip_unreachable_alerted():
+        return
+    api.mail_alarm("[Bilddienst] Paperclip nicht erreichbar",
+                   "Paperclip auf %s antwortet seit %d Zyklen (je 60 s) nicht.\n"
+                   "Der Bilddienst kann weder Aufträge lesen noch Ergebnisse "
+                   "abliefern; laufende Renders bleiben in der Warteschlange.\n\n"
+                   "Diese Meldung kommt genau einmal je Ausfall — die nächste "
+                   "erst wieder, wenn :3100 zwischendurch zurück war.\n\n"
+                   "Letzter Fehler:\n%s"
+                   % (config.PAPERCLIP_BASE, cycles, err))
+    job_state.set_paperclip_unreachable_alerted(True)
+
+
+def reset_paperclip_unreachable():
+    """Nach einem sauber durchgelaufenen Zyklus: Zaehler zurueck, und einmal
+    Entwarnung geben, falls vorher wirklich alarmiert wurde."""
+    if job_state.is_paperclip_unreachable_alerted():
+        api.mail_alarm("[Bilddienst] Paperclip wieder erreichbar",
+                       "Paperclip auf %s antwortet wieder, der Bilddienst "
+                       "arbeitet normal weiter." % config.PAPERCLIP_BASE)
+    elif not job_state.paperclip_unreachable_cycles():
+        return          # nichts zu tun -- spart den Schreibzugriff je Zyklus
+    job_state.reset_paperclip_unreachable()
+
+
 # --- Zyklus --------------------------------------------------------------
 
 def collect_phase(now):
     for issue_id, job in list(job_state.all().items()):
         try:
             collect_one(issue_id, job, now)
-        except api.AuthError:
+        except (api.AuthError, api.PaperclipUnreachable):
+            # Ist :3100 ganz weg, scheitert JEDER Job an derselben Ursache --
+            # das ist ein Zyklusproblem, keins dieses einen Auftrags. Hier
+            # abgefangen gaebe es eine Mail pro Job und Minute.
             raise
         except Exception:
             api.mail_alarm("[Bilddienst] Fehler beim Einsammeln", traceback.format_exc())
@@ -411,8 +457,8 @@ def submit_phase(now):
                     continue
                 try:
                     process_new_issue(company, issue, now)
-                except api.AuthError:
-                    raise
+                except (api.AuthError, api.PaperclipUnreachable):
+                    raise       # siehe collect_phase
                 except Exception:
                     api.mail_alarm("[Bilddienst] Unerwarteter Fehler", traceback.format_exc())
 
@@ -428,8 +474,13 @@ def run_once(now):
     except api.AuthError as e:
         api.mail_alarm("[Bilddienst] Paperclip-Token abgelaufen", str(e))
         sys.exit(1)
+    except api.PaperclipUnreachable as e:
+        note_paperclip_unreachable(e)
+        return
     except Exception:
         api.mail_alarm("[Bilddienst] Zyklus abgebrochen", traceback.format_exc())
+        return
+    reset_paperclip_unreachable()
 
 
 def main():

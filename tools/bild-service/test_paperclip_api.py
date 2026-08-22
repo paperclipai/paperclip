@@ -99,6 +99,65 @@ def test_request_maps_os_error(monkeypatch):
     assert "GET" in str(exc.value)
 
 
+# --- Paperclip nicht erreichbar ist ein EIGENER Fall ----------------------
+#
+# Der Aufrufer muss "Server ist unten" von "Server antwortet, aber der
+# Aufruf war falsch" unterscheiden koennen, ohne in Fehlertexten zu suchen:
+# nur der erste Fall darf gedaempft werden, der zweite muss sofort auffallen.
+
+def test_url_error_ist_unreachable(monkeypatch):
+    _patch_token(monkeypatch)
+
+    def raise_url(*a, **k):
+        raise urllib.error.URLError("Verbindung abgelehnt")
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", raise_url)
+    with pytest.raises(paperclip_api.PaperclipUnreachable):
+        paperclip_api._request("GET", "/api/issues/1")
+
+
+def test_os_error_ist_unreachable(monkeypatch):
+    _patch_token(monkeypatch)
+
+    def raise_os(*a, **k):
+        raise OSError("Netzwerk kaputt")
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", raise_os)
+    with pytest.raises(paperclip_api.PaperclipUnreachable):
+        paperclip_api._request("GET", "/api/issues/1")
+
+
+def test_unreachable_bleibt_ein_paperclip_error():
+    """Bestehende breite except-Bloecke duerfen nicht durchfallen."""
+    assert issubclass(paperclip_api.PaperclipUnreachable,
+                      paperclip_api.PaperclipError)
+
+
+def test_http_status_ist_nicht_unreachable(monkeypatch):
+    """500 heisst: der Server ANTWORTET. Das darf nicht gedaempft werden."""
+    _patch_token(monkeypatch)
+
+    def raise_http(*a, **k):
+        raise urllib.error.HTTPError("http://x", 500, "Server Error", {},
+                                     io.BytesIO(b"kaputt"))
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", raise_http)
+    with pytest.raises(paperclip_api.PaperclipError) as exc:
+        paperclip_api._request("GET", "/api/issues/1")
+    assert not isinstance(exc.value, paperclip_api.PaperclipUnreachable)
+
+
+def test_fetch_attachment_url_error_ist_unreachable(monkeypatch):
+    _patch_token(monkeypatch)
+
+    def raise_url(*a, **k):
+        raise urllib.error.URLError("Verbindung abgelehnt")
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", raise_url)
+    with pytest.raises(paperclip_api.PaperclipUnreachable):
+        paperclip_api.fetch_attachment("att-1")
+
+
 def test_request_maps_malformed_json_body(monkeypatch):
     _patch_token(monkeypatch)
     monkeypatch.setattr(paperclip_api.urllib.request, "urlopen",

@@ -149,6 +149,47 @@ def reset_unreachable():
     _save(st)
 
 
+# --- Paperclip selbst nicht erreichbar: derselbe Zaehler noch einmal -------
+#
+# Getrennt vom Renderknoten-Zaehler oben, weil beide gleichzeitig laufen
+# koennen und sich sonst gegenseitig zuruecksetzen wuerden.
+
+PAPERCLIP_UNREACHABLE_KEY = "paperclip_unreachable"
+
+
+def _paperclip_node(state):
+    return state.get(PAPERCLIP_UNREACHABLE_KEY, {"cycles": 0, "alerted": False})
+
+
+def paperclip_unreachable_cycles():
+    return int(_paperclip_node(_load()).get("cycles", 0))
+
+
+def is_paperclip_unreachable_alerted():
+    return bool(_paperclip_node(_load()).get("alerted", False))
+
+
+def increment_paperclip_unreachable_cycles():
+    st = _load()
+    node = st.setdefault(PAPERCLIP_UNREACHABLE_KEY, {"cycles": 0, "alerted": False})
+    node["cycles"] = int(node.get("cycles", 0)) + 1
+    _save(st)
+    return node["cycles"]
+
+
+def set_paperclip_unreachable_alerted(value):
+    st = _load()
+    node = st.setdefault(PAPERCLIP_UNREACHABLE_KEY, {"cycles": 0, "alerted": False})
+    node["alerted"] = bool(value)
+    _save(st)
+
+
+def reset_paperclip_unreachable():
+    st = _load()
+    st[PAPERCLIP_UNREACHABLE_KEY] = {"cycles": 0, "alerted": False}
+    _save(st)
+
+
 # --- Fehlgeschlagene Absende-/Hochladeversuche (Befund 2 + 3): pro Issue ----
 # zaehlen, statt beim ersten Fehler abzubrechen. Ein einzelner Ausrutscher
 # (kurzer Netzwerk-Hakler, ComfyUI mitten im Neustart) bleibt so folgenlos;

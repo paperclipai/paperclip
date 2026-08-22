@@ -438,6 +438,134 @@ def test_run_once_survives_broad_paperclip_failure(monkeypatch, tmp_path):
     assert api.mails == ["[Bilddienst] Zyklus abgebrochen"]
 
 
+# --- Paperclip nicht erreichbar: gedaempft melden -------------------------
+#
+# Vorfall 21.08.: :3100 lag im Crashloop, der Dienst laeuft im Minutentakt --
+# und schickte 'Zyklus abgebrochen' JEDE Minute, stundenlang. Fuer den
+# Renderknoten gibt es diese Daempfung laengst (note_unreachable), fuer
+# Paperclip fehlte sie.
+
+def _paperclip_weg(monkeypatch):
+    """list_issues so, wie es sich bei totem :3100 verhaelt."""
+    def fn(*a, **k):
+        raise bild_service.api.PaperclipUnreachable(
+            "Paperclip GET /api/companies/x/issues: nicht erreichbar: "
+            "<urlopen error [Errno 61] Connection refused>")
+    monkeypatch.setattr(bild_service.api, "list_issues", fn)
+
+
+def test_paperclip_weg_schweigt_unterhalb_der_schwelle(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    _paperclip_weg(monkeypatch)
+
+    for _ in range(config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES - 1):
+        bild_service.run_once(now=1000.0)
+    assert api.mails == []
+
+
+def test_paperclip_weg_meldet_genau_einmal(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    _paperclip_weg(monkeypatch)
+
+    for _ in range(config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES * 3):
+        bild_service.run_once(now=1000.0)
+    assert api.mails == ["[Bilddienst] Paperclip nicht erreichbar"]
+
+
+def test_paperclip_zurueck_meldet_entwarnung_und_setzt_zurueck(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    _paperclip_weg(monkeypatch)
+    for _ in range(config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES):
+        bild_service.run_once(now=1000.0)
+    assert len(api.mails) == 1
+
+    _stub_list_issues(monkeypatch, {})          # :3100 ist wieder da
+    bild_service.run_once(now=1000.0)
+    assert api.mails[-1] == "[Bilddienst] Paperclip wieder erreichbar"
+    assert job_state.paperclip_unreachable_cycles() == 0
+
+    # und ein spaeterer neuer Ausfall darf wieder melden
+    _paperclip_weg(monkeypatch)
+    for _ in range(config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES):
+        bild_service.run_once(now=1000.0)
+    assert api.mails[-1] == "[Bilddienst] Paperclip nicht erreichbar"
+    assert len(api.mails) == 3
+
+
+def test_kurzer_paperclip_hakler_bleibt_ganz_still(monkeypatch, tmp_path):
+    """Ein einzelner Aussetzer erzeugt weder Alarm noch Entwarnung."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    _paperclip_weg(monkeypatch)
+    bild_service.run_once(now=1000.0)
+
+    _stub_list_issues(monkeypatch, {})
+    bild_service.run_once(now=1000.0)
+    assert api.mails == []
+
+
+def test_paperclip_zaehler_ueberlebt_prozessneustart(monkeypatch, tmp_path):
+    """launchd startet jeden Zyklus als frischen Prozess -- ein Modul-Global
+    wuerde die Schwelle nie erreichen (derselbe Fehler wie beim Renderknoten)."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    _paperclip_weg(monkeypatch)
+
+    haelfte = config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES // 2
+    for _ in range(haelfte):
+        bild_service.run_once(now=1000.0)
+    assert api.mails == []
+
+    import importlib
+    neu = importlib.reload(bild_service)
+    for name in ("add_comment", "patch_status", "upload_attachment", "mail_alarm"):
+        monkeypatch.setattr(neu.api, name, getattr(api, name))
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+
+    for _ in range(config.PAPERCLIP_UNREACHABLE_ALERT_CYCLES - haelfte):
+        neu.run_once(now=1000.0)
+    assert api.mails == ["[Bilddienst] Paperclip nicht erreichbar"]
+
+
+def test_paperclip_weg_erzeugt_keine_meldung_je_job(monkeypatch, tmp_path):
+    """collect_phase faengt sonst pro laufendem Job einzeln ab und mailt --
+    bei drei Jobs waeren das drei Mails pro Minute statt keiner."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    job_state.add("issue-1", "prompt-1", "company-a", 1000.0, modell="qwen")
+    job_state.add("issue-2", "prompt-2", "company-a", 1000.0, modell="qwen")
+
+    monkeypatch.setattr(comfy_client, "poll", lambda pid: ("done", ["bild.png"]))
+    monkeypatch.setattr(comfy_client, "fetch_image", lambda img: b"PNG")
+
+    def weg(*a, **k):
+        raise bild_service.api.PaperclipUnreachable("nicht erreichbar")
+
+    monkeypatch.setattr(bild_service.api, "upload_attachment", weg)
+    _paperclip_weg(monkeypatch)
+
+    bild_service.run_once(now=2000.0)
+    assert api.mails == []
+
+
+def test_http_fehler_bleibt_sofort_laut(monkeypatch, tmp_path):
+    """500 heisst: :3100 lebt und antwortet falsch -- das darf NICHT
+    gedaempft werden, sonst verschwindet ein echter Serverfehler 30 Minuten
+    lang lautlos."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+
+    def http500(*a, **k):
+        raise bild_service.api.PaperclipError("Paperclip GET /x: HTTP 500: kaputt")
+
+    monkeypatch.setattr(bild_service.api, "list_issues", http500)
+    bild_service.run_once(now=1000.0)
+    assert api.mails == ["[Bilddienst] Zyklus abgebrochen"]
+
+
 # --- Modellabhaengige Vorlage und Zeitgrenze ------------------------------
 
 def test_workflow_name_per_model():
@@ -832,3 +960,27 @@ def test_edit_auth_error_on_list_attachments_still_escapes(monkeypatch, tmp_path
     monkeypatch.setattr(bild_service.api, "list_attachments", boom)
     with pytest.raises(bild_service.api.AuthError):
         bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+
+
+def test_edit_paperclip_unreachable_verbraucht_kein_fehlversuch_budget(monkeypatch, tmp_path):
+    """Ist :3100 ganz weg, ist das Sache der zentralen Daempfung -- genau wie
+    ein komplett weggefallener Renderknoten (_submit_local_job). Wuerde es
+    hier als Fehlversuch zaehlen, kaeme ein 10-Minuten-Neustart von :3100
+    einem Abbruch des Auftrags gleich."""
+    api = setup(monkeypatch, tmp_path)
+
+    def weg(issue_id):
+        raise bild_service.api.PaperclipUnreachable(
+            "Paperclip GET .../attachments: nicht erreichbar")
+
+    monkeypatch.setattr(bild_service.api, "list_attachments", weg)
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+
+    for _ in range(config.FAILED_SUBMIT_CANCEL_CYCLES + 5):
+        with pytest.raises(bild_service.api.PaperclipUnreachable):
+            bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+
+    assert job_state.failed_submit_count("issue-1") == 0
+    assert "issue-1" not in api.status
+    assert api.mails == []

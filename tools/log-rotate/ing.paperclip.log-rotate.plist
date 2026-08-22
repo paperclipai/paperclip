@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ing.paperclip.log-rotate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/log-rotate/rotate_logs.py</string>
+  </array>
+  <!-- Stuendlich. Der Lauf ist unterhalb der Schwelle ein reiner stat() je
+       Datei; bei ~7 MB/h in server.log wird real etwa alle 9 Stunden
+       tatsaechlich gekuerzt. -->
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/instances/default/logs/log-rotate.log</string>
+  <key>StandardErrorPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/instances/default/logs/log-rotate.log</string>
+</dict>
+</plist>
