@@ -36,6 +36,7 @@ import {
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldForceFreshCodexSessionForWake,
   shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
@@ -2542,6 +2543,82 @@ describe("normalizeSessionParams", () => {
   it("preserves a non-empty object", () => {
     const params = { sessionId: "thread-1" };
     expect(normalizeSessionParams(params)).toBe(params);
+  });
+});
+
+describe("shouldForceFreshCodexSessionForWake", () => {
+  it("forces fresh Codex sessions for no-task timer heartbeats", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "heartbeat_timer",
+        wakeSource: "timer",
+      }),
+    ).toBe(true);
+  });
+
+  it("forces fresh Codex sessions for no-task retry wakes", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "retry_failed_run",
+      }),
+    ).toBe(true);
+  });
+
+  it("preserves Codex task sessions when a retry is tied to an explicit issue", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        issueId: "issue-1",
+        wakeReason: "retry_failed_run",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not affect non-Codex timer heartbeats", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("claude_local", {
+        wakeReason: "heartbeat_timer",
+        wakeSource: "timer",
+      }),
+    ).toBe(false);
+  });
+
+  // A bounded transient retry reaches the guard under three spellings, depending on
+  // which record the context snapshot was built from: the run's `retryReason`
+  // ("transient_failure"), the run's `wakeReason` ("transient_failure_retry"), and
+  // the wakeup request's own reason ("bounded_transient_heartbeat_retry"). All three
+  // must force a fresh session — a rename of one constant must not silently drop a
+  // branch, which is exactly what these cases pin.
+  it("forces fresh Codex sessions for bounded transient retries by retryReason", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        retryReason: "transient_failure",
+      }),
+    ).toBe(true);
+  });
+
+  it("forces fresh Codex sessions for bounded transient retries by wakeReason", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "transient_failure_retry",
+      }),
+    ).toBe(true);
+  });
+
+  it("forces fresh Codex sessions for the wakeup-request retry reason spelling", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "bounded_transient_heartbeat_retry",
+      }),
+    ).toBe(true);
+  });
+
+  it("preserves Codex task sessions when a bounded transient retry names an issue task", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        issueId: "issue-1",
+        retryReason: "transient_failure",
+      }),
+    ).toBe(false);
   });
 });
 
