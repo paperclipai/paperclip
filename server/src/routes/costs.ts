@@ -20,7 +20,13 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertBoardOrAgent,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+} from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -143,7 +149,7 @@ export function costRoutes(
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardOrAgent(req);
 
     const event = await finance.createEvent(companyId, {
       ...req.body,
