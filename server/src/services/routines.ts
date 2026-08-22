@@ -57,7 +57,7 @@ import {
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
-import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { HttpError, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -1965,6 +1965,57 @@ export function routineService(
         }, txDb);
         return updated ?? createdRun;
       } catch (error) {
+        // If the wakeup failed because the assignee agent is not currently invokable
+        // (paused, terminated, pending-approval, or invalid org-chain), preserve the
+        // issue as a visible `todo` so operators can see the pending work and it can
+        // be executed when the agent resumes or is reassigned.  Without this guard
+        // the issue is deleted and the run is marked `failed`, leaving zero board
+        // artifact and no way for the platform to retry without operator intervention.
+        const isAgentNotInvokable =
+          error instanceof HttpError &&
+          error.status === 409 &&
+          error.details != null &&
+          typeof error.details === "object" &&
+          "reason" in error.details &&
+          [
+            "paused",
+            "terminated",
+            "pending_approval",
+            "unknown_status",
+            "manager_terminated",
+            "manager_missing",
+            "reporting_cycle",
+          ].includes((error.details as Record<string, unknown>).reason as string);
+
+        if (createdIssue && isAgentNotInvokable) {
+          // Issue survives as `todo`; link the run to it so the audit trail is intact.
+          // The agent's resume / next heartbeat timer will pick up the open issue.
+          const preserved = await finalizeRun(createdRun.id, {
+            status: "issue_created",
+            linkedIssueId: createdIssue.id,
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status: "issue_created",
+            issueId: createdIssue.id,
+            nextRunAt,
+          }, txDb);
+          logger.warn(
+            {
+              error,
+              routineId: input.routine.id,
+              runId: createdRun.id,
+              issueId: createdIssue.id,
+              assigneeAgentId,
+            },
+            "routine dispatch: wakeup failed because assignee agent is not invokable; " +
+              "issue preserved as todo — will be picked up on agent resume",
+          );
+          return preserved ?? createdRun;
+        }
+
         if (createdIssue) {
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
         }
