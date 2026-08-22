@@ -96,6 +96,11 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends dos2unix \
+  && rm -rf /var/lib/apt/lists/*
+RUN dos2unix /usr/local/bin/docker-entrypoint.sh
+RUN apt-get -y remove dos2unix && apt-get -y autoremove && apt-get -y autoclean
 
 COPY --chown=node:node --from=build /app /app
 
