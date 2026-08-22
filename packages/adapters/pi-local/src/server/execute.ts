@@ -44,7 +44,6 @@ import {
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
@@ -325,6 +324,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (localAgentConfigDir) {
     env.PI_CODING_AGENT_DIR = localAgentConfigDir;
   }
+  let localSystemPromptDir: string | null = null;
   try {
     // Prepend installed skill `bin/` dirs to PATH so an agent's bash tool can
     // invoke skill binaries (e.g. `paperclip-get-issue`) by name. Without this,
@@ -624,19 +624,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedHeartbeatPrompt.length,
     };
 
+    // Windows `pi.cmd` is launched through cmd.exe, which hard-caps the command
+    // line at 8191 characters. Inline system + user prompts routinely exceed
+    // that. Keep the rendered system prompt in a file (Pi accepts a path for
+    // --append-system-prompt) and send the user prompt on stdin (`pi -p`
+    // merges piped stdin into the initial prompt). Remote targets keep the
+    // system prompt inline because the file would have to be uploaded first;
+    // Linux ARG_MAX is large enough, and stdin still carries the user prompt.
+    let systemPromptArg = renderedSystemPromptExtension;
+    if (!executionTargetIsRemote && renderedSystemPromptExtension.length > 0) {
+      localSystemPromptDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-prompt-"));
+      const localSystemPromptFile = path.join(localSystemPromptDir, "append-system-prompt.md");
+      await fs.writeFile(localSystemPromptFile, renderedSystemPromptExtension, "utf8");
+      systemPromptArg = localSystemPromptFile;
+    }
+
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
-      if (!resolvedInstructionsFilePath) return notes;
-      if (instructionsReadFailed) {
-        notes.push(
-          `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-        );
-        return notes;
+      if (resolvedInstructionsFilePath) {
+        if (instructionsReadFailed) {
+          notes.push(
+            `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+          );
+        } else {
+          notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
+          notes.push(
+            `Appended instructions + path directive to system prompt (relative references from ${instructionsFileDir}).`,
+          );
+        }
       }
-      notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
-      notes.push(
-        `Appended instructions + path directive to system prompt (relative references from ${instructionsFileDir}).`,
-      );
+      if (localSystemPromptDir) {
+        notes.push(
+          `Wrote system prompt to ${path.join(localSystemPromptDir, "append-system-prompt.md")} for --append-system-prompt.`,
+        );
+      }
+      notes.push("Passed the user prompt to Pi via stdin.");
       return notes;
     })();
 
@@ -645,10 +667,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       // Use JSON mode for structured output with print mode (non-interactive)
       args.push("--mode", "json");
-      args.push("-p"); // Non-interactive mode: process prompt and exit
+      // -p with no following message: Pi reads the user prompt from stdin.
+      args.push("-p");
 
-      // Use --append-system-prompt to extend Pi's default system prompt
-      args.push("--append-system-prompt", renderedSystemPromptExtension);
+      if (systemPromptArg.length > 0) {
+        args.push("--append-system-prompt", systemPromptArg);
+      }
 
       if (provider) args.push("--provider", provider);
       if (modelId) args.push("--model", modelId);
@@ -659,9 +683,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--skill", remoteSkillsDir ?? PI_AGENT_SKILLS_DIR);
 
       if (extraArgs.length > 0) args.push(...extraArgs);
-
-      // Add the user prompt as the last argument
-      args.push(userPrompt);
 
       return args;
     };
@@ -708,6 +729,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
+        stdin: userPrompt,
         timeoutSec,
         graceSec,
         onSpawn,
@@ -842,6 +864,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ]);
     }
   } finally {
-    await preparedRuntimeConfig.cleanup();
+    await Promise.all([
+      preparedRuntimeConfig.cleanup(),
+      localSystemPromptDir
+        ? fs.rm(localSystemPromptDir, { recursive: true, force: true }).catch(() => undefined)
+        : Promise.resolve(),
+    ]);
   }
 }
