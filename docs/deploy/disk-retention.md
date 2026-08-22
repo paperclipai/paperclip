@@ -88,13 +88,24 @@ preserved, not reclaimed.
      pushed upstream, or a commit reachable only through a reflog entry
      (`git fsck --unreachable --no-reflogs`) — e.g. one left behind by a
      `git reset --hard` or an amend, gone the instant `.git` (and its
-     reflog) is deleted along with everything else. Checked entirely
-     locally (`git merge-base --is-ancestor`, `git fsck`, no network call),
-     and only computed once every other gate above already passed, so it
-     costs nothing on the common node_modules-only path. Found by code
+     reflog) is deleted along with everything else. The other-branch and
+     tag checks are run against **freshly fetched** remote-tracking refs
+     (`git fetch --prune` on every configured remote, immediately before
+     trusting `refs/remotes/**`) rather than whatever happened to be cached
+     locally — a worktree eligible for this tier is by definition inactive,
+     exactly the condition under which nobody has fetched here in a while,
+     so a stale cached ref could otherwise still claim a commit was mirrored
+     after the real remote branch was deleted or force-pushed. If the fetch
+     itself fails (offline, remote deleted, auth revoked), both checks fail
+     closed rather than trusting the cache. Checked entirely with local
+     `git` subprocesses (`merge-base --is-ancestor`, `fsck`, and now
+     `fetch`), and only paid once every other gate above already passed, so
+     it costs nothing on the common node_modules-only path. Found by code
      review before it could ship: the original PR/merge check only
      validated the checked-out branch, not other branches/stashes/tags/
-     reflog entries a worktree can also be carrying.
+     reflog entries a worktree can also be carrying, and the first fix for
+     that did not yet account for the remote-tracking cache itself going
+     stale.
 
    Any one of these failing to hold — for any reason, including a lookup
    error — keeps the worktree and falls back to tier 1.
@@ -138,6 +149,31 @@ checkouts directly under one shared directory, no `instances` layer).
 Running the script again after a successful `--apply` is a no-op: everything
 already reclaimed is already gone, so the second run reports zero bytes
 reclaimed and exits `0`.
+
+### Known limitation: an untracked, hand-modified file under `node_modules`
+
+Tier 1's `nodeModulesTracked` check (`git ls-files`) can only see paths that
+are actually **tracked** by git (including a force-added one). It cannot see
+a file that was manually created or edited under `node_modules` without ever
+being `git add`-ed, `git add -f`-ed, or recorded by a tool like
+`patch-package` — because such a file is, by definition, indistinguishable
+from ordinary package-manager output using git alone; both are simply
+"untracked". No cheap, reliable git-only check can close this gap; verifying
+it properly would mean re-running the actual package manager install in a
+scratch directory and diffing file-by-file (network-dependent, slow, and a
+disproportionate amount of new complexity and new failure modes for a
+disk-reclaim script) — see the AGE-1135 mandate's own framing of this tier as
+"reinstallable node_modules", which this tier already verifies to the extent
+a lockfile can prove. The existing gates (inactive workspace required, no
+active session, not recently committed, lockfile committed and clean, no
+*tracked* path under `node_modules`) substantially narrow this to one specific
+residual scenario: a hand patch inside `node_modules`, in an abandoned
+workspace, that was never committed, force-added, or run through a patch
+mechanism anywhere. That is already a fragile way to keep a patch regardless
+of this reaper's existence — a fresh clone elsewhere, or any ordinary
+`rm -rf node_modules && install`, would already lose it the same way. Called
+out explicitly here (raised again on the second Greptile review pass on PR
+#11936) as a deliberate, documented tradeoff rather than an oversight.
 
 ## Wiring it in (LaunchAgent, no OS cron)
 

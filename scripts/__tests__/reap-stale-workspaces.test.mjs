@@ -23,6 +23,7 @@ import {
   isLockfileDirty,
   isRecentlyCommitted,
   parseGitHubOwnerRepo,
+  refreshRemoteTrackingRefs,
 } from "../reap-stale-workspaces.mjs";
 
 const scriptPath = new URL("../reap-stale-workspaces.mjs", import.meta.url).pathname;
@@ -77,6 +78,16 @@ function makeRepoFixture({ branchName = "feature/test-branch" } = {}) {
   git(workDir, ["commit", "-m", "feature work"]);
   git(workDir, ["push", "-u", "origin", branchName]);
   git(workDir, ["remote", "set-url", "origin", "https://github.com/acme/widgets.git"]);
+  // A real `origin` is actually fetchable — this fixture only needs a
+  // github.com-shaped URL so `parseGitHubOwnerRepo` succeeds. Redirect the
+  // actual network operation back to the real local bare repo via
+  // `insteadOf`, so `refreshRemoteTrackingRefs`'s `git fetch` succeeds here
+  // exactly as it would against a real, live origin (Greptile review, PR
+  // #11936: "stale refs authorize repository deletion"). `getRemoteOriginUrl`
+  // reads the raw `remote.origin.url` config key rather than
+  // `git remote get-url`, so this redirect does not corrupt owner/repo
+  // parsing above.
+  git(workDir, ["config", `url.${remoteDir}.insteadOf`, "https://github.com/acme/widgets.git"]);
 
   fs.mkdirSync(path.join(workDir, "node_modules"));
   fs.writeFileSync(path.join(workDir, "node_modules", "placeholder.txt"), "x".repeat(1024));
@@ -675,6 +686,78 @@ test("CLI --apply --remove-merged-worktrees: a reflog-only commit (from a hard r
   const parsed = JSON.parse(result.stdout);
   const entry = parsed.results.find((r) => r.dir === finalWorkDir);
   assert.equal(entry.action, "reap-node-modules"); // falls back to tier 1, same as the stash case
+});
+
+test("refreshRemoteTrackingRefs + isBranchReachableFromAnyRemote: a branch deleted on the real remote after being pushed is no longer 'reachable' once refs are refreshed (Greptile review, PR #11936: stale refs authorize repository deletion)", () => {
+  const { remoteDir, workDir } = makeRepoFixture();
+  git(workDir, ["checkout", "-b", "other-work"]);
+  fs.writeFileSync(path.join(workDir, "other.txt"), "other branch work\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "other branch work"]);
+  git(workDir, ["push", "-u", "origin", "other-work"]); // updates workDir's own refs/remotes/origin/other-work
+
+  // At this instant the cached ref correctly shows the branch as mirrored.
+  assert.equal(isBranchReachableFromAnyRemote(workDir, "other-work"), true);
+
+  // Simulate the real remote force-deleting that branch WITHOUT workDir ever
+  // fetching again — exactly what "an inactive worktree nobody has touched
+  // in a while" looks like: the remote can move on without the local
+  // tracking ref ever finding out.
+  git(remoteDir, ["--git-dir=.", "update-ref", "-d", "refs/heads/other-work"]);
+
+  // Documents the vulnerability this finding described: the STALE cached
+  // ref still claims the commit is safely mirrored, because nothing has
+  // refreshed refs/remotes/** since the original push.
+  assert.equal(
+    isBranchReachableFromAnyRemote(workDir, "other-work"),
+    true,
+    "pre-refresh: a stale cached ref still (wrongly) looks safe",
+  );
+
+  // The fix: refreshing remote-tracking refs (which the reaper now does
+  // before trusting this check anywhere on the destructive path) prunes the
+  // now-deleted remote branch, and the same commit correctly stops looking
+  // mirrored.
+  assert.equal(refreshRemoteTrackingRefs(workDir), true, "fetch must succeed (redirected to the real bare repo via insteadOf)");
+  assert.equal(
+    isBranchReachableFromAnyRemote(workDir, "other-work"),
+    false,
+    "post-refresh: the deleted remote branch is correctly no longer considered reachable",
+  );
+});
+
+test("CLI --apply --remove-merged-worktrees: a local branch whose remote copy was deleted after the last fetch blocks full removal (Greptile review, PR #11936: stale refs authorize repository deletion)", () => {
+  const { remoteDir, workDir } = makeRepoFixture({ branchName: "feature/merged-with-stale-ref" });
+  git(workDir, ["checkout", "-b", "stale-other-work"]);
+  fs.writeFileSync(path.join(workDir, "other.txt"), "other branch work, unique commit\n");
+  git(workDir, ["add", "-A"]);
+  git(workDir, ["commit", "-m", "other branch work"]);
+  git(workDir, ["push", "-u", "origin", "stale-other-work"]); // caches refs/remotes/origin/stale-other-work as mirrored
+  git(workDir, ["checkout", "feature/merged-with-stale-ref"]); // back to the branch with the merged-looking PR
+  // Simulate the real remote deleting that branch since the last fetch —
+  // the worktree's own cached ref is now stale, and if trusted as-is would
+  // wrongly consider "stale-other-work"'s unique commit already mirrored.
+  git(remoteDir, ["--git-dir=.", "update-ref", "-d", "refs/heads/stale-other-work"]);
+
+  const home = makeTempDir("reap-home-stale-ref-");
+  fs.mkdirSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1"), { recursive: true });
+  fs.renameSync(workDir, path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+  const finalWorkDir = fs.realpathSync(path.join(home, ".paperclip", "instances", "default", "workspaces", "ws-1", "repo"));
+
+  const result = runScript(["--apply", "--remove-merged-worktrees", "--json", "--recent-commit-minutes", "0"], {
+    REAP_HOME: home,
+    REAP_PR_LOOKUP_CMD: path.join(fixtureBin(), "pr-lookup-merged.sh"),
+    REAP_ACTIVE_SESSION_CMD: path.join(fixtureBin(), "always-inactive.sh"),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(
+    fs.existsSync(finalWorkDir),
+    "a worktree whose OTHER local branch's remote copy was deleted since the last fetch must not be fully removed",
+  );
+  assert.ok(fs.existsSync(path.join(finalWorkDir, ".git")), "the git directory, and the only remaining copy of stale-other-work's commit, must survive");
+  const parsed = JSON.parse(result.stdout);
+  const entry = parsed.results.find((r) => r.dir === finalWorkDir);
+  assert.equal(entry.action, "reap-node-modules"); // falls back to tier 1, same as the stash/reflog cases
 });
 
 test("CLI --apply: a git-tracked (force-added) file under node_modules blocks reclaim even with a clean, committed lockfile (Greptile review, PR #11936)", () => {

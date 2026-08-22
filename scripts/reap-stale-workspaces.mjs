@@ -420,9 +420,19 @@ export function isAheadOfRemote(cwd, branch) {
   }
 }
 
+/**
+ * Reads `origin`'s configured URL via the raw config key rather than
+ * `git remote get-url origin`. Deliberately: `remote get-url` applies any
+ * `url.<base>.insteadOf` rewrite before returning, so on a repo using such a
+ * rewrite (e.g. to redirect an actual `git fetch` through a mirror or proxy)
+ * it would silently return the REWRITTEN target instead of the real
+ * configured remote — corrupting the owner/repo string this function feeds
+ * to GitHub PR-state resolution. `git config --get` returns the literal
+ * stored value, unaffected by URL rewriting.
+ */
 export function getRemoteOriginUrl(cwd) {
   try {
-    return runGit(cwd, ["remote", "get-url", "origin"]).trim();
+    return runGit(cwd, ["config", "--get", "remote.origin.url"]).trim();
   } catch {
     return "";
   }
@@ -452,13 +462,54 @@ export function getLocalBranches(cwd) {
 }
 
 /**
+ * Fetches and prunes every configured remote's tracking refs before any
+ * check trusts `refs/remotes/**` for a destructive decision (Greptile
+ * review, PR #11936: "stale refs authorize repository deletion"). A
+ * worktree this reaper considers for full removal is, by definition,
+ * inactive — exactly the condition under which nobody has run a plain
+ * `git fetch` here in a while, so the locally cached copy of
+ * `refs/remotes/**` can be arbitrarily stale. If the real remote branch was
+ * deleted or force-pushed since the last fetch, a stale cached ref would
+ * still report a commit as "already on the remote" even though the actual,
+ * current remote no longer has it — and `isBranchReachableFromAnyRemote`/
+ * `hasUnpushedOtherLocalBranch`/`getLocalOnlyTags` would wrongly treat that
+ * commit as safely mirrored, right up until full worktree removal destroys
+ * the only remaining copy. Returns `false` (fail closed — caller must not
+ * trust cached refs) when there are no remotes at all, or when fetching any
+ * of them fails (network down, remote deleted, auth revoked, etc.); `true`
+ * only if every configured remote refreshed successfully.
+ */
+export function refreshRemoteTrackingRefs(cwd) {
+  let remotes;
+  try {
+    remotes = runGit(cwd, ["remote"])
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return false;
+  }
+  if (remotes.length === 0) return false; // nothing to compare against — can't verify anything is safely mirrored
+  for (const remote of remotes) {
+    try {
+      execFileSync("git", ["-C", cwd, "fetch", "--prune", "--quiet", remote], { stdio: "ignore" });
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * True when `branchRef`'s commit is reachable from at least one
  * remote-tracking ref (`refs/remotes/**`) in this repo — i.e. its history is
  * already mirrored on some remote, even if the branch itself has no matching
  * upstream. Used to tell apart a harmless leftover branch (e.g. the `main`
  * every plain `git clone` keeps locally alongside a checked-out feature
  * branch, fully contained in `origin/main`) from a branch that holds commits
- * that only exist on this disk.
+ * that only exist on this disk. Callers on the destructive path must call
+ * `refreshRemoteTrackingRefs` first — this function only reads whatever is
+ * already cached locally and does not itself talk to the network.
  */
 export function isBranchReachableFromAnyRemote(cwd, branchRef) {
   let remoteRefs;
@@ -684,18 +735,25 @@ export function evaluateWorktree(
   const recentlyCommitted = isRecentlyCommitted(lastCommitEpochSeconds, Math.floor(now / 1000), recentCommitMinutes);
 
   // The stash/other-branch/local-tag/reflog checks below cost 3-4 extra
-  // `git` subprocess calls, all local (no network). Only pay that cost when
-  // every OTHER worktree-removal gate already holds — i.e. exactly when
-  // `decideAction` would otherwise choose "reap-worktree" — so the default
-  // (or a node_modules-only) run never pays for it.
+  // `git` subprocess calls. Only pay that cost — including the network
+  // `fetch --prune` refresh a correct other-branch/tag check now requires
+  // (Greptile review, PR #11936: cached `refs/remotes/**` can be stale on an
+  // inactive worktree) — when every OTHER worktree-removal gate already
+  // holds — i.e. exactly when `decideAction` would otherwise choose
+  // "reap-worktree" — so the default (or a node_modules-only) run never
+  // pays for it.
   const prSaysMergedOrClosed = prState === "merged" || prState === "closed";
   const wouldOtherwiseReapWorktree =
     Boolean(allowWorktreeRemoval) && gitClean && !aheadOfRemote && prSaysMergedOrClosed && !sharedParent;
+  // Fail closed if the refresh itself fails (offline, remote deleted, auth
+  // revoked, etc.): the other-branch/tag checks below MUST NOT trust a cache
+  // we just failed to confirm is current, so both become null (unsafe).
+  const remoteRefsFresh = wouldOtherwiseReapWorktree ? refreshRemoteTrackingRefs(dir) : false;
   const unsafeExtraGitState = wouldOtherwiseReapWorktree
     ? hasUnsafeExtraGitState({
-        hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
+        hasUnpushedOtherBranch: remoteRefsFresh ? hasUnpushedOtherLocalBranch(dir, branch) : null,
         stashCount: getStashCount(dir),
-        localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
+        localOnlyTags: remoteRefsFresh ? getLocalOnlyTags(dir, getUpstreamRef(dir, branch)) : null,
         reflogOnlyCommits: hasReflogOnlyCommits(dir),
       })
     : false;
@@ -777,16 +835,21 @@ export function revalidateBeforeDelete(
     if (isAheadOfRemote(dir, branch)) {
       return { safe: false, reason: "revalidation-before-delete: HEAD is now ahead of the remote branch" };
     }
+    // Refresh again: this second, close-to-delete-time check must not trust
+    // whatever `refs/remotes/**` happened to be cached at evaluation time
+    // either — the same staleness gap applies here (Greptile review, PR
+    // #11936). Fail closed if the refresh itself fails.
+    const remoteRefsFresh = refreshRemoteTrackingRefs(dir);
     const unsafeExtraGitState = hasUnsafeExtraGitState({
-      hasUnpushedOtherBranch: hasUnpushedOtherLocalBranch(dir, branch),
+      hasUnpushedOtherBranch: remoteRefsFresh ? hasUnpushedOtherLocalBranch(dir, branch) : null,
       stashCount: getStashCount(dir),
-      localOnlyTags: getLocalOnlyTags(dir, getUpstreamRef(dir, branch)),
+      localOnlyTags: remoteRefsFresh ? getLocalOnlyTags(dir, getUpstreamRef(dir, branch)) : null,
       reflogOnlyCommits: hasReflogOnlyCommits(dir),
     });
     if (unsafeExtraGitState) {
       return {
         safe: false,
-        reason: "revalidation-before-delete: an unpushed local branch/stash/tag/reflog-only commit appeared since evaluation",
+        reason: "revalidation-before-delete: an unpushed local branch/stale-remote-ref/tag/reflog-only commit appeared or was found since evaluation",
       };
     }
     return { safe: true };
