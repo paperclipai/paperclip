@@ -89,6 +89,18 @@ export function RuntimeServicesJsonField({
   );
 }
 
+function jsonError(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "Must be a JSON object";
+    return null;
+  } catch (e) {
+    return e instanceof SyntaxError ? e.message : "Invalid JSON";
+  }
+}
+
 export function PayloadTemplateJsonField({
   isCreate,
   values,
@@ -104,11 +116,12 @@ export function PayloadTemplateJsonField({
   }, [existing, isCreate]);
 
   const value = isCreate ? values?.payloadTemplateJson ?? "" : draft;
+  const error = jsonError(value);
 
   return (
     <Field label="Payload template JSON" hint={help.payloadTemplateJson}>
       <textarea
-        className={`${inputClass} min-h-[132px]`}
+        className={`${inputClass} min-h-[132px] ${error ? "border-destructive" : ""}`}
         value={value}
         onChange={(e) => {
           const next = e.target.value;
@@ -116,7 +129,9 @@ export function PayloadTemplateJsonField({
           updateJsonConfig(isCreate, "payloadTemplateJson", next, set, mark, "payloadTemplate");
         }}
         placeholder={`{\n  "agentId": "remote-agent-123",\n  "metadata": {\n    "team": "platform"\n  }\n}`}
+        aria-invalid={!!error}
       />
+      {error && <p className="text-xs text-destructive mt-1">{error}</p>}
     </Field>
   );
 }
