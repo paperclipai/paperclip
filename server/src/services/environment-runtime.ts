@@ -294,24 +294,6 @@ export function classifyEnvironmentCapabilities(input: {
 }
 
 /**
- * The sandbox capability normalizer. It resolves the effective capability as
- * verified ∩ declared ∩ narrowing. It is a thin compatibility wrapper over the
- * general {@link classifyEnvironmentCapabilities}: it applies no static support
- * gate, so it keeps the exact behavior every current caller depends on. A later
- * phase migrates the callers to the general classifier.
- *
- * A declaration never grants a capability the runtime did not verify, so a
- * declared capability whose worker lacks a prerequisite verb resolves `false`.
- */
-export function resolveEffectiveSandboxCapabilities(input: {
-  verifiedMethods?: readonly string[] | null;
-  declared?: Partial<SandboxProviderCapabilities> | null;
-  narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
-}): EffectiveSandboxCapabilities {
-  return classifyEnvironmentCapabilities(input);
-}
-
-/**
  * Build the per-target narrowing for a sandbox lease. Narrowing removes a
  * capability that the provider verified and declared but that this specific
  * lease or config cannot use. Each source is grounded in existing runtime
