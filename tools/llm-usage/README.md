@@ -45,6 +45,53 @@ Grenze: bewegt sich ein Modell, stimmt die Angabe für zurückliegende Tage erst
 wieder, wenn der Umzug in `hosts.py` steht. Eine tagesgenaue Historie bräuchte
 einen Sampler, der `lms ps` laufend mitschreibt — bewusst nicht gebaut.
 
+## Spalten „Quant", „CTX" und „Thinking" — der Steckbrief
+
+Anders als der Ausführungsort lässt sich das hier **messen**; `steckbrief.py`
+braucht deshalb keine handgepflegte Tabelle.
+
+| Spalte | Quelle |
+| --- | --- |
+| **Quant** | `GET :1234/api/v0/models` → `quantization`. Steht auch bei `state: not-loaded`. |
+| **CTX** | derselbe Katalog → `loaded_context_length`, also das *geladene* Fenster. |
+| **Thinking** | LM-Studio-Logs: Anteil der Vorhersagen mit `reasoning_tokens > 0`. |
+
+Nicht erreichbare Modelle (RTX nachts aus, Modell entladen) kommen aus
+`state/steckbrief-cache.json` — dem zuletzt gesehenen Stand. Das pflegt sich
+selbst; nur für Modelle, die aus dem Katalog *verschwunden* sind, gibt es die
+kleine Tabelle `steckbrief.ERSATZ`.
+
+**Thinking ist gemessen, nicht konfiguriert.** Es gibt keinen Schalter, den man
+auslesen könnte — also wird gezählt, wie oft ein Modell tatsächlich denkt.
+Deshalb steht die Quote in Klammern dabei: „off" allein würde verschweigen,
+dass eine gepatchte Jinja-Vorlage eine Restquote übrig lässt. `on` ab 5 %.
+Gemessen über 36.000 Vorhersagen am 22./23.08.2026:
+
+| Modell | Läufe | mit Reasoning |
+| --- | ---: | ---: |
+| `qwen3.6-35b-a3b-mlx` | 5.181 | 97,0 % |
+| `google/gemma-4-12b` | 2.697 | 18,1 % |
+| `gemma4-31b-it` (Vorlage gepatcht) | 2.744 | 1,2 % |
+| `google/gemma-4-12b-qat` (PII) | 16.596 | 0,1 % |
+| `gemma-4-31b-it-mlx` | 6.352 | 0,0 % |
+
+Ein Tag Logs sind ~220 MB in 23 Dateien, geparst in ~2 s; die Mail scannt einen
+Tag, das Excel sieben. Die Logs reichen bis April 2026 zurück — `backfill.py`
+liefert die Denkquote deshalb auch für alte Notizen **historisch korrekt**,
+während Quant und CTX dort den heutigen Katalog zeigen.
+
+**Anthropic:** keine Quantisierung (`–`), Fenster bekannt (200K, `[1m]` = 1M),
+Thinking **nicht ermittelbar** → `?`. `cost_events` führt keine Reasoning-Token,
+und die `claude_local`-Agenten haben kein Thinking-Feld in der `adapter_config`.
+
+Zwei Zählweisen nebeneinander: LM Studio rechnet binär (262144 = 256K),
+Anthropic dezimal (200.000 = 200K).
+
+Die kumulative CSV bleibt bei `ort`: Quant, CTX und Thinking sind
+Modell-Eigenschaften, keine Agent-Eigenschaften. Sie stehen je Tag im
+Frontmatter der Notiz unter `je_modell`, wo Dataview sie erreicht — inklusive
+`ctx` und `denkquote` als nackte Zahlen.
+
 ## Module
 
 | Datei | Zweck |
@@ -52,6 +99,7 @@ einen Sampler, der `lms ps` laufend mitschreibt — bewusst nicht gebaut.
 | `query.py` | Alle SQL-Abfragen gegen `cost_events` |
 | `pricing.py` | Preistabelle inkl. Einführungspreisen mit Ablaufdatum |
 | `hosts.py` | Modell → Ausführungsort, plus `lms ps`-Abgleich |
+| `steckbrief.py` | Quantisierung, Kontextfenster, gemessene Denkquote |
 | `digest.py` | Tagesmail (HTML) + Anstoß für Excel und Vault-Notiz |
 | `build_xlsx.py` | 7-Tage-Excel mit Detailtabellen und Grafiken |
 | `vault_note.py` | Baut die Obsidian-Tagesnotiz (rein, ohne I/O) |
@@ -92,7 +140,7 @@ python3 digest.py --dry-run              # Mail zeigen, nichts senden, nichts sc
 python3 digest.py --day 2026-08-19       # bestimmten Tag nachfahren (sendet!)
 python3 backfill.py --dry-run            # zeigen, welche Tage nachgezogen würden
 python3 backfill.py --von 2026-07-01     # Vault-Notizen nachziehen, ohne Mail
-python3 -m pytest -q                     # 73 Tests
+python3 -m pytest -q                     # 115 Tests
 ```
 
 `--dry-run` schreibt weder Mail noch Vault. `backfill.py` verschickt nie etwas.
@@ -114,3 +162,9 @@ und ersetzt die CSV-Zeilen des Tages, statt sie zu verdoppeln.
 - **Modell umgezogen oder neu geladen?** `hosts.ZUORDNUNG` nachziehen. Die Mail
   meldet beides von selbst („Ausführungsort nicht hinterlegt" bzw. „Zuordnung
   veraltet"), das Gerät steht in der DEVICE-Spalte von `lms ps`.
+- **Quant/CTX zeigen `?`** heißt: weder im Katalog noch im Cache. Meist ist das
+  Modell deinstalliert — dann gehört es nach `steckbrief.ERSATZ`. Die Mail
+  meldet es als „Steckbrief unvollständig".
+- **`state/steckbrief-cache.json` nicht löschen.** Er ist die einzige Quelle für
+  Modelle auf einem gerade abgeschalteten Gerät. Er füllt sich zwar wieder,
+  aber erst, wenn das Gerät wieder da ist.

@@ -55,6 +55,51 @@ def _zeilen(ws):
     return [[c.value for c in row] for row in ws.iter_rows()]
 
 
+SB = {
+    "katalog": {"gemma4-31b-it": {"quant": "Q8_0", "ctx": 98304}},
+    "denken": {"gemma4-31b-it": [1000, 12]},
+}
+
+
+def test_sheet_llm_pro_tag_traegt_den_steckbrief(monkeypatch):
+    _stub(monkeypatch)
+    wb = Workbook()
+    build_xlsx.sheet_llm_per_day(wb, 7, sb=SB)
+    zeilen = _zeilen(wb.active)
+    kopf = next(z for z in zeilen if z and z[0] == "LLM")
+    for spalte in ("Quant", "CTX", "Thinking", "Denkquote"):
+        assert spalte in kopf, spalte
+    zeile = next(z for z in zeilen if z and z[0] == "gemma4-31b-it")
+    werte = dict(zip(kopf, zeile))
+    assert werte["Quant"] == "Q8_0"
+    assert werte["CTX"] == "96K"
+    assert werte["Thinking"] == "off (1 %)"
+    # Die Quote als Zahl, nicht als Text — sonst kann Excel nicht damit rechnen.
+    assert werte["Denkquote"] == 0.012
+
+
+def test_denkquote_bleibt_leer_wenn_nicht_messbar(monkeypatch):
+    _stub(monkeypatch)
+    wb = Workbook()
+    build_xlsx.sheet_llm_per_day(wb, 7, sb=SB)
+    zeilen = _zeilen(wb.active)
+    kopf = next(z for z in zeilen if z and z[0] == "LLM")
+    zeile = next(z for z in zeilen if z and z[0] == "claude-sonnet-4-6")
+    assert dict(zip(kopf, zeile))["Denkquote"] is None
+
+
+def test_sheet_agent_je_stunde_traegt_den_steckbrief(monkeypatch):
+    _stub(monkeypatch)
+    wb = Workbook()
+    build_xlsx.sheet_agent_hour(wb, 7, sb=SB)
+    zeilen = _zeilen(wb["Agent je Stunde"])
+    kopf = next(z for z in zeilen if z and z[0] == "Agent")
+    zeile = next(z for z in zeilen if z and z[0] == "CTO")
+    werte = dict(zip(kopf, zeile))
+    assert (werte["Quant"], werte["CTX"], werte["Thinking"]) == \
+        ("Q8_0", "96K", "off (1 %)")
+
+
 def test_sheet_llm_pro_tag_hat_eine_wo_spalte(monkeypatch):
     _stub(monkeypatch)
     wb = Workbook()

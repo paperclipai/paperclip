@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import query
+import steckbrief
 import vault_writer
 
 
@@ -70,6 +71,12 @@ def main():
         return 0
     print(f"{len(tage)} Tage: {tage[0]} bis {tage[-1]} -> {ziel}")
 
+    # Der Katalog (Quantisierung, Kontextfenster) wird EINMAL geholt — er kennt
+    # ohnehin nur den heutigen Stand. Die Denkquote dagegen kommt je Tag aus
+    # den LM-Studio-Logs dieses Tages und ist damit historisch korrekt.
+    katalog = steckbrief.verschmelze(steckbrief.lies_cache(),
+                                     steckbrief.lade_katalog())
+
     geschrieben = 0
     for tag in tage:
         modell_rows = query.per_llm_on_day(tag.isoformat())
@@ -79,7 +86,8 @@ def main():
             print(f"  [dry-run] {tag}: {aufrufe} Aufrufe, "
                   f"{len(modell_rows)} Modelle, {len(agent_rows)} Agent/Modell-Paare")
             continue
-        notiz, _csv = vault_writer.schreibe_tag(tag, modell_rows, agent_rows, ziel)
+        sb = {"katalog": katalog, "denken": steckbrief.denk_zaehler(tag)}
+        notiz, _csv = vault_writer.schreibe_tag(tag, modell_rows, agent_rows, ziel, sb)
         if notiz:
             geschrieben += 1
             print(f"  {tag}: {aufrufe} Aufrufe -> {notiz.name}")

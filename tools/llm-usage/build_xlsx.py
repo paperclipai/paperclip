@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Baut die LLM-Nutzungs-Excel: 3 Sheets + gestapelte Balkengrafiken mit Legende.
 
-Sheet 1  LLM pro Tag        — LLM; Datum; Aufrufe; Token; Laufzeit  + gestapelter Balken (Serie=LLM)
-Sheet 2  Agent je Stunde    — Agent; Datum; Stunde; LLM; Aufrufe; Token
+Sheet 1  LLM pro Tag        — LLM; Steckbrief; Datum; Aufrufe; Token; Laufzeit + gestapelter Balken (Serie=LLM)
+Sheet 2  Agent je Stunde    — Agent; Datum; Stunde; LLM; Steckbrief; Aufrufe; Token
+
+„Steckbrief" = Wo (Geraet), Quant, CTX, Thinking. Die Denkquote steht in
+Sheet 1 zusaetzlich als nackte Zahl, damit Pivot und Formel damit rechnen.
 Sheet 3  Grafik Agent×LLM   — Matrix + gestapelter Balken (x=Agent, Serie=LLM, Legende)
 
 Usage: build_xlsx.py [TAGE] [AUSGABE.xlsx]
@@ -17,6 +20,7 @@ from openpyxl.utils import get_column_letter
 
 import hosts
 import pricing
+import steckbrief
 import query
 
 HEAD_FILL = PatternFill("solid", fgColor="1F3864")
@@ -60,14 +64,14 @@ def _stacked_chart(title, height):
 
 
 # --------------------------------------------------------------------------- #
-def sheet_llm_per_day(wb, days):
+def sheet_llm_per_day(wb, days, sb=None):
     ws = wb.active
     ws.title = "LLM pro Tag"
     ws["A1"] = f"LLM-Nutzung pro Tag (letzte {days} Tage) — Paperclip-Agenten"
     ws["A1"].font = TITLE_FONT
-    hdr = ["LLM", "Wo", "Datum", "Aufrufe", "Input-Token", "Cache-Token",
-           "Output-Token", "Token gesamt", "Laufzeit (Sek.)", "Laufzeit (h:m:s)",
-           "Kosten (EUR)"]
+    hdr = ["LLM", "Wo", "Quant", "CTX", "Thinking", "Denkquote", "Datum",
+           "Aufrufe", "Input-Token", "Cache-Token", "Output-Token",
+           "Token gesamt", "Laufzeit (Sek.)", "Laufzeit (h:m:s)", "Kosten (EUR)"]
     ws.append([])
     ws.append(hdr)
     hrow = ws.max_row
@@ -77,21 +81,24 @@ def sheet_llm_per_day(wb, days):
         # Kosten je Tag rechnen, damit ein auslaufender Einfuehrungspreis
         # (pricing.INTRO) am richtigen Datum greift.
         kosten = pricing.kosten_eur(model, in_tok, cached_tok, out_tok, tag)
-        ws.append([model, hosts.ort(model, tag), str(tag), calls, in_tok or 0,
+        ws.append([model, hosts.ort(model, tag), steckbrief.quant(model, sb),
+                   steckbrief.ctx(model, sb), steckbrief.thinking(model, sb),
+                   steckbrief.denk_quote(model, sb), str(tag), calls, in_tok or 0,
                    cached_tok or 0, out_tok or 0, tokens or 0, dur or 0, _hms(dur),
                    kosten if kosten is not None else "Preis unbekannt"])
-    _autosize(ws, [40, 12, 12, 9, 14, 14, 14, 14, 15, 15, 14])
+    _autosize(ws, [40, 12, 10, 8, 14, 11, 12, 9, 14, 14, 14, 14, 15, 15, 14])
     for r in range(hrow + 1, ws.max_row + 1):
-        for c in (5, 6, 7, 8):
+        for c in (9, 10, 11, 12):
             ws.cell(row=r, column=c).number_format = "#,##0"
-        zelle = ws.cell(row=r, column=11)
+        ws.cell(row=r, column=6).number_format = "0,0 %"
+        zelle = ws.cell(row=r, column=15)
         if isinstance(zelle.value, float):
             zelle.number_format = '#,##0.00 "€"'
     ws.freeze_panes = ws.cell(row=hrow + 1, column=1)
 
-    # ---- Grafik-Matrix (Datum × LLM) rechts, Spalte L ff. ----
+    # ---- Grafik-Matrix (Datum × LLM) rechts, Spalte P ff. ----
     tage, modelle, counts = query.matrix_day_by_model(days)
-    gcol = 12  # L
+    gcol = 16  # P
     ws.cell(row=hrow, column=gcol, value="Datum").fill = HEAD_FILL
     ws.cell(row=hrow, column=gcol).font = HEAD_FONT
     for j, m in enumerate(modelle, start=1):
@@ -112,21 +119,23 @@ def sheet_llm_per_day(wb, days):
     ws.add_chart(ch, f"A{ws.max_row + 3}")
 
 
-def sheet_agent_hour(wb, days):
+def sheet_agent_hour(wb, days, sb=None):
     ws = wb.create_sheet("Agent je Stunde")
     ws["A1"] = f"Agenten-LLM-Aufrufe je Stunde (letzte {days} Tage)"
     ws["A1"].font = TITLE_FONT
-    hdr = ["Agent", "Datum", "Stunde", "LLM", "Wo", "Aufrufe", "Token"]
+    hdr = ["Agent", "Datum", "Stunde", "LLM", "Wo", "Quant", "CTX", "Thinking",
+           "Aufrufe", "Token"]
     ws.append([])
     ws.append(hdr)
     hrow = ws.max_row
     _style_header(ws, hrow, len(hdr))
     for agent, tag, stunde, model, calls, tokens in query.agent_hour(days):
         ws.append([agent, str(tag), stunde, model, hosts.ort(model, tag),
-                   calls, tokens or 0])
-    _autosize(ws, [24, 12, 9, 40, 12, 9, 12])
+                   steckbrief.quant(model, sb), steckbrief.ctx(model, sb),
+                   steckbrief.thinking(model, sb), calls, tokens or 0])
+    _autosize(ws, [24, 12, 9, 40, 12, 10, 8, 14, 9, 12])
     for r in range(hrow + 1, ws.max_row + 1):
-        ws.cell(row=r, column=7).number_format = "#,##0"
+        ws.cell(row=r, column=10).number_format = "#,##0"
     ws.freeze_panes = ws.cell(row=hrow + 1, column=1)
 
 
@@ -162,9 +171,11 @@ def sheet_agent_chart(wb, days):
 def main():
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 7
     out = sys.argv[2] if len(sys.argv) > 2 else f"LLM-Nutzung-{days}Tage.xlsx"
+    # Denkquote ueber den ganzen Zeitraum der Mappe, nicht ueber einen Tag.
+    sb = steckbrief.erhebe(steckbrief.letzte_tage(days))
     wb = Workbook()
-    sheet_llm_per_day(wb, days)
-    sheet_agent_hour(wb, days)
+    sheet_llm_per_day(wb, days, sb)
+    sheet_agent_hour(wb, days, sb)
     sheet_agent_chart(wb, days)
     wb.save(out)
     print(f"geschrieben: {out}")

@@ -37,9 +37,9 @@ def _mit_ort(zeile: list) -> list:
 
 
 def schreibe_notiz(tag: date, modell_rows, agent_model_rows,
-                   ziel=VAULT_ZIEL) -> Optional[Path]:
+                   ziel=VAULT_ZIEL, sb=None) -> Optional[Path]:
     """Notiz schreiben; None, wenn an dem Tag nichts lief (keine Karteileiche)."""
-    text = vault_note.build(tag, modell_rows, agent_model_rows)
+    text = vault_note.build(tag, modell_rows, agent_model_rows, sb)
     if text is None:
         return None
     ziel = Path(ziel)
@@ -49,13 +49,14 @@ def schreibe_notiz(tag: date, modell_rows, agent_model_rows,
     return pfad
 
 
-def schreibe_tag(tag: date, modell_rows, agent_model_rows, ziel=VAULT_ZIEL):
+def schreibe_tag(tag: date, modell_rows, agent_model_rows, ziel=VAULT_ZIEL,
+                 sb=None):
     """Notiz + CSV in einem Rutsch — die gemeinsame Klammer fuer Digest und Backfill.
 
     Gibt (notiz_pfad, csv_pfad) zurueck, bei einem Tag ohne Aufrufe (None, None):
     dann bleibt der Vault unberuehrt, auch die CSV.
     """
-    notiz = schreibe_notiz(tag, modell_rows, agent_model_rows, ziel)
+    notiz = schreibe_notiz(tag, modell_rows, agent_model_rows, ziel, sb)
     if notiz is None:
         return None, None
     return notiz, aktualisiere_csv(tag, agent_model_rows, ziel)

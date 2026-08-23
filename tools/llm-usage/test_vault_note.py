@@ -165,3 +165,45 @@ def test_unbekannter_ort_wird_in_der_notiz_gewarnt():
     rows = MODELL_ROWS + [("irgendwas/neues-42b", 10, 1000, 5, 0.0)]
     text = vault_note.build(TAG, rows, AGENT_MODELL_ROWS)
     assert "Ausfuehrungsort nicht hinterlegt: irgendwas/neues-42b" in text
+
+
+# --------------------------------------------------------------------------- #
+# Quantisierung, Kontextfenster, Thinking
+# --------------------------------------------------------------------------- #
+SB = {
+    "katalog": {"qwen3.6-35b-a3b-mlx": {"quant": "8bit", "ctx": 262144}},
+    "denken": {"qwen3.6-35b-a3b-mlx": [1000, 970]},
+}
+
+
+def test_je_modell_tabelle_zeigt_quant_ctx_und_thinking():
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS, sb=SB)
+    block = text.split("## Je Modell", 1)[1].split("##", 1)[0]
+    assert "| Modell | Wo | Quant | CTX | Thinking |" in block
+    assert "| qwen3.6-35b-a3b-mlx | MacBook | 8bit | 256K | on (97 %) |" in block
+    assert "| claude-sonnet-4-6 | Cloud | – | 200K | ? |" in block
+
+
+def test_frontmatter_je_modell_traegt_die_technischen_felder():
+    """Dataview soll nach Quantisierung filtern und ueber die Denkquote rechnen
+    koennen, ohne den Body zu parsen — die Quote deshalb als nackte Zahl."""
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS, sb=SB)
+    block = text.split("je_modell:", 1)[1].split("tags:", 1)[0]
+    assert '    quant: "8bit"' in block
+    assert "    ctx: 262144" in block
+    assert "    denkquote: 0.97" in block
+
+
+def test_frontmatter_denkquote_ist_null_wenn_nicht_messbar():
+    """Bei Anthropic gibt es keine Reasoning-Token — `null`, nicht 0."""
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS, sb=SB)
+    block = text.split("je_modell:", 1)[1].split("tags:", 1)[0]
+    claude = block.split('modell: "claude-sonnet-4-6"', 1)[1]
+    assert "    denkquote: null" in claude
+
+
+def test_ohne_steckbrief_bleibt_die_notiz_baubar():
+    """backfill.py fuer einen Tag ohne Logs — die Notiz darf nicht scheitern."""
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS)
+    block = text.split("## Je Modell", 1)[1].split("##", 1)[0]
+    assert "| qwen3.6-35b-a3b-mlx | MacBook | 8bit | 256K | ? |" in block

@@ -92,7 +92,79 @@ def test_ohne_live_abgleich_wird_nichts_behauptet():
 
 def test_leerer_tag_bleibt_darstellbar():
     """Die Platzhalterzeile muss ueber alle Spalten gehen, sonst bricht die
-    Tabelle — mit der neuen Spalte sind es eine mehr."""
+    Tabelle — mit den neuen Spalten sind es vier mehr."""
     html = digest.build_html(TAG, [], WEEK)
     assert "Keine Aufrufe an diesem Tag." in html
-    assert "colspan='6'" in html
+    assert "colspan='9'" in html
+
+
+# --------------------------------------------------------------------------- #
+# Quantisierung, Kontextfenster, Thinking
+# --------------------------------------------------------------------------- #
+SB = {
+    "katalog": {
+        "gemma4-31b-it": {"quant": "Q8_0", "ctx": 98304},
+        "gemma-4-31b-it-mlx": {"quant": "8bit", "ctx": 262144},
+        "google/gemma-4-12b": {"quant": "Q4_K_M", "ctx": 98304},
+    },
+    "denken": {
+        "gemma4-31b-it": [1000, 12],          # 1,2 % -> off
+        "gemma-4-31b-it-mlx": [1000, 0],      # 0,0 % -> off
+        "google/gemma-4-12b": [1000, 181],    # 18,1 % -> on
+    },
+}
+
+
+def test_vortagstabelle_hat_quant_ctx_und_thinking():
+    kopf = tabelle(digest.build_html(TAG, ROWS, WEEK, sb=SB), "Je Modell (Vortag)")
+    for spalte in (">Quant<", ">CTX<", ">Thinking<"):
+        assert spalte in kopf, spalte
+
+
+def test_die_drei_spalten_tragen_die_gemessenen_werte():
+    block = tabelle(digest.build_html(TAG, ROWS, WEEK, sb=SB), "Je Modell (Vortag)")
+    zeile = next(z for z in block.split("<tr>") if ">gemma4-31b-it<" in z)
+    assert ">Q8_0<" in zeile
+    assert ">96K<" in zeile
+    assert ">off (1 %)<" in zeile
+
+
+def test_thinking_zeigt_die_quote_auch_wenn_es_aus_ist():
+    """`google/gemma-4-12b` denkt bei 18 % der Aufrufe — das soll man sehen."""
+    block = tabelle(digest.build_html(TAG, ROWS, WEEK, sb=SB), "Je Modell (Vortag)")
+    zeile = next(z for z in block.split("<tr>") if ">google/gemma-4-12b<" in z)
+    assert ">on (18 %)<" in zeile
+
+
+def test_anthropic_ohne_quant_mit_fenster_ohne_thinking_behauptung():
+    block = tabelle(digest.build_html(TAG, ROWS, WEEK, sb=SB), "Je Modell (Vortag)")
+    zeile = next(z for z in block.split("<tr>") if ">claude-sonnet-4-6<" in z)
+    assert ">–<" in zeile      # keine Quantisierung in der Cloud
+    assert ">200K<" in zeile
+    assert ">?<" in zeile      # nicht ermittelbar, also auch nicht behauptet
+
+
+def test_siebentagetabelle_bleibt_schmal():
+    """Quant, CTX und Thinking sind Modell-Eigenschaften und aendern sich nicht
+    je Tag — in der Balkentabelle waeren sie nur Breite."""
+    block = digest.build_html(TAG, ROWS, WEEK, sb=SB).split("7 Tage", 1)[1]
+    assert "Q8_0" not in block
+
+
+def test_fehlender_steckbrief_zeigt_fragezeichen_statt_zu_kippen():
+    """LM Studio nicht erreichbar und kein Cache — der Report laeuft trotzdem."""
+    html = digest.build_html(TAG, ROWS, WEEK, sb={"katalog": {}, "denken": {}})
+    zeile = next(z for z in tabelle(html, "Je Modell (Vortag)").split("<tr>")
+                 if ">gemma4-31b-it<" in z)
+    assert zeile.count(">?<") == 3
+
+
+def test_modell_ohne_quant_und_ctx_wird_gemeldet():
+    rows = ROWS + [("irgendwas/neues-42b", 10, 1000, 5, 0.0)]
+    html = digest.build_html(TAG, rows, WEEK, sb=SB)
+    assert "Steckbrief unvollständig" in html
+    assert "irgendwas/neues-42b" in html.split("Steckbrief unvollständig", 1)[1]
+
+
+def test_vollstaendiger_steckbrief_erzeugt_keine_warnung():
+    assert "Steckbrief unvollständig" not in digest.build_html(TAG, ROWS, WEEK, sb=SB)

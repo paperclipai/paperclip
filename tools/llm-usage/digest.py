@@ -17,6 +17,7 @@ from datetime import date
 import hosts
 import pricing
 import query
+import steckbrief
 import vault_writer
 
 WEBHOOK_URL = "http://127.0.0.1:5678/webhook/mailhub/send"
@@ -53,13 +54,18 @@ def _warnung(text):
             "padding:8px 12px;font-size:13px;margin-top:16px'>" + text + "</p>")
 
 
-def build_html(day, rows, week_totals, live=None):
+def build_html(day, rows, week_totals, live=None, sb=None):
     """Der Mail-Body.
 
     `live` ist die Belegung aus `hosts.lade_live()` (Modell -> Geraet) und dient
     allein dem Abgleich gegen `hosts.ZUORDNUNG`. `None` heisst „kein Abgleich
     moeglich" (LM Studio nicht erreichbar) — dann wird auch nichts behauptet.
+
+    `sb` ist der Steckbrief aus `steckbrief.erhebe()` (Quantisierung,
+    Kontextfenster, Denkquote). Fehlt er, stehen dort Fragezeichen — der
+    Report laeuft trotzdem durch.
     """
+    sb = sb or {}
     total_calls = sum(r[1] for r in rows)
     total_tokens = sum(r[2] for r in rows)
     total_dur = sum(r[3] for r in rows)
@@ -72,16 +78,20 @@ def build_html(day, rows, week_totals, live=None):
     offen = pricing.unbekannte(alle_modelle)
     ortlos = hosts.unbekannte(alle_modelle, day)
     umgezogen = hosts.abweichungen(alle_modelle, live) if live else []
+    steckbrieflos = steckbrief.unvollstaendig(alle_modelle, sb)
 
     day_rows = "".join(
         f"<tr><td style='padding:4px 10px'>{m}</td>"
         f"<td style='padding:4px 10px'>{hosts.ort(m, day)}</td>"
+        f"<td style='padding:4px 10px'>{steckbrief.quant(m, sb)}</td>"
+        f"<td style='padding:4px 10px;text-align:right'>{steckbrief.ctx(m, sb)}</td>"
+        f"<td style='padding:4px 10px'>{steckbrief.thinking(m, sb)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{fmt(c)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{fmt(t)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{hms(d)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{pricing.fmt_eur(k)}</td></tr>"
         for m, c, t, d, k in rows
-    ) or "<tr><td colspan='6' style='padding:8px'>Keine Aufrufe an diesem Tag.</td></tr>"
+    ) or "<tr><td colspan='9' style='padding:8px'>Keine Aufrufe an diesem Tag.</td></tr>"
 
     max_wk = max((c for _m, c, *_ in week_totals), default=1)
     week_rows = "".join(
@@ -120,16 +130,26 @@ def build_html(day, rows, week_totals, live=None):
                 for m, soll, ist in umgezogen
             ) + " — <code>hosts.ZUORDNUNG</code> nachziehen."
         )
+    if steckbrieflos:
+        hinweis += _warnung(
+            "<b>Steckbrief unvollständig:</b> " + ", ".join(steckbrieflos) +
+            " — weder im Katalog (<code>:1234/api/v0/models</code>) noch im "
+            "Cache. Modell laden oder in <code>steckbrief.ERSATZ</code> "
+            "eintragen."
+        )
 
-    return f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#202124;max-width:720px">
+    return f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#202124;max-width:980px">
 <h2 style="color:#1F3864;margin-bottom:2px">LLM-Nutzung — {day}</h2>
 <p style="color:#5f6368;margin-top:0">Paperclip-Agenten · {fmt(total_calls)} Aufrufe · {fmt(total_tokens)} Token · Laufzeit {hms(total_dur)} · <b>Kosten {pricing.fmt_eur(tag_kosten)}</b></p>
 
 <h3 style="color:#1F3864;margin-bottom:4px">Je Modell (Vortag)</h3>
-<table style="border-collapse:collapse;font-size:14px;border:1px solid #dadce0">
+<table style="border-collapse:collapse;font-size:13px;border:1px solid #dadce0">
 <tr style="background:#1F3864;color:#fff">
 <th style="padding:6px 10px;text-align:left">Modell</th>
 <th style="padding:6px 10px;text-align:left">Wo</th>
+<th style="padding:6px 10px;text-align:left">Quant</th>
+<th style="padding:6px 10px;text-align:right">CTX</th>
+<th style="padding:6px 10px;text-align:left">Thinking</th>
 <th style="padding:6px 10px;text-align:right">Aufrufe</th>
 <th style="padding:6px 10px;text-align:right">Token</th>
 <th style="padding:6px 10px;text-align:right">Laufzeit</th>
@@ -137,7 +157,7 @@ def build_html(day, rows, week_totals, live=None):
 {day_rows}
 <tr style="background:#f1f3f4;font-weight:bold">
 <td style="padding:5px 10px">Summe</td>
-<td></td>
+<td></td><td></td><td></td><td></td>
 <td style="padding:5px 10px;text-align:right">{fmt(total_calls)}</td>
 <td style="padding:5px 10px;text-align:right">{fmt(total_tokens)}</td>
 <td style="padding:5px 10px;text-align:right">{hms(total_dur)}</td>
@@ -163,6 +183,11 @@ Detail-Tabellen (LLM/Tag + Agent/Aufruf) mit Grafiken im angehängten Excel.<br>
 <code>cost_events</code> führt keinen Host, alle Agenten rufen <code>localhost:1234</code> und LM Link routet unsichtbar weiter.
 Vor dem 06.07.2026 war der Mac Studio der einzige LLM-Server, danach gilt die Tabelle.
 Zieht ein Modell um, stimmt die Angabe für zurückliegende Tage erst wieder, wenn der Umzug dort eingetragen ist.<br>
+<b>Quant</b> und <b>CTX</b> kommen aus dem LM-Studio-Katalog (<code>:1234/api/v0/models</code>), CTX ist das <i>geladene</i> Fenster.
+Nicht erreichbare Modelle (RTX nachts aus) kommen aus dem zuletzt gesehenen Stand. Bei Anthropic gibt es keine Quantisierung; das Fenster ist 200K, bei der <code>[1m]</code>-Variante 1M.<br>
+<b>Thinking</b> ist gemessen, nicht konfiguriert: Anteil der Vorhersagen mit <code>reasoning_tokens &gt; 0</code> in den LM-Studio-Logs des Tages.
+<code>on</code> ab 5 %. Die Quote steht dabei, weil eine gepatchte Vorlage eine Restquote übrig lässt. Für Anthropic-Modelle nicht ermittelbar (<code>?</code>) —
+<code>cost_events</code> führt keine Reasoning-Token.<br>
 <b>Kosten</b> sind aus den Token gerechnet (Preistabelle in <code>pricing.py</code>), nicht aus <code>cost_events.cost_cents</code> — Paperclip füllt die Spalte für Anthropic-Modelle nicht.
 Lokale Modelle kosten 0 €. Cache-Reads zu 0,1× Input-Preis; Cache-<i>Writes</i> erfasst <code>cost_events</code> offenbar nicht getrennt, die echten Kosten liegen daher eher etwas höher.</p>
 </body></html>"""
@@ -227,7 +252,10 @@ def main():
     # (LM Studio nicht erreichbar), liefert lade_live() ein leeres dict und der
     # Report laeuft ohne Abgleich weiter — er darf daran nie scheitern.
     live = hosts.lade_live()
-    html = build_html(day, rows, week_totals, live=live)
+    # Steckbrief fuer den Berichtstag: Katalog live + Cache, Denkquote aus den
+    # LM-Studio-Logs genau dieses Tages (~2 s).
+    sb = steckbrief.erhebe(day)
+    html = build_html(day, rows, week_totals, live=live, sb=sb)
 
     attachments = []
     if attach:
@@ -249,7 +277,7 @@ def main():
         try:
             agent_rows = query.agent_model_on_day(day)
             notiz, _csv = vault_writer.schreibe_tag(
-                date.fromisoformat(day), rows, agent_rows)
+                date.fromisoformat(day), rows, agent_rows, sb=sb)
             print(f"Vault-Notiz: {notiz}" if notiz
                   else "Vault-Notiz: uebersprungen (keine Aufrufe)")
         except Exception as exc:  # noqa: BLE001 — Mail ist bereits raus

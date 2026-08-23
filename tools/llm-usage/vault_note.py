@@ -18,6 +18,7 @@ from typing import Optional
 
 import hosts
 import pricing
+import steckbrief
 
 TZ_HINWEIS = (
     "Quelle: Paperclip `cost_events` (Europe/Berlin). Nicht enthalten: "
@@ -29,7 +30,13 @@ TZ_HINWEIS = (
     "Host, alle Agenten rufen `localhost:1234` und LM Link routet unsichtbar "
     "weiter. Vor dem 06.07.2026 war der Mac Studio der einzige LLM-Server, "
     "danach gilt die Tabelle; ein spaeterer Modellumzug muss dort nachgetragen "
-    "werden, damit zurueckliegende Tage wieder stimmen."
+    "werden, damit zurueckliegende Tage wieder stimmen. "
+    "`Quant` und `CTX` (geladenes Fenster) kommen aus dem LM-Studio-Katalog "
+    "`:1234/api/v0/models`, ersatzweise aus dem zuletzt gesehenen Stand; "
+    "Anthropic hat keine Quantisierung, das Fenster ist 200K bzw. 1M. "
+    "`Thinking` ist **gemessen**, nicht konfiguriert: Anteil der Vorhersagen "
+    "mit `reasoning_tokens > 0` in den LM-Studio-Logs des Tages, `on` ab 5 %. "
+    "Fuer Anthropic nicht ermittelbar."
 )
 
 
@@ -54,6 +61,24 @@ def _yaml_str(text) -> str:
     """Frontmatter-Wert quoten. Modell-IDs enthalten ':' und '[1m]' — beides
     bringt einen YAML-Parser sonst aus dem Tritt."""
     return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _ctx_zahl(modell, sb) -> str:
+    """Kontextfenster als nackte Zahl fuers Frontmatter — Dataview soll damit
+    rechnen koennen. '96K' waere Text."""
+    e = steckbrief._eintrag(modell, sb or {})
+    if steckbrief._ist_cloud(modell):
+        n = (steckbrief.ANTHROPIC_CTX_1M
+             if str(modell).strip().endswith("[1m]") else steckbrief.ANTHROPIC_CTX)
+    else:
+        n = e.get("ctx")
+    return str(int(n)) if n else "null"
+
+
+def _quote_zahl(modell, sb) -> str:
+    """Denkquote als nackte Zahl. `null`, wenn nicht messbar — 0 waere gelogen."""
+    q = steckbrief.denk_quote(modell, sb or {})
+    return "null" if q is None else f"{q:.4g}"
 
 
 def agent_summen(agent_model_rows, tag: Optional[date] = None):
@@ -105,12 +130,15 @@ def csv_zeilen(tag: date, agent_model_rows):
     return zeilen
 
 
-def build(tag: date, modell_rows, agent_model_rows) -> Optional[str]:
+def build(tag: date, modell_rows, agent_model_rows, sb=None) -> Optional[str]:
     """Die fertige Notiz — oder None, wenn an dem Tag nichts lief.
 
     `modell_rows` wie query.per_llm_on_day(): (modell, aufrufe, token, dauer, kosten)
     `agent_model_rows` wie query.agent_model_on_day(): (agent, modell, aufrufe,
     in_tok, cached_tok, out_tok)
+
+    `sb` ist der Steckbrief aus `steckbrief.erhebe()`. Fehlt er (backfill fuer
+    einen Tag ohne Logs), stehen dort Fragezeichen statt einer Behauptung.
 
     None statt einer leeren Notiz, damit im Vault keine Karteileichen fuer
     Tage stehen, an denen kein Agent lief.
@@ -149,6 +177,9 @@ def build(tag: date, modell_rows, agent_model_rows) -> Optional[str]:
         fm += [
             f"  - modell: {_yaml_str(modell)}",
             f"    ort: {_yaml_str(hosts.ort(modell, tag))}",
+            f"    quant: {_yaml_str(steckbrief.quant(modell, sb))}",
+            f"    ctx: {_ctx_zahl(modell, sb)}",
+            f"    denkquote: {_quote_zahl(modell, sb)}",
             f"    aufrufe: {calls}",
             f"    token: {tok or 0}",
             f"    kosten_eur: {'null' if k is None else f'{k:.4f}'}",
@@ -184,10 +215,12 @@ def build(tag: date, modell_rows, agent_model_rows) -> Optional[str]:
         ]
 
     body += ["## Je Modell", "",
-             "| Modell | Wo | Aufrufe | Token | Laufzeit | Kosten |",
-             "| --- | --- | ---: | ---: | ---: | ---: |"]
+             "| Modell | Wo | Quant | CTX | Thinking | Aufrufe | Token | Laufzeit | Kosten |",
+             "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: |"]
     for modell, calls, tok, dur, k in modell_rows:
-        body.append(f"| {_zelle(modell)} | {hosts.ort(modell, tag)} | {_de(calls)} | "
+        body.append(f"| {_zelle(modell)} | {hosts.ort(modell, tag)} | "
+                    f"{steckbrief.quant(modell, sb)} | {steckbrief.ctx(modell, sb)} | "
+                    f"{steckbrief.thinking(modell, sb)} | {_de(calls)} | "
                     f"{_de(tok)} | {_hms(dur)} | {pricing.fmt_eur(k)} |")
 
     body += ["", "## Je Agent", "", "| Agent | Aufrufe | Token | Kosten |",
