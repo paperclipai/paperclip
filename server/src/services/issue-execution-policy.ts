@@ -437,12 +437,7 @@ export function readChangesRequestedExecutorAgentId(input: {
   const returnAssigneeAgentId = returnAssignee.agentId ?? null;
   if (!returnAssigneeAgentId) return null;
   const assigneeAgentId = input.assigneeAgentId ?? null;
-  if (!assigneeAgentId) return returnAssigneeAgentId;
-  const leftoverParticipantAgentId =
-    state.currentParticipant?.type === "agent" ? (state.currentParticipant.agentId ?? null) : null;
-  if (assigneeAgentId !== returnAssigneeAgentId && assigneeAgentId !== leftoverParticipantAgentId) {
-    return assigneeAgentId;
-  }
+  if (assigneeAgentId) return assigneeAgentId;
   return returnAssigneeAgentId;
 }
 
