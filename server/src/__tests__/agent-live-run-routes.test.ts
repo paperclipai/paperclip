@@ -92,7 +92,18 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: Record<string, unknown> = {}) {
+const localBoardActor = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+};
+
+async function createApp(
+  db: Record<string, unknown> = {},
+  actor: Record<string, unknown> = localBoardActor,
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -100,13 +111,7 @@ async function createApp(db: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", agentRoutes(db as any));
@@ -414,6 +419,48 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(404);
     expect(res.body).toMatchObject({ error: "Issue not found" });
+  });
+
+  // Adding 204 gave this route a third status code, so "no active run" must not become
+  // an existence oracle: a cross-tenant issue that happens to have no active run has to
+  // be indistinguishable from an issue that does not exist. Asserting 404 alone would
+  // pass even if the two answers differed in body, so compare both responses directly.
+  it("answers a cross-tenant issue with no active run identically to a missing issue", async () => {
+    // `local_implicit` actors get blanket company access, so the cross-tenant case is
+    // only reachable as a session user scoped to a different company.
+    const sessionActor = {
+      type: "board",
+      userId: "session-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    };
+
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-9",
+      companyId: "company-2",
+      executionRunId: null,
+      assigneeAgentId: "agent-1",
+      status: "done",
+    });
+    const crossTenant = await requestApp(
+      await createApp({}, sessionActor),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(null);
+    const missing = await requestApp(
+      await createApp({}, sessionActor),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    expect(crossTenant.status, JSON.stringify(crossTenant.body)).toBe(404);
+    expect(crossTenant.status).toBe(missing.status);
+    expect(crossTenant.body).toEqual(missing.body);
+    // The 204 path must not have been reached: no run lookup happened at all.
+    expect(mockHeartbeatService.getRunIssueSummary).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getActiveRunIssueSummaryForAgent).not.toHaveBeenCalled();
   });
 
   it("uses narrow run log metadata lookups for log polling", async () => {
