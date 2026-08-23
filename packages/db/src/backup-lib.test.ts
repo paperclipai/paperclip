@@ -567,4 +567,156 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     20_000,
   );
+
+  it(
+    "never materializes a bare .sql file on disk during a javascript-engine backup (AGE-1204 red repro)",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-no-raw-sql-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."no_raw_sql_probe" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+        `);
+        const payload = "x".repeat(4096);
+        for (let index = 0; index < 300; index += 1) {
+          await sourceSql`
+            INSERT INTO "public"."no_raw_sql_probe" ("payload") VALUES (${payload})
+          `;
+        }
+
+        const seenNames = new Set<string>();
+        let polling = true;
+        const pollTimer = setInterval(() => {
+          if (!polling || !fs.existsSync(backupDir)) return;
+          for (const name of fs.readdirSync(backupDir)) {
+            seenNames.add(name);
+          }
+        }, 5);
+
+        try {
+          const result = await runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-no-raw-sql-test",
+            backupEngine: "javascript",
+          });
+          for (const name of fs.readdirSync(backupDir)) seenNames.add(name);
+
+          // A bare (non-.sql.gz, non-.tmp) .sql file must never have existed on
+          // disk at any point during a JS-engine backup. On unfixed main this
+          // assertion fails because the JS engine writes a full plaintext
+          // `<prefix>-<ts>.sql` file and only gzips it after the entire dump
+          // completes.
+          const bareSqlFiles = [...seenNames].filter(
+            (name) => name.endsWith(".sql") && !name.endsWith(".sql.gz"),
+          );
+          expect(bareSqlFiles).toEqual([]);
+          expect(result.backupFile.endsWith(".sql.gz")).toBe(true);
+          expect(fs.existsSync(result.backupFile)).toBe(true);
+        } finally {
+          polling = false;
+          clearInterval(pollTimer);
+        }
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "cleans up only the .tmp file on a forced pg_dump failure, leaving prior backups untouched",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-atomic-failure-");
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+
+      const priorBackupName = "paperclip-atomic-test-existing.sql.gz";
+      const priorBackup = path.join(backupDir, priorBackupName);
+      fs.writeFileSync(priorBackup, "prior-backup-content");
+
+      try {
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-atomic-test",
+            backupEngine: "pg_dump",
+          }),
+        ).rejects.toThrow();
+
+        const entries = fs.readdirSync(backupDir);
+        expect(entries).toEqual([priorBackupName]);
+        expect(fs.readFileSync(priorBackup, "utf8")).toBe("prior-backup-content");
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "refuses to start a backup before touching disk when free space would drop below the configured floor",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-disk-floor-");
+
+      await expect(
+        runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-disk-floor-test",
+          backupEngine: "javascript",
+          minFreeBytesAfter: 1024 * 1024 * 1024,
+          statfs: async () => ({ bavail: 100, bsize: 4096 }),
+        }),
+      ).rejects.toThrow(/Refusing to start database backup/);
+
+      expect(fs.existsSync(backupDir)).toBe(true);
+      expect(fs.readdirSync(backupDir)).toEqual([]);
+    },
+    30_000,
+  );
+
+  it(
+    "keeps the newly-written backup even under an aggressive dailyDays:1 retention window",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-aggressive-retention-");
+
+      const staleBackupName = "paperclip-aggressive-test-stale.sql.gz";
+      const staleBackup = path.join(backupDir, staleBackupName);
+      fs.writeFileSync(staleBackup, "stale");
+      const staleDate = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
+      fs.utimesSync(staleBackup, staleDate, staleDate);
+
+      const result = await runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-aggressive-test",
+        backupEngine: "javascript",
+      });
+
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(fs.existsSync(staleBackup)).toBe(false);
+      const remaining = fs.readdirSync(backupDir);
+      expect(remaining.length).toBeGreaterThanOrEqual(1);
+      expect(remaining).toContain(path.basename(result.backupFile));
+    },
+    30_000,
+  );
 });
