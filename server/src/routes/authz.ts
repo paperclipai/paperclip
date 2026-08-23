@@ -244,6 +244,25 @@ export function getActorInfo(req: Request): (
   };
 }
 
+export type ActorSource = ReturnType<typeof getActorInfo>["actorSource"];
+
+/**
+ * Whether an actor source is evidence that a person issued the request.
+ *
+ * `local_implicit` is the board principal `actorMiddleware` assigns to every
+ * request on a `local_trusted` deployment *before* it inspects the auth
+ * header. It names a user but proves nothing about who sent the request — an
+ * agent's tokenless `fetch` and a click in the board UI produce byte-identical
+ * actors. It is therefore the one user-typed source that does not count as a
+ * human, and any policy that means to require a human must consult this rather
+ * than `actorType === "user"`.
+ */
+export function actorSourceProvesHumanPresence(actorSource: ActorSource): boolean {
+  return actorSource === "session"
+    || actorSource === "board_key"
+    || actorSource === "cloud_tenant";
+}
+
 /**
  * The actor-scoped fields of a secret-binding context, keyed to a caller-supplied
  * consumer identity. Structurally matches `SecretConsumerContext` in

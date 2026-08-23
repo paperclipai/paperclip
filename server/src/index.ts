@@ -85,6 +85,7 @@ import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
+import { ensureLocalAgentJwtSecret } from "./agent-jwt-secret.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
@@ -595,6 +596,31 @@ export async function startServer(): Promise<StartedServer> {
     | undefined;
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
+  }
+  // Must run before any heartbeat can spawn. A run started without a signing
+  // secret gets no injected `PAPERCLIP_API_KEY`, falls back to the implicit
+  // board principal, and writes every record under the board's identity.
+  const agentJwtSecret = ensureLocalAgentJwtSecret({ deploymentMode: config.deploymentMode });
+  if (agentJwtSecret.status === "created") {
+    logger.info(
+      { envFilePath: agentJwtSecret.envFilePath },
+      "Generated PAPERCLIP_AGENT_JWT_SECRET; agent runs will now authenticate as themselves",
+    );
+  } else if (agentJwtSecret.status === "loaded") {
+    logger.info(
+      { envFilePath: agentJwtSecret.envFilePath },
+      "Loaded PAPERCLIP_AGENT_JWT_SECRET from the Paperclip env file",
+    );
+  } else if (agentJwtSecret.status === "failed") {
+    logger.error(
+      { err: agentJwtSecret.error, envFilePath: agentJwtSecret.envFilePath },
+      "Could not persist PAPERCLIP_AGENT_JWT_SECRET; agent runs will fall back to the board "
+        + "principal and their writes will be recorded as the board's",
+    );
+  } else if (agentJwtSecret.status === "absent") {
+    logger.warn(
+      "PAPERCLIP_AGENT_JWT_SECRET is unset; agent runs cannot authenticate as themselves",
+    );
   }
   const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
   if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {

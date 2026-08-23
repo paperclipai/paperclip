@@ -131,6 +131,77 @@ describe("issue-thread interaction resolver audience", () => {
     })).toMatchObject({ allowed: true, effectiveResolverPolicy: "not_creator" });
   });
 
+  // AIC-119. `local_trusted` assigns the board principal to every request
+  // before it reads the auth header, so a tokenless agent and a person at the
+  // board UI produce the same `type: "user"` actor. `human_only` was tested
+  // only on the agent branch, which made it the strictest policy on offer and
+  // simultaneously the one that restricted nothing.
+  describe("human_only against an unverified user actor", () => {
+    const humanOnly = interaction({
+      createdByAgentId: null,
+      createdByUserId: null,
+      sourceRunId: null,
+      effectiveResolverPolicy: "human_only",
+    });
+
+    it("denies a user actor that did not prove a human sent the request", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({
+        actor: { type: "user", userId: "local-board" },
+        interaction: humanOnly,
+      })).toMatchObject({
+        allowed: false,
+        status: 403,
+        code: "interaction_human_only",
+        effectiveResolverPolicy: "human_only",
+      });
+    });
+
+    it("denies an explicitly unverified user actor", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({
+        actor: { type: "user", userId: "local-board", humanPresenceVerified: false },
+        interaction: humanOnly,
+      })).toMatchObject({ allowed: false, code: "interaction_human_only" });
+    });
+
+    it("still allows a user actor whose presence was proved by a credential", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({
+        actor: { type: "user", userId: "user-1", humanPresenceVerified: true },
+        interaction: humanOnly,
+      })).toMatchObject({
+        allowed: true,
+        effectiveResolverPolicy: "human_only",
+        reason: "allow_human",
+      });
+    });
+
+    it("denies an unverified user actor for a governed action", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({
+        actor: { type: "user", userId: "local-board" },
+        interaction: interaction({ createdByAgentId: null, createdByUserId: null, sourceRunId: null }),
+        governedAction: true,
+      })).toMatchObject({ allowed: false, code: "interaction_human_only" });
+    });
+
+    it("does not disturb an unverified user actor when no human_only applies", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({
+        actor: { type: "user", userId: "local-board" },
+        interaction: interaction({ createdByAgentId: null, createdByUserId: null, sourceRunId: null }),
+      })).toMatchObject({ allowed: true, reason: "allow_human" });
+    });
+
+    it("keeps the more specific creator denial ahead of the human_only denial", () => {
+      expect(evaluateIssueThreadInteractionResolverAudience({
+        actor: { type: "user", userId: "user-1" },
+        interaction: interaction({
+          createdByAgentId: null,
+          createdByUserId: "user-1",
+          effectiveResolverPolicy: "not_creator",
+        }),
+        additionalRestriction: "human_only",
+      })).toMatchObject({ allowed: false, code: "interaction_creator_excluded" });
+    });
+  });
+
   it("keeps governed actions independently human-only", () => {
     const decision = evaluateIssueThreadInteractionResolverAudience({
       actor: agent,

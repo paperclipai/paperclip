@@ -160,7 +160,13 @@ import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  actorSourceProvesHumanPresence,
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+} from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -4347,7 +4353,11 @@ export function issueRoutes(
       evaluateIssueThreadInteractionResolverAudience({
         actor: actor.actorType === "agent"
           ? { type: "agent", agentId: actor.agentId, runId: runId || actor.runId }
-          : { type: "user", userId: actor.actorId },
+          : {
+              type: "user",
+              userId: actor.actorId,
+              humanPresenceVerified: actorSourceProvesHumanPresence(actor.actorSource),
+            },
         interaction,
         additionalRestriction: resolverPolicyRestriction,
         governedAction:
@@ -4390,6 +4400,27 @@ export function issueRoutes(
     if (runId === false) return false;
     if (!(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))) return false;
     if (req.actor.type !== "agent") assertBoard(req);
+
+    // An unauthenticated caller that nevertheless names a live heartbeat run is
+    // an agent that could not present a token. Resolving anyway would not just
+    // fail to name the agent — it would write `resolvedByUserId: <board>` and
+    // positively classify the answer as a human's. Refuse instead: a missing
+    // record is recoverable, a false one is not, and this is exactly the row an
+    // approval gate later reads back as proof a person answered.
+    const unauthenticatedRun = await resolveRequestAgentIdentity(req, issue.companyId);
+    if (unauthenticatedRun.grade === "run_header") {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 422,
+        code: "interaction_run_attribution_required",
+        message: "This request names a heartbeat run but did not authenticate as its agent, so the "
+          + "resolution cannot be attributed",
+        details: {
+          runId: unauthenticatedRun.runId,
+          remediation: "Send the run's PAPERCLIP_API_KEY as a bearer token. If the runtime injected no "
+            + "token, PAPERCLIP_AGENT_JWT_SECRET is unset on the server.",
+        },
+      });
+    }
 
     const interactionSvc = issueThreadInteractionService(db);
     const current = await interactionSvc.getForIssue(issue, interactionId);
@@ -4984,6 +5015,59 @@ export function issueRoutes(
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * The agent behind a request, resolved from evidence rather than actor type.
+   *
+   * There are two grades and they are deliberately not interchangeable:
+   *
+   *  - `authenticated` — a bearer credential proved the agent id. Safe to
+   *    record in the resolution/audit columns and to authorize against.
+   *  - `run_header` — no credential, but `X-Paperclip-Run-Id` names a run row
+   *    owned by an agent in this company. The board UI never sends that
+   *    header, so it is good evidence that a heartbeat made the call. It is
+   *    still caller-supplied, so it is forgeable — and, more importantly,
+   *    forgeable *by omission*: an agent that simply drops the header reads as
+   *    the board.
+   *
+   * Because `run_header` can be dropped at will it may only be used to
+   * *suppress* work the caller would otherwise cause itself — a self-wake,
+   * where failing open costs one redundant heartbeat and nothing else. It must
+   * never gate a permission or populate an identity column, because there the
+   * failure mode is an unearned allow or an attribution that is affirmatively
+   * wrong rather than merely missing.
+   */
+  async function resolveRequestAgentIdentity(
+    req: Request,
+    companyId: string | null | undefined,
+  ): Promise<
+    | { grade: "authenticated"; agentId: string; runId: string | null }
+    | { grade: "run_header"; agentId: string; runId: string }
+    | { grade: "none" }
+  > {
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      return {
+        grade: "authenticated",
+        agentId: req.actor.agentId,
+        runId: req.actor.runId?.trim() || null,
+      };
+    }
+
+    const runId = req.header("x-paperclip-run-id")?.trim();
+    if (!runId || typeof companyId !== "string" || companyId.length === 0) {
+      return { grade: "none" };
+    }
+
+    const run = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
+      .then((rows) => rows[0] ?? null)
+      .catch(() => null);
+
+    if (!run?.agentId) return { grade: "none" };
+    return { grade: "run_header", agentId: run.agentId, runId };
   }
 
   async function resolveWorkProductCreatedByRunId(
@@ -10666,8 +10750,13 @@ export function issueRoutes(
 
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
-        const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        // Resolved from evidence, not from `actor.actorType`: on a
+        // `local_trusted` deployment an agent's own progress comment arrives as
+        // the board principal, so the actor-type test was never true and every
+        // agent woke itself on its own note.
+        const commentAgent = await resolveRequestAgentIdentity(req, issue.companyId);
+        const actingAgentId = commentAgent.grade === "none" ? null : commentAgent.agentId;
+        const selfComment = actingAgentId !== null && actingAgentId === assigneeId;
         // Re-derive closed-ness from the post-update issue so a status change
         // like in_progress -> done with a closure comment does not enqueue a
         // stale issue_commented wake for an already-completed issue.
@@ -11349,8 +11438,14 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        runId: actor.runId,
+        // Only an authenticated agent's run id is attribution. A user-typed
+        // actor's `runId` is the raw `X-Paperclip-Run-Id` header, which the
+        // caller chooses and can omit, so recording it would dress a
+        // caller-supplied string as provenance.
+        runId: actor.actorType === "agent" ? actor.runId : null,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        userPresenceVerified: actor.actorType === "user"
+          && actorSourceProvesHumanPresence(actor.actorSource),
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
         suggestedTaskEffectsAuthorized,
       });
@@ -11588,8 +11683,14 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        runId: actor.runId,
+        // Only an authenticated agent's run id is attribution. A user-typed
+        // actor's `runId` is the raw `X-Paperclip-Run-Id` header, which the
+        // caller chooses and can omit, so recording it would dress a
+        // caller-supplied string as provenance.
+        runId: actor.actorType === "agent" ? actor.runId : null,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        userPresenceVerified: actor.actorType === "user"
+          && actorSourceProvesHumanPresence(actor.actorSource),
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
       });
 
@@ -11657,8 +11758,14 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        runId: actor.runId,
+        // Only an authenticated agent's run id is attribution. A user-typed
+        // actor's `runId` is the raw `X-Paperclip-Run-Id` header, which the
+        // caller chooses and can omit, so recording it would dress a
+        // caller-supplied string as provenance.
+        runId: actor.actorType === "agent" ? actor.runId : null,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        userPresenceVerified: actor.actorType === "user"
+          && actorSourceProvesHumanPresence(actor.actorSource),
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
       });
 
@@ -11726,8 +11833,11 @@ export function issueRoutes(
         req.body,
         {
           agentId: actor.agentId,
-          runId: actor.runId,
+          // Only an authenticated agent's run id is attribution; see above.
+          runId: actor.actorType === "agent" ? actor.runId : null,
           userId: actor.actorType === "user" ? actor.actorId : null,
+          userPresenceVerified: actor.actorType === "user"
+            && actorSourceProvesHumanPresence(actor.actorSource),
           resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
         },
       );
@@ -12673,8 +12783,14 @@ export function issueRoutes(
         return null;
       })) ?? currentIssue;
       const assigneeId = wakeIssueSnapshot.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      // Resolved from evidence, not from `actor.actorType`: on a
+      // `local_trusted` deployment an agent's own progress comment arrives as
+      // the board principal, so the actor-type test was never true and every
+      // agent woke itself on its own note. This is the second copy of the same
+      // decision; the first is on the PATCH path above.
+      const commentAgent = await resolveRequestAgentIdentity(req, currentIssue.companyId);
+      const actingAgentId = commentAgent.grade === "none" ? null : commentAgent.agentId;
+      const selfComment = actingAgentId !== null && actingAgentId === assigneeId;
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
@@ -12757,7 +12873,9 @@ export function issueRoutes(
       }
 
       for (const mentionedId of mentionedIds) {
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
+        // Same evidence-based identity as the self-comment decision above: an
+        // agent that @-mentions itself must not be woken by its own mention.
+        if (actingAgentId !== null && actingAgentId === mentionedId) continue;
         addWakeup(mentionedId, {
           source: "automation",
           triggerDetail: "system",

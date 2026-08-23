@@ -24,7 +24,27 @@ export type IssueThreadInteractionResolutionDenialCode =
   (typeof ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES)[number];
 
 export type IssueThreadInteractionResolverActor =
-  | { type: "user"; userId: string }
+  | {
+      type: "user";
+      userId: string;
+      /**
+       * Whether the request actually proved a person was behind it.
+       *
+       * `local_trusted` assigns the board principal to every request *before*
+       * it reads the auth header, so `type: "user"` on that deployment means
+       * "nobody presented a credential", not "a human is present". An agent
+       * calling the API without a token is indistinguishable from the board at
+       * this layer, so a `human_only` policy that trusts the actor type alone
+       * is enforced against an identity every agent already holds.
+       *
+       * Callers set this only when the identity came from evidence — a login
+       * session, a board key, or a cloud tenant header. It is deliberately
+       * optional and deliberately defaults to falsy, so a caller that has not
+       * been taught the distinction fails closed on `human_only` instead of
+       * silently satisfying it.
+       */
+      humanPresenceVerified?: boolean;
+    }
   | { type: "agent"; agentId: string | null | undefined; runId: string | null | undefined }
   | { type: "system"; systemId: string };
 
@@ -200,6 +220,33 @@ export function evaluateIssueThreadInteractionResolverAudience(
         effectiveResolverPolicy,
         additionalRestriction?.excludedActor !== null,
       );
+    }
+    // Must stay ahead of the allow below. `human_only` used to be tested only
+    // on the agent branch, so a user-typed request reached `allow_human` and
+    // never consulted it. On `local_trusted` that made `human_only` the
+    // strictest policy on offer *and* the one that restricted nothing, because
+    // the board principal it was enforced against is the identity every
+    // tokenless agent already holds. A policy that silently no-ops is worse
+    // than an absent one: it reads as protection.
+    //
+    // It sits after the creator and review checks so their more specific
+    // denials keep precedence when several restrictions apply at once.
+    if (humanOnly && input.actor.humanPresenceVerified !== true) {
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_human_only",
+        message:
+          "This issue-thread interaction is human-only and the request did not prove a human sent it",
+        details: {
+          humanPresenceVerified: false,
+          remediation:
+            "Resolve it from an authenticated board session or with a board key. A `local_trusted` "
+            + "deployment assigns the board principal to every unauthenticated request, so an "
+            + "unauthenticated call cannot satisfy `human_only`.",
+        },
+      };
     }
     return {
       allowed: true,

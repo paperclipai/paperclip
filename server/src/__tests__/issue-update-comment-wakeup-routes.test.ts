@@ -682,3 +682,166 @@ describe("issue update comment wakeups", () => {
     );
   });
 });
+
+// AIC-119. `selfComment` suppression was computed from `actor.actorType ===
+// "agent"`, which is never true on a `local_trusted` deployment: the actor
+// middleware assigns the board principal to every request before it reads the
+// auth header. An agent's own end-of-heartbeat progress note therefore woke the
+// agent that wrote it, and the wake carried a comment the agent had just
+// authored — a self-sustaining loop.
+describe("agent self-comment wake suppression", () => {
+  const RUN_ID = "d1111111-1111-4111-8111-111111111111";
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+  });
+
+  // The board actor here is exactly what a tokenless agent produces. What
+  // distinguishes it is `X-Paperclip-Run-Id`, which the board UI never sends.
+  async function createAppWithRuns(runAgentId: string | null) {
+    const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", issueRoutes({
+      transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              Promise.resolve(runAgentId ? [{ agentId: runAgentId }] : []).then(resolve),
+          }),
+        }),
+      }),
+    } as any, {} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function stubAssignedIssue() {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-self",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Progress note from the assignee itself.",
+    });
+    return existing;
+  }
+
+  it("does not wake the assignee for its own comment posted without a token", async () => {
+    const existing = stubAssignedIssue();
+    const app = await createAppWithRuns(ASSIGNEE_AGENT_ID);
+
+    const res = await request(app)
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("x-paperclip-run-id", RUN_ID)
+      .send({ body: "Progress note from the assignee itself." });
+
+    expect(res.status).toBe(201);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("still wakes the assignee when a different agent's run comments", async () => {
+    const existing = stubAssignedIssue();
+    const app = await createAppWithRuns(PREVIOUS_AGENT_ID);
+
+    const res = await request(app)
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("x-paperclip-run-id", RUN_ID)
+      .send({ body: "Question from a peer agent." });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
+  it("still wakes the assignee for a genuine board comment", async () => {
+    // No run header: the board UI's comment must keep waking the assignee.
+    const existing = stubAssignedIssue();
+    const app = await createAppWithRuns(ASSIGNEE_AGENT_ID);
+
+    const res = await request(app)
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "Board asking for an update." });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not wake an agent that @-mentioned itself in its own comment", async () => {
+    const existing = stubAssignedIssue();
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      status: "in_progress",
+    }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID]);
+    const app = await createAppWithRuns(ASSIGNEE_AGENT_ID);
+
+    const res = await request(app)
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("x-paperclip-run-id", RUN_ID)
+      .send({ body: "Noting @self for the record." });
+
+    expect(res.status).toBe(201);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("suppresses the self-wake on the PATCH comment path too", async () => {
+    // The same decision exists twice in the route file; both must be reachable.
+    const existing = stubAssignedIssue();
+    mockIssueService.update.mockResolvedValue(makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    }));
+    const app = await createAppWithRuns(ASSIGNEE_AGENT_ID);
+
+    const res = await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .set("x-paperclip-run-id", RUN_ID)
+      .send({ priority: "high", comment: "Raising priority; continuing." });
+
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    const commentedWakes = mockHeartbeatService.wakeup.mock.calls.filter(
+      ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
+    );
+    expect(commentedWakes).toEqual([]);
+  });
+});
