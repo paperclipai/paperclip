@@ -238,7 +238,15 @@ function resolveExecutionWorkspaceControl(input: ExecutionWorkspaceControlInput)
   };
 }
 
-/** How the run's resolved mode reads to an operator diagnosing where their work landed. */
+/**
+ * How the run's resolved mode reads to an operator diagnosing where their work landed.
+ *
+ * Only three of these are reachable here: with the policy and the issue settings both gated out,
+ * the run resolves to `agent_default` (a legacy assignee override opting out of the project
+ * workspace), to `shared_workspace`, or to `isolated_workspace` once a low-trust review run
+ * escalates that. `operator_branch` needs a surviving policy or issue setting, so a suppressed run
+ * never lands on it. Kept total over the mode union so a new mode cannot silently go undescribed.
+ */
 const WORKSPACE_PHRASE_BY_MODE: Record<ParsedExecutionWorkspaceMode, string> = {
   shared_workspace: "the shared project workspace",
   isolated_workspace: "an isolated workspace",
