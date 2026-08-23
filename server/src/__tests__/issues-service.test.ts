@@ -6073,7 +6073,13 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
   });
 
   it("does not collide issue numbers between concurrent create() and importIssues()", async () => {
-    const companyId = await seedAssignableAgentCompany();
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
     const svcA = issueService(db);
     const svcB = issueService(db);
 
