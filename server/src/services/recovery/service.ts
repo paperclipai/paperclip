@@ -5712,6 +5712,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             companyId: issues.companyId,
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
+            blockedTransitionAt: issues.blockedTransitionAt,
             totalCount: sql<number>`count(*) over()::int`,
           })
           .from(issueRelations)
@@ -5727,6 +5728,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           companyId: issues.companyId,
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
+          blockedTransitionAt: issues.blockedTransitionAt,
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
@@ -5800,11 +5802,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: candidate.id,
           blockerIssueIds: readiness.blockerIssueIds,
+          blockedTransitionAt: candidate.blockedTransitionAt,
         });
         const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
           companyId,
           dependentIssueId: candidate.id,
           blockerIssueIds: readiness.blockerIssueIds,
+          blockedTransitionAt: candidate.blockedTransitionAt,
         });
         if (existingWake) {
           result.existingWakeSkipped += 1;
