@@ -10,4 +10,9 @@
 -- the (company, principal_type, principal_id, permission_key) unique index, or
 -- scan a principal's handful of grants; an index on "expires_at" would be
 -- writes-slower for no read this table performs.
-ALTER TABLE "principal_permission_grants" ADD COLUMN "expires_at" timestamp with time zone;
+--
+-- IF NOT EXISTS because a source database whose journal lags the code journal
+-- can re-apply the newest migration over a schema that already has the column.
+-- The worktree seeding path exercises exactly that, and 0225 and 0226 are
+-- guarded the same way.
+ALTER TABLE "principal_permission_grants" ADD COLUMN IF NOT EXISTS "expires_at" timestamp with time zone;

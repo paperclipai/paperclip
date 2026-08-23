@@ -821,10 +821,17 @@ function normalizePortablePermissionGrants(value: unknown): PortableAgentPermiss
     if (!isPlainRecord(entry)) return [];
     const permissionKey = asString(entry.permissionKey);
     if (!permissionKey || !VALID_PERMISSION_KEYS.has(permissionKey as PermissionKey)) return [];
+    // This path is hand-rolled and does not go through the manifest's zod
+    // schema, so it validates the expiry itself. A present-but-unparseable
+    // expiry drops the whole grant rather than importing it unbounded: the
+    // manifest asked for time-boxed authority, and importing it without the
+    // bound is the one outcome worse than importing nothing (FAI-10144).
+    const expiresAt = asString(entry.expiresAt);
+    if (expiresAt !== null && Number.isNaN(new Date(expiresAt).getTime())) return [];
     return [{
       permissionKey: permissionKey as PermissionKey,
       scope: isPlainRecord(entry.scope) ? entry.scope : null,
-      expiresAt: asString(entry.expiresAt),
+      expiresAt,
     }];
   });
 }

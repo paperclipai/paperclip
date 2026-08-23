@@ -1851,6 +1851,10 @@ describe("company portability", () => {
       true,
       "user-1",
       null,
+      // Explicit null expiry, not an omitted argument: an import re-materializes
+      // the grant, so "the source had no expiry" must clear one an earlier
+      // import left behind (FAI-10144).
+      null,
     );
     expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
       "company-1",
@@ -1860,6 +1864,7 @@ describe("company portability", () => {
       true,
       "user-1",
       { targetAgentIds: ["agent-imported"] },
+      null,
     );
   });
 

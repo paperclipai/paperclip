@@ -1,4 +1,4 @@
-import { sql, type SQL } from "drizzle-orm";
+import { gt, isNull, or, type SQL } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
@@ -56,8 +56,17 @@ export function principalGrantIsActive(
 /**
  * The same rule as a SQL predicate, for readers that filter in the query
  * instead of in JS. Kept beside `principalGrantIsActive` so the two cannot
- * drift; `>` here is the same exclusive boundary.
+ * drift; `gt` here is the same exclusive boundary.
+ *
+ * Built from drizzle's typed operators rather than a raw `sql` fragment on
+ * purpose. A raw fragment carries no column type, so postgres.js has nothing to
+ * encode a `Date` parameter with and throws `ERR_INVALID_ARG_TYPE` when the
+ * query runs. Going through `gt` on the column hands the driver the
+ * timestamptz encoder.
  */
 export function principalGrantNotExpired(now: Date = new Date()): SQL {
-  return sql`(${principalPermissionGrants.expiresAt} is null or ${principalPermissionGrants.expiresAt} > ${now})`;
+  return or(
+    isNull(principalPermissionGrants.expiresAt),
+    gt(principalPermissionGrants.expiresAt, now),
+  )!;
 }

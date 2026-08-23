@@ -47,7 +47,7 @@ import {
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -85,6 +85,7 @@ import {
   assertGrantScopesAreSaveable,
   boardAuthService,
   deduplicateAgentName,
+  grantRowsPreservingExpiry,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
@@ -125,7 +126,7 @@ const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
 type MemberGrantPayload = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
-  /** ISO instant the grant lapses; absent or null means it never does. */
+  /** ISO instant the grant lapses. Null removes the bound; absent keeps it. */
   expiresAt?: string | null;
 };
 
@@ -4663,6 +4664,20 @@ export function accessRoutes(
           .returning()
           .then((rows) => rows[0] ?? existing);
 
+        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
+        // Read the existing bounds *before* the delete: an omitted `expiresAt`
+        // keeps the one already on that permission, so a client that round-trips
+        // the grant list without the field cannot silently un-time-box a grant.
+        // See `grantRowsPreservingExpiry` in services/access.ts.
+        const rows = await grantRowsPreservingExpiry(tx, {
+          companyId,
+          principalType: existing.principalType as PrincipalType,
+          principalId: existing.principalId,
+          grants,
+          grantedByUserId: req.actor.userId ?? null,
+          now,
+        });
+
         await tx
           .delete(principalPermissionGrants)
           .where(
@@ -4673,22 +4688,7 @@ export function accessRoutes(
             ),
           );
 
-        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
-        if (grants.length > 0) {
-          await tx.insert(principalPermissionGrants).values(
-            grants.map((grant) => ({
-              companyId,
-              principalType: existing.principalType,
-              principalId: existing.principalId,
-              permissionKey: grant.permissionKey,
-              scope: grant.scope ?? null,
-              expiresAt: grant.expiresAt ? new Date(grant.expiresAt) : null,
-              grantedByUserId: req.actor.userId ?? null,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          );
-        }
+        if (rows.length > 0) await tx.insert(principalPermissionGrants).values(rows);
 
         return updatedMember;
       });

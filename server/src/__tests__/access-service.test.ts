@@ -300,8 +300,10 @@ describeEmbeddedPostgres("access service", () => {
     // Still inside the window, so the time-boxed permission is live.
     await expect(access.canUser(company.id, owner.principalId, "environments:manage")).resolves.toBe(true);
 
-    // Re-writing the same grant with no expiry clears the bound; the delete-then
-    // -insert write path has no notion of "leave the old expiry alone".
+    // Omission must never widen. A client written before this field existed
+    // reads the grant list, flips one permission and writes the list back
+    // without `expiresAt`; that must not turn a two-week authority into a
+    // standing one, even though this endpoint replaces the whole grant set.
     await access.setPrincipalGrants(
       company.id,
       "user",
@@ -310,7 +312,19 @@ describeEmbeddedPostgres("access service", () => {
       owner.principalId,
     );
     const rewritten = await access.listPrincipalGrants(company.id, "user", owner.principalId);
-    expect(rewritten.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt).toBeNull();
+    expect(rewritten.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt?.toISOString())
+      .toBe(twoWeeks.toISOString());
+
+    // An explicit null is how a bound is removed.
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [{ permissionKey: "environments:manage", expiresAt: null }],
+      owner.principalId,
+    );
+    const cleared = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    expect(cleared.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt).toBeNull();
   });
 
   /**

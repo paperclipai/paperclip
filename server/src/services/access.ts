@@ -17,7 +17,10 @@ type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
-  /** Null or absent means the grant does not expire (FAI-10144). */
+  /**
+   * Absent means "keep whatever bound this permission already has"; explicit
+   * null removes the bound (FAI-10144). See `grantRowsPreservingExpiry`.
+   */
   expiresAt?: Date | string | null;
 };
 
@@ -26,9 +29,65 @@ type GrantInput = {
  * internal callers, where it is already a `Date`. Normalize once at the write
  * boundary so the column only ever sees a `Date` or null.
  */
-function grantExpiresAt(grant: GrantInput): Date | null {
-  if (grant.expiresAt === null || grant.expiresAt === undefined) return null;
-  return grant.expiresAt instanceof Date ? grant.expiresAt : new Date(grant.expiresAt);
+function normalizeExpiresAt(value: Date | string | null): Date | null {
+  if (value === null) return null;
+  return value instanceof Date ? value : new Date(value);
+}
+
+/**
+ * Rows for a wholesale grant replacement, with each grant's expiry carried
+ * forward when the payload does not mention it.
+ *
+ * These endpoints replace a principal's entire grant set, so an omitted field
+ * normally means "gone" — that is exactly how `scope` behaves. Expiry cannot
+ * follow that rule. A client written before `expiresAt` existed reads the grant
+ * list, flips one permission and writes the list back without the field, and
+ * "gone" would silently turn a deliberately time-boxed authority into an
+ * indefinite one. Omission must never widen, so absent keeps the existing bound
+ * and an explicit null is how a bound is removed.
+ *
+ * `tx` must be the replacing transaction, and this must run before the delete,
+ * so the bound being carried forward is the one being replaced.
+ */
+export async function grantRowsPreservingExpiry(
+  tx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    principalType: PrincipalType;
+    principalId: string;
+    grants: readonly GrantInput[];
+    grantedByUserId: string | null;
+    now: Date;
+  },
+) {
+  const existing = await tx
+    .select({
+      permissionKey: principalPermissionGrants.permissionKey,
+      expiresAt: principalPermissionGrants.expiresAt,
+    })
+    .from(principalPermissionGrants)
+    .where(
+      and(
+        eq(principalPermissionGrants.companyId, input.companyId),
+        eq(principalPermissionGrants.principalType, input.principalType),
+        eq(principalPermissionGrants.principalId, input.principalId),
+      ),
+    );
+  const expiryByKey = new Map(existing.map((row) => [row.permissionKey, row.expiresAt]));
+
+  return input.grants.map((grant) => ({
+    companyId: input.companyId,
+    principalType: input.principalType,
+    principalId: input.principalId,
+    permissionKey: grant.permissionKey,
+    scope: grant.scope ?? null,
+    expiresAt: grant.expiresAt === undefined
+      ? expiryByKey.get(grant.permissionKey) ?? null
+      : normalizeExpiresAt(grant.expiresAt),
+    grantedByUserId: input.grantedByUserId,
+    createdAt: input.now,
+    updatedAt: input.now,
+  }));
 }
 
 /**
@@ -160,6 +219,14 @@ export function accessService(db: Db) {
     if (!member) return null;
 
     await db.transaction(async (tx) => {
+      const rows = await grantRowsPreservingExpiry(tx, {
+        companyId,
+        principalType: member.principalType as PrincipalType,
+        principalId: member.principalId,
+        grants,
+        grantedByUserId,
+        now: new Date(),
+      });
       await tx
         .delete(principalPermissionGrants)
         .where(
@@ -169,21 +236,7 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.principalId, member.principalId),
           ),
         );
-      if (grants.length > 0) {
-        await tx.insert(principalPermissionGrants).values(
-          grants.map((grant) => ({
-            companyId,
-            principalType: member.principalType,
-            principalId: member.principalId,
-            permissionKey: grant.permissionKey,
-            scope: grant.scope ?? null,
-            expiresAt: grantExpiresAt(grant),
-            grantedByUserId,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })),
-        );
-      }
+      if (rows.length > 0) await tx.insert(principalPermissionGrants).values(rows);
     });
 
     return member;
@@ -257,6 +310,14 @@ export function accessService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? existing);
 
+      const rows = await grantRowsPreservingExpiry(tx, {
+        companyId,
+        principalType: existing.principalType as PrincipalType,
+        principalId: existing.principalId,
+        grants: data.grants,
+        grantedByUserId,
+        now,
+      });
       await tx
         .delete(principalPermissionGrants)
         .where(
@@ -266,21 +327,7 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.principalId, existing.principalId),
           ),
         );
-      if (data.grants.length > 0) {
-        await tx.insert(principalPermissionGrants).values(
-          data.grants.map((grant) => ({
-            companyId,
-            principalType: existing.principalType,
-            principalId: existing.principalId,
-            permissionKey: grant.permissionKey,
-            scope: grant.scope ?? null,
-            expiresAt: grantExpiresAt(grant),
-            grantedByUserId,
-            createdAt: now,
-            updatedAt: now,
-          })),
-        );
-      }
+      if (rows.length > 0) await tx.insert(principalPermissionGrants).values(rows);
 
       return updated;
     });
@@ -606,6 +653,14 @@ export function accessService(db: Db) {
   ) {
     assertGrantScopesAreSaveable(grants);
     await db.transaction(async (tx) => {
+      const rows = await grantRowsPreservingExpiry(tx, {
+        companyId,
+        principalType,
+        principalId,
+        grants,
+        grantedByUserId,
+        now: new Date(),
+      });
       await tx
         .delete(principalPermissionGrants)
         .where(
@@ -615,20 +670,8 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.principalId, principalId),
           ),
         );
-      if (grants.length === 0) return;
-      await tx.insert(principalPermissionGrants).values(
-        grants.map((grant) => ({
-          companyId,
-          principalType,
-          principalId,
-          permissionKey: grant.permissionKey,
-          scope: grant.scope ?? null,
-          expiresAt: grantExpiresAt(grant),
-          grantedByUserId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })),
-      );
+      if (rows.length === 0) return;
+      await tx.insert(principalPermissionGrants).values(rows);
     });
   }
 

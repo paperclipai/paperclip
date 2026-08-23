@@ -99,9 +99,10 @@ export const updateMemberPermissionsSchema = z.object({
       permissionKey: z.enum(PERMISSION_KEYS),
       scope: z.record(z.string(), z.unknown()).optional().nullable(),
       /**
-       * When the grant stops conferring anything (FAI-10144). Absent or null is
-       * "no expiry", which is what every grant meant before this field existed,
-       * so a client that never sends it keeps exactly its current behaviour.
+       * When the grant stops conferring anything (FAI-10144). Null removes any
+       * bound. Absent keeps whatever bound the permission already carries — not
+       * "no expiry" — so a client written before this field existed cannot
+       * silently un-time-box a grant by round-tripping the list without it.
        */
       expiresAt: z.string().datetime().optional().nullable(),
     }),

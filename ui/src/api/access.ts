@@ -340,7 +340,7 @@ export const accessApi = {
       grants: Array<{
         permissionKey: PermissionKey;
         scope?: Record<string, unknown> | null;
-        /** ISO instant the grant lapses; omit or null for no expiry. */
+        /** ISO instant the grant lapses. Null removes the bound; omit keeps it. */
         expiresAt?: string | null;
       }>;
     },
@@ -355,7 +355,7 @@ export const accessApi = {
       grants: Array<{
         permissionKey: PermissionKey;
         scope?: Record<string, unknown> | null;
-        /** ISO instant the grant lapses; omit or null for no expiry. */
+        /** ISO instant the grant lapses. Null removes the bound; omit keeps it. */
         expiresAt?: string | null;
       }>;
     },
