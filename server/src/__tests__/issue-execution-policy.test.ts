@@ -439,16 +439,16 @@ describe("issue execution policy transitions", () => {
       })).toBe(coderAgentId);
       expect(readChangesRequestedExecutorAgentId({
         status: "in_progress",
-        assigneeAgentId: qaAgentId,
-        assigneeUserId: null,
-        executionState: result.patch.executionState,
-      })).toBe(coderAgentId);
-      expect(readChangesRequestedExecutorAgentId({
-        status: "in_progress",
         assigneeAgentId: ctoAgentId,
         assigneeUserId: null,
         executionState: result.patch.executionState,
       })).toBe(ctoAgentId);
+      expect(readChangesRequestedExecutorAgentId({
+        status: "in_progress",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        executionState: result.patch.executionState,
+      })).toBe(coderAgentId);
     });
 
     it("board/human participant requests changes → returns to executor without dissolving the stage", () => {
