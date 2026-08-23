@@ -381,11 +381,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
+  const wakeReason =
+    typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
+      ? context.wakeReason.trim()
+      : null;
+  const isTimerWake = wakeReason === "heartbeat_timer";
+  const sessionId = canResumeSession && !isTimerWake ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+    );
+  }
+  if (runtimeSessionId && canResumeSession && isTimerWake) {
+    await onLog(
+      "stdout",
+      `[paperclip] Skipping --resume for heartbeat_timer wake; starting fresh session.\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
