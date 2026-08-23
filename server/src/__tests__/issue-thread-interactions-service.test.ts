@@ -3941,7 +3941,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       await expect(guardedService(calls).answerQuestions(
         { id: issueId, companyId },
         created.id,
-        { answers: [{ questionId: "scope", selectedOptionIds: ["phase-1"] }] },
+        { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
         { userId: "local-board" },
       )).rejects.toBeInstanceOf(RevokedAuthorityError);
 

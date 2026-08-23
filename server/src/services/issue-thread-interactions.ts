@@ -2908,29 +2908,35 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw interactionTerminalError(current);
       }
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "rejected",
-          result: {
-            version: 1,
-            rejectionReason: input.reason?.trim() || null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      // Guarded, not pooled. Forwarding `opts` was only half the fix: this write
+      // never opened a transaction, so there was nothing for the guard to run in
+      // and its locks had nothing to hold through (FAI-10134 blocking finding 2).
+      const updated = await guardedTransaction(async (tx) => {
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "rejected",
+            result: {
+              version: 1,
+              rejectionReason: input.reason?.trim() || null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!row) {
+          throw interactionAlreadyResolvedError();
+        }
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const rejected = hydrateInteraction(updated);
