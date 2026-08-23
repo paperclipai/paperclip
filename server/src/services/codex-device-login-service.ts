@@ -20,9 +20,14 @@ import {
   type DeviceLoginPrompt,
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
+import {
+  createLoginPtyTransport,
+  type LoginPtySessionOpener,
+} from "@paperclipai/adapter-utils/login-pty-transport";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
+import { runDescriptorBoundAuthRead } from "./codex-device-login-credential-read.js";
 
 // The login-session service. It creates a login session, acquires a fresh
 // sandbox lease, runs `codex login --device-auth` through the runner, and owns
@@ -1151,80 +1156,113 @@ export function sessionCredentialPath(sessionId: string): string {
 
 /**
  * Build the sandbox login driver. This is the one helper the production runtime
- * and the tests share. It binds streamed execution and a credential read to the
- * environment runtime.
+ * and the tests share. It runs the login command over the shared login
+ * pseudo-terminal (PTY) transport and reads the credential with one
+ * descriptor-bound read.
  *
- * - `execStreaming` sets an empty session-specific Codex home before the fixed
- *   login command runs, exports `CODEX_HOME`, and streams standard output to the
- *   runner. It passes the command through `sh -c`, so the runtime runs the whole
- *   compound command in one shell. It sets `forceSession`, so the command opens
- *   the persistent session and streams each standard-output chunk while the
- *   login command waits for the user. A one-shot exec returns the output only at
- *   the end, so the login prompt would never reach the user in time.
- * - `readFile` reads the credential from the fixed session-specific path with a
- *   one-shot `cat` command. No caller controls the path.
- * - `dispose` is a no-op. The service owns the sandbox delete through a separate
- *   seam, so the runner's swallowed dispose must not delete the sandbox.
+ * - `start` runs the fixed login command on a real pseudo-terminal through the
+ *   shared {@link createLoginPtyTransport} and streams each terminal output chunk
+ *   to the runner while the login command waits for the user. The login command
+ *   needs a pseudo-terminal: pipe stdio emits no login prompt. The pseudo-terminal
+ *   opener sets the session-specific `CODEX_HOME` to the same verified session
+ *   home this driver reads.
+ * - `readFile` runs one descriptor-bound read. It opens the verified session home
+ *   and the fixed credential file with no symlink follow, checks the opened
+ *   descriptor, and reads only from that same descriptor. It ignores the path the
+ *   runner passes, so no caller controls the read target. It reads the fixed
+ *   `auth.json` under the server-controlled session home.
+ * - `dispose` releases the pseudo-terminal transport, so the host frees the login
+ *   pseudo-terminal slot. The service owns the sandbox delete through a separate
+ *   seam, so this dispose never deletes the sandbox.
  *
- * The runtime passes `command` and `args` to the provider as a program and its
- * argument vector. The provider quotes each element as one shell token. So a
- * compound command must run through a shell (`sh -c "<script>"`); a bare
- * compound string in `command` becomes one token and never runs.
+ * The session home is server-controlled and shared: the pseudo-terminal opener
+ * sets `CODEX_HOME` to it, and the descriptor-bound read opens it. So the login
+ * command writes `auth.json` into the exact directory the read opens.
  */
 export function buildSandboxLoginDriver(deps: {
+  openPtySession: LoginPtySessionOpener;
   environmentRuntime: Pick<EnvironmentRuntimeService, "execute">;
   environment: Environment;
   lease: EnvironmentLease;
   sessionHome: string;
   timeoutMs: number;
 }): SandboxLoginDriver {
-  const { environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
+  const { openPtySession, environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
+  const transport = createLoginPtyTransport(openPtySession);
   return {
-    async execStreaming(command, onStdout) {
-      const script = `rm -rf ${sessionHome} && mkdir -p ${sessionHome} && CODEX_HOME=${sessionHome} ${command}`;
-      const result = await environmentRuntime.execute({
-        environment,
-        lease,
-        command: "sh",
-        args: ["-c", script],
-        timeoutMs,
-        // Open the persistent session, so the runtime streams each output chunk
-        // to the runner while the login command waits. A one-shot exec returns
-        // the output only at the end, so the prompt would arrive too late.
-        forceSession: true,
-        onLog: (stream, chunk) => {
-          if (stream === "stdout") onStdout(chunk);
-        },
-      });
-      return { exitCode: result.exitCode };
+    async start(command, onData) {
+      return transport.start(command, onData);
     },
-    async readFile(path) {
-      const result = await environmentRuntime.execute({
+    async readFile(_path) {
+      // The read ignores the runner path. It runs one fixed, server-controlled,
+      // descriptor-bound operation against the verified session home. So a swap of
+      // the credential file between a check and the read cannot steer the read.
+      return runDescriptorBoundAuthRead({
+        environmentRuntime,
         environment,
         lease,
-        command: "cat",
-        args: [path],
+        sessionHome,
         timeoutMs,
-        bypassSession: true,
       });
-      return Buffer.from(result.stdout ?? "", "utf8");
     },
     async dispose() {
-      // The service owns the sandbox delete. This dispose is a no-op.
+      // Free the host pseudo-terminal slot before the service deletes the sandbox.
+      // The service owns the sandbox delete through a separate seam.
+      await transport.dispose();
     },
   };
 }
 
+/**
+ * The verified binding one login session hands to the live pseudo-terminal
+ * opener. The opener sets the sandbox `CODEX_HOME` to `sessionHome`, so the login
+ * command writes `auth.json` into the exact directory the descriptor-bound read
+ * opens.
+ */
+export interface LoginPtySessionBinding {
+  companyId: string;
+  environmentId: string;
+  adapterType: AgentAdapterType;
+  /** The provider lease that binds the sandbox worker. */
+  providerLeaseId: string;
+  /** The server-controlled session home. The opener sets `CODEX_HOME` to it. */
+  sessionHome: string;
+  /** The resolved environment for the acquired lease. */
+  environment: Environment;
+  /** The acquired environment lease. */
+  lease: EnvironmentLease;
+}
+
+/**
+ * Opens the live pseudo-terminal for one login session and returns the shared
+ * transport opener. The Daytona provider runs as a plugin worker, so the real
+ * opener binds inside the worker through the plugin worker manager route. A test
+ * injects a fake opener to drive the full session path.
+ */
+export type OpenLoginPtySession = (
+  binding: LoginPtySessionBinding,
+) => Promise<LoginPtySessionOpener>;
+
 export interface ProductionLoginSessionRuntimeDeps {
   db: Db;
   environmentRuntime: EnvironmentRuntimeService;
+  /**
+   * Opens the live pseudo-terminal for the acquired lease. When a caller omits
+   * it, the runtime binds a fail-closed opener: the login run then fails and the
+   * service deletes the sandbox. The live opener binds the sandbox worker route.
+   */
+  openLivePtySession?: OpenLoginPtySession;
 }
+
+/** The fixed, non-secret error the fail-closed opener throws when no live
+ *  pseudo-terminal opener is bound. */
+const LOGIN_PTY_OPENER_UNBOUND = "device login failed: the sandbox pseudo-terminal transport is not bound.";
 
 /**
  * Build the production login-session runtime. It acquires a fresh lease with
  * reuse disabled (no heartbeat run, no execution workspace) and the active
- * custom-image template applied, binds the sandbox login driver, and owns the
- * delete and release seams.
+ * custom-image template applied, binds the sandbox login driver over the shared
+ * pseudo-terminal transport, and owns the delete and release seams.
  */
 export function createProductionLoginSessionRuntime(
   deps: ProductionLoginSessionRuntimeDeps,
@@ -1254,7 +1292,23 @@ export function createProductionLoginSessionRuntime(
       const sessionHome = sessionCodexHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
       const providerLeaseId = record.lease.providerLeaseId ?? record.lease.id;
+      // Resolve the live pseudo-terminal opener for this lease. When no live
+      // opener is bound, use a fail-closed opener: the login run then fails and
+      // the service deletes the sandbox. The opener sets `CODEX_HOME` to the same
+      // `sessionHome` the descriptor-bound read opens.
+      const openPtySession: LoginPtySessionOpener = deps.openLivePtySession
+        ? await deps.openLivePtySession({
+            companyId: input.companyId,
+            environmentId: input.environmentId,
+            adapterType: input.adapterType,
+            providerLeaseId,
+            sessionHome,
+            environment: record.environment,
+            lease: record.lease,
+          })
+        : () => Promise.reject(new Error(LOGIN_PTY_OPENER_UNBOUND));
       const driver = buildSandboxLoginDriver({
+        openPtySession,
         environmentRuntime: deps.environmentRuntime,
         environment: record.environment,
         lease: record.lease,

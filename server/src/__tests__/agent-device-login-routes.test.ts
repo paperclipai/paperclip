@@ -263,8 +263,8 @@ function createFakeRuntime(): LoginSessionRuntime {
         providerLeaseId: `provider-lease-${input.sessionId}`,
         authPath: `/tmp/paperclip-adapter-login/${input.sessionId}/auth.json`,
         driver: {
-          async execStreaming(_command, onStdout) {
-            onStdout(PROMPT_OUTPUT);
+          async start(_command, onData) {
+            onData(PROMPT_OUTPUT);
             await harness.gate;
             return { exitCode: 0 };
           },
