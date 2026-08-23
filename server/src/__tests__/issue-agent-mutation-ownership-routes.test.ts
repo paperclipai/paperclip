@@ -1097,6 +1097,87 @@ describe("agent issue mutation checkout ownership", () => {
     }
   });
 
+  // FAI-10134 blocking finding 1: `POST /comments` is not always a pure
+  // comment. `resume`/`reopen` moves the target's status, so the run-cap gate
+  // has to be asked for mutation-grade authority — otherwise a comment-only
+  // basis (a sibling, a shared routine origin, a mention) carries a state change.
+  it("asks for mutation-grade authority when a comment carries resume intent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const resumed = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Picking this back up.", resume: true });
+
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "comment", operation: "mutation" }),
+    );
+
+    // A pure comment on the same issue keeps comment grade.
+    mockObserveCrossIssueInfluence.mockClear();
+    await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Context only." })
+      .expect(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "comment", operation: "comment" }),
+    );
+  });
+
+  // The atomicity half of the same finding: the status transition a resuming
+  // comment performs and the comment row must commit together, or a revocation
+  // landing between them refuses the comment after the peer issue has already
+  // been reopened.
+  it("commits a fenced resuming comment's status change and comment row in one transaction", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      fence: {
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        responsibleUserId: null,
+        sourceIssueId: "88888888-8888-4888-8888-888888888888",
+        targetIssueId: issueId,
+        targetIssueIdentifier: "PAP-1649",
+        kind: "comment",
+        operation: "mutation",
+        basisAtCheck: "actor_is_target_assignee",
+        enforceAt: null,
+      },
+    } as never);
+    const runContextDb = createRunContextDb();
+    const openedTransactions: unknown[] = [];
+    const db = {
+      ...runContextDb,
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
+        const tx = { ...runContextDb, transaction: runContextDb.transaction };
+        openedTransactions.push(tx);
+        return callback(tx);
+      },
+    };
+
+    const res = await request(await createApp(ownerActor(), db))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Picking this back up.", resume: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    const updateTx = mockIssueService.update.mock.calls[0][2];
+    const commentTx = mockIssueService.addComment.mock.calls[0][4];
+    expect(openedTransactions).toContain(updateTx);
+    expect(commentTx).toBe(updateTx);
+    expect(mockAssertCrossIssueWriteFence).toHaveBeenCalled();
+    for (const call of mockAssertCrossIssueWriteFence.mock.calls) {
+      expect((call as unknown[])[1]).toBe(updateTx);
+    }
+  });
+
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
     const app = await createApp(ownerActor());
 

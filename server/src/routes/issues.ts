@@ -254,6 +254,7 @@ import {
   type CrossIssueInfluenceKind,
   type CrossIssueWriteFence,
 } from "../services/cross-issue-influence-limit.js";
+import type { CrossIssueWriteOperation } from "../services/cross-issue-write-basis.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -2372,6 +2373,18 @@ class AutoApprovalIssueMissingError extends Error {
   }
 }
 
+/**
+ * Thrown so drizzle rolls back the fenced comment transaction when the target
+ * issue has been deleted between the run-cap gate and the write. Returning null
+ * would commit the comment against a vanished issue.
+ */
+class CommentTargetIssueMissingError extends Error {
+  constructor() {
+    super("Issue not found during fenced comment transaction");
+    this.name = "CommentTargetIssueMissingError";
+  }
+}
+
 function toCompactIssue(issue: any): CompactIssue {
   return {
     id: issue.id,
@@ -2934,6 +2947,7 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
+    options: { operation?: CrossIssueWriteOperation } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
@@ -2948,6 +2962,7 @@ export function issueRoutes(
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
       kind,
+      operation: options.operation,
     });
     // The gate's decision is a time-of-check answer. Under enforcement it comes
     // with a fence the persistence transaction must re-assert under locks, or a
@@ -12329,7 +12344,20 @@ export function issueRoutes(
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
     }
-    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
+    // Grade the authority by what this request actually does, not by the route
+    // it arrived on. A comment that moves the target to `todo`, supersedes its
+    // scheduled retry, or rebuilds its closed workspace is a mutation of someone
+    // else's ticket, and a comment-only basis — a sibling relationship, a shared
+    // routine origin, a mention — must not reach it (FAI-10134 blocking finding 1).
+    const commentPerformsIssueMutation =
+      effectiveMoveToTodoRequested ||
+      effectiveReopenRequested ||
+      effectiveResumeRequested === true ||
+      interruptRequested ||
+      closedExecutionWorkspace !== null;
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment", {
+      operation: commentPerformsIssueMutation ? "mutation" : "comment",
+    }))) return;
     // Reopen the closed isolated workspace only after every access, resume-intent,
     // blocker, and run-cap gate passes. A rejected comment must not rebuild and
     // republish the workspace as active, because the issue stays terminal and the
@@ -12378,11 +12406,23 @@ export function issueRoutes(
 
     let scheduledRetrySupersededByComment = false;
     let cancelledScheduledRetryRunId: string | null = null;
-    if (
+    const commentMovesIssueToTodo =
       effectiveMoveToTodoRequested &&
-      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry)
-    ) {
+      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry);
+    // A fenced write must be all-or-nothing: persisting `status: todo` and then
+    // taking a 403 on the comment leaves a peer issue reopened by an agent whose
+    // authority was revoked mid-request. So under a fence the transition is
+    // deferred into the comment's transaction and its non-transactional side
+    // effect — cancelling the superseded retry run — happens only after that
+    // commit. With no fence the ordering is exactly what it was
+    // (FAI-10134 blocking finding 1).
+    const deferTodoTransitionToCommentTx = commentMovesIssueToTodo && hasPendingCrossIssueWriteFences(req);
+    if (commentMovesIssueToTodo) {
       scheduledRetrySupersededByComment = shouldResumeInProgressScheduledRetry && issue.status === "in_progress";
+      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
+      reopenFromStatus = reopened ? issue.status : null;
+    }
+    if (commentMovesIssueToTodo && !deferTodoTransitionToCommentTx) {
       cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
         ? await cancelScheduledRetrySupersededByComment({
             scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
@@ -12395,8 +12435,6 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
-      reopenFromStatus = reopened ? issue.status : null;
       currentIssue = reopenedIssue;
 
       await logActivity(db, {
@@ -12596,7 +12634,7 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await addCommentWithCrossIssueWriteFence(req, [id, req.body.body, {
+      const commentArgs: Parameters<typeof addCommentWithCrossIssueWriteFence>[1] = [id, req.body.body, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
@@ -12607,7 +12645,68 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      }]);
+      }];
+      if (deferTodoTransitionToCommentTx) {
+        let txResult: {
+          issue: NonNullable<Awaited<ReturnType<typeof svc.update>>>;
+          comment: Awaited<ReturnType<typeof svc.addComment>>;
+        };
+        try {
+          txResult = await db.transaction(async (tx) => {
+            await assertPendingCrossIssueWriteFences(tx, req);
+            const updated = await svc.update(id, { status: "todo" }, tx);
+            if (!updated) throw new CommentTargetIssueMissingError();
+            // Last statement, so the comment keeps its position after any
+            // relay comment the update wrote.
+            const inserted = await svc.addComment(commentArgs[0], commentArgs[1], commentArgs[2], commentArgs[3], tx);
+            return { issue: updated, comment: inserted };
+          });
+        } catch (err) {
+          if (err instanceof CommentTargetIssueMissingError) {
+            res.status(404).json({ error: "Issue not found" });
+            return;
+          }
+          throw err;
+        }
+        currentIssue = txResult.issue;
+        comment = txResult.comment;
+        // Cancelling the superseded retry run is not transactional, so it runs
+        // only once the transition it belongs to is durable.
+        cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
+          ? await cancelScheduledRetrySupersededByComment({
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+              issue,
+              actor,
+            })
+          : null;
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: "todo",
+            ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+            ...(scheduledRetrySupersededByComment
+              ? {
+                  scheduledRetrySupersededByComment: true,
+                  scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                  ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+                }
+              : {}),
+            source: "comment",
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            identifier: currentIssue.identifier,
+          },
+        });
+      } else {
+        comment = await addCommentWithCrossIssueWriteFence(req, commentArgs);
+      }
     }
 
     await issueReferencesSvc.syncComment(comment.id);

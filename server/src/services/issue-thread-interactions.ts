@@ -1386,15 +1386,25 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+/**
+ * Cheap precondition for the expiry below, so a caller can decide whether the
+ * expiry is worth its own guarded transaction without opening one for every
+ * confirmation that has no document target.
+ */
+function mayExpireStaleRequestConfirmationTarget(row: IssueThreadInteractionRow) {
+  if (!isTargetBoundInteractionKind(row.kind) || row.status !== "pending") return false;
+  const target = (hydrateInteraction(row) as TargetBoundInteraction).payload.target ?? null;
+  return target?.type === "issue_document";
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
 }): Promise<IssueThreadInteraction | null> {
-  if (!isTargetBoundInteractionKind(args.row.kind) || args.row.status !== "pending") return null;
+  if (!mayExpireStaleRequestConfirmationTarget(args.row)) return null;
   const interaction = hydrateInteraction(args.row) as TargetBoundInteraction;
-  const target = interaction.payload.target ?? null;
+  const target = interaction.payload.target;
   if (!target) return null;
-  if (target.type !== "issue_document") return null;
 
   const snapshot = await getIssueDocumentTargetSnapshot(db, {
     companyId: args.row.companyId,
@@ -1595,10 +1605,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
   }> {
-    const expired = await expireStaleRequestConfirmationTarget(db, {
-      row: args.current,
-      actor: args.actor,
-    });
+    // The stale-target expiry is itself a write on someone's card, so it goes
+    // through the same authority guard as the resolution it precedes — on the
+    // pooled handle it was the one mutation on this path an actor whose
+    // authority had been revoked could still land (FAI-10134 blocking finding 2).
+    // It commits before the terminal error is thrown, exactly as it did before:
+    // the card really is stale, and the caller has to be told so.
+    const expired = mayExpireStaleRequestConfirmationTarget(args.current)
+      ? await guardedTransaction(async (tx) =>
+        expireStaleRequestConfirmationTarget(tx, { row: args.current, actor: args.actor }))
+      : null;
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const now = new Date();
@@ -1758,10 +1774,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     input: RejectIssueThreadInteraction;
     actor: InteractionActor;
   }): Promise<IssueThreadInteraction> {
-    const expired = await expireStaleRequestConfirmationTarget(db, {
-      row: args.current,
-      actor: args.actor,
-    });
+    // The stale-target expiry is itself a write on someone's card, so it goes
+    // through the same authority guard as the resolution it precedes — on the
+    // pooled handle it was the one mutation on this path an actor whose
+    // authority had been revoked could still land (FAI-10134 blocking finding 2).
+    // It commits before the terminal error is thrown, exactly as it did before:
+    // the card really is stale, and the caller has to be told so.
+    const expired = mayExpireStaleRequestConfirmationTarget(args.current)
+      ? await guardedTransaction(async (tx) =>
+        expireStaleRequestConfirmationTarget(tx, { row: args.current, actor: args.actor }))
+      : null;
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
@@ -2529,7 +2551,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           // Accepting suggest_tasks only creates follow-up issues; it does not
           // approve code state or move the source workspace forward, so the
           // workspace_finalize gate (PAPA-440) does not apply here.
-          return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
+          // `opts` must be forwarded: a service built without it has no
+          // `preCommitAuthorityGuard`, so the accept path would persist its
+          // follow-up issues outside the cross-issue write fence the caller
+          // configured (FAI-10134 blocking finding 2).
+          return issueThreadInteractionService(db, opts).acceptSuggestedTasks(issue, interactionId, data, actor);
         case "request_confirmation": {
           await assertIssueWorkspaceFinalizedForAccept({ db, issue, sourceRunId: current.sourceRunId });
           const accepted = await acceptRequestConfirmation({
@@ -2735,7 +2761,14 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       assertInteractionResolutionAllowed(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
-          return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
+          // Same as the accept path above — forward `opts` or the guard is lost.
+          return issueThreadInteractionService(db, opts).rejectSuggestedTasks(
+            issue,
+            interactionId,
+            data,
+            actor,
+            current,
+          );
         case "request_confirmation":
         case "request_checkbox_confirmation":
           return rejectRequestConfirmation({
@@ -3360,30 +3393,33 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         answers: input.answers,
       });
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result: {
-            version: 1,
-            answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+      // Guarded, not pooled: this resolves someone's card, so the authority
+      // guard has to hold its locks through the commit that answers it
+      // (FAI-10134 blocking finding 2).
+      const updated = await guardedTransaction(async (tx) => {
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: {
+              version: 1,
+              answers: normalizedAnswers,
+              summaryMarkdown: input.summaryMarkdown ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const answered = hydrateInteraction(updated);

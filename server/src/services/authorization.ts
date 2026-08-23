@@ -20,7 +20,13 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  grantScopePrefixedValues,
+  grantScopeValueList,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -172,20 +178,10 @@ function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
 }
 
-function scopeValueList(value: unknown): string[] {
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    .map((entry) => entry.trim());
-}
-
-function prefixedScopeValues(grantScope: Record<string, unknown>, prefix: string) {
-  return scopeValueList(grantScope.allow)
-    .filter((rule) => rule.startsWith(prefix))
-    .map((rule) => rule.slice(prefix.length))
-    .filter((value) => value.length > 0);
-}
+// Shared with the `issues:cross-write` save-time scope check so the two cannot
+// disagree about what a scope constrains on — see `cross-issue-write-grant-scope.ts`.
+const scopeValueList = grantScopeValueList;
+const prefixedScopeValues = grantScopePrefixedValues;
 
 function scopeValuesForKeys(grantScope: Record<string, unknown>, keys: string[]) {
   return keys.flatMap((key) => scopeValueList(grantScope[key]));

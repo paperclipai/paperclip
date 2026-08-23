@@ -506,6 +506,69 @@ describe("cross-issue write grant (FAI-10132)", () => {
     expect(fake.observedCount).toBe(0);
   });
 
+  /**
+   * FAI-10134 blocking finding 1. `kind` names the route; `operation` names what
+   * the request actually does. A `POST /comments` that carries `resume`/`reopen`
+   * moves the target's status, so a sibling relationship — comment-grade — must
+   * not carry it, while the same relationship still carries a pure comment.
+   */
+  it("grades a comment by its effects, not by its route", async () => {
+    const siblings = () => counterDb(0, {}, {
+      issues: [
+        issueRow({ id: SOURCE_ISSUE_ID, parentId: "parent-1" }),
+        issueRow({ id: TARGET_ISSUE_ID, parentId: "parent-1", assigneeAgentId: OTHER_AGENT_ID }),
+      ],
+    });
+
+    const pure = siblings();
+    await expect(observeCrossIssueInfluence(pure.db as never, {
+      ...base,
+      kind: "comment",
+      now: AFTER,
+      enforceGrantAt: ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true });
+    expect((pure.inserted[0]!.details as { basis: string; operation: string }))
+      .toMatchObject({ basis: "target_shares_parent_with_source", operation: "comment" });
+
+    const mutating = siblings();
+    await expect(observeCrossIssueInfluence(mutating.db as never, {
+      ...base,
+      kind: "comment",
+      operation: "mutation",
+      now: AFTER,
+      enforceGrantAt: ENFORCE_AT,
+    })).rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
+    expect(mutating.inserted[0]).toMatchObject({
+      action: "issue.cross_issue_write_grant_denied",
+      details: expect.objectContaining({
+        kind: "comment",
+        operation: "mutation",
+        basis: null,
+        commentOnlyBasis: "target_shares_parent_with_source",
+      }),
+    });
+    // Refused before the cap, so a denied mutating comment spends no budget.
+    expect(mutating.observedCount).toBe(0);
+  });
+
+  it("carries the resolved operation onto the fence so the write-time re-check keeps the same grade", async () => {
+    // Actor owns the target, so a mutation is allowed and a fence is minted.
+    const owned = counterDb(0, {}, {
+      issues: [
+        issueRow({ id: SOURCE_ISSUE_ID }),
+        issueRow({ id: TARGET_ISSUE_ID, assigneeAgentId: AGENT_ID }),
+      ],
+    });
+    const decision = await observeCrossIssueInfluence(owned.db as never, {
+      ...base,
+      kind: "comment",
+      operation: "mutation",
+      now: AFTER,
+      enforceGrantAt: ENFORCE_AT,
+    });
+    expect(decision?.fence).toMatchObject({ kind: "comment", operation: "mutation" });
+  });
+
   // Finding 1 again, on the one input the first fix locked in the wrong order:
   // the ancestor walk read unlocked rows and the lock was taken on what that
   // walk returned, so a reparent committing in between was never seen.
@@ -562,35 +625,83 @@ describe("cross-issue write grant (FAI-10132)", () => {
       .rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
   });
 
-  // FAI-10134 blocking finding 3: `requireStructuredScope` rejected only
-  // null/empty, so any *non-empty* scope the evaluator did not understand fell
-  // through the constraint checks and returned an unconstrained allow — the
-  // company-wide permit, wearing a scope.
-  it.each([
-    ["null", null],
-    ["empty", {}],
-    ["unknown-key-only", { note: "scoped to the sweep" }],
-    ["no-op allow rule", { allow: true, description: "cross-team routing" }],
-    ["misspelled project key", { projectID: "project-a" }],
-    ["empty-string project", { projectId: "" }],
-    ["empty project list", { projectIds: [] }],
-    ["wildcard agent prefix", { "agent:*": true }],
-  ] as const)("refuses an issues:cross-write grant whose scope is %s", async (_label, grantScope) => {
-    const fake = counterDb(0, {}, { ...unrelated, grantScope });
+  /**
+   * One corpus, both sides. FAI-10134 blocking finding 3 was the evaluator
+   * reading an unrecognized-but-non-empty scope as an unconstrained allow; the
+   * contract correction on the same gate was the other direction — the save-time
+   * check recognized prefixed *object keys* (`{"project:x": true}`) while the
+   * evaluator reads prefixed selectors out of `scope.allow`, so each side
+   * accepted what the other refused. Both now run off `GRANT_SCOPE_CORPUS`, and
+   * a scope that saves must be a scope the evaluator can act on.
+   *
+   * `covers` is what the evaluator does with this scope against the `unrelated`
+   * fixture — a target in `project-a` assigned to `OTHER_AGENT_ID`. `null` means
+   * the scope is well-formed but not exercised here (a subtree selector needs a
+   * real agent hierarchy, which the fake reader has no rows for).
+   */
+  const GRANT_SCOPE_CORPUS: ReadonlyArray<{
+    label: string;
+    scope: Record<string, unknown> | null;
+    saves: boolean;
+    covers: boolean | null;
+  }> = [
+    { label: "null", scope: null, saves: false, covers: false },
+    { label: "empty", scope: {}, saves: false, covers: false },
+    { label: "unknown key only", scope: { note: "scoped to the sweep" }, saves: false, covers: false },
+    { label: "no-op allow rule", scope: { allow: true, description: "routing" }, saves: false, covers: false },
+    { label: "misspelled project key", scope: { projectID: "project-a" }, saves: false, covers: false },
+    { label: "empty-string project", scope: { projectId: "" }, saves: false, covers: false },
+    { label: "empty project list", scope: { projectIds: [] }, saves: false, covers: false },
+    { label: "wildcard agent prefix", scope: { "agent:*": true }, saves: false, covers: false },
+    // The contract correction: a prefixed *key* is not a selector on either
+    // side any more, and an `allow` list is a selector on both.
+    { label: "prefixed object key", scope: { [`agent:${OTHER_AGENT_ID}`]: true }, saves: false, covers: false },
+    { label: "empty allow list", scope: { allow: [] }, saves: false, covers: false },
+    { label: "allow list of blanks", scope: { allow: ["", "   "] }, saves: false, covers: false },
+    { label: "unknown allow selector", scope: { allow: ["team:ops"] }, saves: false, covers: false },
+    { label: "matching project", scope: { projectId: "project-a" }, saves: true, covers: true },
+    { label: "matching project list", scope: { projectIds: ["project-a", "project-b"] }, saves: true, covers: true },
+    { label: "other project", scope: { projectId: "project-b" }, saves: true, covers: false },
+    { label: "matching project selector", scope: { allow: ["project:project-a"] }, saves: true, covers: true },
+    { label: "other project selector", scope: { allow: ["project:project-b"] }, saves: true, covers: false },
+    { label: "matching assignee", scope: { assigneeAgentId: OTHER_AGENT_ID }, saves: true, covers: true },
+    { label: "matching agent selector", scope: { allow: [`agent:${OTHER_AGENT_ID}`] }, saves: true, covers: true },
+    { label: "other agent selector", scope: { allow: [`agent:${AGENT_ID}`] }, saves: true, covers: false },
+    { label: "subtree selector", scope: { allow: [`subtree:${AGENT_ID}`] }, saves: true, covers: null },
+  ];
 
-    await expect(observeCrossIssueInfluence(fake.db as never, { ...base, now: AFTER, enforceGrantAt: ENFORCE_AT }))
-      .rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
-    expect(fake.observedCount).toBe(0);
-  });
+  it.each(GRANT_SCOPE_CORPUS.map((entry) => [entry.label, entry] as const))(
+    "evaluates an issues:cross-write scope that is %s the same way it stores it",
+    async (_label, entry) => {
+      // Save time: a scope that confers nothing must not be storable as "scoped".
+      expect(crossIssueWriteGrantScopeError("issues:cross-write", entry.scope) === null).toBe(entry.saves);
+      if (entry.covers === null) return;
 
-  it("refuses the same malformed scopes at grant-write time", () => {
-    for (const scope of [null, {}, { note: "scoped" }, { allow: true }, { projectId: "" }, { projectIds: [] }]) {
-      expect(crossIssueWriteGrantScopeError("issues:cross-write", scope)).toBeTruthy();
-    }
-    expect(crossIssueWriteGrantScopeError("issues:cross-write", { projectId: "project-a" })).toBeNull();
-    expect(crossIssueWriteGrantScopeError("issues:cross-write", { "agent:66666666": true })).toBeNull();
-    // Every other permission key keeps its existing, looser scope contract.
+      // Evaluation time: same scope, same answer.
+      const fake = counterDb(0, {}, { ...unrelated, grantScope: entry.scope });
+      const observe = observeCrossIssueInfluence(fake.db as never, {
+        ...base,
+        now: AFTER,
+        enforceGrantAt: ENFORCE_AT,
+      });
+      if (entry.covers) {
+        await expect(observe).resolves.toMatchObject({ allowed: true });
+        expect(fake.observedCount).toBe(1);
+      } else {
+        await expect(observe).rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
+        expect(fake.observedCount).toBe(0);
+      }
+      // A scope the evaluator refuses must never have been storable in the
+      // first place; that is the invariant the two halves kept breaking.
+      if (!entry.covers && entry.saves) {
+        expect(entry.scope).toBeTruthy(); // constrained, just not at this target
+      }
+    },
+  );
+
+  it("leaves every other permission key on its existing, looser scope contract", () => {
     expect(crossIssueWriteGrantScopeError("tasks:assign", null)).toBeNull();
+    expect(crossIssueWriteGrantScopeError("tasks:assign", { note: "anything" })).toBeNull();
   });
 
   it("observes when the cutover env var is unset and refuses to start when it is invalid", () => {
@@ -603,6 +714,46 @@ describe("cross-issue write grant (FAI-10132)", () => {
     expect(() => assertCrossIssueWriteGrantEnforceAtConfig(
       { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "2026-13-45" } as NodeJS.ProcessEnv,
     )).toThrow(/ISO-8601/);
+
+    // FAI-10134 blocking finding 4. `new Date()` alone accepts all three of
+    // these and pins none of them to the instant the operator meant, so each
+    // one silently moves or defers the security cutover.
+    for (const raw of [
+      "2026-02-30T00:00:00.000Z", // rolls forward to March 2
+      "2026-02-30T00:00:00+02:00", // same rollover, non-UTC offset
+      "2026-04-31T00:00:00Z", // April has 30 days
+      "2026-09-01T24:00:00Z", // hour 24 rolls to the next day
+      "2026-09-01T00:60:00Z", // minute 60 rolls forward
+      "2026-09-01T00:00:00", // no offset: read in the host's local zone
+      "2026-09-01 00:00:00Z", // space instead of `T`
+      "2026-09-01", // date only: midnight in some zone
+      "September 1, 2026 00:00:00 UTC", // locale string
+      "09/01/2026", // locale date, ambiguous day/month
+    ]) {
+      expect(() => assertCrossIssueWriteGrantEnforceAtConfig(
+        { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: raw } as NodeJS.ProcessEnv,
+      ), raw).toThrow(CrossIssueWriteGrantConfigError);
+    }
+
+    // Canonical values still parse, in UTC and at a real offset, with or
+    // without fractional seconds.
+    for (const [raw, expected] of [
+      ["2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z"],
+      ["2026-09-01T00:00:00Z", "2026-09-01T00:00:00.000Z"],
+      ["2026-09-01T02:00:00+02:00", "2026-09-01T00:00:00.000Z"],
+      ["2026-08-31T20:00:00-04:00", "2026-09-01T00:00:00.000Z"],
+    ] as ReadonlyArray<readonly [string, string]>) {
+      expect(crossIssueWriteGrantEnforceAt(
+        { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: raw } as NodeJS.ProcessEnv,
+      )?.toISOString(), raw).toBe(expected);
+    }
+    // Leap-day handling both ways: 2024 had a February 29, 2026 does not.
+    expect(crossIssueWriteGrantEnforceAt(
+      { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "2024-02-29T00:00:00.000Z" } as NodeJS.ProcessEnv,
+    )?.toISOString()).toBe("2024-02-29T00:00:00.000Z");
+    expect(() => assertCrossIssueWriteGrantEnforceAtConfig(
+      { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "2026-02-29T00:00:00.000Z" } as NodeJS.ProcessEnv,
+    )).toThrow(CrossIssueWriteGrantConfigError);
     // Absent and blank stay observe; only a present-but-unparseable value throws.
     expect(() => assertCrossIssueWriteGrantEnforceAtConfig({} as NodeJS.ProcessEnv)).not.toThrow();
     expect(() => assertCrossIssueWriteGrantEnforceAtConfig(

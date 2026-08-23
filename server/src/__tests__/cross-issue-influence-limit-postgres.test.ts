@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -33,6 +34,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -222,6 +224,85 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
           eq(activityLog.action, "issue.cross_issue_write_grant_revoked_in_flight"),
         ));
       expect(audited).toHaveLength(1);
+    });
+
+    /**
+     * The grant is the authority this issue introduces, so revoking it has to
+     * be as binding mid-write as reassigning the target. `explicitGrantScope`
+     * takes `FOR SHARE` on the grant row inside the persisting transaction, so
+     * a `DELETE` that commits first is seen and the write rolls back whole.
+     */
+    it("rolls back when the explicit grant is revoked before the write", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const runId = randomUUID();
+      const sourceIssueId = randomUUID();
+      const targetIssueId = randomUUID();
+      const projectId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `G${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        defaultResponsibleUserId: "board-user",
+      });
+      await db.insert(agents).values([agentId, otherAgentId].map((id, index) => ({
+        id,
+        companyId,
+        name: index === 0 ? "Sweeper" : "Owner",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })));
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "board-user",
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.insert(issues).values([
+        { id: sourceIssueId, companyId, title: "Sweep task" },
+        // Held by someone else and unrelated by tree or origin: the grant is
+        // the only thing that can authorize this write.
+        { id: targetIssueId, companyId, title: "Peer task", assigneeAgentId: otherAgentId, projectId },
+      ]);
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "issues:cross-write",
+        scope: { projectId },
+      });
+
+      const decision = await observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId,
+        targetIssueId,
+        targetIssueIdentifier: "GRANT-1",
+        kind: "update",
+        now: NOW,
+        enforceGrantAt: ENFORCE_AT,
+      });
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "explicit_permission_grant" });
+
+      // Connection B revokes the grant and commits.
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+
+      await expect(db.transaction(async (tx) => {
+        await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        await tx.insert(activityLog).values(mutationRow(companyId, agentId, runId, targetIssueId));
+      })).rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_write_grant_required" },
+      });
+
+      expect(await countMutations(companyId)).toBe(0);
     });
 
     it("makes a revocation racing the write wait for it instead of racing past it", async () => {

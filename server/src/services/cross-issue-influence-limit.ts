@@ -32,6 +32,13 @@ export type CrossIssueInfluenceKind = "comment" | "update" | "interaction_resolu
  * resolution changes their ticket's state. The second needs a basis that names
  * authority over the target, not just a relationship to it — see
  * `CROSS_ISSUE_WRITE_COMMENT_ONLY_BASES`.
+ *
+ * This is the *default* grade for a route, not the last word. `POST /comments`
+ * is not always a pure comment: `resume`/`reopen`, an implicit move-to-todo, a
+ * superseded scheduled retry, and a closed-workspace reopen all mutate the
+ * target. Callers pass an explicit `operation` when the request body says the
+ * write does more than add a message, so authority is graded by effect rather
+ * than by endpoint (FAI-10134 blocking finding 1).
  */
 export function crossIssueWriteOperationForKind(kind: CrossIssueInfluenceKind): CrossIssueWriteOperation {
   return kind === "comment" ? "comment" : "mutation";
@@ -52,6 +59,12 @@ export type CrossIssueWriteFence = {
   targetIssueId: string;
   targetIssueIdentifier: string | null;
   kind: CrossIssueInfluenceKind;
+  /**
+   * The grade the gate resolved against. Carried on the fence so the
+   * persistence-time re-check cannot silently re-resolve a mutating comment as
+   * comment-grade and re-admit the write the gate refused.
+   */
+  operation: CrossIssueWriteOperation;
   /** The basis that held at cap time, for the drift audit row. */
   basisAtCheck: CrossIssueWriteGrantDecision["basis"];
   enforceAt: string | null;
@@ -132,6 +145,12 @@ export async function observeCrossIssueInfluence(
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
+    /**
+     * Overrides the route's default grade when the request's effects are wider
+     * than its endpoint — a `POST /comments` that also moves the target to
+     * `todo` is a mutation and must be authorized as one.
+     */
+    operation?: CrossIssueWriteOperation;
     now?: Date;
     enforceGrantAt?: Date | null;
   },
@@ -139,6 +158,8 @@ export async function observeCrossIssueInfluence(
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
   if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
+
+  const operation = input.operation ?? crossIssueWriteOperationForKind(input.kind);
 
   const outcome = await db.transaction(async (tx): Promise<
     | { grantDenied: CrossIssueWriteGrantDecision; sourceIssueId: string; runResponsibleUserId: string | null }
@@ -183,7 +204,7 @@ export async function observeCrossIssueInfluence(
         actorAgentId: input.agentId,
         sourceIssueId,
         targetIssueId: input.targetIssueId,
-        operation: crossIssueWriteOperationForKind(input.kind),
+        operation,
       }),
       now: input.now,
       enforceAt: input.enforceGrantAt,
@@ -214,6 +235,7 @@ export async function observeCrossIssueInfluence(
           entityId: input.targetIssueId,
           details: {
             kind: input.kind,
+            operation,
             sourceIssueId,
             targetIssueId: input.targetIssueId,
             targetIssueIdentifier: input.targetIssueIdentifier ?? null,
@@ -270,6 +292,7 @@ export async function observeCrossIssueInfluence(
       entityId: input.targetIssueId,
       details: {
         kind: input.kind,
+        operation,
         sourceIssueId,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
@@ -317,6 +340,7 @@ export async function observeCrossIssueInfluence(
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         kind: input.kind,
+        operation,
         basisAtCheck: grant.basis,
         enforceAt: grant.enforceAt,
       }
@@ -328,6 +352,7 @@ export async function observeCrossIssueInfluence(
   if ("grantDenied" in outcome) {
     await auditCrossIssueWriteGrantDenied(db, {
       ...input,
+      operation,
       responsibleUserId: input.responsibleUserId ?? outcome.runResponsibleUserId,
     }, outcome.grantDenied, outcome.sourceIssueId);
     throw crossIssueWriteGrantError({ issueIdentifier: input.targetIssueIdentifier ?? null });
@@ -350,6 +375,7 @@ async function auditCrossIssueWriteGrantDenied(
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
+    operation: CrossIssueWriteOperation;
   },
   grant: CrossIssueWriteGrantDecision,
   sourceIssueId: string,
@@ -367,10 +393,12 @@ async function auditCrossIssueWriteGrantDenied(
       entityId: input.targetIssueId,
       details: {
         kind: input.kind,
+        operation: input.operation,
         sourceIssueId,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         basis: null,
+        commentOnlyBasis: grant.commentOnlyBasis,
         grantMode: grant.mode,
         grantEnforceAt: grant.enforceAt,
       },
@@ -422,7 +450,7 @@ export async function assertCrossIssueWriteFence(
       actorAgentId: fence.agentId,
       sourceIssueId: fence.sourceIssueId,
       targetIssueId: fence.targetIssueId,
-      operation: crossIssueWriteOperationForKind(fence.kind),
+      operation: fence.operation,
     },
     { lockAuthorityInputs: true },
   );
@@ -453,6 +481,7 @@ export async function assertCrossIssueWriteFence(
       entityId: fence.targetIssueId,
       details: {
         kind: fence.kind,
+        operation: fence.operation,
         sourceIssueId: fence.sourceIssueId,
         targetIssueId: fence.targetIssueId,
         targetIssueIdentifier: fence.targetIssueIdentifier,

@@ -14,7 +14,8 @@ export const CROSS_ISSUE_WRITE_PERMISSION_KEY = "issues:cross-write";
 
 /**
  * Scope keys `scopeAllows` actually narrows on. Kept in sync by the
- * `recognized cross-write scope keys` test in `authorization-service.test.ts`.
+ * `GRANT_SCOPE_CORPUS` cases in `cross-issue-influence-limit.test.ts`, which
+ * run every scope through both this check and the evaluator.
  */
 export const CROSS_ISSUE_WRITE_SCOPE_KEYS = [
   "projectId",
@@ -35,25 +36,39 @@ export const CROSS_ISSUE_WRITE_SCOPE_KEYS = [
   "subtreeRootAgentIds",
 ] as const;
 
-const CROSS_ISSUE_WRITE_SCOPE_PREFIXES = ["project:", "agent:", "subtree:"] as const;
+export const CROSS_ISSUE_WRITE_SCOPE_PREFIXES = ["project:", "agent:", "subtree:"] as const;
 
-function isEmptyScopeValue(value: unknown): boolean {
-  if (value === null || value === undefined) return true;
-  if (typeof value === "string") return value.trim().length === 0;
-  if (Array.isArray(value)) return value.every(isEmptyScopeValue);
-  return false;
+/**
+ * The two primitives the authorization evaluator reads a grant scope with.
+ * They live here, not next to `scopeAllows`, because the save-time check below
+ * has to agree with the evaluator exactly: an earlier revision read prefixed
+ * *object keys* at save time while the evaluator read prefixed strings out of
+ * `scope.allow`, so `{"project:<id>": true}` stored as "scoped" and conferred
+ * nothing, and the evaluator-valid `{"allow": ["project:<id>"]}` was refused at
+ * save time (FAI-10134 contract correction).
+ */
+export function grantScopeValueList(value: unknown): string[] {
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim());
 }
 
-/** A recognized key or prefix carrying at least one non-empty value. */
+export function grantScopePrefixedValues(grantScope: Record<string, unknown>, prefix: string): string[] {
+  return grantScopeValueList(grantScope.allow)
+    .filter((rule) => rule.startsWith(prefix))
+    .map((rule) => rule.slice(prefix.length))
+    .filter((value) => value.length > 0);
+}
+
+/** A recognized key, or an `allow` selector, carrying at least one non-empty value. */
 export function crossIssueWriteScopeIsConstrained(scope: Record<string, unknown> | null | undefined) {
   if (!scope) return false;
-  for (const [key, value] of Object.entries(scope)) {
-    const recognized =
-      (CROSS_ISSUE_WRITE_SCOPE_KEYS as readonly string[]).includes(key) ||
-      CROSS_ISSUE_WRITE_SCOPE_PREFIXES.some((prefix) => key.startsWith(prefix));
-    if (recognized && !isEmptyScopeValue(value)) return true;
+  for (const key of CROSS_ISSUE_WRITE_SCOPE_KEYS) {
+    if (grantScopeValueList(scope[key]).length > 0) return true;
   }
-  return false;
+  return CROSS_ISSUE_WRITE_SCOPE_PREFIXES.some((prefix) => grantScopePrefixedValues(scope, prefix).length > 0);
 }
 
 /**
@@ -69,8 +84,9 @@ export function crossIssueWriteGrantScopeError(
   if (crossIssueWriteScopeIsConstrained(scope)) return null;
   return (
     `An \`${CROSS_ISSUE_WRITE_PERMISSION_KEY}\` grant must be scoped to at least one project or ` +
-    `assignee. Use one of ${CROSS_ISSUE_WRITE_SCOPE_KEYS.slice(0, 4).join(", ")} (or a ` +
-    `\`project:\`/\`agent:\`/\`subtree:\` prefixed key). An empty scope, or a scope made only of ` +
-    `keys the authorization evaluator does not recognize, would read as company-wide write access.`
+    `assignee. Use one of ${CROSS_ISSUE_WRITE_SCOPE_KEYS.slice(0, 4).join(", ")}, or an ` +
+    `\`allow\` list of \`project:\`/\`agent:\`/\`subtree:\` selectors (for example ` +
+    `{"allow":["project:<id>"]}). An empty scope, or a scope made only of keys the authorization ` +
+    `evaluator does not recognize, would read as company-wide write access.`
   );
 }
