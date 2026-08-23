@@ -48,17 +48,26 @@ import {
   type ReservationToken,
 } from "./duplex-aggregate-byte-ledger.js";
 import {
+  DUPLEX_BODY_CHUNK_RAW_BYTES,
   DEFAULT_MAX_DUPLEX_FRAME_BYTES,
   DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES,
   DUPLEX_FRAME_VERSION,
   DuplexFrameDecoder,
   encodeDuplexFrame,
   encodeDuplexFrameChecked,
+  type DuplexBodyChunkFrame,
   type DuplexFrame,
   type DuplexRequestFrame,
   type DuplexResponseFrame,
   type DuplexResponseOutcome,
 } from "./duplex-frame-codec.js";
+import {
+  DuplexBodyError,
+  DuplexBodyReceiver,
+  splitBodyIntoChunkFrames,
+  type DuplexBodyReceiverConfig,
+  type ReassembledBody,
+} from "./duplex-body-spool.js";
 import type {
   DuplexLossReason,
   DuplexOutcomeValue,
@@ -195,12 +204,15 @@ export interface DuplexBrokerForwardResult {
 /**
  * The forward handler the broker calls for each request. The handler applies the
  * real token and the run attribution, then forwards the request on the existing
- * API path. The broker aborts `options.signal` when the forward budget ends or a
- * loss happens, so a handler that threads the signal into its work stops early.
+ * API path. The broker reassembles the request body from the `body_chunk` frames
+ * before it calls the handler, so the handler streams the body from
+ * `options.body`. The broker aborts `options.signal` when the forward budget ends
+ * or a loss happens, so a handler that threads the signal into its work stops
+ * early.
  */
 export type DuplexBrokerForwardHandler = (
   request: DuplexRequestFrame,
-  options: { signal: AbortSignal },
+  options: { signal: AbortSignal; body: ReassembledBody },
 ) => Promise<DuplexBrokerForwardResult>;
 
 /** One request record. The broker captures the dispatch-start point for metrics only. */
@@ -249,6 +261,14 @@ export interface DuplexBrokerOptions {
    * {@link DEFAULT_DUPLEX_BROKER_MAX_LIFETIME_REQUESTS}.
    */
   maxLifetimeRequests?: number;
+  /**
+   * The config for the receive-side request-body reassembler. It sets the spill
+   * threshold, the fixed raw chunk size, and the per-channel spill caps. The
+   * broker creates one reassembler for the channel. The config stays injectable,
+   * so a test lowers the spill threshold and the caps to exercise the spill path
+   * and the fail-closed cap behavior without a large body.
+   */
+  bodyReceiverConfig?: DuplexBodyReceiverConfig;
   /** The clock the broker reads for the metric timestamps. The default is `Date.now`. */
   now?: () => number;
   /** The metrics sink for the per-request dispatch record. */
@@ -381,10 +401,24 @@ export function isSafeBridgeMethod(method: string): boolean {
 interface PendingRequest {
   controller: AbortController;
   responded: boolean;
-  forwardTimer: ReturnType<typeof setTimeout>;
+  /**
+   * The forward-budget timer. It is `null` while the broker reassembles the
+   * request body, and the broker sets it when it starts the forward. So the
+   * forward budget bounds the forward call, not the reassembly.
+   */
+  forwardTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The response-budget backstop timer. The broker starts it at the request
+   * envelope, so it bounds the whole request: the body reassembly plus the
+   * forward. It answers a request that never completes its reassembly or forward.
+   */
   responseTimer: ReturnType<typeof setTimeout>;
   /** The point the broker started to dispatch the request. It sets the span latency. */
   dispatchStartMs: number;
+  /** The request method. The response backstop reads it to classify the safe-method retry. */
+  method: string;
+  /** The reassembled request body, set once reassembly completes. The broker disposes it on settle. */
+  reassembled: ReassembledBody | null;
   /** True once the forward promise settled. The finally owner sets it one time. */
   forwardSettled: boolean;
   /**
@@ -409,10 +443,14 @@ interface OrphanedForward {
 }
 
 /**
- * Create the host duplex bridge broker. The factory asserts the budget order and
- * returns a handle. Call `start` to wire the channel and open the broker.
+ * Create the host duplex bridge broker. The factory asserts the budget order,
+ * creates the receive-side request-body reassembler, and returns a handle. It is
+ * asynchronous because the reassembler owns a spill directory it creates with
+ * `mkdtemp`. Call `start` to wire the channel and open the broker.
  */
-export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBridgeBroker {
+export async function createDuplexBridgeBroker(
+  options: DuplexBrokerOptions,
+): Promise<DuplexBridgeBroker> {
   const budgets: DuplexBrokerBudgets = {
     ...DEFAULT_DUPLEX_BROKER_BUDGETS,
     ...options.budgets,
@@ -452,20 +490,49 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     if (ledger && token) ledger.release(token);
   };
   // The byte size of the normalized request payload the broker retains across the
-  // forward. It counts the exact retained scalar and header bytes, so the charge
-  // matches the retained bytes and never a parsed object graph.
+  // forward. It counts the exact retained scalar and header bytes plus the raw body
+  // byte count, so the charge matches the reassembled body the broker holds and
+  // never a parsed object graph. The body rides `body_chunk` frames, so the
+  // envelope carries only `bodyByteCount`; that count is the retained body size.
   const requestPayloadBytes = (frame: DuplexRequestFrame): number => {
     let bytes =
       Buffer.byteLength(frame.id, "utf8") +
       Buffer.byteLength(frame.method, "utf8") +
       Buffer.byteLength(frame.path, "utf8") +
       Buffer.byteLength(frame.query, "utf8") +
-      Buffer.byteLength(frame.body, "utf8");
+      frame.bodyByteCount;
     for (const [key, value] of Object.entries(frame.headers)) {
       bytes += Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8");
     }
     return bytes;
   };
+
+  // The receive-side request-body reassembler. It reassembles each request body
+  // from the `body_chunk` frames, on the memory path at or below the spill
+  // threshold and on the spill path above it, so the broker never holds a whole
+  // large request body in memory. It owns a per-channel spill directory and the
+  // spill caps.
+  const receiver = await DuplexBodyReceiver.create(options.bodyReceiverConfig ?? {});
+  let receiverFinalized = false;
+  const finalizeReceiver = (): Promise<void> => {
+    // Remove the spill directory and every in-flight body once. The broker calls
+    // it on every terminal path: a loss, a normal teardown, and an orderly close.
+    if (receiverFinalized) return Promise.resolve();
+    receiverFinalized = true;
+    return receiver.destroy().catch(() => undefined);
+  };
+  // The fixed raw slice size for the response `body_chunk` frames. It matches the
+  // reassembler config, so a test that lowers the slice size splits both a request
+  // body and a response body the same way.
+  const rawChunkBytes = options.bodyReceiverConfig?.rawChunkBytes ?? DUPLEX_BODY_CHUNK_RAW_BYTES;
+  // The ids the broker is reassembling right now. A `body_chunk` for an id in this
+  // set routes to the reassembler. The broker removes an id when the body settles.
+  const reassembling = new Set<string>();
+  // The ids the broker refused at the envelope, with the raw bytes it still must
+  // drain. The sender emits the `body_chunk` frames for a refused request before
+  // it learns of the refusal, so the broker drains and drops those chunks instead
+  // of treating them as a body_chunk with no envelope.
+  const draining = new Map<string, number>();
 
   let state: DuplexBrokerState = "opening";
   let stopped = false;
@@ -544,21 +611,33 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
 
   const clearPending = (): void => {
     for (const [id, entry] of pending) {
-      clearTimeout(entry.forwardTimer);
+      if (entry.forwardTimer !== null) clearTimeout(entry.forwardTimer);
       clearTimeout(entry.responseTimer);
       entry.controller.abort(new Error("Duplex broker stopped."));
-      // A forward that has not settled still owns its request tokens. Transfer it
-      // to the orphan registry, so its tokens stay charged until the forward
-      // finally releases them. The abort only asks the forward to stop; it never
-      // releases a token by itself.
-      if (!entry.forwardSettled) {
+      if (entry.reassembled !== null) {
+        void entry.reassembled.dispose();
+        entry.reassembled = null;
+      }
+      if (entry.forwardSettled) continue;
+      if (entry.forwardTimer !== null) {
+        // A live forward promise still owns its request tokens. Transfer it to the
+        // orphan registry, so its tokens stay charged until the forward finally
+        // releases them. The abort only asks the forward to stop; it never releases
+        // a token by itself.
         orphanedForwards.set(id, {
           controller: entry.controller,
           releaseForwardTokens: entry.releaseForwardTokens,
         });
+      } else {
+        // The request is still reassembling, so no forward promise will settle and
+        // release its tokens. Release the request tokens now. The reassembler
+        // teardown below rejects the in-flight body and unlinks any spill file.
+        entry.releaseForwardTokens();
       }
     }
     pending.clear();
+    reassembling.clear();
+    draining.clear();
     // Ask every already-orphaned forward to stop as well. The forward-promise
     // finally owner releases each orphan token when the forward settles.
     for (const orphan of orphanedForwards.values()) {
@@ -582,6 +661,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       clearPending();
       releaseSeenRequestIdTokens();
       decoder.dispose();
+      void finalizeReceiver();
       if (state !== "closing") setState("closed");
       return;
     }
@@ -607,6 +687,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     clearPending();
     releaseSeenRequestIdTokens();
     decoder.dispose();
+    void finalizeReceiver();
     lossRecord = { reason, message, atMs: now() };
     setState("lost");
     // Log the internal reason only. The broker never writes the raw provider
@@ -626,31 +707,57 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     }
   };
 
-  // The result of one bounded send. `sent` means the frame went out; `too_large`
-  // means the encoded frame exceeds the bound and the broker wrote nothing;
-  // `lost` means the write failed and the broker recorded the channel loss.
+  // The result of one bounded send. `sent` means every frame went out; `too_large`
+  // means the response envelope exceeds the bound and the broker wrote nothing;
+  // `lost` means a write failed and the broker recorded the channel loss.
   type SendResult = "sent" | "too_large" | "lost";
 
-  const trySendFrame = (frame: DuplexFrame): SendResult => {
-    // Enforce the frame size bound on every broker write. Report a size rejection
-    // as `too_large` without a channel loss; a broker-built frame over the bound
-    // is a defect, not a transport failure. A caller decides how to answer the
-    // request, so no size rejection ever drops the channel.
-    const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
-    if (!encoded.ok) return "too_large";
-    return writeLine(encoded.line) ? "sent" : "lost";
-  };
-
-  const writeFrame = (frame: DuplexFrame): boolean => {
-    // A control frame and the bounded terminal responses are always small, so the
-    // size guard is a no-op for them. Drop an oversized frame here without a
-    // channel loss and report the drop to the caller.
-    const result = trySendFrame(frame);
-    if (result === "too_large") {
-      options.logger?.(`Duplex broker dropped an oversized ${frame.type} frame.`);
-      return false;
+  // Send one full response as a sequence of frames: one envelope frame that
+  // carries `bodyByteCount`, then the `body_chunk` frames that carry the body. The
+  // envelope is always small. Each `body_chunk` carries one fixed raw slice, so
+  // each encoded chunk stays under the frame bound by construction. The result
+  // reports `too_large` when the envelope itself exceeds the bound and the broker
+  // wrote nothing, `lost` when a write failed and the broker recorded the channel
+  // loss, and `sent` when every frame went out.
+  const sendResponseFrames = (
+    id: string,
+    status: number,
+    headers: Record<string, string>,
+    bodyText: string,
+    outcome: DuplexResponseOutcome,
+  ): SendResult => {
+    const bodyBuffer = Buffer.from(bodyText, "utf8");
+    const envelope: DuplexResponseFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id,
+      status,
+      headers,
+      bodyByteCount: bodyBuffer.length,
+      outcome,
+    };
+    // Guard the envelope against the frame bound. The envelope holds no body, so a
+    // real bound rejects it only under an extreme small test bound. Report the
+    // rejection without a channel loss, so the caller decides how to answer.
+    const encodedEnvelope = encodeDuplexFrameChecked(envelope, maxFrameBytes);
+    if (!encodedEnvelope.ok) return "too_large";
+    const chunkFrames = splitBodyIntoChunkFrames(id, bodyBuffer, DUPLEX_FRAME_VERSION, rawChunkBytes);
+    if (!writeLine(encodedEnvelope.line)) return "lost";
+    for (const chunk of chunkFrames) {
+      const encodedChunk = encodeDuplexFrameChecked(chunk, maxFrameBytes);
+      if (!encodedChunk.ok) {
+        // A single fixed-size slice never exceeds the bound in a real configuration.
+        // A test bound below one chunk can reject it. The envelope already went out
+        // with the true `bodyByteCount`, so the broker cannot complete the body
+        // within the bound. Log the drop and stop; the gateway ends the request on
+        // its wait budget. Report `sent`, because the broker already committed the
+        // envelope, so no caller resends a bounded replacement over the same id.
+        options.logger?.("Duplex broker dropped an oversized body_chunk frame.");
+        return "sent";
+      }
+      if (!writeLine(encodedChunk.line)) return "lost";
     }
-    return result === "sent";
+    return "sent";
   };
 
   const sendTerminalIndeterminate = (id: string): void => {
@@ -658,42 +765,32 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // request reached the host and may have changed state, so the response is
     // non-retryable and carries the `indeterminate` outcome. The broker tries the
     // full replacement first. When the frame bound rejects even the full
-    // replacement, the broker sends a minimal replacement that carries only the
-    // `indeterminate` outcome, so the gateway still ends the request and never
-    // waits for its full wait budget. When the bound rejects even the minimal
-    // replacement, the broker logs a clear local error and keeps the channel
-    // open; it records no channel loss.
-    const fullReplacement: DuplexResponseFrame = {
-      version: DUPLEX_FRAME_VERSION,
-      type: "response",
-      id,
-      status: 502,
-      headers: {
-        "content-type": "application/json",
-        "x-paperclip-bridge-outcome": "indeterminate",
-      },
-      body: JSON.stringify({
-        error: "upstream response too large to deliver",
-        outcome: "indeterminate",
-        retryable: false,
-      }),
+    // replacement envelope, the broker sends a minimal replacement that carries
+    // only the `indeterminate` outcome, so the gateway still ends the request and
+    // never waits for its full wait budget. When the bound rejects even the
+    // minimal replacement envelope, the broker logs a clear local error and keeps
+    // the channel open; it records no channel loss.
+    const fullBody = JSON.stringify({
+      error: "upstream response too large to deliver",
       outcome: "indeterminate",
-    };
-    if (trySendFrame(fullReplacement) !== "too_large") return;
-    // The bound rejects the full replacement. Send a minimal terminal response
-    // with empty headers and an empty body. The `indeterminate` outcome still
-    // rides the frame, so the gateway maps the request to a terminal 409.
-    const minimalReplacement: DuplexResponseFrame = {
-      version: DUPLEX_FRAME_VERSION,
-      type: "response",
-      id,
-      status: 502,
-      headers: {},
-      body: "",
-      outcome: "indeterminate",
-    };
-    if (trySendFrame(minimalReplacement) !== "too_large") return;
-    // The bound rejects even the minimal terminal response. The broker cannot
+      retryable: false,
+    });
+    if (
+      sendResponseFrames(
+        id,
+        502,
+        { "content-type": "application/json", "x-paperclip-bridge-outcome": "indeterminate" },
+        fullBody,
+        "indeterminate",
+      ) !== "too_large"
+    ) {
+      return;
+    }
+    // The bound rejects the full replacement envelope. Send a minimal terminal
+    // response with empty headers and an empty body. The `indeterminate` outcome
+    // still rides the envelope, so the gateway maps the request to a terminal 409.
+    if (sendResponseFrames(id, 502, {}, "", "indeterminate") !== "too_large") return;
+    // The bound rejects even the minimal terminal envelope. The broker cannot
     // deliver any frame for this request within the bound. Log a clear local
     // error and keep the channel open for every other request. The gateway ends
     // its own outstanding request on its wait budget.
@@ -711,40 +808,19 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     const entry = pending.get(id);
     if (!entry || entry.responded) return;
     entry.responded = true;
-    clearTimeout(entry.forwardTimer);
-    clearTimeout(entry.responseTimer);
-    pending.delete(id);
-    // The response timer, an abort, or a broker loss can answer the gateway before
-    // the forward promise settles. When the forward has not settled, transfer it to
-    // the orphan registry so its request tokens stay charged until the forward
-    // finally releases them. A settled forward already released or will release
-    // through its finally owner, so it needs no orphan record.
-    if (!entry.forwardSettled) {
-      orphanedForwards.set(id, {
-        controller: entry.controller,
-        releaseForwardTokens: entry.releaseForwardTokens,
-      });
-    }
+    settlePendingBookkeeping(id, entry);
     // Do not write on a lost or closed channel. The gateway answers its own
     // outstanding request on loss, so a late write would go to a dead channel.
     if (state !== "open") return;
-    const frame: DuplexResponseFrame = {
-      version: DUPLEX_FRAME_VERSION,
-      type: "response",
-      id,
-      status: result.status,
-      headers: result.headers ?? {},
-      body: result.body ?? "",
-      outcome,
-    };
-    const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
-    if (!encoded.ok) {
-      // The host produced a result, but the response frame exceeds the size
-      // bound. Do not write the oversized frame and do not record a channel loss.
-      // The request reached the host and may have changed state, so the caller
-      // must not retry a possible mutation. Send a bounded, non-retryable terminal
-      // response marked `indeterminate` in its place. Record the request outcome
-      // as an error, never a loss. The channel stays open for every other request.
+    const bodyText = result.body ?? "";
+    const bodyByteCount = Buffer.byteLength(bodyText, "utf8");
+    // The response body rides `body_chunk` frames, so a large body no longer makes
+    // one frame too large. The gateway reassembles a response body in memory,
+    // though, so a body over the frame bound would force the gateway to hold an
+    // oversized body in memory. Treat a response body over the frame bound like the
+    // former oversized case: send a bounded, non-retryable indeterminate terminal
+    // response, and record the request outcome as an error, never a loss.
+    if (bodyByteCount > maxFrameBytes) {
       options.telemetry?.recordRequest({
         latencyMs: now() - entry.dispatchStartMs,
         outcome: "error",
@@ -753,12 +829,14 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       return;
     }
     // Record the request span for the delivered request. The span carries the
-    // latency and the outcome only; no route, query, body, or token rides it.
+    // latency and the outcome only; no route, query, body, or token rides it. The
+    // broker records the span before the writes, so the outcome is recorded even if
+    // a later chunk write records a channel loss.
     options.telemetry?.recordRequest({
       latencyMs: now() - entry.dispatchStartMs,
       outcome: telemetryOutcome,
     });
-    writeLine(encoded.line);
+    sendResponseFrames(id, result.status, result.headers ?? {}, bodyText, outcome);
   };
 
   const respondSaturated = (id: string, retryable: boolean): void => {
@@ -768,23 +846,61 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // it holds only the fixed error shape. The `unavailable` outcome tells the
     // gateway this is not a delivered host response, so it never counts as one.
     if (state !== "open") return;
-    const frame: DuplexResponseFrame = {
-      version: DUPLEX_FRAME_VERSION,
-      type: "response",
+    sendResponseFrames(
       id,
-      status: 503,
-      headers: {
-        "content-type": "application/json",
-        "x-paperclip-bridge-outcome": "unavailable",
-      },
-      body: JSON.stringify({
+      503,
+      { "content-type": "application/json", "x-paperclip-bridge-outcome": "unavailable" },
+      JSON.stringify({
         error: "Duplex broker capacity limit reached.",
         outcome: "unavailable",
         retryable,
       }),
-      outcome: "unavailable",
-    };
-    writeFrame(frame);
+      "unavailable",
+    );
+  };
+
+  // Release the timers and route the reassembly and ledger resources for one
+  // request the broker just answered. The broker calls it exactly once per
+  // request, from the response path. It clears both timers and drops the pending
+  // record, then it settles the resources by the request phase:
+  //   - A live forward promise (the response backstop answered while the forward
+  //     ran) keeps its request tokens and its reassembled body until its finally
+  //     owner releases and disposes them, so the orphan registry holds it.
+  //   - A request still reassembling (the backstop answered before the forward
+  //     started) has no forward promise to settle, so the broker releases its
+  //     tokens and disposes the in-flight body now.
+  //   - A settled forward already released and disposed through its finally owner.
+  const settlePendingBookkeeping = (id: string, entry: PendingRequest): void => {
+    if (entry.forwardTimer !== null) clearTimeout(entry.forwardTimer);
+    clearTimeout(entry.responseTimer);
+    pending.delete(id);
+    if (entry.forwardSettled) return;
+    if (entry.forwardTimer !== null) {
+      // A live forward still owns its request tokens and streams the reassembled
+      // body. Keep both charged until the forward finally owner settles them.
+      orphanedForwards.set(id, {
+        controller: entry.controller,
+        releaseForwardTokens: entry.releaseForwardTokens,
+      });
+      return;
+    }
+    // The request is still reassembling, so no forward promise will settle. Release
+    // the request tokens and dispose the in-flight body, so no spill file, arena
+    // reservation, or ledger token lingers.
+    entry.releaseForwardTokens();
+    if (reassembling.delete(id)) void receiver.disposeBody(id);
+    if (entry.reassembled !== null) {
+      void entry.reassembled.dispose();
+      entry.reassembled = null;
+    }
+  };
+
+  // Mark a refused or duplicate request id for chunk draining. The sender emits
+  // the `body_chunk` frames for the request before it learns of the refusal, so
+  // the broker records the raw byte count it must drain and drop. A request with
+  // no body needs no draining, so the broker records only a non-zero count.
+  const markDrain = (frame: DuplexRequestFrame): void => {
+    if (frame.bodyByteCount > 0) draining.set(frame.id, frame.bodyByteCount);
   };
 
   const respondAggregateExceeded = (id: string): void => {
@@ -796,23 +912,17 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // host response. The refusal is retryable, because the broker did not retain
     // the id: the aggregate pressure can ease, and a resend can then get through.
     if (state !== "open") return;
-    const frame: DuplexResponseFrame = {
-      version: DUPLEX_FRAME_VERSION,
-      type: "response",
+    sendResponseFrames(
       id,
-      status: 503,
-      headers: {
-        "content-type": "application/json",
-        "x-paperclip-bridge-outcome": "unavailable",
-      },
-      body: JSON.stringify({
+      503,
+      { "content-type": "application/json", "x-paperclip-bridge-outcome": "unavailable" },
+      JSON.stringify({
         error: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
         outcome: "unavailable",
         retryable: true,
       }),
-      outcome: "unavailable",
-    };
-    writeFrame(frame);
+      "unavailable",
+    );
   };
 
   const dispatch = (frame: DuplexRequestFrame): void => {
@@ -825,13 +935,19 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // forwards. It answers with the bounded terminal refusal, which carries no
     // route, query, body, or token, and records no telemetry. The refusal is not
     // retryable, because a resend of the same over-limit id never gets past this
-    // bound.
+    // bound. It drains the following chunks of the refused body.
     if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
       respondSaturated(frame.id, false);
+      markDrain(frame);
       return;
     }
-    // Forward one id one time. A repeated id never reaches the API twice.
-    if (seenRequestIds.has(frame.id)) return;
+    // Forward one id one time. A repeated id never reaches the API twice. The
+    // broker already answered the first request, so it answers no second time; it
+    // drains the resent body chunks and drops them.
+    if (seenRequestIds.has(frame.id)) {
+      markDrain(frame);
+      return;
+    }
     // Bound the retained request-id memory. The broker keeps one id per distinct
     // dispatched request for the no-replay guarantee, so the set can only grow.
     // Once the broker reaches the lifetime limit, it refuses each new distinct id
@@ -840,6 +956,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // the set never grows past the limit.
     if (seenRequestIds.size >= limits.maxLifetimeRequests) {
       respondSaturated(frame.id, false);
+      markDrain(frame);
       return;
     }
     // Bound the in-flight request count. Once the broker holds the maximum number
@@ -847,9 +964,11 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // it. The broker does not add the id to the seen set, so the gateway can
     // resend the request after an in-flight request completes. The refusal is
     // retryable for that reason. This check bounds the controllers, the timers,
-    // and the concurrent forwards a provider can force.
+    // the concurrent reassemblies, and the concurrent forwards a provider can
+    // force.
     if (pending.size >= limits.maxInFlightRequests) {
       respondSaturated(frame.id, true);
+      markDrain(frame);
       return;
     }
     // Reserve the exact retained bytes against the aggregate ledger before the
@@ -868,12 +987,14 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       requestFrameToken = ledger.reserve("request_frame", rawFrameBytes);
       if (!requestFrameToken) {
         respondAggregateExceeded(frame.id);
+        markDrain(frame);
         return;
       }
       requestPayloadToken = ledger.reserve("request_payload", requestPayloadBytes(frame));
       if (!requestPayloadToken) {
         ledger.release(requestFrameToken);
         respondAggregateExceeded(frame.id);
+        markDrain(frame);
         return;
       }
       const seenEntryBytes =
@@ -883,6 +1004,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
         ledger.release(requestFrameToken);
         ledger.release(requestPayloadToken);
         respondAggregateExceeded(frame.id);
+        markDrain(frame);
         return;
       }
     }
@@ -910,83 +1032,123 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     options.onRequestRecord?.(record);
 
     const controller = new AbortController();
-    const forwardTimer = setTimeout(() => {
-      controller.abort(new Error("Duplex broker forward budget exceeded."));
-    }, budgets.forwardTimeoutMs);
-    const responseTimer = setTimeout(() => {
-      // Response-budget backstop. The forward rejection normally answers first,
-      // well before this deadline. This backstop answers a request whose forward
-      // rejection handling itself stalls, so the request never strands. One stall
-      // path is a response whose headers arrive but whose body reader stays
-      // pending through the budget, so the forward promise never settles.
-      if (isSafeBridgeMethod(frame.method)) {
-        // A safe method never changes host state, so a stalled body reader
-        // cannot leave a mutation half-applied. Keep the request retryable:
-        // return a 504 with the completed outcome and no indeterminate marker,
-        // so the gateway passes it through as a retryable status and never maps
-        // it to a terminal 409.
-        respond(
-          frame.id,
-          {
-            status: 504,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              error: "Duplex broker response budget exceeded.",
-              retryable: true,
-            }),
-          },
-          "completed",
-          "error",
-        );
-        return;
-      }
-      // The method may mutate host state, and the broker cannot prove the host
-      // applied no mutation once the response budget passes. Return a
-      // non-retryable 504 and mark the outcome indeterminate, so the gateway
-      // maps it to a terminal 409 and no caller double-applies the mutation.
-      respond(
-        frame.id,
-        {
-          status: 504,
-          headers: {
-            "content-type": "application/json",
-            "x-paperclip-bridge-outcome": "indeterminate",
-          },
-          body: JSON.stringify({
-            error: "Duplex broker response budget exceeded.",
-            outcome: "indeterminate",
-            retryable: false,
-          }),
-        },
-        "indeterminate",
-        "error",
-      );
-    }, budgets.responseBudgetMs);
-    forwardTimer.unref?.();
+    // Start the response-budget backstop at the request envelope, so it bounds the
+    // whole request: the body reassembly plus the forward. The forward-budget timer
+    // starts later, when the broker starts the forward, so it bounds the forward
+    // call alone.
+    const responseTimer = setTimeout(() => respondBackstop(frame.id), budgets.responseBudgetMs);
     responseTimer.unref?.();
-    pending.set(frame.id, {
+    const entry: PendingRequest = {
       controller,
       responded: false,
-      forwardTimer,
+      forwardTimer: null,
       responseTimer,
       dispatchStartMs: record.dispatchStartMs,
+      method: frame.method,
+      reassembled: null,
       forwardSettled: false,
       releaseForwardTokens,
-    });
-
-    // The forward promise has one cleanup owner. The two settle handlers mark the
-    // forward settled and answer the gateway. The `finally` then releases the
-    // request tokens exactly one time and removes the request from both the pending
-    // map and the orphan map. The forward resolves only after the forward and its
-    // response-body reader both settle, so this owner waits for both.
-    const markForwardSettled = (): void => {
-      // Mark the pending entry settled before `respond` runs, so `respond` never
-      // moves a just-settled forward to the orphan registry. An already-orphaned
-      // forward needs no flag; its finally owner releases and drains it.
-      const entry = pending.get(frame.id);
-      if (entry) entry.forwardSettled = true;
     };
-    forwardRequest(frame, { signal: controller.signal })
+    pending.set(frame.id, entry);
+    // Route the following `body_chunk` frames for this id to the reassembler.
+    reassembling.add(frame.id);
+    // Reassemble the request body from the `body_chunk` frames, then forward it.
+    // The reassembler chooses the memory path or the spill path from the envelope
+    // `bodyByteCount`, so the broker never holds a whole large request body in
+    // memory. A reassembly error is a terminal protocol failure.
+    receiver.begin(frame.id, frame.bodyByteCount).then(
+      (body) => onBodyReady(frame, entry, body),
+      (error) => onBodyError(frame.id, entry, error),
+    );
+  };
+
+  const respondBackstop = (id: string): void => {
+    // Response-budget backstop. The forward rejection normally answers first, well
+    // before this deadline. This backstop answers a request whose body never
+    // completes its reassembly, or whose forward rejection handling itself stalls,
+    // so the request never strands. One stall path is a response whose headers
+    // arrive but whose body reader stays pending through the budget, so the forward
+    // promise never settles.
+    const entry = pending.get(id);
+    if (!entry || entry.responded) return;
+    if (isSafeBridgeMethod(entry.method)) {
+      // A safe method never changes host state, so a stalled body reader cannot
+      // leave a mutation half-applied. Keep the request retryable: return a 504
+      // with the completed outcome and no indeterminate marker, so the gateway
+      // passes it through as a retryable status and never maps it to a terminal 409.
+      respond(
+        id,
+        {
+          status: 504,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: "Duplex broker response budget exceeded.",
+            retryable: true,
+          }),
+        },
+        "completed",
+        "error",
+      );
+      return;
+    }
+    // The method may mutate host state, and the broker cannot prove the host
+    // applied no mutation once the response budget passes. Return a non-retryable
+    // 504 and mark the outcome indeterminate, so the gateway maps it to a terminal
+    // 409 and no caller double-applies the mutation.
+    respond(
+      id,
+      {
+        status: 504,
+        headers: {
+          "content-type": "application/json",
+          "x-paperclip-bridge-outcome": "indeterminate",
+        },
+        body: JSON.stringify({
+          error: "Duplex broker response budget exceeded.",
+          outcome: "indeterminate",
+          retryable: false,
+        }),
+      },
+      "indeterminate",
+      "error",
+    );
+  };
+
+  // The request body reassembled. Start the forward now, so the forward budget
+  // bounds the forward call alone. The broker passes the reassembled body to the
+  // forward handler, so the handler streams it to the host API path.
+  const onBodyReady = (
+    frame: DuplexRequestFrame,
+    entry: PendingRequest,
+    body: ReassembledBody,
+  ): void => {
+    reassembling.delete(frame.id);
+    if (stopped || state !== "open" || entry.responded) {
+      // The channel died, or the response backstop already answered, so no forward
+      // runs. Dispose the body and release the request tokens, so no spill file,
+      // arena reservation, or ledger token lingers, and drop the request from the
+      // pending and orphan maps.
+      void body.dispose();
+      pending.delete(frame.id);
+      orphanedForwards.delete(frame.id);
+      entry.releaseForwardTokens();
+      return;
+    }
+    entry.reassembled = body;
+    const forwardTimer = setTimeout(() => {
+      entry.controller.abort(new Error("Duplex broker forward budget exceeded."));
+    }, budgets.forwardTimeoutMs);
+    forwardTimer.unref?.();
+    entry.forwardTimer = forwardTimer;
+
+    // The forward promise has one cleanup owner. Both settle handlers mark the
+    // forward settled and answer the gateway. The `finally` then releases the
+    // request tokens exactly one time, disposes the reassembled body, and removes
+    // the request from the pending map and the orphan map.
+    const markForwardSettled = (): void => {
+      entry.forwardSettled = true;
+    };
+    forwardRequest(frame, { signal: entry.controller.signal, body })
       .then(
         (result) => {
           markForwardSettled();
@@ -1004,20 +1166,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
         },
         (error) => {
           markForwardSettled();
-          return handleForwardRejection(error);
-        },
-      )
-      .finally(() => {
-        pending.delete(frame.id);
-        orphanedForwards.delete(frame.id);
-        releaseForwardTokens();
-      });
-
-    // The forward rejection handler. It classifies the rejection by method safety
-    // and answers the gateway. The `markForwardSettled` call above runs first, so
-    // the response never re-orphans a settled forward.
-    function handleForwardRejection(error: unknown): void {
-        if (controller.signal.aborted) {
+          if (entry.controller.signal.aborted) {
           // The forward budget aborted the call. A safe method never changes
           // host state, so a forward timeout stays retryable for it. Return a
           // 504 with the completed outcome and no indeterminate marker, so the
@@ -1103,13 +1252,70 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
           "indeterminate",
           "error",
         );
+        },
+      )
+      .finally(() => {
+        // The single forward cleanup owner. Release the request tokens, dispose the
+        // reassembled body, and drop the request from the pending and orphan maps,
+        // each exactly one time.
+        pending.delete(frame.id);
+        orphanedForwards.delete(frame.id);
+        entry.releaseForwardTokens();
+        if (entry.reassembled !== null) {
+          void entry.reassembled.dispose();
+          entry.reassembled = null;
+        }
+      });
+  };
+
+  // The request body reassembly failed. A malformed chunk, a size mismatch, an
+  // overrun, or a truncation is a terminal protocol failure, so the broker fails
+  // the channel closed. A `channel_closed` error is the broker's own teardown of an
+  // in-flight body, so it is not a fresh loss.
+  const onBodyError = (id: string, entry: PendingRequest, error: unknown): void => {
+    reassembling.delete(id);
+    // The forward never ran, so release its request tokens and drop the request
+    // from the pending and orphan maps. The release is idempotent, so a teardown
+    // that already released the tokens keeps the count correct.
+    pending.delete(id);
+    orphanedForwards.delete(id);
+    entry.releaseForwardTokens();
+    if (stopped) return;
+    if (error instanceof DuplexBodyError && error.code === "channel_closed") return;
+    recordLoss("protocol_failure", errorMessage(error));
+  };
+
+  // Route one `body_chunk` frame. A chunk for an id under reassembly goes to the
+  // reassembler, which validates it and appends it. A chunk for a refused or
+  // duplicate id drains against its recorded byte count and drops. A chunk with no
+  // matching envelope is a terminal protocol failure.
+  const handleBodyChunk = (frame: DuplexBodyChunkFrame): void => {
+    if (reassembling.has(frame.id)) {
+      const result = receiver.pushChunk(frame);
+      if (!result.ok) recordLoss("protocol_failure", result.error.message);
+      return;
     }
+    const remaining = draining.get(frame.id);
+    if (remaining !== undefined) {
+      // Drain and drop a chunk of a refused body. The broker does not validate a
+      // drained chunk; it only tracks the byte progress, so it stops draining once
+      // the refused body ends. A further chunk after that is a chunk with no
+      // envelope.
+      const next = remaining - Buffer.byteLength(frame.data, "base64");
+      if (next > 0) draining.set(frame.id, next);
+      else draining.delete(frame.id);
+      return;
+    }
+    recordLoss("protocol_failure", "body_chunk arrived with no matching envelope");
   };
 
   const handleFrame = (frame: DuplexFrame): void => {
     switch (frame.type) {
       case "request":
         dispatch(frame);
+        return;
+      case "body_chunk":
+        handleBodyChunk(frame);
         return;
       case "close":
         // The gateway asked for an orderly close. The gateway sends this frame on
@@ -1201,6 +1407,9 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
         if (closeTimer !== undefined) clearTimeout(closeTimer);
         recordLoss("close_timeout", errorMessage(error));
       }
+      // Remove the spill directory and every in-flight body. The broker owns the
+      // reassembler, so the orderly close cleans it up.
+      await finalizeReceiver();
     })();
     return closePromise;
   };

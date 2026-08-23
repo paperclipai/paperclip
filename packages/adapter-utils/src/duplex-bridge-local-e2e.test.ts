@@ -4,6 +4,7 @@ import net from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -14,6 +15,9 @@ import {
 } from "./sandbox-callback-bridge.js";
 import {
   DuplexFrameDecoder,
+  DUPLEX_BODY_CHUNK_RAW_BYTES,
+  DUPLEX_FRAME_VERSION,
+  encodeDuplexFrame,
   type DuplexFrame,
   type DuplexReadyFrame,
   type DuplexRequestFrame,
@@ -23,6 +27,7 @@ import {
   type DuplexBridgeBroker,
   type DuplexBrokerForwardResult,
 } from "./duplex-bridge-broker.js";
+import type { ReassembledBody } from "./duplex-body-spool.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 
 /**
@@ -299,7 +304,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<DuplexE2EHar
 
   const forwardRequest = async (
     request: DuplexRequestFrame,
-    opts: { signal: AbortSignal },
+    opts: { signal: AbortSignal; body: ReassembledBody },
   ): Promise<DuplexBrokerForwardResult> => {
     forwardedRequests.push(request);
     // Keep the real route allowlist on the forward seam. The broker forwards
@@ -334,12 +339,16 @@ async function createHarness(options: HarnessOptions = {}): Promise<DuplexE2EHar
     headers.set("authorization", `Bearer ${hostApiToken}`);
     headers.set("x-paperclip-run-id", runId);
     const target = new URL(`${request.path}${request.query ?? ""}`, api.origin);
-    const response = await fetch(target, {
-      method,
-      headers,
-      ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-      signal: opts.signal,
-    });
+    // Stream the reassembled request body to the host, the same as the real
+    // forward. A streamed body needs `duplex: "half"`.
+    const forwardInit: RequestInit & { duplex?: "half" } = { method, headers, signal: opts.signal };
+    if (method !== "GET" && method !== "HEAD") {
+      forwardInit.body = Readable.toWeb(
+        opts.body.createReadStream(),
+      ) as unknown as ReadableStream<Uint8Array>;
+      forwardInit.duplex = "half";
+    }
+    const response = await fetch(target, forwardInit);
     const body = await response.text();
     const outHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
@@ -349,7 +358,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<DuplexE2EHar
     return { status: response.status, headers: outHeaders, body };
   };
 
-  const broker = createDuplexBridgeBroker({
+  const broker = await createDuplexBridgeBroker({
     channel,
     forwardRequest,
     logger: () => undefined,
@@ -456,7 +465,7 @@ describe("duplex bridge local end-to-end harness", () => {
     const ready = harness.observedFrames.find(
       (frame) => frame.type === "ready",
     ) as DuplexReadyFrame;
-    expect(ready.version).toBe(1);
+    expect(ready.version).toBe(2);
     expect(ready.nonce).toBe(harness.nonce);
     // READY is liveness only. It carries no address data.
     expect((ready as unknown as Record<string, unknown>).address).toBeUndefined();
@@ -642,5 +651,91 @@ describe("duplex bridge local end-to-end harness", () => {
     expect(harness.child.stderr.destroyed).toBe(true);
     expect(harness.api.listening()).toBe(false);
     expect(harness.api.openSocketCount()).toBe(0);
+  }, 20000);
+
+  it("fails a request with a local 502 when the host sends a malformed response chunk", async () => {
+    const RAW = DUPLEX_BODY_CHUNK_RAW_BYTES;
+    // Each case declares one malformed body_chunk a broken or hostile host could
+    // send. The gateway must reject it at once with a local 502. It must not grow
+    // its response reassembly buffer until the response timeout. `bodyByteCount`
+    // sets the declared body size on the response envelope. `data` is the base64
+    // payload of the one injected chunk.
+    const cases: Array<{ name: string; bodyByteCount: number; data: string; error: string }> = [
+      { name: "an empty chunk", bodyByteCount: RAW, data: "", error: "duplex response body_chunk is empty" },
+      {
+        name: "an undersized non-final chunk",
+        bodyByteCount: RAW + 8,
+        data: Buffer.alloc(4, 1).toString("base64"),
+        error: "duplex response body_chunk has the wrong size",
+      },
+      {
+        name: "an oversized chunk",
+        bodyByteCount: RAW + 8,
+        data: Buffer.alloc(RAW + 4, 1).toString("base64"),
+        error: "duplex response body_chunk has the wrong size",
+      },
+      {
+        name: "an overrun past the declared size",
+        bodyByteCount: 10,
+        data: Buffer.alloc(200, 1).toString("base64"),
+        error: "duplex response body overruns the declared size",
+      },
+      {
+        name: "a non-canonical base64 chunk",
+        bodyByteCount: 10,
+        data: "AB==",
+        error: "duplex response body_chunk is not canonical base64",
+      },
+    ];
+
+    const harness = await createHarness();
+    harnesses.push(harness);
+    await harness.waitFor(readyPredicate(harness), "the gateway to become ready");
+
+    // Hold the broker forward open, so only the injected frames answer each
+    // request. The gateway reassembles the response body itself, so a raw
+    // malformed chunk on its stdin drives the reject path under test.
+    harness.setForwardMode("hang");
+
+    for (const testCase of cases) {
+      const forwardedBefore = harness.forwardedRequests.length;
+      const pendingFetch = fetch(`${harness.baseUrl}/api/agents/me`, {
+        headers: { authorization: `Bearer ${harness.bridgeToken}` },
+      });
+      void pendingFetch.catch(() => undefined);
+      await harness.waitFor(
+        () => harness.forwardedRequests.length > forwardedBefore,
+        `the broker to receive the forwarded request for ${testCase.name}`,
+      );
+      const id = harness.forwardedRequests[harness.forwardedRequests.length - 1].id;
+
+      // Inject the response envelope, then the one malformed body_chunk, straight
+      // to the gateway stdin. This bypasses the broker response encoder, so the
+      // gateway sees the exact bytes a broken or hostile host could send.
+      harness.child.stdin.write(
+        encodeDuplexFrame({
+          version: DUPLEX_FRAME_VERSION,
+          type: "response",
+          id,
+          status: 200,
+          headers: {},
+          bodyByteCount: testCase.bodyByteCount,
+          outcome: "completed",
+        }),
+      );
+      harness.child.stdin.write(
+        encodeDuplexFrame({
+          version: DUPLEX_FRAME_VERSION,
+          type: "body_chunk",
+          id,
+          seq: 0,
+          data: testCase.data,
+        }),
+      );
+
+      const response = await pendingFetch;
+      expect(response.status).toBe(502);
+      await expect(response.json()).resolves.toEqual({ error: testCase.error });
+    }
   }, 20000);
 });

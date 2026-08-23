@@ -16,6 +16,7 @@ import {
   type DuplexRequestFrame,
   type DuplexResponseFrame,
 } from "./duplex-frame-codec.js";
+import { splitBodyIntoChunkFrames } from "./duplex-body-spool.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 
 /**
@@ -35,41 +36,83 @@ interface PendingForward {
   settled: boolean;
 }
 
+/**
+ * One reassembled response the broker wrote back. The broker writes a response as
+ * one envelope frame that carries `bodyByteCount`, then the `body_chunk` frames
+ * that carry the body. The harness reassembles the body and exposes it as `body`.
+ */
+type ReassembledResponse = DuplexResponseFrame & { body: string };
+
+/** One request the harness feeds: the envelope frame plus its raw body text. */
+interface RequestInput {
+  frame: DuplexRequestFrame;
+  bodyText: string;
+}
+
 /** The in-memory channel plus the levers a test uses to drive the broker. */
 interface FakeChannelHarness {
   channel: CommandManagedDuplexChannel;
-  feed: (frame: DuplexRequestFrame) => void;
+  feed: (input: RequestInput) => void;
   exit: () => void;
-  responses: DuplexResponseFrame[];
+  responses: ReassembledResponse[];
   forwards: PendingForward[];
   resolveForward: (id: string, body?: string) => void;
 }
 
-/** Build one valid request frame. */
-function requestFrame(id: string, method = "POST"): DuplexRequestFrame {
+/** Build one valid request: the envelope carries `bodyByteCount`, the body rides body_chunk frames. */
+function requestFrame(id: string, method = "POST"): RequestInput {
+  const bodyText = JSON.stringify({ id });
   return {
-    version: DUPLEX_FRAME_VERSION,
-    type: "request",
-    id,
-    method,
-    path: `/api/issues/${id}`,
-    query: "",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id }),
+    frame: {
+      version: DUPLEX_FRAME_VERSION,
+      type: "request",
+      id,
+      method,
+      path: `/api/issues/${id}`,
+      query: "",
+      headers: { "content-type": "application/json" },
+      bodyByteCount: Buffer.byteLength(bodyText, "utf8"),
+    },
+    bodyText,
   };
 }
 
 function createFakeChannelHarness(): FakeChannelHarness {
-  const responses: DuplexResponseFrame[] = [];
+  const responses: ReassembledResponse[] = [];
   const forwards: PendingForward[] = [];
   const writtenDecoder = new DuplexFrameDecoder();
+  const responseAssembly = new Map<
+    string,
+    { frame: DuplexResponseFrame; received: number; chunks: Buffer[] }
+  >();
   let dataListener: ((chunk: string) => void) | null = null;
   let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
 
   const channel: CommandManagedDuplexChannel = {
     write: (data) => {
       for (const result of writtenDecoder.push(data)) {
-        if (result.ok && result.frame.type === "response") responses.push(result.frame);
+        if (!result.ok) continue;
+        const frame = result.frame;
+        if (frame.type === "response") {
+          if (frame.bodyByteCount === 0) {
+            responses.push({ ...frame, body: "" });
+          } else {
+            responseAssembly.set(frame.id, { frame, received: 0, chunks: [] });
+          }
+        } else if (frame.type === "body_chunk") {
+          const assembly = responseAssembly.get(frame.id);
+          if (!assembly) continue;
+          const decoded = Buffer.from(frame.data, "base64");
+          assembly.received += decoded.length;
+          assembly.chunks.push(decoded);
+          if (assembly.received >= assembly.frame.bodyByteCount) {
+            responseAssembly.delete(frame.id);
+            responses.push({
+              ...assembly.frame,
+              body: Buffer.concat(assembly.chunks).toString("utf8"),
+            });
+          }
+        }
       }
     },
     onData: (listener) => {
@@ -84,9 +127,18 @@ function createFakeChannelHarness(): FakeChannelHarness {
 
   return {
     channel,
-    feed: (frame) => {
+    feed: ({ frame, bodyText }) => {
       if (!dataListener) throw new Error("The broker did not bind the data listener.");
       dataListener(encodeDuplexFrame(frame));
+      if (bodyText.length > 0) {
+        for (const chunk of splitBodyIntoChunkFrames(
+          frame.id,
+          Buffer.from(bodyText, "utf8"),
+          DUPLEX_FRAME_VERSION,
+        )) {
+          dataListener(encodeDuplexFrame(chunk));
+        }
+      }
     },
     exit: () => {
       if (!exitListener) throw new Error("The broker did not bind the exit listener.");
@@ -111,10 +163,12 @@ function controllableForward(harness: FakeChannelHarness) {
     });
 }
 
-/** Wait for the microtask queue to drain, so a settled promise runs its handlers. */
+/**
+ * Wait for the microtasks and one macrotask to settle, so the broker reassembles
+ * a request body, dispatches its forward, and runs each settled promise handler.
+ */
 async function flush(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe("duplex bridge broker aggregate byte ledger", () => {
@@ -130,7 +184,7 @@ describe("duplex bridge broker aggregate byte ledger", () => {
   it("charges request-frame, request-payload, and seen-id tokens, then releases the request tokens on forward settlement", async () => {
     const harness = createFakeChannelHarness();
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1_000_000 });
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       duplexAggregateByteLedger: ledger,
@@ -139,12 +193,15 @@ describe("duplex bridge broker aggregate byte ledger", () => {
     broker.start();
 
     harness.feed(requestFrame("req-1"));
-    // The dispatch retains three tokens: the raw frame, the normalized payload,
-    // and the no-replay set entry.
+    // The dispatch retains three tokens at the request envelope: the raw frame, the
+    // normalized payload, and the no-replay set entry. The reservation is
+    // synchronous, so the charge holds before the body reassembles.
     expect(ledger.liveTokenCount).toBe(3);
     expect(ledger.bytesInUse).toBeGreaterThan(0);
     const chargedInFlight = ledger.bytesInUse;
 
+    // The broker reassembles the request body, then dispatches the forward.
+    await flush();
     harness.resolveForward("req-1");
     await flush();
 
@@ -164,7 +221,7 @@ describe("duplex bridge broker aggregate byte ledger", () => {
   it("keeps request tokens charged when the response timer answers before the forward settles, and releases them on settlement", async () => {
     const harness = createFakeChannelHarness();
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1_000_000 });
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       // Squeeze the nested budgets so the response timer fires quickly while the
@@ -202,7 +259,7 @@ describe("duplex bridge broker aggregate byte ledger", () => {
     // can size a ceiling one byte below it and force the reservation to fail.
     const probeHarness = createFakeChannelHarness();
     const measured = new DuplexAggregateByteLedger({ ceilingBytes: 1_000_000 });
-    const measuringBroker = createDuplexBridgeBroker({
+    const measuringBroker = await createDuplexBridgeBroker({
       channel: probeHarness.channel,
       forwardRequest: controllableForward(probeHarness),
       duplexAggregateByteLedger: measured,
@@ -213,7 +270,7 @@ describe("duplex bridge broker aggregate byte ledger", () => {
     await measuringBroker.close();
 
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: perRequestBytes - 1 });
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       duplexAggregateByteLedger: ledger,
@@ -238,7 +295,7 @@ describe("duplex bridge broker aggregate byte ledger", () => {
     // admitted: raise the ceiling and re-feed.
     const roomyLedger = new DuplexAggregateByteLedger({ ceilingBytes: 1_000_000 });
     const roomyHarness = createFakeChannelHarness();
-    const roomyBroker = createDuplexBridgeBroker({
+    const roomyBroker = await createDuplexBridgeBroker({
       channel: roomyHarness.channel,
       forwardRequest: controllableForward(roomyHarness),
       duplexAggregateByteLedger: roomyLedger,
@@ -246,13 +303,14 @@ describe("duplex bridge broker aggregate byte ledger", () => {
     brokers.push(roomyBroker);
     roomyBroker.start();
     roomyHarness.feed(requestFrame("req-1"));
+    await flush();
     expect(roomyHarness.forwards.length).toBe(1);
   });
 
   it("releases every retained token on a terminal channel loss", async () => {
     const harness = createFakeChannelHarness();
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1_000_000 });
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       duplexAggregateByteLedger: ledger,
@@ -262,7 +320,13 @@ describe("duplex bridge broker aggregate byte ledger", () => {
 
     harness.feed(requestFrame("req-1"));
     harness.feed(requestFrame("req-2"));
+    // The reservation is synchronous, so both dispatches charge three tokens each
+    // at the request envelope, before the bodies reassemble.
     expect(ledger.liveTokenCount).toBe(6);
+
+    // Let both requests reassemble and start their forwards, so the loss below
+    // transfers live forwards to the orphan registry.
+    await flush();
 
     // The channel exits mid-flight. The broker latches the loss, transfers the
     // in-flight forwards to the orphan registry, and releases the seen-id tokens.
@@ -294,7 +358,7 @@ describe("duplex bridge broker aggregate byte ledger", () => {
         },
       },
     });
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       duplexAggregateByteLedger: ledger,
@@ -303,6 +367,9 @@ describe("duplex bridge broker aggregate byte ledger", () => {
     broker.start();
 
     harness.feed(requestFrame("req-1"));
+    // Let the request reassemble and start its forward before the close, so the
+    // close orphans a live forward that settles afterward.
+    await flush();
     await broker.close();
     // The close aborted the in-flight forward and orphaned it. The forward now
     // settles after the close: its finally owner releases the request tokens once.

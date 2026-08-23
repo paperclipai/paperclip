@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
@@ -59,6 +60,7 @@ import {
   DEFAULT_MAX_DUPLEX_FRAME_BYTES,
   type DuplexRequestFrame,
 } from "./duplex-frame-codec.js";
+import type { ReassembledBody } from "./duplex-body-spool.js";
 import {
   createDuplexTelemetry,
   type DuplexFallbackReason,
@@ -3132,9 +3134,24 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // file bridge and the duplex broker. The sandbox request carries only the
   // bridge token; the real agent token never leaves the host.
   const forwardBridgeRequest = async (
-    request: { method: string; path: string; query: string; headers: Record<string, string>; body: string },
+    request: {
+      method: string;
+      path: string;
+      query: string;
+      headers: Record<string, string>;
+      /** The file bridge passes the whole request body here as one string. */
+      body?: string;
+    },
     signal?: AbortSignal,
-    options?: { suppressDebugLog?: boolean },
+    options?: {
+      suppressDebugLog?: boolean;
+      /**
+       * The duplex broker passes the reassembled request body here. The forward
+       * streams it to the host, so a spilled body never loads into memory on the
+       * receive side. The forward never disposes it; the broker owns its lifecycle.
+       */
+      reassembledBody?: ReassembledBody;
+    },
   ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
     const method = request.method.trim().toUpperCase() || "GET";
     // The per-request debug log prints the method, the path, and the query. The
@@ -3159,12 +3176,26 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // the forward budget here, whichever comes first.
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+    // Build the request-body init. A GET or a HEAD carries no body. The duplex
+    // broker passes the reassembled body: stream it, so a body that spilled to
+    // disk never loads into memory here. A streamed body needs `duplex: "half"`.
+    // The file bridge passes the whole body as one string.
+    const forwardInit: RequestInit & { duplex?: "half" } = {
       method,
       headers,
-      ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
       signal: forwardSignal,
-    });
+    };
+    if (method !== "GET" && method !== "HEAD") {
+      if (options?.reassembledBody) {
+        forwardInit.body = Readable.toWeb(
+          options.reassembledBody.createReadStream(),
+        ) as unknown as ReadableStream<Uint8Array>;
+        forwardInit.duplex = "half";
+      } else if (typeof request.body === "string") {
+        forwardInit.body = request.body;
+      }
+    }
+    const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), forwardInit);
     if (emitDebugLog) {
       await onLog(
         "stdout",
@@ -3375,14 +3406,14 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         // token only now, after readiness passed.
         let broker: DuplexBridgeBroker | null = null;
         try {
-          broker = createDuplexBridgeBroker({
+          broker = await createDuplexBridgeBroker({
             channel: gate.brokerChannel,
             // Derive the nested budgets from the forward budget, so any forward
             // budget keeps the nested order the broker asserts at construction.
             budgets: deriveNestedDuplexBrokerBudgets(forwardTimeoutMs),
             forwardRequest: async (
               request: DuplexRequestFrame,
-              options: { signal: AbortSignal },
+              options: { signal: AbortSignal; body: ReassembledBody },
             ): Promise<DuplexBrokerForwardResult> => {
               const denialReason = authorizeSandboxCallbackBridgeRequestWithRoutes(request);
               if (denialReason) {
@@ -3402,9 +3433,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                 headers: sanitizeSandboxCallbackBridgeHeaders(request.headers),
               };
               // Suppress the per-request debug log on the duplex path, so no route
-              // or query rides a log line here.
+              // or query rides a log line here. Stream the reassembled request
+              // body, so a spilled body never loads into memory on the host.
               return forwardBridgeRequest(sanitizedRequest, options.signal, {
                 suppressDebugLog: true,
+                reassembledBody: options.body,
               });
             },
             // The duplex path emits only the fixed transport telemetry. It passes no

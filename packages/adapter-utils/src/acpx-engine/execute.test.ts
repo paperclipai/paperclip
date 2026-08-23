@@ -5763,8 +5763,8 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
   // Wrap a started real broker in a paperclip bridge handle. The handle exposes
   // the same run-disposition surface the sandbox bridge exposes, so the seam runs
   // against the real latch and the real orderly-completion mark.
-  function bridgeOverBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
-    const broker = createDuplexBridgeBroker({
+  async function bridgeOverBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
+    const broker = await createDuplexBridgeBroker({
       channel: fake.channel,
       forwardRequest: async () => ({ status: 200 }),
     });
@@ -5891,7 +5891,7 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
   it("fails a completed run when the duplex channel was lost before the completion", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeDuplexChannel();
-    const { broker, handle, settleRunDisposition } = bridgeOverBroker(fake);
+    const { broker, handle, settleRunDisposition } = await bridgeOverBroker(fake);
     // Latch the loss before the ACP terminal resolves.
     const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
 
@@ -5912,7 +5912,7 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
   it("keeps a completed run a success when the channel stays live, and a later teardown loss is benign", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeDuplexChannel();
-    const { broker, handle, settleRunDisposition } = bridgeOverBroker(fake);
+    const { broker, handle, settleRunDisposition } = await bridgeOverBroker(fake);
     // No loss before the completion.
     const runtime = runtimeWithControlledResult();
 
@@ -5932,7 +5932,7 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
   it("does not let a later completion or activity clear the loss latch", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeDuplexChannel();
-    const { broker, handle } = bridgeOverBroker(fake);
+    const { broker, handle } = await bridgeOverBroker(fake);
     // Latch the loss before the ACP terminal resolves.
     const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
 
@@ -5951,7 +5951,7 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
   it("marks an orderly completion on a failed terminal so the teardown loss emits no false loss", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeDuplexChannel();
-    const { broker, handle, markOrderlyCompletion } = bridgeOverBroker(fake);
+    const { broker, handle, markOrderlyCompletion } = await bridgeOverBroker(fake);
     // The turn fails, and no channel loss ordered before the finalization.
     const runtime = runtimeWithFailedResult();
 
