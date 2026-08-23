@@ -408,11 +408,20 @@ cmd_candidate_tests() {
   fi
   local root="${PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT:-$CANDIDATE_ROOT}"
   [ -d "$root" ] || fail "candidate root missing for candidate_tests: $root"
-  if (cd "$root" && npx vitest run         packages/adapter-utils/src/token-budget.test.ts         packages/adapter-utils/src/acpx-engine/execute.test.ts         packages/adapters/claude-local/src/server/parse.test.ts         packages/adapters/claude-local/src/server/execute.acp-fallback.test.ts         packages/adapters/hermes/src/server/execute.test.ts         server/src/__tests__/resource-ceiling-continuation.test.ts         server/src/__tests__/heartbeat-issue-rewake-throttle.test.ts         server/src/__tests__/heartbeat-high-input-token-guard.test.ts         > /tmp/candidate-tests.$$.log 2>&1); then
-    receipt_set_gate "candidate_tests" "pass" "adapter + budget/ceiling vitest suites green"
-    rm -f "/tmp/candidate-tests.$$.log"
+  # Each suite runs in its OWN workspace dir so it gets that project's vitest
+  # setup (server suites need the server project harness to drive the heartbeat;
+  # mixing package + server paths under the root config leaves those runs undriven).
+  local log="/tmp/candidate-tests.$$.log"; : > "$log"; local ok=1
+  _cand_group() { local d="$1"; shift; (cd "$root/$d" && npx vitest run "$@" >> "$log" 2>&1) || { echo "candidate_tests: group $d failed" >> "$log"; ok=0; }; }
+  _cand_group packages/adapter-utils src/token-budget.test.ts src/acpx-engine/execute.test.ts
+  _cand_group packages/adapters/claude-local src/server/parse.test.ts src/server/execute.acp-fallback.test.ts
+  _cand_group packages/adapters/hermes src/server/execute.test.ts
+  _cand_group server src/__tests__/resource-ceiling-continuation.test.ts src/__tests__/heartbeat-issue-rewake-throttle.test.ts src/__tests__/heartbeat-high-input-token-guard.test.ts
+  if [ "$ok" = "1" ]; then
+    receipt_set_gate "candidate_tests" "pass" "adapter + budget/ceiling/throttle vitest suites green"
+    rm -f "$log"
   else
-    tail -30 "/tmp/candidate-tests.$$.log" >&2 || true
+    tail -40 "$log" >&2 || true
     receipt_set_gate "candidate_tests" "fail" "candidate vitest suites failed (see stderr)"
     fail "candidate_tests failed"
   fi
