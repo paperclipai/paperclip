@@ -1868,6 +1868,98 @@ describe("company portability", () => {
     );
   });
 
+  /**
+   * FAI-10144. The import normalizer is hand-rolled and does not run the
+   * manifest's zod schema, so it parses expiries with that schema's own
+   * exported contract. An expiry that does not name an offset is rejected
+   * rather than accepted: `new Date("2026-09-06T00:00:00")` resolves against
+   * the importing machine's local zone, so the same manifest would otherwise
+   * grant a different window depending on where it was imported. A rejected
+   * expiry drops the grant, because importing time-boxed authority *without*
+   * the bound is worse than importing nothing.
+   */
+  it("keeps an offset-bearing grant expiry and drops one with no timezone", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    permissionGrants:",
+            "      - permissionKey: agents:suggest-changes",
+            "        expiresAt: \"2026-09-06T00:00:00.000Z\"",
+            "      - permissionKey: skills:create",
+            "        expiresAt: \"2026-09-06T00:00:00\"",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "agents:suggest-changes",
+      true,
+      "user-1",
+      null,
+      new Date("2026-09-06T00:00:00.000Z"),
+    );
+    // The timezone-free one never reaches the write at all — not with a null
+    // expiry either, which would be the unbounded grant this guards against.
+    const permissionKeysWritten = accessSvc.setPrincipalPermission.mock.calls.map(
+      (call: unknown[]) => call[3],
+    );
+    expect(permissionKeysWritten).toContain("agents:suggest-changes");
+    expect(permissionKeysWritten).not.toContain("skills:create");
+  });
+
   it("removes import secrets created before a later import failure", async () => {
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([]);
