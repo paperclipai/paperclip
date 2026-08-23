@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   issues,
   principalPermissionGrants,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -36,6 +37,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     await db.delete(activityLog);
     await db.delete(principalPermissionGrants);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -265,6 +267,9 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
         responsibleUserId: "board-user",
         contextSnapshot: { issueId: sourceIssueId },
       });
+      // The grant scope names this project, so it has to be a real row: the
+      // target issue's `project_id` is a foreign key.
+      await db.insert(projects).values({ id: projectId, companyId, name: "Sweeps" });
       await db.insert(issues).values([
         { id: sourceIssueId, companyId, title: "Sweep task" },
         // Held by someone else and unrelated by tree or origin: the grant is
