@@ -58,7 +58,10 @@ Use these routes directly. Do not guess unscoped `/api/issues` or alternate summ
 - Read the current slot: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}?scopeId=...`
 - Read revision history only when the current-slot response is missing its latest document: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions?scopeId=...`
 - Gather project issues: `GET /api/companies/{companyId}/issues?projectId=...`
+- Cheap single-issue status check (avoids per-issue detail fetches): `GET /api/companies/{companyId}/issues?q={issueIdentifier}` — filter results for the exact identifier, read `status` and `priority` at the top level.
 - Write the new revision: `PUT /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}` with `scopeId`, `markdown`, `changeSummary`, `baseRevisionId`, `generationIssueId`, and `model` in the JSON body.
+- Comment on the generation issue (step 5 close-out): `POST /api/issues/{issueId}/comments` with `{ "body": "…" }` in the JSON body. Body field is `body` (not `content`); multiline text is passed verbatim — build the JSON from a heredoc so newlines survive the request. The company-scoped comment path (`/api/companies/{companyId}/issues/{issueId}/comments`) does not exist and 404s.
+- Close the generation issue (step 5): `PATCH /api/issues/{issueId}` with `{ "status": "done", "comment": "…" }` in the JSON body. Use unscoped `/api/issues/{issueId}` — the PATCH route is not available on the company-scoped path.
 
 For `workspaces_overview`, omit `scopeId` from the read query and send it as `null` in the write body. All calls use the run-scoped Paperclip API URL and bearer token already present in the environment.
 

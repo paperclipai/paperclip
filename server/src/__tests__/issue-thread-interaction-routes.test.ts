@@ -17,6 +17,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
+  expireStaleInteractionForAssigneeAgent: vi.fn(),
   answerQuestions: vi.fn(),
   submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
@@ -1264,6 +1265,91 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("expires a provably stale pending card through the assignee-agent route", async () => {
+    const expired = {
+      id: "interaction-stale",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-stale",
+      payload: { version: 1, prompt: "Apply this plan?" },
+      result: {
+        version: 1,
+        outcome: "stale_target",
+        reason: "Card targets a superseded plan document revision; expired by the issue assignee agent",
+        staleTarget: null,
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T13:00:00.000Z",
+      resolvedAt: "2026-04-20T13:00:00.000Z",
+    };
+    mockInteractionService.expireStaleInteractionForAssigneeAgent.mockResolvedValueOnce(expired);
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-stale",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-stale/expire-stale")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("expired");
+    expect(mockInteractionService.expireStaleInteractionForAssigneeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+      }),
+      "interaction-stale",
+      { agentId: ASSIGNEE_AGENT_ID, userId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        details: expect.objectContaining({
+          interactionId: "interaction-stale",
+          interactionKind: "request_confirmation",
+          source: "issue.interaction.expire_stale",
+        }),
+      }),
+    );
+  });
+
+  it("rejects a non-assignee agent from expiring stale interaction cards", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-stale",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-stale/expire-stale")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("current assignee agent");
+    expect(mockInteractionService.expireStaleInteractionForAssigneeAgent).not.toHaveBeenCalled();
+  });
+
+  it("rejects board actors from the assignee-agent stale-expiry route", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-stale/expire-stale")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.expireStaleInteractionForAssigneeAgent).not.toHaveBeenCalled();
   });
 
   it("allows agent-authored interaction creation and stamps the active run id", async () => {

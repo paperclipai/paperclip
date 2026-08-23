@@ -2542,6 +2542,7 @@ const issueListSelect = {
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
+  wakePolicy: issues.wakePolicy,
   monitorNextCheckAt: issues.monitorNextCheckAt,
   monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
   monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
