@@ -28,6 +28,7 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { hasAgentWriteRunAuthority } from "./agent-run-authority.js";
 
 export type AuthorizationActor =
   {
@@ -772,18 +773,27 @@ export function authorizationService(db: Db) {
       : null;
   }
 
+  /**
+   * The run's canonical issue, used to widen an agent's reach to that issue's
+   * direct parent. That is a grant the run carries while it executes, so a run
+   * that has finished must not still confer it: the stale checkout lock a dead
+   * run can leave behind would otherwise be enough to keep writing to the
+   * parent (FAI-9983).
+   */
   async function loadRunIssueId(runId: string | null | undefined, companyId: string, agentId: string) {
     if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!row || row.companyId !== companyId || row.agentId !== agentId) return null;
+    if (!hasAgentWriteRunAuthority(row.status)) return null;
     const context = isPlainRecord(row.contextSnapshot) ? row.contextSnapshot : null;
     const issueId = typeof context?.issueId === "string"
       ? context.issueId.trim()
