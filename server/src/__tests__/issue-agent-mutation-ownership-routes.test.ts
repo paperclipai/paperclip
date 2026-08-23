@@ -792,6 +792,123 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  describe("manager close-on-behalf with evidence (ETS-479)", () => {
+    function closeOnBehalfBoundaryDecide() {
+      // Base authorization denies everything; the close-on-behalf route-level
+      // gate is the only allow path under test.
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: false,
+        action: input.action,
+        reason:
+          input.action === "tasks:manage_active_checkouts"
+            ? "deny_missing_grant"
+            : "deny_company_boundary",
+        explanation: "Denied by test boundary.",
+      }));
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) return makeAgent(peerAgentId, { role: "ceo" });
+        if (id === ownerAgentId) return makeAgent(ownerAgentId);
+        return null;
+      });
+    }
+
+    it("allows a CEO-role agent to PATCH status on a cross-assigned issue with an evidence comment", async () => {
+      closeOnBehalfBoundaryDecide();
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          status: "done",
+          comment: "Verified complete per [PAP-1650](/PAP/issues/PAP-1650).",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0][1]).toMatchObject({ status: "done" });
+      const closeOnBehalfLogs = mockLogActivity.mock.calls.filter(
+        (call) => call[1]?.action === "issue.cross_assign_close_on_behalf",
+      );
+      expect(closeOnBehalfLogs).toHaveLength(1);
+      expect(closeOnBehalfLogs[0][1]).toMatchObject({
+        action: "issue.cross_assign_close_on_behalf",
+        details: expect.objectContaining({
+          kind: "mutation",
+          actingAgentId: peerAgentId,
+          targetAssigneeAgentId: ownerAgentId,
+          referencedIssueIdentifiers: ["PAP-1650"],
+          reason: "manager_close_on_behalf_with_evidence",
+        }),
+      });
+    });
+
+    it("allows a CEO-role agent to post a comment on a cross-assigned issue with an issue reference", async () => {
+      closeOnBehalfBoundaryDecide();
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Disposition: verified per [PAP-1650](/PAP/issues/PAP-1650)." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+      const closeOnBehalfLogs = mockLogActivity.mock.calls.filter(
+        (call) => call[1]?.action === "issue.cross_assign_close_on_behalf",
+      );
+      expect(closeOnBehalfLogs).toHaveLength(1);
+      expect(closeOnBehalfLogs[0][1]).toMatchObject({
+        action: "issue.cross_assign_close_on_behalf",
+        details: expect.objectContaining({
+          kind: "comment",
+          actingAgentId: peerAgentId,
+          targetAssigneeAgentId: ownerAgentId,
+          reason: "manager_close_on_behalf_with_evidence",
+        }),
+      });
+    });
+
+    it("rejects cross-assigned mutation when the comment has no issue reference", async () => {
+      closeOnBehalfBoundaryDecide();
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "Verified complete." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "issue.cross_assign_close_on_behalf" }),
+      );
+    });
+
+    it("rejects cross-assigned mutation for non-CEO agents without checkout-management authority", async () => {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: false,
+        action: input.action,
+        reason: "deny_missing_grant",
+        explanation: "Denied by test boundary.",
+      }));
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) return makeAgent(peerAgentId, { role: "engineer" });
+        if (id === ownerAgentId) return makeAgent(ownerAgentId);
+        return null;
+      });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          status: "done",
+          comment: "Verified complete per [PAP-1650](/PAP/issues/PAP-1650).",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "issue.cross_assign_close_on_behalf" }),
+      );
+    });
+  });
+
   it("rejects non-mentioned peer agents from posting comments", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read",

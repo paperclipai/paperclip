@@ -63,6 +63,7 @@ import {
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  extractIssueReferenceIdentifiers,
   type CompactIssue,
   type CompanySearchExtractQuery,
   type CompanySearchExtractResponse,
@@ -3457,7 +3458,57 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      const closeOnBehalfComment =
+        typeof req.body?.body === "string" &&
+        extractIssueReferenceIdentifiers(req.body.body).length > 0;
+      if (
+        closeOnBehalfComment &&
+        issue.assigneeAgentId &&
+        issue.assigneeAgentId !== actorAgentId &&
+        (await hasCloseOnBehalfAuthority(actorAgentId, issue.companyId, issue.assigneeAgentId))
+      ) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.cross_assign_close_on_behalf",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            kind: "comment",
+            issueId: issue.id,
+            actingAgentId: actorAgentId,
+            targetAssigneeAgentId: issue.assigneeAgentId,
+            status: issue.status,
+            referencedIssueIdentifiers: extractIssueReferenceIdentifiers(req.body.body),
+            reason: "manager_close_on_behalf_with_evidence",
+          },
+        });
+        if (logger.info) {
+          logger.info(
+            { actorAgentId, targetAssigneeAgentId: issue.assigneeAgentId, issueId: issue.id, companyId: issue.companyId },
+            "issue:comment allowed via close-on-behalf evidence comment",
+          );
+        }
+        return {
+          allowed: true,
+          action: "issue:comment",
+          reason: "allow_manager_close_on_behalf",
+          explanation: "Allowed by manager close-on-behalf with evidence comment.",
+        } as Awaited<ReturnType<typeof decideIssueAccess>>;
+      }
+      res.status(403).json({
+        error: "Issue is outside this actor's authorization boundary",
+        details: {
+          issueId: issue.id,
+          denyPath: boundaryDecision.allowed ? "boundary" : "agent_boundary_denied",
+          authorizationReason: boundaryDecision.reason,
+        },
+      });
       return false;
     }
     return boundaryDecision;
@@ -3494,12 +3545,18 @@ export function issueRoutes(
     companyId: string,
     assigneeAgentId: string,
   ) {
+    return hasCloseOnBehalfAuthority(actorAgentId, companyId, assigneeAgentId);
+  }
+
+  async function hasCloseOnBehalfAuthority(actorAgentId: string, companyId: string, assigneeAgentId: string) {
     const decision = await access.decide({
       actor: { type: "agent", agentId: actorAgentId, companyId },
       action: "tasks:manage_active_checkouts",
       resource: { type: "issue", companyId, assigneeAgentId },
     });
-    return decision.allowed;
+    if (decision.allowed) return true;
+    const actorAgent = await agentsSvc.getById(actorAgentId);
+    return Boolean(actorAgent && (actorAgent.role === "ceo" || (actorAgent.permissions?.canCreateAgents === true)));
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -3546,7 +3603,58 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      const rawCloseComment =
+        (typeof req.body?.comment === "string" && req.body.comment.trim().length > 0
+          ? req.body.comment
+          : null) ||
+        (typeof req.body?.body === "string" && req.body.body.trim().length > 0
+          ? req.body.body
+          : null);
+      const referencedIssueIdentifiers = rawCloseComment ? extractIssueReferenceIdentifiers(rawCloseComment) : [];
+      if (
+        referencedIssueIdentifiers.length > 0 &&
+        issue.assigneeAgentId &&
+        issue.assigneeAgentId !== actorAgentId &&
+        (await hasCloseOnBehalfAuthority(actorAgentId, issue.companyId, issue.assigneeAgentId))
+      ) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.cross_assign_close_on_behalf",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            kind: "mutation",
+            issueId: issue.id,
+            actingAgentId: actorAgentId,
+            targetAssigneeAgentId: issue.assigneeAgentId,
+            status: issue.status,
+            referencedIssueIdentifiers,
+            reason: "manager_close_on_behalf_with_evidence",
+          },
+        });
+        if (logger.info) {
+          logger.info(
+            { actorAgentId, targetAssigneeAgentId: issue.assigneeAgentId, issueId: issue.id, companyId: issue.companyId },
+            "issue:mutate allowed via close-on-behalf evidence comment",
+          );
+        }
+        return true;
+      }
+      res.status(403).json({
+        error: "Issue is outside this actor's authorization boundary",
+        details: {
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorAgentId,
+          authorizationDenied: authorizationDeniedDetails(boundaryDecision),
+        },
+      });
       return false;
     }
     if (issue.assigneeAgentId === null) {

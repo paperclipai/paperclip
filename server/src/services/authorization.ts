@@ -102,6 +102,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_manager_close_on_behalf"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
