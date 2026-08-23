@@ -162,6 +162,8 @@ async function runExecutor(
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
+    onSetConfigOption?: (input: { key: string; value: string }) => void;
+    expectExitCode?: number;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -174,10 +176,13 @@ async function runExecutor(
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
+    createRuntime: (runtimeCreateOptions) => {
+      runtimeOptions.push(runtimeCreateOptions as unknown as Record<string, unknown>);
       return buildRuntime(
-        ({ key, value }) => configOptions.push({ key, value }),
+        (input) => {
+          configOptions.push({ key: input.key, value: input.value });
+          options.onSetConfigOption?.(input);
+        },
         (input) => sessionInputs.push(input),
       ) as never;
     },
@@ -208,7 +213,7 @@ async function runExecutor(
     },
   } as never);
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode).toBe(options.expectExitCode ?? 0);
   return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
 }
 
@@ -515,6 +520,49 @@ describe("shared ACPX engine runtime behavior", () => {
       { key: "model", value: "gemini-2.5-pro" },
       { key: "effort", value: "high" },
     ]);
+  });
+
+  it("completes the run when the backend does not advertise a session config option", async () => {
+    const { logs, configOptions } = await runExecutor(
+      { agent: "claude", model: "claude-sonnet-4-6", thinkingEffort: "low" },
+      {
+        onSetConfigOption: ({ key }) => {
+          if (key === "effort") {
+            const err = new Error(
+              "ACP session does not advertise config option 'effort'. Supported config options: mode, model.",
+            ) as Error & { code?: string };
+            err.code = "ACP_BACKEND_UNSUPPORTED_CONTROL";
+            throw err;
+          }
+        },
+      },
+    );
+
+    // The unsupported option was attempted, then skipped instead of failing the run.
+    expect(configOptions).toContainEqual({ key: "effort", value: "low" });
+    expect(
+      logs.some(
+        (entry) =>
+          entry.stream === "stderr" &&
+          entry.text.includes("does not advertise config option 'effort'"),
+      ),
+    ).toBe(true);
+  });
+
+  it("still fails the run when a session config option errors for a non-capability reason", async () => {
+    const { result } = await runExecutor(
+      { agent: "claude", model: "claude-sonnet-4-6", thinkingEffort: "low" },
+      {
+        expectExitCode: 1,
+        onSetConfigOption: ({ key }) => {
+          if (key === "effort") {
+            throw new Error("acp transport crashed");
+          }
+        },
+      },
+    );
+
+    expect(result.errorCode).toBe("acpx_session_config_failed");
   });
 
   it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {

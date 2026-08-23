@@ -2164,11 +2164,25 @@ async function applySessionConfigOptions(input: {
     throw new Error(message);
   }
   for (const option of options) {
-    await input.runtime.setConfigOption({
-      handle: input.handle,
-      key: option.key,
-      value: option.value,
-    });
+    try {
+      await input.runtime.setConfigOption({
+        handle: input.handle,
+        key: option.key,
+        value: option.value,
+      });
+    } catch (err) {
+      // A backend that does not advertise this control (older ACP CLI build)
+      // must not tank the whole run — mirror the CLI `--effort` graceful
+      // omission and skip just this option. Any other failure still propagates.
+      if (describeErrorDiagnostics(err).acpCode === "ACP_BACKEND_UNSUPPORTED_CONTROL") {
+        await input.onLog(
+          "stderr",
+          `[paperclip] ACPX ${input.prepared.acpxAgent} backend does not advertise config option '${option.key}'; omitting ${option.key}=${option.value}. Upgrade the ACP CLI/backend to restore it.\n`,
+        );
+        continue;
+      }
+      throw err;
+    }
     await input.onLog(
       "stdout",
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
