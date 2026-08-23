@@ -51,7 +51,7 @@ For a full PostgreSQL server locally, use the included Docker Compose setup:
 docker compose up -d
 ```
 
-This starts PostgreSQL 17 on `localhost:5432`. Then set the connection string:
+This starts PostgreSQL 18 on `localhost:5432`. Then set the connection string:
 
 ```sh
 cp .env.example .env
