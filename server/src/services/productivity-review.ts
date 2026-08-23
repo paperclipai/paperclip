@@ -492,7 +492,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
-    const sampledRuns = await db
+    const selectRunSample = (extraCondition?: ReturnType<typeof notInfraTerminatedRunSql>) => db
       .select({
         id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
@@ -510,19 +510,35 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.companyId, sourceIssue.companyId),
           eq(heartbeatRuns.agentId, sourceAgent.id),
           issueRunScopeSql(sourceIssue.id),
+          extraCondition,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(MAX_RUNS_FOR_STREAK);
 
-    const infraTerminatedRuns = sampledRuns.filter(isInfraTerminatedSample);
-    const latestRuns = sampledRuns.filter((run) => !isInfraTerminatedSample(run));
+    // Two samples, because the two questions have different windows.
+    //
+    // "Is this issue currently held by infrastructure?" is about recent history
+    // as it happened, so it reads the mixed run stream. "How long has the agent
+    // gone without commenting?" is about the agent's own runs, so it excludes
+    // platform kills in SQL — before the row limit, not after. Filtering a mixed
+    // sample in memory would let a burst of infra kills push agent-owned runs
+    // out of the window and silently shrink the streak evidence, which is the
+    // false negative mirroring the false positive this all exists to prevent.
+    const [recentRuns, latestRuns] = await Promise.all([
+      selectRunSample(),
+      selectRunSample(notInfraTerminatedRunSql()),
+    ]);
+
+    const infraTerminatedRuns = recentRuns.filter(isInfraTerminatedSample);
     const isTerminal = (run: ProductivityRunSample) =>
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]);
-    // Every terminal run in the sample was killed by infrastructure. The agent
-    // never got a chance to make progress, so the issue is blocked on infra and
-    // reviewing the assignee would be a false positive.
-    if (infraTerminatedRuns.some(isTerminal) && !latestRuns.some(isTerminal)) {
+    // Every terminal run in recent history was killed by infrastructure. The
+    // agent never got a chance to make progress, so the issue is blocked on
+    // infra and reviewing the assignee would be a false positive. This stays on
+    // the mixed sample: an agent-owned run from before the window says nothing
+    // about whether the agent can make progress now.
+    if (infraTerminatedRuns.some(isTerminal) && !recentRuns.some((run) => !isInfraTerminatedSample(run) && isTerminal(run))) {
       return { kind: "infra_blocked", infraTerminatedRunCount: infraTerminatedRuns.length };
     }
 

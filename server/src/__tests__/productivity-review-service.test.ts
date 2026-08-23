@@ -855,6 +855,42 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
+  // The mirror-image failure: excluding infra runs must not cost the agent's own
+  // runs their place in the bounded sample. A long-lived issue can hold more runs
+  // than the sample takes, so a burst of host restarts would otherwise push the
+  // silent agent runs out of the window and hide a real streak.
+  it("keeps the full agent-run sample when recent infra kills exceed the sample bound", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // A genuine, complete silent streak, then enough platform kills on top to
+    // fill the sample bound on their own.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: new Date(now.getTime() - 120 * 60_000),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 95,
+      now,
+      errorCodes: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.infraSuppressed).toBe(0);
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.description).toContain(
+      `No-comment completed-run streak: ${DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS}`,
+    );
+  });
+
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
