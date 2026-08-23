@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents as agentRows,
   documentRevisions,
   documents,
   builtInManagedResources,
@@ -559,11 +560,18 @@ export function summarySlotService(db: Db) {
     slotRow: SummarySlotRow | null,
     input: { generationIssueId?: string | null },
     actor: SummaryWriteActor,
+    executor: Db = db,
+    lockRows = false,
   ): Promise<void> {
     if (!actor.agentId) {
       throw forbidden("Only the Summarizer built-in agent may write summaries");
     }
-    const agent = await agents.getById(actor.agentId);
+    const agentQuery = executor
+      .select()
+      .from(agentRows)
+      .where(and(eq(agentRows.id, actor.agentId), eq(agentRows.companyId, sel.companyId)));
+    const agent = await (lockRows ? agentQuery.for("update") : agentQuery)
+      .then((rows) => rows[0] ?? null);
     if (!agent || agent.companyId !== sel.companyId) {
       throw forbidden("Only the Summarizer built-in agent may write summaries");
     }
@@ -580,23 +588,31 @@ export function summarySlotService(db: Db) {
     if (!slotRow?.generatingIssueId || slotRow.generatingIssueId !== generationIssueId) {
       throw forbidden("Summary write does not match the active generation task");
     }
-    const issueRef = await loadIssueRef(sel.companyId, generationIssueId);
-    if (!issueRef.row) {
+    const issueQuery = executor
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, generationIssueId), eq(issues.companyId, sel.companyId)));
+    const issueRow = await (lockRows ? issueQuery.for("update") : issueQuery)
+      .then((rows) => rows[0] ?? null);
+    if (!issueRow) {
       throw forbidden("Linked generation task not found");
     }
-    if (issueRef.row.assigneeAgentId !== actor.agentId) {
+    if (issueRow.status !== "in_progress") {
+      throw forbidden("Linked generation task is no longer active");
+    }
+    if (issueRow.assigneeAgentId !== actor.agentId) {
       throw forbidden("Generation task is not assigned to this agent");
     }
     const runId = actor.runId ?? null;
     const runMatches =
-      !!runId && (issueRef.row.checkoutRunId === runId || issueRef.row.executionRunId === runId);
+      !!runId && (issueRow.checkoutRunId === runId || issueRow.executionRunId === runId);
     if (!runMatches) {
       throw forbidden("Summary write must run from the linked generation task");
     }
 
-    if (await isSummarizerRefreshRoutineIssue(sel.companyId, issueRef.row)) return;
+    if (await isSummarizerRefreshRoutineIssue(sel.companyId, issueRow, executor)) return;
 
-    const payloadMatch = issueRef.row.description?.match(/```json\n([\s\S]*?)\n```/);
+    const payloadMatch = issueRow.description?.match(/```json\n([\s\S]*?)\n```/);
     let payload: Record<string, unknown> | null = null;
     try {
       payload = payloadMatch ? (JSON.parse(payloadMatch[1]) as Record<string, unknown>) : null;
@@ -616,9 +632,10 @@ export function summarySlotService(db: Db) {
   async function isSummarizerRefreshRoutineIssue(
     companyId: string,
     issueRow: typeof issues.$inferSelect,
+    executor: Db = db,
   ): Promise<boolean> {
     if (issueRow.originKind !== "routine_execution" || !issueRow.originId) return false;
-    const row = await db
+    const row = await executor
       .select({ routineId: routines.id })
       .from(routines)
       .innerJoin(
@@ -811,16 +828,23 @@ export function summarySlotService(db: Db) {
 
     const now = new Date();
     const result = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
       const currentSlot = slotRow
-        ? await tx
+        ? await txDb
             .select()
             .from(summarySlots)
-            .where(eq(summarySlots.id, slotRow.id))
+            .where(and(eq(summarySlots.id, slotRow.id), eq(summarySlots.companyId, sel.companyId)))
+            .for("update")
             .then((rows) => rows[0] ?? null)
         : null;
       if (!currentSlot || currentSlot.generatingIssueId !== input.generationIssueId) {
         throw conflict("Summary generation was superseded by a newer task");
       }
+      // Revalidate the complete writer binding while holding locks on the
+      // built-in agent, generation issue, and claimed slot. A concurrent task
+      // cancellation/reassignment therefore commits either before this check
+      // (and is rejected) or after this summary write commits.
+      await assertSummarizerWriter(sel, currentSlot, input, actor, txDb, true);
 
       let documentRow: typeof documents.$inferSelect;
       let revisionRow: typeof documentRevisions.$inferSelect;
