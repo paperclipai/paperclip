@@ -126,7 +126,7 @@ describe("round-trip", () => {
         ),
       ),
     );
-    for (const type of ["request", "response", "ready", "heartbeat", "close", "error"]) {
+    for (const type of ["request", "response", "body_chunk", "ready", "heartbeat", "close", "error"]) {
       expect(types).toContain(type);
     }
   });
@@ -212,8 +212,8 @@ describe("streaming decoder behavior", () => {
       method: "POST",
       path: "/x",
       query: "",
-      headers: {},
-      body: "😀",
+      headers: { "x-note": "😀" },
+      bodyByteCount: 0,
     };
     const bytes = Buffer.from(encodeDuplexFrame(frame), "utf8");
     // Split inside the four-byte emoji, right before a continuation byte.
@@ -275,7 +275,7 @@ describe("request id byte bound", () => {
       path: "/",
       query: "",
       headers: {},
-      body: "",
+      bodyByteCount: 0,
     });
   }
 
@@ -314,7 +314,7 @@ describe("request id byte bound", () => {
         id,
         status: 200,
         headers: {},
-        body: "",
+        bodyByteCount: 0,
         outcome: "completed",
       }),
     );
@@ -461,8 +461,8 @@ describe("size-checked encode", () => {
       type: "response",
       id: "big",
       status: 200,
-      headers: {},
-      body: "x".repeat(2_000),
+      headers: { "x-pad": "x".repeat(2_000) },
+      bodyByteCount: 0,
       outcome: "completed",
     };
     expect(() => encodeDuplexFrameChecked(frame, 1_000)).not.toThrow();
@@ -475,22 +475,25 @@ describe("size-checked encode", () => {
     // Build a frame whose encoded JSON is exactly N bytes. The guard measures the
     // JSON without the newline, so N bytes encodes and N+1 bytes fails. This is the
     // same boundary the decoder applies, so encode and decode agree exactly.
-    const base: DuplexFrame = {
+    // Pad a header value to grow the encoded JSON by an exact byte count. The
+    // "x-pad" value adds one byte per character, so the frame lands on an exact
+    // size the guard measures without the trailing newline.
+    const pad = (n: number): DuplexFrame => ({
       version: DUPLEX_FRAME_VERSION,
       type: "response",
       id: "boundary",
       status: 200,
-      headers: {},
-      body: "",
+      headers: { "x-pad": "x".repeat(n) },
+      bodyByteCount: 0,
       outcome: "completed",
-    };
-    const baseBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
+    });
+    const baseBytes = Buffer.byteLength(JSON.stringify(pad(0)), "utf8");
     const limit = baseBytes + 10;
-    const atLimit: DuplexFrame = { ...base, body: "x".repeat(10) };
+    const atLimit = pad(10);
     expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(limit);
     const okResult = encodeDuplexFrameChecked(atLimit, limit);
     expect(okResult.ok).toBe(true);
-    const overResult = encodeDuplexFrameChecked({ ...base, body: "x".repeat(11) }, limit);
+    const overResult = encodeDuplexFrameChecked(pad(11), limit);
     expect(overResult.ok).toBe(false);
     if (!overResult.ok) expect(overResult.error.code).toBe("frame_too_large");
   });

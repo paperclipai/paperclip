@@ -1763,7 +1763,8 @@ export async function startSandboxCallbackBridgeServer(input: {
  * compatible with the host codec. {@link getSandboxDuplexGatewayCodecSource}
  * returns this exact source so a test can run every fixture vector against it.
  */
-const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 1;
+const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 2;
+const DUPLEX_BODY_CHUNK_RAW_BYTES = 256 * 1024;
 const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1000000;
 const DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES = 256;
 const DEFAULT_MAX_DUPLEX_DECODER_BYTES = ${DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES};
@@ -1790,6 +1791,10 @@ function duplexIsStringRecord(value) {
     if (typeof entry !== "string") return false;
   }
   return true;
+}
+
+function duplexIsSafeNonNegativeInteger(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function encodeDuplexFrame(frame) {
@@ -1828,6 +1833,8 @@ function duplexValidateFrame(frame) {
       return duplexValidateRequest(frame);
     case "response":
       return duplexValidateResponse(frame);
+    case "body_chunk":
+      return duplexValidateBodyChunk(frame);
     case "ready":
       return duplexValidateReady(frame);
     case "heartbeat":
@@ -1847,7 +1854,7 @@ function duplexValidateRequest(frame) {
     typeof frame.method !== "string" ||
     typeof frame.path !== "string" ||
     typeof frame.query !== "string" ||
-    typeof frame.body !== "string" ||
+    !duplexIsSafeNonNegativeInteger(frame.bodyByteCount) ||
     !duplexIsStringRecord(frame.headers)
   ) {
     return duplexFail("malformed_frame", "request frame has a missing or wrong-typed field");
@@ -1862,7 +1869,7 @@ function duplexValidateResponse(frame) {
   if (
     typeof frame.id !== "string" ||
     typeof frame.status !== "number" ||
-    typeof frame.body !== "string" ||
+    !duplexIsSafeNonNegativeInteger(frame.bodyByteCount) ||
     !duplexIsStringRecord(frame.headers) ||
     typeof frame.outcome !== "string" ||
     !DUPLEX_RESPONSE_OUTCOMES.has(frame.outcome)
@@ -1871,6 +1878,19 @@ function duplexValidateResponse(frame) {
   }
   if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
     return duplexFail("id_too_large", "response frame id exceeds the maximum size");
+  }
+  return duplexOk(frame);
+}
+
+function duplexValidateBodyChunk(frame) {
+  if (typeof frame.id !== "string" || typeof frame.data !== "string") {
+    return duplexFail("malformed_frame", "body_chunk frame has a missing or wrong-typed field");
+  }
+  if (!duplexIsSafeNonNegativeInteger(frame.seq)) {
+    return duplexFail("malformed_frame", "body_chunk frame has a missing or wrong-typed seq");
+  }
+  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
+    return duplexFail("id_too_large", "body_chunk frame id exceeds the maximum size");
   }
   return duplexOk(frame);
 }
