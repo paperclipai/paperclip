@@ -46,15 +46,19 @@ def test_csv_liegt_im_datenunterordner(tmp_path):
 def test_csv_bekommt_kopfzeile_und_datenzeilen(tmp_path):
     pfad = vault_writer.aktualisiere_csv(TAG, AGENT_MODELL_ROWS, tmp_path)
     zeilen = pfad.read_text(encoding="utf-8").strip().splitlines()
-    assert zeilen[0] == "tag,agent,modell,ort,aufrufe,token,kosten_eur"
+    assert zeilen[0] == ("tag,agent,modell,ort,quant,ctx,denkquote,"
+                         "aufrufe,token,kosten_eur")
     assert len(zeilen) == 3
 
 
-def test_alte_csv_ohne_ort_spalte_wird_nachgezogen(tmp_path):
-    """Die kumulative CSV traegt 2.361 Zeilen ab dem 16.04. im alten
-    6-Spalten-Format. Die duerfen nicht kurz bleiben, sonst verrutschen
-    Kosten und Ort gegeneinander — der Ort ist aus der Modell-ID ableitbar
-    und wird deshalb nachgetragen.
+def test_alte_csv_wird_auf_das_neue_format_gehoben(tmp_path):
+    """Die kumulative CSV traegt 2.361 Zeilen ab dem 16.04. Sie hat zwei
+    Altformate erlebt (6 Spalten, dann 7 mit `ort`). Beide muessen auf die
+    volle Breite kommen, sonst verrutschen die Spalten gegeneinander.
+
+    Was ableitbar ist, wird nachgetragen: `ort` aus Modell-ID plus Tag,
+    `quant`/`ctx` aus dem Steckbrief. Was nicht ableitbar ist — die Denkquote
+    zurueckliegender Tage ohne Log-Lauf — bleibt leer statt geraten.
     """
     ordner = tmp_path / vault_writer.CSV_UNTERORDNER
     ordner.mkdir(parents=True)
@@ -70,13 +74,32 @@ def test_alte_csv_ohne_ort_spalte_wird_nachgezogen(tmp_path):
     with open(pfad, encoding="utf-8", newline="") as fh:
         zeilen = list(csv.reader(fh))
     assert zeilen[0] == vault_writer.CSV_KOPF
-    assert all(len(z) == 7 for z in zeilen[1:]), zeilen
+    assert all(len(z) == 10 for z in zeilen[1:]), zeilen
     alt = {z[0]: z for z in zeilen[1:]}
     assert alt["2026-04-16"][3] == "Cloud"
     # Nach dem Tag der Zeile, nicht nach dem heutigen Stand: im April lief
     # `gemma-4-31b-it-mlx` auf der Studio, aufs MacBook kam es erst am 06.07.
     assert alt["2026-04-17"][3] == "Mac Studio"
     assert alt["2026-04-16"][-1] == "0.3077"  # Kosten bleiben, wo sie waren
+    assert alt["2026-04-17"][6] == ""         # Denkquote nicht nachtraeglich erfunden
+
+
+def test_csv_im_siebenspalten_format_wird_ebenfalls_gehoben(tmp_path):
+    """Das Zwischenformat von heute Vormittag (mit `ort`, ohne Steckbrief)."""
+    ordner = tmp_path / vault_writer.CSV_UNTERORDNER
+    ordner.mkdir(parents=True)
+    (ordner / vault_writer.CSV_NAME).write_text(
+        "tag,agent,modell,ort,aufrufe,token,kosten_eur\n"
+        "2026-04-16,CEO,claude-opus-4-6[1m],Cloud,1,4638,0.3077\n",
+        encoding="utf-8",
+    )
+    pfad = vault_writer.aktualisiere_csv(TAG, AGENT_MODELL_ROWS, tmp_path)
+    import csv
+    with open(pfad, encoding="utf-8", newline="") as fh:
+        zeilen = list(csv.reader(fh))
+    assert all(len(z) == 10 for z in zeilen[1:]), zeilen
+    alt = next(z for z in zeilen[1:] if z[0] == "2026-04-16")
+    assert alt[3] == "Cloud" and alt[-1] == "0.3077"
 
 
 def test_csv_aktualisierung_ist_idempotent(tmp_path):
@@ -112,7 +135,7 @@ def test_komma_im_agentennamen_zerlegt_die_csv_nicht(tmp_path):
     with open(pfad, encoding="utf-8", newline="") as fh:
         zeilen = list(csv.reader(fh))
     assert zeilen[1][1] == "Meier, Otto"
-    assert len(zeilen[1]) == 7
+    assert len(zeilen[1]) == 10
 
 
 def test_schreibe_tag_erzeugt_notiz_und_csv(tmp_path):

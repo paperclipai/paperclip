@@ -87,10 +87,10 @@ und die `claude_local`-Agenten haben kein Thinking-Feld in der `adapter_config`.
 Zwei Zählweisen nebeneinander: LM Studio rechnet binär (262144 = 256K),
 Anthropic dezimal (200.000 = 200K).
 
-Die kumulative CSV bleibt bei `ort`: Quant, CTX und Thinking sind
-Modell-Eigenschaften, keine Agent-Eigenschaften. Sie stehen je Tag im
-Frontmatter der Notiz unter `je_modell`, wo Dataview sie erreicht — inklusive
-`ctx` und `denkquote` als nackte Zahlen.
+Die kumulative CSV führt dieselben Felder mit (`ort,quant,ctx,denkquote`),
+zusätzlich zum Frontmatter der Tagesnotiz. Doppelt gehalten mit Absicht:
+Dataview kommt an Body-Tabellen nicht heran, und Auswertungen über die
+Agent-Achse laufen ausschließlich über die CSV.
 
 ## Module
 
@@ -115,8 +115,12 @@ Ziel: `WHITESTAG-Vault/Analysen/LLM-Nutzung/`
   im Frontmatter (Dataview-auswertbar), im Body Tabellen je Modell, je Agent
   und Agent × Modell. Jede Modellzeile trägt den Ausführungsort.
 - `_daten/llm-nutzung.csv` — kumulativ, eine Zeile je Tag/Agent/Modell,
-  Spalten `tag,agent,modell,ort,aufrufe,token,kosten_eur`. Zeilen im alten
-  6-Spalten-Format werden beim nächsten Lauf automatisch nachgezogen.
+  Spalten `tag,agent,modell,ort,quant,ctx,denkquote,aufrufe,token,kosten_eur`.
+  `ctx` und `denkquote` sind nackte Zahlen, damit Dataview rechnen kann; nicht
+  Ermittelbares bleibt leer, nie 0. Ältere Formate (6 bzw. 7 Spalten) werden
+  beim nächsten Lauf automatisch gehoben — dabei wird nur nachgetragen, was
+  ableitbar ist. Die Denkquote alter Zeilen füllt erst `backfill.py`, weil nur
+  dort die Logs des jeweiligen Tages gelesen werden.
   Dataview kommt an Body-Tabellen nicht heran; Agenten-Auswertungen über
   längere Zeiträume laufen deshalb über diese Datei.
 - `LLM-Nutzung.md` — Index mit fertigen Dataview-Abfragen.
@@ -140,7 +144,7 @@ python3 digest.py --dry-run              # Mail zeigen, nichts senden, nichts sc
 python3 digest.py --day 2026-08-19       # bestimmten Tag nachfahren (sendet!)
 python3 backfill.py --dry-run            # zeigen, welche Tage nachgezogen würden
 python3 backfill.py --von 2026-07-01     # Vault-Notizen nachziehen, ohne Mail
-python3 -m pytest -q                     # 115 Tests
+python3 -m pytest -q                     # 118 Tests
 ```
 
 `--dry-run` schreibt weder Mail noch Vault. `backfill.py` verschickt nie etwas.

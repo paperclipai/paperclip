@@ -113,17 +113,27 @@ def dateiname(tag: date) -> str:
     return f"LLM-Nutzung {tag.isoformat()}.md"
 
 
-def csv_zeilen(tag: date, agent_model_rows):
-    """Zeilen fuer die kumulative CSV: (tag, agent, modell, ort, aufrufe, token, kosten).
+def csv_zeilen(tag: date, agent_model_rows, sb=None):
+    """Zeilen fuer die kumulative CSV.
+
+    (tag, agent, modell, ort, quant, ctx, denkquote, aufrufe, token, kosten)
 
     Reihenfolge wie geliefert — die Abfrage sortiert bereits nach Aufrufen.
-    Unbekannter Preis wird zu '' und nicht zu 0; 0 waere schlicht gelogen.
+    `ctx` und `denkquote` sind nackte Zahlen, damit Dataview rechnen kann.
+    Nicht Ermittelbares wird zu '' und nicht zu 0 — weder ein unbekannter
+    Preis noch eine nicht gemessene Denkquote ist null.
     """
     zeilen = []
     for agent, modell, calls, in_tok, cached, out_tok in agent_model_rows:
         k = pricing.kosten_eur(modell, in_tok, cached, out_tok, tag)
+        ctx = _ctx_zahl(modell, sb)
+        quote = _quote_zahl(modell, sb)
         zeilen.append((
-            tag.isoformat(), agent, modell, hosts.ort(modell, tag), calls,
+            tag.isoformat(), agent, modell, hosts.ort(modell, tag),
+            steckbrief.quant(modell, sb),
+            "" if ctx == "null" else int(ctx),
+            "" if quote == "null" else float(quote),
+            calls,
             (in_tok or 0) + (out_tok or 0),
             "" if k is None else round(k, 4),
         ))

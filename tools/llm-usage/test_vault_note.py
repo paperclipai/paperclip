@@ -118,12 +118,14 @@ def test_dateiname_kollidiert_nicht_mit_den_tagesprotokollen():
 
 
 def test_csv_eine_zeile_je_agent_und_modell_mit_kosten():
-    zeilen = vault_note.csv_zeilen(TAG, AGENT_MODELL_ROWS)
+    zeilen = vault_note.csv_zeilen(TAG, AGENT_MODELL_ROWS, sb=SB)
     assert len(zeilen) == 4
-    tag, agent, modell, ort, aufrufe, token, kosten = zeilen[0]
+    (tag, agent, modell, ort, quant, ctx, denkquote,
+     aufrufe, token, kosten) = zeilen[0]
     assert tag == "2026-08-19"
     assert (agent, modell, aufrufe) == ("CTO", "qwen3.6-35b-a3b-mlx", 120)
     assert ort == "MacBook"
+    assert (quant, ctx, denkquote) == ("8bit", 262144, 0.97)
     assert token == 660_000  # in + out, wie in query.py
     assert kosten == 0.0     # lokales Modell
 
@@ -132,6 +134,24 @@ def test_csv_kosten_bei_unbekanntem_preis_sind_leer_nicht_null():
     """Auch hier: 0 waere gelogen, leer ist ehrlich."""
     zeilen = vault_note.csv_zeilen(TAG, [("X", "claude-supernova-9", 1, 10, 0, 5)])
     assert zeilen[0][-1] == ""
+
+
+def test_csv_ctx_und_denkquote_sind_zahlen_oder_leer():
+    """Dataview soll rechnen koennen. Nicht messbar -> leer, nicht 0."""
+    zeilen = vault_note.csv_zeilen(
+        TAG, [("X", "claude-sonnet-4-6", 1, 10, 0, 5)], sb=SB)
+    _t, _a, _m, ort, quant, ctx, quote, *_ = zeilen[0]
+    assert (ort, quant, ctx) == ("Cloud", "–", 200_000)
+    assert quote == ""      # bei Anthropic nicht ermittelbar
+
+
+def test_csv_ohne_steckbrief_bleibt_befuellbar():
+    """backfill fuer einen Tag ohne Katalog — Spalten leer statt Absturz."""
+    zeilen = vault_note.csv_zeilen(TAG, AGENT_MODELL_ROWS)
+    _t, _a, _m, ort, quant, ctx, quote, *_ = zeilen[0]
+    assert ort == "MacBook"          # kommt aus hosts, nicht aus dem Steckbrief
+    assert (quant, ctx) == ("8bit", 262144)   # steckbrief.ERSATZ
+    assert quote == ""
 
 
 # --------------------------------------------------------------------------- #

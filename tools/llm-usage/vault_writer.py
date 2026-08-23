@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import hosts
+import steckbrief
 import vault_note
 
 VAULT_ZIEL = Path(os.path.expanduser(
@@ -18,22 +19,37 @@ VAULT_ZIEL = Path(os.path.expanduser(
 ))
 CSV_UNTERORDNER = "_daten"
 CSV_NAME = "llm-nutzung.csv"
-CSV_KOPF = ["tag", "agent", "modell", "ort", "aufrufe", "token", "kosten_eur"]
-# Der Kopf vor Einfuehrung der Ort-Spalte (08/2026). Die kumulative CSV reicht
-# bis zum 16.04. zurueck; ihre Zeilen werden beim naechsten Lauf nachgezogen.
-CSV_KOPF_ALT = ["tag", "agent", "modell", "aufrufe", "token", "kosten_eur"]
+CSV_KOPF = ["tag", "agent", "modell", "ort", "quant", "ctx", "denkquote",
+            "aufrufe", "token", "kosten_eur"]
+# Die kumulative CSV reicht bis zum 16.04.2026 zurueck und hat zwei aeltere
+# Formate erlebt. Altzeilen werden beim naechsten Lauf auf die volle Breite
+# gehoben — bliebe eine kurz, laegen ab der vierten Spalte alle Werte um eins
+# daneben und jede Dataview-Auswertung waere still falsch.
+CSV_KOEPFE_ALT = [
+    ["tag", "agent", "modell", "aufrufe", "token", "kosten_eur"],          # bis 08/2026
+    ["tag", "agent", "modell", "ort", "aufrufe", "token", "kosten_eur"],   # 23.08. vormittags
+]
 
 
-def _mit_ort(zeile: list) -> list:
-    """Eine Zeile im alten 6-Spalten-Format auf das neue Format heben.
+def _migriere(zeile: list, sb=None) -> list:
+    """Eine Altzeile auf das aktuelle Format heben.
 
-    Der Ort ist aus der Modell-ID ableitbar, muss also nicht neu erhoben
-    werden. Ohne diese Migration blieben die Altzeilen kurz und jede Auswertung
-    laege ab der vierten Spalte um eins daneben.
+    Nachgetragen wird nur, was ableitbar ist: `ort` aus Modell-ID plus Tag der
+    Zeile, `quant`/`ctx` aus dem Steckbrief. Die **Denkquote bleibt leer** —
+    sie steht nur in den Logs des jeweiligen Tages, und ein erfundener Wert
+    waere schlimmer als eine Luecke. `backfill.py` traegt sie nach, weil es
+    die Logs ohnehin Tag fuer Tag liest.
     """
     if len(zeile) >= len(CSV_KOPF):
         return zeile
-    return zeile[:3] + [hosts.ort(zeile[2], zeile[0])] + zeile[3:]
+    tag, agent, modell = zeile[0], zeile[1], zeile[2]
+    # 7 Spalten = Zwischenformat, `ort` steht schon drin und wird neu gesetzt.
+    rest = zeile[4:] if len(zeile) == 7 else zeile[3:]
+    ctx = vault_note._ctx_zahl(modell, sb)
+    return [tag, agent, modell, hosts.ort(modell, tag),
+            steckbrief.quant(modell, sb),
+            "" if ctx == "null" else int(ctx),
+            ""] + list(rest)
 
 
 def schreibe_notiz(tag: date, modell_rows, agent_model_rows,
@@ -59,10 +75,11 @@ def schreibe_tag(tag: date, modell_rows, agent_model_rows, ziel=VAULT_ZIEL,
     notiz = schreibe_notiz(tag, modell_rows, agent_model_rows, ziel, sb)
     if notiz is None:
         return None, None
-    return notiz, aktualisiere_csv(tag, agent_model_rows, ziel)
+    return notiz, aktualisiere_csv(tag, agent_model_rows, ziel, sb)
 
 
-def aktualisiere_csv(tag: date, agent_model_rows, ziel=VAULT_ZIEL) -> Path:
+def aktualisiere_csv(tag: date, agent_model_rows, ziel=VAULT_ZIEL,
+                     sb=None) -> Path:
     """Zeilen des Tages in die kumulative CSV einpflegen — idempotent.
 
     Vorhandene Zeilen desselben Tages werden ersetzt, nicht ergaenzt. Sonst
@@ -80,12 +97,13 @@ def aktualisiere_csv(tag: date, agent_model_rows, ziel=VAULT_ZIEL) -> Path:
         with open(pfad, encoding="utf-8", newline="") as fh:
             leser = csv.reader(fh)
             for i, zeile in enumerate(leser):
-                if i == 0 and zeile in (CSV_KOPF, CSV_KOPF_ALT):
+                if i == 0 and zeile in [CSV_KOPF] + CSV_KOEPFE_ALT:
                     continue
                 if zeile and zeile[0] != tag_str:
-                    bestand.append(_mit_ort(zeile))
+                    bestand.append(_migriere(zeile, sb))
 
-    neu = [[str(f) for f in z] for z in vault_note.csv_zeilen(tag, agent_model_rows)]
+    neu = [[str(f) for f in z] for z in
+           vault_note.csv_zeilen(tag, agent_model_rows, sb)]
     alle = sorted(bestand + neu, key=lambda z: (z[0], z[1], z[2]))
 
     with open(pfad, "w", encoding="utf-8", newline="") as fh:
