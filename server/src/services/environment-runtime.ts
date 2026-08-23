@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { companySecrets, companySecretVersions, environmentLeases } from "@paperclipai/db";
 import type {
   Environment,
+  EnvironmentDriver,
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
@@ -219,32 +220,98 @@ export function builtinSandboxProviderVerifiedMethods(
 }
 
 /**
- * The one normalizer for the sandbox capability contract. It resolves the
- * effective capability as verified ∩ declared ∩ narrowing.
+ * The static capability support definition for one environment driver. It names
+ * the eight capabilities the driver family can support at all. A capability the
+ * definition does not name resolves `false` for the driver, whatever a
+ * declaration, a verified verb, or a narrowing says. The general classifier
+ * reads this static definition for a built-in driver in place of a live worker
+ * method list.
  *
+ * The definition is the code-level ground truth for a driver. It replaces a
+ * driver-identity condition: a consumer asks the classifier for a capability
+ * instead of a matching the driver name.
+ */
+export interface EnvironmentDriverCapabilitySupport {
+  readonly driver: EnvironmentDriver;
+  /** The capability keys the driver family can support. */
+  readonly supportedCapabilities: ReadonlySet<SandboxCapabilityKey>;
+}
+
+const NO_CAPABILITY_SUPPORT: ReadonlySet<SandboxCapabilityKey> = new Set<SandboxCapabilityKey>();
+const ALL_CAPABILITY_SUPPORT: ReadonlySet<SandboxCapabilityKey> = new Set<SandboxCapabilityKey>(
+  SANDBOX_CAPABILITY_KEYS,
+);
+
+/**
+ * The static capability support for the four environment drivers.
+ *
+ * - `local` runs commands on the host file system with no provider capability
+ *   model, so it supports none of the eight capabilities. Every capability
+ *   resolves `false`.
+ * - `ssh` runs commands on a remote host through the SSH transport with no
+ *   provider capability model, so it supports none of the eight capabilities
+ *   either.
+ * - `sandbox` runs the full provider capability model. A built-in provider maps
+ *   its own methods through {@link builtinSandboxProviderVerifiedMethods}, and a
+ *   plugin-backed provider reports live worker methods, so the driver can support
+ *   every capability. The classifier still intersects the per-provider
+ *   declaration, the verified methods, and the per-lease narrowing.
+ * - `plugin` resolves its capabilities from the live plugin worker method list,
+ *   so it can support every capability. The classifier intersects the live
+ *   verified methods and the declaration.
+ */
+export const ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT: Record<
+  EnvironmentDriver,
+  EnvironmentDriverCapabilitySupport
+> = {
+  local: { driver: "local", supportedCapabilities: NO_CAPABILITY_SUPPORT },
+  ssh: { driver: "ssh", supportedCapabilities: NO_CAPABILITY_SUPPORT },
+  sandbox: { driver: "sandbox", supportedCapabilities: ALL_CAPABILITY_SUPPORT },
+  plugin: { driver: "plugin", supportedCapabilities: ALL_CAPABILITY_SUPPORT },
+};
+
+/**
+ * The one general capability classifier. It resolves each of the eight effective
+ * capabilities as static support ∩ verified ∩ declared ∩ narrowing, and returns
+ * the read-only eight-field snapshot. Every driver reads the same classifier, so
+ * the runtime no longer branches on the driver name.
+ *
+ * - `supportedCapabilities` is the driver's static support definition (see
+ *   {@link ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT}). A capability not in the set
+ *   resolves `false` regardless of the other inputs. An absent set applies no
+ *   static gate, so the classifier behaves as the pure declaration ∩ verified ∩
+ *   narrowing normalizer.
  * - `verifiedMethods` is the runtime's verified worker verb list (the plug-in
  *   worker's `supportedMethods`, or a built-in provider mapped through
  *   {@link builtinSandboxProviderVerifiedMethods}). A missing or empty list
  *   verifies nothing, so every capability resolves `false` (fail closed).
  * - `declared` is the provider's declaration. An absent flag defers to the
- *   verified discovery baseline; it never grants a capability. A present flag
- *   can only remove a verified capability, never add one.
- * - `narrowing` is the per-target restriction from the config or lease. An
- *   absent key applies no restriction; a `false` value removes the capability.
+ *   verified discovery baseline for a worker-property capability; it never grants
+ *   an opt-in capability. A present flag can only remove a capability.
+ * - `narrowing` is the per-target restriction from the config or lease. An absent
+ *   key applies no restriction; a `false` value removes the capability.
  *
- * A declaration never grants a capability the runtime did not verify, so a
- * declared capability whose worker lacks a prerequisite verb resolves `false`.
+ * The two default rules stay intact. An absent declaration defers to the
+ * verified baseline for a worker-property capability. The three opt-in
+ * capabilities deny by default (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}). A
+ * declaration never grants a capability the runtime did not verify.
  */
-export function resolveEffectiveSandboxCapabilities(input: {
+export function classifyEnvironmentCapabilities(input: {
   verifiedMethods?: readonly string[] | null;
   declared?: Partial<SandboxProviderCapabilities> | null;
   narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
+  supportedCapabilities?: ReadonlySet<SandboxCapabilityKey> | null;
 }): EffectiveSandboxCapabilities {
   const verifiedMethods = new Set(input.verifiedMethods ?? []);
   const declared = input.declared ?? {};
   const narrowing = input.narrowing ?? {};
+  const supportedCapabilities = input.supportedCapabilities ?? null;
 
   const resolve = (key: SandboxCapabilityKey): boolean => {
+    // The static support definition is the first gate. A capability the driver
+    // family cannot support resolves false, whatever the other inputs say. An
+    // absent set applies no static gate.
+    if (supportedCapabilities && !supportedCapabilities.has(key)) return false;
     const verified = capabilityIsVerified(key, verifiedMethods);
     // An absent declaration defers to the verified baseline for a worker-property
     // capability (true = no extra restriction), but denies an opt-in capability
@@ -266,6 +333,24 @@ export function resolveEffectiveSandboxCapabilities(input: {
     concurrentSyncOperations: resolve("concurrentSyncOperations"),
     duplexCommandStream: resolve("duplexCommandStream"),
   };
+}
+
+/**
+ * The sandbox capability normalizer. It resolves the effective capability as
+ * verified ∩ declared ∩ narrowing. It is a thin compatibility wrapper over the
+ * general {@link classifyEnvironmentCapabilities}: it applies no static support
+ * gate, so it keeps the exact behavior every current caller depends on. A later
+ * phase migrates the callers to the general classifier.
+ *
+ * A declaration never grants a capability the runtime did not verify, so a
+ * declared capability whose worker lacks a prerequisite verb resolves `false`.
+ */
+export function resolveEffectiveSandboxCapabilities(input: {
+  verifiedMethods?: readonly string[] | null;
+  declared?: Partial<SandboxProviderCapabilities> | null;
+  narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
+}): EffectiveSandboxCapabilities {
+  return classifyEnvironmentCapabilities(input);
 }
 
 /**
