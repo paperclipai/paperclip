@@ -985,11 +985,19 @@ export interface PluginRenderCloseEvent {
 // output and exit as notifications, never as a reply, so the host binds them by
 // the worker session identifier while the route is open.
 
+/**
+ * The closed set of login command identities. The host resolves the key from the
+ * trusted adapter type and carries it in the open request. The worker maps the
+ * key to a compile-time command. The open request carries no command string, so a
+ * caller cannot select or override the command.
+ */
+export type PluginLoginCommandKey = "claude" | "codex";
+
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
 export interface PluginLoginPtyOpenParams {
   /** The host-owned opaque route identifier. The worker registers the terminal by it. */
   hostRouteId: string;
-  /** The environment driver key, for the worker sandbox scope. */
+  /** The environment driver key, for the worker sandbox scope. It routes the worker; it confers no command authority. */
   driverKey: string;
   /** The company that owns the login session. */
   companyId: string;
@@ -997,8 +1005,17 @@ export interface PluginLoginPtyOpenParams {
   environmentId: string;
   /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
   providerLeaseId: string;
-  /** The fixed login command. The worker runs only this command on the terminal. */
-  command: string;
+  /**
+   * The host-resolved fixed command identity. The worker maps it to a
+   * compile-time command. The open request carries no command string.
+   */
+  loginCommandKey: PluginLoginCommandKey;
+  /**
+   * The server-controlled, validated session home. The shape is exact:
+   * `/tmp/paperclip-adapter-login/<uuid>`. The worker revalidates the shape
+   * before it touches the filesystem.
+   */
+  sessionHome: string;
 }
 
 /** The open reply. It returns the worker session identifier for output binding only. */

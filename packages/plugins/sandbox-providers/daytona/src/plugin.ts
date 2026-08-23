@@ -51,19 +51,26 @@ import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js"
 export {
   createDaytonaLoginPtySessionOpener,
   openDaytonaLoginPtySession,
+  createDaytonaLoginHomeFs,
 } from "./login-pty.js";
 export type {
   LoginPtySession,
   LoginPtySessionOpener,
+  LoginPtyLaunchDescriptor,
   DaytonaPtyHandle,
   DaytonaPtyProcess,
   DaytonaPtyCreateOptions,
   DaytonaLoginPtyOptions,
+  DaytonaLoginHomeFs,
 } from "./login-pty.js";
-import { openDaytonaLoginPtySession as openLoginPtySession } from "./login-pty.js";
+import {
+  openDaytonaLoginPtySession as openLoginPtySession,
+  createDaytonaLoginHomeFs,
+} from "./login-pty.js";
 import type {
   LoginPtySession as LoginPtyWorkerSession,
   DaytonaPtyProcess,
+  DaytonaSandboxExec,
 } from "./login-pty.js";
 
 // The Daytona duplex command stream for the sandbox callback bridge. The channel
@@ -2731,8 +2738,9 @@ const plugin = definePlugin({
     });
   },
 
-  // Open one live Claude `setup-token` login pseudo-terminal. Resolve
-  // the cached sandbox by the provider lease id, run the fixed login command on a
+  // Open one live login pseudo-terminal. Resolve the cached sandbox by the
+  // provider lease id, revalidate the host launch descriptor and the session
+  // home, create and validate the session home, run the fixed login command on a
   // real pseudo-terminal, and register the session under the host route id. Stream
   // the raw output and the exit through `ctx.loginPty`, bound to the returned
   // worker session id. Fail closed when no cached sandbox matches the lease.
@@ -2740,12 +2748,16 @@ const plugin = definePlugin({
     const sandbox = await sandboxHandleCache.findByProviderLeaseId(params.providerLeaseId);
     if (!sandbox) {
       throw new Error(
-        "Daytona setup-token login: no cached sandbox resolves the provider lease.",
+        "Daytona login pseudo-terminal: no cached sandbox resolves the provider lease.",
       );
     }
+    const homeFs = createDaytonaLoginHomeFs(
+      sandbox.process as unknown as DaytonaSandboxExec,
+    );
     const session = await openLoginPtySession(
       sandbox.process as unknown as DaytonaPtyProcess,
-      params.command,
+      homeFs,
+      { loginCommandKey: params.loginCommandKey, sessionHome: params.sessionHome },
     );
     const workerSessionId = `pty-${randomUUID()}`;
     const entry: DaytonaLoginPtyEntry = {

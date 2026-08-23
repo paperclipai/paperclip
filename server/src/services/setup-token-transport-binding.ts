@@ -47,6 +47,13 @@ import {
   runSetupTokenLogin,
   CLAUDE_SETUP_TOKEN_COMMAND,
 } from "@paperclipai/adapter-claude-local/server";
+import { randomUUID } from "node:crypto";
+import {
+  deriveLoginSessionHome,
+  resolveLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
 
 /**
  * The sandbox provider for one login session. It acquires a fresh sandbox lease
@@ -543,7 +550,8 @@ export interface LoginPtyWorkerManagerLike {
       companyId: string;
       environmentId: string;
       providerLeaseId: string;
-      command: string;
+      loginCommandKey: LoginCommandKey;
+      sessionHome: string;
     },
   ): Promise<LoginPtySession>;
 }
@@ -579,6 +587,12 @@ function readLeaseMetaString(value: unknown): string | null {
  * drives the worker through the manager route gate. The manager mints the host
  * route identifier and owns the route lifecycle. The opener fails closed when the
  * lease carries no sandbox worker binding.
+ *
+ * The opener resolves the host launch descriptor. It reads the closed login
+ * command key from the trusted adapter type, and it derives the server-controlled
+ * session home from a fresh UUID. It validates the home shape before the worker
+ * RPC. It never reads a command from the caller: the incoming opener argument is
+ * unused, so the transport cannot influence the sandbox command.
  */
 export function createWorkerBoundLoginPtyOpener(
   deps: WorkerBoundLoginPtyOpenerDeps,
@@ -601,13 +615,30 @@ export function createWorkerBoundLoginPtyOpener(
       log("[paperclip] Setup-token login: the lease carries no sandbox worker binding.");
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
     }
-    return (command: string) =>
-      deps.workerManager.openLoginPtySession(pluginId, {
+    // Resolve the closed command key from the trusted adapter type. An unmapped
+    // adapter fails closed before the worker RPC.
+    let loginCommandKey: LoginCommandKey;
+    try {
+      loginCommandKey = resolveLoginCommandKey(scope.adapterType);
+    } catch {
+      log("[paperclip] Setup-token login: the adapter type has no login command key.");
+      throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
+    }
+    // The opener argument is the runner's fixed command string. It confers no
+    // command authority, so the opener ignores it and returns a host-bound opener.
+    return (_command: string) => {
+      // Generate the session UUID, then the home path, then validate the exact
+      // shape before the host sends the worker RPC.
+      const sessionHome = deriveLoginSessionHome(randomUUID());
+      validateLoginSessionHome(sessionHome);
+      return deps.workerManager.openLoginPtySession(pluginId, {
         driverKey,
         companyId: scope.companyId,
         environmentId,
         providerLeaseId,
-        command,
+        loginCommandKey,
+        sessionHome,
       });
+    };
   };
 }

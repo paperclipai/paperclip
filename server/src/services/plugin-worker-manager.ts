@@ -63,7 +63,11 @@ import {
   type DuplexAggregateTokenOwner,
   type ReservationToken,
 } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
-import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
+import {
+  isLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
 import { logger } from "../middleware/logger.js";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
@@ -168,10 +172,10 @@ const LOGIN_PTY_OPEN_TIMEOUT_MS = 30_000;
 /** The default close timeout for one login pseudo-terminal route, in milliseconds. */
 const LOGIN_PTY_CLOSE_TIMEOUT_MS = 10_000;
 /**
- * The fixed non-secret error a disallowed login command returns. The manager
- * forwards only the compile-time `CLAUDE_SETUP_TOKEN_COMMAND` to the worker
- * pseudo-terminal. It rejects any other command before the worker call, so a
- * future caller cannot spawn an arbitrary process in the sandbox.
+ * The fixed non-secret error a disallowed login command key returns. The manager
+ * forwards only a closed login command key to the worker pseudo-terminal. It
+ * rejects a key outside the closed set before the worker call, so a caller cannot
+ * select an arbitrary command in the sandbox.
  */
 const LOGIN_PTY_COMMAND_NOT_ALLOWED = "LOGIN_PTY_COMMAND_NOT_ALLOWED";
 /** The fixed non-secret error a rejected second credential open returns. */
@@ -542,16 +546,25 @@ export type ExecuteLogSink = (
 ) => void | Promise<void>;
 
 /**
- * The input the manager needs to open one live login pseudo-terminal route
- * The manager mints the host route identifier; the caller supplies
- * only the sandbox scope, the provider lease id, and the fixed command.
+ * The input the manager needs to open one live login pseudo-terminal route. The
+ * manager mints the host route identifier; the caller supplies the sandbox scope,
+ * the provider lease id, and the host-resolved launch descriptor. The launch
+ * descriptor carries a closed command key and a validated session home. It
+ * carries no command string, so a caller cannot select the command.
  */
 export interface LoginPtyOpenInput {
+  /** The environment driver key. It routes the worker; it confers no command authority. */
   driverKey: string;
   companyId: string;
   environmentId: string;
   providerLeaseId: string;
-  command: string;
+  /** The host-resolved fixed command identity. The worker maps it to a compile-time command. */
+  loginCommandKey: LoginCommandKey;
+  /**
+   * The server-controlled, validated session home. The shape is exact:
+   * `/tmp/paperclip-adapter-login/<uuid>`.
+   */
+  sessionHome: string;
 }
 
 /**
@@ -1490,13 +1503,17 @@ export function createPluginWorkerHandle(
   async function openLoginPtySession(
     input: LoginPtyOpenInput,
   ): Promise<LoginPtyHostSession> {
-    if (input.command !== CLAUDE_SETUP_TOKEN_COMMAND) {
-      // Allowlist the login command. Only the fixed `CLAUDE_SETUP_TOKEN_COMMAND`
-      // may run in the sandbox pseudo-terminal. Reject any other command with one
-      // fixed non-secret error before the worker call, so a caller cannot spawn
-      // an arbitrary process in the sandbox pseudo-terminal.
+    if (!isLoginCommandKey(input.loginCommandKey)) {
+      // Allowlist the login command key. Only a key in the closed set may open a
+      // sandbox pseudo-terminal. Reject a key outside the set with one fixed
+      // non-secret error before the worker call, so a caller cannot select an
+      // arbitrary command in the sandbox pseudo-terminal.
       throw new Error(LOGIN_PTY_COMMAND_NOT_ALLOWED);
     }
+    // Revalidate the server-controlled session home shape before the worker RPC.
+    // The binding validated it at the service boundary; this is the last host gate
+    // before the worker call, so a malformed home fails closed here too.
+    validateLoginSessionHome(input.sessionHome);
     if (loginPtyRoute) {
       // A route for this worker is not yet closed and confirmed. Reject the
       // second open with one fixed non-secret error before it reaches the worker.
@@ -1530,7 +1547,8 @@ export function createPluginWorkerHandle(
           companyId: input.companyId,
           environmentId: input.environmentId,
           providerLeaseId: input.providerLeaseId,
-          command: input.command,
+          loginCommandKey: input.loginCommandKey,
+          sessionHome: input.sessionHome,
         },
         loginPtyOpenTimeoutMs,
       );

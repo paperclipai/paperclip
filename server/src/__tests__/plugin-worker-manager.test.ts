@@ -9,7 +9,6 @@ import {
   type HostServices,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
-import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
 import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
@@ -1077,39 +1076,71 @@ function makeLoginPtyHandle(extra?: Record<string, unknown>) {
   });
 }
 
+// One valid session home. The shape is the fixed root, one slash, and one UUID.
+const PTY_SESSION_HOME = "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555";
+
 function ptyOpenInput(directive: unknown) {
   return {
     driverKey: "daytona",
     companyId: "company-1",
     environmentId: "env-1",
     // The test directive rides in `providerLeaseId`, an opaque field the manager
-    // forwards to the worker unchanged. The manager allowlists `command`, so the
-    // command stays the fixed `CLAUDE_SETUP_TOKEN_COMMAND` for every route-gate
-    // case.
+    // forwards to the worker unchanged. The manager carries the closed command
+    // key and the validated session home; it carries no command string.
     providerLeaseId: JSON.stringify(directive),
-    command: CLAUDE_SETUP_TOKEN_COMMAND,
+    loginCommandKey: "claude" as const,
+    sessionHome: PTY_SESSION_HOME,
   };
 }
 
 describe("plugin worker manager setup-token pty route gate", () => {
-  it("rejects a command that is not the allowlisted setup-token command before the worker call", async () => {
+  it("rejects a command key that is not in the closed set before the worker call", async () => {
     const handle = makeLoginPtyHandle();
     try {
       await handle.start();
-      // A caller passes a command other than the fixed `CLAUDE_SETUP_TOKEN_COMMAND`.
-      // The manager rejects it with one fixed non-secret error before the worker
-      // call, so no arbitrary process spawns in the sandbox pseudo-terminal.
+      // The provider driver key routes the worker; it confers no command
+      // authority. A key outside the closed set rejects with one fixed non-secret
+      // error before the worker call, so a caller cannot select an arbitrary
+      // command in the sandbox pseudo-terminal.
       await expect(
         handle.openLoginPtySession({
           driverKey: "daytona",
           companyId: "company-1",
           environmentId: "env-1",
           providerLeaseId: JSON.stringify({ mode: "normal" }),
-          command: "rm -rf /",
+          loginCommandKey: "gemini" as unknown as "claude",
+          sessionHome: PTY_SESSION_HOME,
         }),
       ).rejects.toThrow("LOGIN_PTY_COMMAND_NOT_ALLOWED");
-      // The rejected open never consumed the single route, so a later open with
-      // the allowlisted command still succeeds.
+      // The rejected open never consumed the single route, so a later open with a
+      // closed key still succeeds.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("rejects a malformed session home before the worker call", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The host revalidates the server-controlled session home shape before the
+      // worker RPC. A traversal candidate fails closed at the last host gate.
+      await expect(
+        handle.openLoginPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          loginCommandKey: "claude" as const,
+          sessionHome: "/tmp/paperclip-adapter-login/../etc",
+        }),
+      ).rejects.toThrow("LOGIN_PTY_INVALID_SESSION_HOME");
+      // The rejected open never consumed the single route.
       const session = await handle.openLoginPtySession(
         ptyOpenInput({ mode: "normal" }),
       );

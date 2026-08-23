@@ -1,40 +1,140 @@
-// The Daytona pseudo-terminal (PTY) session for the Claude `setup-token` login.
-// The login command needs a real pseudo-terminal: pipe stdio emits no login
-// prompt. The Daytona SDK opens a PTY through `process.createPty`. This module
-// binds that PTY to a small session that the login PTY transport consumes, so
-// the login runner runs the command on a real terminal, streams the terminal
-// output, and delivers the delayed browser code plus the Enter byte.
+// The Daytona pseudo-terminal (PTY) session for the shared login flow. The login
+// command needs a real pseudo-terminal: pipe stdio emits no login prompt. The
+// Daytona SDK opens a PTY through `process.createPty`. This module binds that PTY
+// to a small session that the login PTY transport consumes, so the login runner
+// runs the command on a real terminal, streams the terminal output, and delivers
+// the delayed browser code plus the Enter byte.
+//
+// Command contract: the host resolves a closed login command key and a validated
+// session home, and it carries them in a launch descriptor. The descriptor holds
+// no command string. This module maps the key to a compile-time command, so a
+// caller cannot select or override the command. For the Codex key the module
+// composes `exec env CODEX_HOME=<encoded-home> <fixed-codex-command>`. For the
+// Claude key it composes `exec <fixed-claude-command>` with no CODEX_HOME. The
+// module encodes the dynamic home with a POSIX shell-argument encoder, so the
+// home cannot add a second shell token or a second command.
+//
+// Session home: the module revalidates the descriptor and the home shape, then
+// creates the exact UUID directory as a NEW directory with mode 0700, owned by the
+// login user. It rejects a pre-existing target, a symlink, a non-directory, a
+// wrong owner, and a wrong mode. It uses no recursive delete. It re-checks the
+// directory with a no-symlink check before it opens the terminal and again before
+// it sends the launch input, so a symlink swapped in after creation fails before
+// the launch.
 //
 // Dependency boundary: this provider plugin ships standalone (the workspace
 // excludes `packages/plugins/sandbox-providers/**`). So the module imports no
 // workspace package. It declares the small session shape locally through
-// {@link LoginPtySession}. The shape matches the `LoginPtySession`
-// interface in `@paperclipai/adapter-utils`, so the transport factory
-// `createLoginPtyTransport` accepts the session opener from this module with
-// no adapter. The runner drives the transport; the transport drives this session.
+// {@link LoginPtySession}. The shape matches the `LoginPtySession` interface in
+// `@paperclipai/adapter-utils`, so the transport factory `createLoginPtyTransport`
+// accepts the session opener from this module with no adapter. The runner drives
+// the transport; the transport drives this session.
 //
-// SDK boundary: the module holds no Daytona SDK type import. It declares the
-// small subset of the SDK PTY surface that it uses through
-// {@link DaytonaPtyProcess} and {@link DaytonaPtyHandle}. The SDK `Process` and
-// `PtyHandle` satisfy that subset, so a caller passes `sandbox.process` with no
-// adapter. The narrow surface keeps the module unit-testable with a fake PTY.
+// SDK boundary: the module holds no Daytona SDK type import. It declares the small
+// subset of the SDK PTY and filesystem surfaces that it uses through
+// {@link DaytonaPtyProcess}, {@link DaytonaPtyHandle}, and {@link DaytonaSandboxExec}.
+// The SDK `Process` and `PtyHandle` satisfy those subsets, so a caller passes
+// `sandbox.process` with no adapter. The narrow surface keeps the module
+// unit-testable with a fake PTY and a fake filesystem.
 //
 // Security (secret handling): the login runner delivers the browser code and the
 // Enter byte through {@link DaytonaPtyHandle.sendInput}. The SDK sends the input
 // over the PTY socket, so the code never rides a command line and never reaches a
-// process argument list. The session forwards the raw terminal bytes with no
-// ANSI or OSC 8 handling; the setup-token parser owns that handling.
+// process argument list. The session forwards the raw terminal bytes with no ANSI
+// or OSC 8 handling; the login parser owns that handling.
 
 import { randomUUID } from "node:crypto";
 
 import { sendPtyInputInChunks } from "./pty-chunked-input.js";
 
 /**
- * A live pseudo-terminal session for one setup-token login command. The session
- * allocates a real pseudo-terminal, streams the raw terminal output, accepts
- * delayed input, and stops the child. The shape matches the
- * `LoginPtySession` interface in `@paperclipai/adapter-utils`, so the
- * transport factory there accepts a session opener that returns this session.
+ * The closed set of login command identities. The worker maps each key to a
+ * compile-time command. A value outside this set fails closed before the module
+ * touches the filesystem.
+ */
+export type LoginCommandKey = "claude" | "codex";
+
+/**
+ * The host-resolved launch descriptor. It carries the closed command key and the
+ * server-controlled session home. It holds no command string.
+ */
+export interface LoginPtyLaunchDescriptor {
+  /** The host-resolved fixed command identity. */
+  loginCommandKey: LoginCommandKey;
+  /**
+   * The server-controlled session home. The shape is exact:
+   * `/tmp/paperclip-adapter-login/<uuid>`.
+   */
+  sessionHome: string;
+}
+
+/**
+ * The compile-time command for each login command key. The Daytona plugin ships
+ * standalone, so it holds its own copy of the fixed commands. A future change to
+ * a command lands here and in the adapter constant together.
+ */
+const LOGIN_COMMAND_BY_KEY: Readonly<Record<LoginCommandKey, string>> = {
+  claude: "claude setup-token",
+  codex: "codex login --device-auth",
+};
+
+/** The octal mode string for a new session home directory. */
+const LOGIN_HOME_MODE = "700";
+
+/** The fixed root for a login session home. */
+const LOGIN_SESSION_HOME_ROOT = "/tmp/paperclip-adapter-login";
+
+/**
+ * The exact absolute path shape for a login session home. The path is the fixed
+ * root, one slash, and one UUID. The anchors reject a relative path, a traversal,
+ * whitespace, a control character, and a shell metacharacter, because none of
+ * those match the UUID or the fixed root.
+ */
+const SESSION_HOME_PATTERN =
+  /^\/tmp\/paperclip-adapter-login\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The fixed non-secret error a rejected launch descriptor or session home returns. */
+export const LOGIN_PTY_DESCRIPTOR_REJECTED = "LOGIN_PTY_DESCRIPTOR_REJECTED";
+/** The fixed non-secret error a rejected session home directory returns. */
+export const LOGIN_PTY_HOME_REJECTED = "LOGIN_PTY_HOME_REJECTED";
+
+/**
+ * Encodes one value as a single POSIX shell argument. It wraps the value in
+ * single quotes and escapes each embedded single quote. The shell treats every
+ * other character inside single quotes as a literal, so an encoded value cannot
+ * add a second shell token or a second command.
+ */
+export function encodePosixShellArg(value: string): string {
+  return `'${value.split("'").join("'\\''")}'`;
+}
+
+/** Reports whether a value is a member of the closed login command key set. */
+export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
+  return value === "claude" || value === "codex";
+}
+
+/**
+ * Composes the launch line for the descriptor. For the Codex key it prefixes one
+ * safely encoded `CODEX_HOME` assignment with `env`. For the Claude key it adds no
+ * `CODEX_HOME`. It replaces the interactive shell with the command through `exec`,
+ * so the pseudo-terminal runs the command directly and its exit code becomes the
+ * PTY exit code.
+ */
+export function composeLaunchLine(descriptor: LoginPtyLaunchDescriptor): string {
+  const command = LOGIN_COMMAND_BY_KEY[descriptor.loginCommandKey];
+  if (descriptor.loginCommandKey === "codex") {
+    const encodedHome = encodePosixShellArg(descriptor.sessionHome);
+    return `exec env CODEX_HOME=${encodedHome} ${command}`;
+  }
+  return `exec ${command}`;
+}
+
+/**
+ * A live pseudo-terminal session for one login command. The session allocates a
+ * real pseudo-terminal, streams the raw terminal output, accepts delayed input,
+ * and stops the child. The shape matches the `LoginPtySession` interface in
+ * `@paperclipai/adapter-utils`, so the transport factory there accepts a session
+ * opener that returns this session.
  */
 export interface LoginPtySession {
   /** Registers the one output listener. The session streams each raw chunk in order. */
@@ -49,8 +149,10 @@ export interface LoginPtySession {
   close(): Promise<void>;
 }
 
-/** Opens a {@link LoginPtySession} for `command`. The transport calls it one time. */
-export type LoginPtySessionOpener = (command: string) => Promise<LoginPtySession>;
+/** Opens a {@link LoginPtySession} for `descriptor`. The transport calls it one time. */
+export type LoginPtySessionOpener = (
+  descriptor: LoginPtyLaunchDescriptor,
+) => Promise<LoginPtySession>;
 
 /**
  * The subset of the Daytona SDK `PtyHandle` that the session uses. The SDK
@@ -91,6 +193,55 @@ export interface DaytonaPtyProcess {
   createPty(options: DaytonaPtyCreateOptions): Promise<DaytonaPtyHandle>;
 }
 
+/** The result of one command run on the sandbox. */
+export interface DaytonaExecResult {
+  exitCode?: number;
+  result?: string;
+}
+
+/**
+ * The subset of the Daytona SDK `Process` that the filesystem helper uses. The
+ * SDK `Process` satisfies this interface through `executeCommand`, so a caller
+ * passes `sandbox.process`.
+ */
+export interface DaytonaSandboxExec {
+  executeCommand(
+    command: string,
+    cwd?: string,
+    env?: Record<string, string>,
+    timeout?: number,
+  ): Promise<DaytonaExecResult>;
+}
+
+/** One no-follow inspection of a filesystem path. */
+export interface LoginHomeInspection {
+  /** True when the path exists (as any type). */
+  exists: boolean;
+  /** True when the path itself is a symbolic link. */
+  isSymlink: boolean;
+  /** True when the path itself is a directory. */
+  isDirectory: boolean;
+  /** The octal permission string, for example `700`. Empty when the path is absent. */
+  mode: string;
+  /** The owner user id, or null when the path is absent. */
+  ownerUid: number | null;
+}
+
+/**
+ * The narrow filesystem surface the session home operations need. The production
+ * surface runs commands on the sandbox; a unit test injects a fake. The
+ * inspection is a no-follow inspection, so a symlink at the target reports the
+ * link, not the target.
+ */
+export interface DaytonaLoginHomeFs {
+  /** Resolves the user id of the login user that runs the pseudo-terminal. */
+  loginUserId(): Promise<number>;
+  /** Inspects `path` without following a symlink. */
+  inspect(path: string): Promise<LoginHomeInspection>;
+  /** Creates `path` as a NEW directory with the octal `mode`. It fails when the path exists. */
+  createDirectory(path: string, mode: string): Promise<void>;
+}
+
 /** The options for the Daytona login PTY session. */
 export interface DaytonaLoginPtyOptions {
   /** The working directory for the login PTY. Defaults to the sandbox default. */
@@ -111,22 +262,96 @@ const LOGIN_PTY_ROWS = 30;
  */
 const PTY_COMMAND_TERMINATOR = "\r";
 
+/** Normalizes an octal permission string to its numeric value for comparison. */
+function octalMode(value: string): number {
+  return Number.parseInt(value, 8);
+}
+
 /**
- * Opens a Daytona PTY session for `command` and returns it as a
- * {@link LoginPtySession}. The session allocates a real pseudo-terminal,
- * streams the raw terminal output, delivers delayed input, and stops the child.
+ * Revalidates the launch descriptor. It fails closed when the command key is
+ * outside the closed set or the session home shape is wrong. A unit test that
+ * bypasses the host boundary hits this check, so the provider never trusts an
+ * unvalidated descriptor.
+ */
+function assertDescriptor(descriptor: LoginPtyLaunchDescriptor): void {
+  if (!isLoginCommandKey(descriptor.loginCommandKey)) {
+    throw new Error(LOGIN_PTY_DESCRIPTOR_REJECTED);
+  }
+  if (!SESSION_HOME_PATTERN.test(descriptor.sessionHome)) {
+    throw new Error(LOGIN_PTY_DESCRIPTOR_REJECTED);
+  }
+}
+
+/**
+ * Creates and validates the exact session home directory. It rejects a
+ * pre-existing target (including a symlink), creates the directory as a NEW
+ * directory with mode 0700, then verifies the directory type, the no-symlink
+ * state, the mode, and the login-user ownership. It uses no recursive delete.
+ */
+async function prepareSessionHome(fs: DaytonaLoginHomeFs, sessionHome: string): Promise<void> {
+  const loginUid = await fs.loginUserId();
+
+  // Reject a pre-existing target. A no-follow inspection reports a symlink, a
+  // file, or a directory as present, so any pre-existing target fails here.
+  const before = await fs.inspect(sessionHome);
+  if (before.exists) {
+    throw new Error(LOGIN_PTY_HOME_REJECTED);
+  }
+
+  // Create the exact directory as a NEW directory with mode 0700. The create
+  // fails when the path exists, so the create never follows a symlink.
+  await fs.createDirectory(sessionHome, LOGIN_HOME_MODE);
+
+  // Verify the created directory. Reject a symlink, a non-directory, a wrong
+  // owner, and a wrong mode. Do not delete on a rejection; the sandbox is
+  // ephemeral and the provider uses no recursive delete.
+  const after = await fs.inspect(sessionHome);
+  if (
+    !after.exists ||
+    after.isSymlink ||
+    !after.isDirectory ||
+    after.ownerUid !== loginUid ||
+    octalMode(after.mode) !== octalMode(LOGIN_HOME_MODE)
+  ) {
+    throw new Error(LOGIN_PTY_HOME_REJECTED);
+  }
+}
+
+/**
+ * Re-checks the directory with a no-symlink check. It rejects a symlink and a
+ * non-directory, so a symlink swapped in after creation fails before the launch.
+ */
+async function assertHomeStillSafe(fs: DaytonaLoginHomeFs, sessionHome: string): Promise<void> {
+  const now = await fs.inspect(sessionHome);
+  if (!now.exists || now.isSymlink || !now.isDirectory) {
+    throw new Error(LOGIN_PTY_HOME_REJECTED);
+  }
+}
+
+/**
+ * Opens a Daytona PTY session for `descriptor` and returns it as a
+ * {@link LoginPtySession}. The function revalidates the descriptor and the home
+ * shape, creates and validates the session home, opens a real pseudo-terminal,
+ * re-checks the directory before the launch, composes the safe launch line, and
+ * sends it. The session streams the raw terminal output, delivers delayed input,
+ * and stops the child.
  *
- * The function starts the login command with `exec`, so the pseudo-terminal runs
- * the command directly and the command exit code becomes the PTY exit code. The
- * function decodes the terminal bytes as a UTF-8 stream, so a multibyte
+ * The function decodes the terminal bytes as a UTF-8 stream, so a multibyte
  * character that splits across two output chunks stays whole. It buffers the
  * output until the transport registers the listener, so no early chunk is lost.
  */
 export async function openDaytonaLoginPtySession(
   process: DaytonaPtyProcess,
-  command: string,
+  fs: DaytonaLoginHomeFs,
+  descriptor: LoginPtyLaunchDescriptor,
   options?: DaytonaLoginPtyOptions,
 ): Promise<LoginPtySession> {
+  assertDescriptor(descriptor);
+  // Create and validate the session home before the terminal opens.
+  await prepareSessionHome(fs, descriptor.sessionHome);
+  // Re-check the directory with a no-symlink check before `createPty`.
+  await assertHomeStillSafe(fs, descriptor.sessionHome);
+
   const decoder = new TextDecoder("utf-8");
   let listener: ((chunk: string) => void) | null = null;
   let buffered = "";
@@ -148,10 +373,13 @@ export async function openDaytonaLoginPtySession(
   });
 
   await handle.waitForConnection();
+  // Re-check the directory with a no-symlink check immediately before the launch
+  // input, so a symlink swapped in after creation fails before `sendInput`.
+  await assertHomeStillSafe(fs, descriptor.sessionHome);
   // Replace the interactive shell with the login command, so the pseudo-terminal
   // runs the command directly. The runner then writes the delayed browser code
   // to the command, not to a shell.
-  await handle.sendInput(`exec ${command}${PTY_COMMAND_TERMINATOR}`);
+  await handle.sendInput(composeLaunchLine(descriptor) + PTY_COMMAND_TERMINATOR);
 
   // The tail of the write chain. The chunker awaits each chunk, so one write can
   // suspend between its chunks. The chain runs each write after the previous
@@ -192,16 +420,64 @@ export async function openDaytonaLoginPtySession(
 }
 
 /**
- * Creates a {@link LoginPtySessionOpener} bound to a Daytona `process`. Pass
- * `sandbox.process` from the Daytona SDK. A later phase wraps the opener with the
- * `createLoginPtyTransport` factory from `@paperclipai/adapter-utils` and
- * hands the transport to the login runner. The opener runs the login command on
- * a real pseudo-terminal, streams the terminal output, delivers the delayed
- * browser code plus the Enter byte, and stops the child for a terminal state.
+ * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs
+ * short commands on the sandbox to inspect and create the session home. It
+ * inspects a path with a no-follow inspection, so a symlink at the target reports
+ * the link. It creates the directory with `mkdir` and no `-p`, so the create
+ * fails when the path exists. The real filesystem operations land against a live
+ * sandbox; a unit test injects a fake surface instead.
+ */
+export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLoginHomeFs {
+  return {
+    async loginUserId(): Promise<number> {
+      const out = await exec.executeCommand("id -u");
+      const uid = Number.parseInt((out.result ?? "").trim(), 10);
+      if (!Number.isInteger(uid)) {
+        throw new Error(LOGIN_PTY_HOME_REJECTED);
+      }
+      return uid;
+    },
+    async inspect(path: string): Promise<LoginHomeInspection> {
+      // Read the file type, the octal mode, and the owner uid with a no-follow
+      // inspection. GNU `stat` does not dereference a symlink without `-L`, so a
+      // symlink reports its own type. A non-zero exit means the path is absent.
+      const encoded = encodePosixShellArg(path);
+      const out = await exec.executeCommand(`stat -c '%F|%a|%u' -- ${encoded} 2>/dev/null`);
+      const text = (out.result ?? "").trim();
+      if ((out.exitCode ?? 0) !== 0 || text.length === 0) {
+        return { exists: false, isSymlink: false, isDirectory: false, mode: "", ownerUid: null };
+      }
+      const [fileType = "", mode = "", ownerText = ""] = text.split("|");
+      const ownerUid = Number.parseInt(ownerText, 10);
+      return {
+        exists: true,
+        isSymlink: fileType === "symbolic link",
+        isDirectory: fileType === "directory",
+        mode,
+        ownerUid: Number.isInteger(ownerUid) ? ownerUid : null,
+      };
+    },
+    async createDirectory(path: string, mode: string): Promise<void> {
+      const encoded = encodePosixShellArg(path);
+      const out = await exec.executeCommand(`mkdir -m ${mode} -- ${encoded}`);
+      if ((out.exitCode ?? 0) !== 0) {
+        throw new Error(LOGIN_PTY_HOME_REJECTED);
+      }
+    },
+  };
+}
+
+/**
+ * Creates a {@link LoginPtySessionOpener} bound to a Daytona `process` and a
+ * {@link DaytonaLoginHomeFs}. The opener runs the login command on a real
+ * pseudo-terminal, streams the terminal output, delivers the delayed browser code
+ * plus the Enter byte, and stops the child for a terminal state.
  */
 export function createDaytonaLoginPtySessionOpener(
   process: DaytonaPtyProcess,
+  fs: DaytonaLoginHomeFs,
   options?: DaytonaLoginPtyOptions,
 ): LoginPtySessionOpener {
-  return (command: string) => openDaytonaLoginPtySession(process, command, options);
+  return (descriptor: LoginPtyLaunchDescriptor) =>
+    openDaytonaLoginPtySession(process, fs, descriptor, options);
 }

@@ -569,7 +569,9 @@ describe("worker-bound live pseudo-terminal opener", () => {
       kill: () => {},
       close: async () => {},
     };
-    const openLoginPtySession = vi.fn(async () => session);
+    const openLoginPtySession = vi.fn(
+      async (_pluginId: string, _input: Record<string, unknown>) => session,
+    );
     const getLeaseById = vi.fn(async () => ({
       providerLeaseId: "provider-lease-9",
       metadata: { pluginId: "paperclip.daytona", provider: "daytona" },
@@ -588,18 +590,58 @@ describe("worker-bound live pseudo-terminal opener", () => {
     // The opener resolved the server lease id to the provider lease id.
     expect(getLeaseById).toHaveBeenCalledWith("lease-42");
 
-    const opened = await opener("claude setup-token");
-    // The opener drove the manager route gate with the resolved worker target and
-    // the fixed command. The manager mints the host route id, so the opener passes
-    // none.
-    expect(openLoginPtySession).toHaveBeenCalledWith("paperclip.daytona", {
+    // The opener ignores the incoming command argument. It resolves the closed
+    // command key from the trusted adapter type and derives the session home.
+    const opened = await opener("caller-supplied-ignored");
+    // The opener drove the manager route gate with the resolved worker target, the
+    // closed command key, and a validated session home. The manager mints the host
+    // route id, so the opener passes none. The open carries no command string.
+    expect(openLoginPtySession).toHaveBeenCalledTimes(1);
+    const [pluginId, openInput] = openLoginPtySession.mock.calls[0];
+    expect(pluginId).toBe("paperclip.daytona");
+    expect(openInput).toMatchObject({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
       providerLeaseId: "provider-lease-9",
-      command: "claude setup-token",
+      loginCommandKey: "claude",
     });
+    expect(openInput).not.toHaveProperty("command");
+    // The session home is the fixed root, one slash, and one UUID.
+    expect(openInput.sessionHome).toMatch(
+      /^\/tmp\/paperclip-adapter-login\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
     expect(opened).toBe(session);
+  });
+
+  it("fails closed when the adapter type has no login command key", async () => {
+    const openLoginPtySession = vi.fn(async () => ({
+      onData: () => {},
+      write: () => {},
+      wait: async () => ({ exitCode: 0 }),
+      kill: () => {},
+      close: async () => {},
+    }));
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
+      workerManager: { openLoginPtySession },
+      environments: {
+        getLeaseById: async () => ({
+          providerLeaseId: "provider-lease-9",
+          metadata: { pluginId: "paperclip.daytona", provider: "daytona" },
+        }),
+      },
+    });
+
+    // An unmapped adapter type confers no command authority. The opener fails
+    // closed before it reaches the worker manager.
+    await expect(
+      openLivePtySession({
+        scope: { ...SCOPE, adapterType: "gemini_local" },
+        environmentId: "env-1",
+        leaseId: "lease-42",
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(openLoginPtySession).not.toHaveBeenCalled();
   });
 
   it("fails closed when the lease carries no sandbox worker binding", async () => {

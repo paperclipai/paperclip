@@ -782,10 +782,14 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
         resolveWait = (value) => ctx.loginPty.exit("ws-1", value.exitCode);
       },
       async onLoginPtyOpen(params) {
-        // The open carries the host route id and the fixed command. The worker
-        // returns a worker session id for the output binding only.
+        // The open carries the host route id, the closed command key, and the
+        // validated session home. The worker returns a worker session id for the
+        // output binding only. The open carries no command string.
         expect(params.hostRouteId).toBe("route-1");
-        expect(params.command).toBe("claude setup-token");
+        expect(params.loginCommandKey).toBe("claude");
+        expect(params.sessionHome).toBe(
+          "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555",
+        );
         expect(params.providerLeaseId).toBe("lease-1");
         return { workerSessionId: "ws-1" };
       },
@@ -869,7 +873,8 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
           companyId: "company-1",
           environmentId: "env-1",
           providerLeaseId: "lease-1",
-          command: "claude setup-token",
+          loginCommandKey: "claude",
+          sessionHome: "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555",
         }),
       ).resolves.toEqual({ workerSessionId: "ws-1" });
 
