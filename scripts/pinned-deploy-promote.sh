@@ -429,7 +429,11 @@ cmd_candidate_tests() {
   # gated — it has a 5s live-usage-poll timing test that flakes under gate load;
   # a mandatory gate must be deterministic. Hermes disposition/re-ask logic is
   # exercised by its own CI; the gate covers the budget/disposition/ceiling code.
-  _cand_group server src/__tests__/resource-ceiling-continuation.test.ts src/__tests__/heartbeat-issue-rewake-throttle.test.ts src/__tests__/heartbeat-high-input-token-guard.test.ts
+  # blocked-repoll-throttle guards a LIVE scheduling behaviour (how long a
+  # blocked card is held before it may be re-polled). A regression there either
+  # strands work or re-opens the ~800 runs/day of blocked re-poll churn, so it
+  # is gated alongside the loop throttle it complements.
+  _cand_group server src/__tests__/resource-ceiling-continuation.test.ts src/__tests__/heartbeat-issue-rewake-throttle.test.ts src/__tests__/heartbeat-high-input-token-guard.test.ts src/__tests__/blocked-repoll-throttle.test.ts
   if [ "$ok" = "1" ]; then
     receipt_set_gate "candidate_tests" "pass" "adapter + budget/ceiling/throttle vitest suites green"
     rm -f "$log"
