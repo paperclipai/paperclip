@@ -246,15 +246,29 @@ describe("gemini remote execution", () => {
         stats: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
       }),
     ].join("\n");
-    const runnerExecute = vi.fn(async (input: { command: string; args?: string[] }) => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      stdout: input.command === "gemini" ? geminiOutput : "",
-      stderr: "",
-      pid: 321,
-      startedAt: new Date().toISOString(),
-    }));
+    const runnerExecute = vi.fn(async (input: { command: string; args?: string[] }) => {
+      // The managed-runtime chunked reader probes the remote size with
+      // `wc -c < <path>` before pulling the workspace tarball (2c98c8e1e).
+      // A stub that answers "" to every non-gemini command makes that
+      // Number.parseInt NaN and the restore throws "Could not determine
+      // remote file size" — the whole command line has to be considered, not
+      // just input.command, because the probe runs through a shell.
+      const commandLine = [input.command, ...(input.args ?? [])].join(" ");
+      const stdout = input.command === "gemini"
+        ? geminiOutput
+        : commandLine.includes("wc -c")
+          ? "0"
+          : "";
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout,
+        stderr: "",
+        pid: 321,
+        startedAt: new Date().toISOString(),
+      };
+    });
 
     await execute({
       runId: "run-sandbox-1",

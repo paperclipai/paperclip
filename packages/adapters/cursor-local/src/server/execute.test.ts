@@ -272,11 +272,22 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
         runnerState.commands.push(input.command);
         if (input.command === "sh") {
+          // The managed-runtime chunked reader probes the remote size with
+          // `wc -c < <path>` before pulling the workspace tarball (2c98c8e1e).
+          // Answering "" made Number.parseInt NaN and the restore threw
+          // "Could not determine remote file size". This runner operates on a
+          // real temp directory, so answer with the file's actual size.
+          const commandLine = (input.args ?? []).join(" ");
+          let stdout = "";
+          const sizeProbe = /wc -c <\s*'?([^'\s]+)'?/.exec(commandLine);
+          if (sizeProbe) {
+            stdout = await fs.stat(sizeProbe[1]).then((st) => String(st.size)).catch(() => "0");
+          }
           return {
             exitCode: 0,
           signal: null,
           timedOut: false,
-          stdout: "",
+          stdout,
           stderr: "",
           pid: 555,
           startedAt: new Date().toISOString(),

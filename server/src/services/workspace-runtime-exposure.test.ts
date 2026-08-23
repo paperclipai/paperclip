@@ -48,7 +48,13 @@ afterEach(async () => {
 function serviceCommand() {
   // Answers `/api/health` the way a real Paperclip dev runtime does: managed
   // publication requires semantic health, not just a 200 (PAP-17572).
-  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
+  // The HMR companion is `port + RUNTIME_EXPOSURE_HMR_PORT_OFFSET`, which is
+  // only a valid port when the app port is in the dedicated 42xxx range. Tests
+  // that take an OS-assigned ephemeral port (57xxx here) pushed the companion
+  // past 65535, and the guest died on ERR_SOCKET_BAD_PORT before readiness —
+  // surfacing as "service process exited before readiness (code 1)". Bind the
+  // companion only when it is actually addressable.
+  return `node -e 'const http=require("http");const p=Number(process.env.PORT);const ports=[p];const hmr=p+10000;if(hmr<65536)ports.push(hmr);for(const q of ports)http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
 }
 
 /**
@@ -86,7 +92,7 @@ const p = Number(process.env.PORT);
 // Even a pre-exposure checkout answered /api/health semantically; these guests
 // model bind behaviour, not health behaviour.
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of (p + 10000 < 65536 ? [p, p + 10000] : [p])) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, host);
 }
 setInterval(() => {}, 1000);
@@ -108,7 +114,7 @@ const p = Number(process.env.PORT);
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
 http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(p, host);
 // No host argument: Vite's own HMR listener lands on the wildcard.
-http.createServer((_, r) => { r.statusCode = 426; r.end(); }).listen(p + 10000);
+if (p + 10000 < 65536) http.createServer((_, r) => { r.statusCode = 426; r.end(); }).listen(p + 10000);
 setInterval(() => {}, 1000);
 `;
 
@@ -117,7 +123,7 @@ const ALWAYS_WILDCARD_GUEST = `
 import http from "node:http";
 const p = Number(process.env.PORT);
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of (p + 10000 < 65536 ? [p, p + 10000] : [p])) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "0.0.0.0");
 }
 setInterval(() => {}, 1000);
@@ -139,7 +145,7 @@ if (p === 42000) {
   process.exit(1);
 }
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of (p + 10000 < 65536 ? [p, p + 10000] : [p])) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "127.0.0.1");
 }
 setInterval(() => {}, 1000);
