@@ -8,6 +8,7 @@ const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
+  cancel: vi.fn(),
   requestRevision: vi.fn(),
   resubmit: vi.fn(),
   listComments: vi.fn(),
@@ -132,6 +133,7 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.create.mockReset();
     mockApprovalService.approve.mockReset();
     mockApprovalService.reject.mockReset();
+    mockApprovalService.cancel.mockReset();
     mockApprovalService.requestRevision.mockReset();
     mockApprovalService.resubmit.mockReset();
     mockApprovalService.listComments.mockReset();
@@ -698,6 +700,88 @@ describe("approval routes idempotent retries", () => {
     expect(ceoWake[1]).toMatchObject({
       reason: "approval_rejected",
       idempotencyKey: "approval-assignee:approval-15:ceo-issue:rejected",
+    });
+  });
+
+  describe("POST /approvals/:id/cancel", () => {
+    const baseApproval = {
+      id: "approval-cancel-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Test" },
+      requestedByAgentId: "agent-1",
+    };
+
+    it("returns 403 when a non-requester agent attempts to cancel", async () => {
+      mockApprovalService.getById.mockResolvedValue(baseApproval);
+
+      // Agent acting as a different agent than the requester
+      const app = await createAgentApp();
+      // Override the actor so agentId differs from requestedByAgentId
+      const expressApp = express();
+      expressApp.use(express.json());
+      expressApp.use((_req, _res, next) => {
+        (_req as any).actor = {
+          type: "agent",
+          agentId: "other-agent",
+          companyId: "company-1",
+          runId: "run-1",
+          source: "api_key",
+          isInstanceAdmin: false,
+        };
+        next();
+      });
+      const { approvalRoutes } = await import("../routes/approvals.js");
+      expressApp.use("/api", approvalRoutes(createRouteDb()));
+      const { errorHandler } = await import("../middleware/index.js");
+      expressApp.use(errorHandler);
+
+      const res = await request(expressApp)
+        .post("/api/approvals/approval-cancel-1/cancel")
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(mockApprovalService.cancel).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("returns 200 with current state when approval is already resolved (idempotent)", async () => {
+      const resolvedApproval = { ...baseApproval, status: "approved" };
+      mockApprovalService.getById.mockResolvedValue(resolvedApproval);
+      // svc.cancel returns null when approval is not in a resolvable status
+      mockApprovalService.cancel.mockResolvedValue(null);
+
+      const res = await request(await createAgentApp())
+        .post("/api/approvals/approval-cancel-1/cancel")
+        .send({ reason: "changed my mind" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ id: "approval-cancel-1", status: "approved" });
+      expect(mockApprovalService.cancel).toHaveBeenCalledWith("approval-cancel-1", "changed my mind");
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("cancels pending approval, returns 200, and logs activity", async () => {
+      mockApprovalService.getById.mockResolvedValue(baseApproval);
+      const cancelled = { ...baseApproval, status: "cancelled" };
+      mockApprovalService.cancel.mockResolvedValue(cancelled);
+
+      const res = await request(await createAgentApp())
+        .post("/api/approvals/approval-cancel-1/cancel")
+        .send({ reason: "no longer needed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ id: "approval-cancel-1", status: "cancelled" });
+      expect(mockApprovalService.cancel).toHaveBeenCalledWith("approval-cancel-1", "no longer needed");
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "approval.cancelled",
+          entityId: "approval-cancel-1",
+          details: expect.objectContaining({ reason: "no longer needed" }),
+        }),
+      );
     });
   });
 });
