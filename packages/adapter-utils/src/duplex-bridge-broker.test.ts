@@ -16,6 +16,7 @@ import {
 } from "./duplex-frame-codec.js";
 import {
   createDuplexTelemetry,
+  DUPLEX_COUNTER_LOSS_TOTAL,
   DUPLEX_SPAN_REQUEST,
   type DuplexTelemetryCounterRecord,
   type DuplexTelemetryEventRecord,
@@ -461,6 +462,232 @@ describe("duplex bridge broker request limits", () => {
     expect(broker.state).toBe("open");
   });
 
+  it("substitutes a bounded terminal response for an oversized response and keeps the channel open", async () => {
+    const harness = createFakeChannelHarness();
+    const { telemetry, capture } = createTelemetryCapture();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      telemetry,
+      // A small frame bound makes a legitimately large response body exceed the
+      // bound, so the test exercises the encode guard without a megabyte body.
+      maxFrameBytes: 1000,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // Two requests are in flight at the same time. One resolves with a normal
+    // body; the other resolves with a body that pushes the response frame over
+    // the bound. The host produced both results, so both requests reached the
+    // host.
+    harness.feed(requestFrame("small-1", "POST"));
+    harness.feed(requestFrame("big-1", "POST"));
+
+    const smallForward = harness.forwards.find((entry) => entry.id === "small-1" && !entry.settled);
+    if (!smallForward) throw new Error("The broker did not forward the small request.");
+    smallForward.settled = true;
+    smallForward.resolve({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ok: true }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const bigForward = harness.forwards.find((entry) => entry.id === "big-1" && !entry.settled);
+    if (!bigForward) throw new Error("The broker did not forward the big request.");
+    bigForward.settled = true;
+    bigForward.resolve({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: "y".repeat(2000) }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The other in-flight request delivered its full response, unaffected by the
+    // oversized one.
+    expect(harness.responses).toHaveLength(2);
+    const delivered = harness.responses.find((entry) => entry.id === "small-1")!;
+    expect(delivered.status).toBe(200);
+    expect(delivered.outcome).toBe("completed");
+    expect(JSON.parse(delivered.body)).toEqual({ ok: true });
+
+    // The oversized response became one bounded terminal response marked
+    // indeterminate and non-retryable, so a caller does not retry a possible
+    // mutation. The broker did not write the oversized frame.
+    const terminal = harness.responses.find((entry) => entry.id === "big-1")!;
+    expect(terminal.status).toBe(502);
+    expect(terminal.outcome).toBe("indeterminate");
+    expect(terminal.headers["x-paperclip-bridge-outcome"]).toBe("indeterminate");
+    expect(JSON.parse(terminal.body)).toEqual({
+      error: "upstream response too large to deliver",
+      outcome: "indeterminate",
+      retryable: false,
+    });
+
+    // The oversized body never crossed the wire. The broker did not truncate it or
+    // pass it through.
+    const writtenText = harness.responses.map((entry) => encodeDuplexFrame(entry)).join("");
+    expect(writtenText).not.toContain("yyyy");
+
+    // The broker recorded the oversized request as an error outcome, never a loss.
+    // The channel stays open and the run does not fail.
+    const errorSpans = capture.spans.filter((span) => span.dimensions.outcome === "error");
+    expect(errorSpans).toHaveLength(1);
+    expect(errorSpans[0]!.name).toBe(DUPLEX_SPAN_REQUEST);
+    expect(broker.lossRecord).toBeNull();
+    expect(broker.state).toBe("open");
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
+  it("sends a minimal terminal response when the frame bound rejects the full replacement", async () => {
+    const harness = createFakeChannelHarness();
+    const { telemetry, capture } = createTelemetryCapture();
+    // The bound accepts a compact request (130 bytes) and the minimal terminal
+    // response (106 bytes), but rejects the full replacement response (288 bytes).
+    // This proves the broker never drops the channel or strands the request when
+    // the configured bound is smaller than the full replacement response.
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      telemetry,
+      maxFrameBytes: 200,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A compact request frame fits the bound, so the broker forwards it.
+    harness.feed({
+      version: DUPLEX_FRAME_VERSION,
+      type: "request",
+      id: "big-1",
+      method: "POST",
+      path: "/api/issues/big-1",
+      query: "",
+      headers: {},
+      body: JSON.stringify({ go: 1 }),
+    });
+
+    const forward = harness.forwards.find((entry) => entry.id === "big-1" && !entry.settled);
+    if (!forward) throw new Error("The broker did not forward the request.");
+    forward.settled = true;
+    // The host produced a large response body that pushes the real response frame
+    // and the full replacement frame over the bound.
+    forward.resolve({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: "y".repeat(2000) }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The broker sent one minimal terminal response, not the oversized real
+    // response and not the full replacement. The minimal response carries the
+    // indeterminate outcome, so the gateway maps it to a terminal 409.
+    expect(harness.responses).toHaveLength(1);
+    const terminal = harness.responses[0]!;
+    expect(terminal.id).toBe("big-1");
+    expect(terminal.status).toBe(502);
+    expect(terminal.outcome).toBe("indeterminate");
+    expect(terminal.headers).toEqual({});
+    expect(terminal.body).toBe("");
+
+    // The oversized body never crossed the wire.
+    const writtenText = harness.responses.map((entry) => encodeDuplexFrame(entry)).join("");
+    expect(writtenText).not.toContain("yyyy");
+
+    // The broker recorded the request as an error outcome, never a loss. The
+    // channel stays open and the run does not fail.
+    const errorSpans = capture.spans.filter((span) => span.dimensions.outcome === "error");
+    expect(errorSpans).toHaveLength(1);
+    expect(errorSpans[0]!.name).toBe(DUPLEX_SPAN_REQUEST);
+    expect(broker.lossRecord).toBeNull();
+    expect(broker.state).toBe("open");
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
+  it("keeps the channel open and logs when the bound rejects even the minimal terminal response", async () => {
+    const harness = createFakeChannelHarness();
+    const { telemetry, capture } = createTelemetryCapture();
+    const logs: string[] = [];
+    // The bound accepts a tiny request (99 bytes) but rejects even the minimal
+    // terminal response (102 bytes). The broker cannot send any frame for this
+    // request, so it must keep the channel open and log a clear local error.
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      telemetry,
+      maxFrameBytes: 100,
+      logger: (message) => logs.push(message),
+    });
+    brokers.push(broker);
+    broker.start();
+
+    harness.feed({
+      version: DUPLEX_FRAME_VERSION,
+      type: "request",
+      id: "x",
+      method: "GET",
+      path: "/",
+      query: "",
+      headers: {},
+      body: "",
+    });
+
+    const forward = harness.forwards.find((entry) => entry.id === "x" && !entry.settled);
+    if (!forward) throw new Error("The broker did not forward the request.");
+    forward.settled = true;
+    forward.resolve({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: "y".repeat(200) }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The broker sent no response frame, because no frame fits the bound.
+    expect(harness.responses).toHaveLength(0);
+    // The broker recorded the request as an error outcome, never a loss.
+    const errorSpans = capture.spans.filter((span) => span.dimensions.outcome === "error");
+    expect(errorSpans).toHaveLength(1);
+    // The broker logged a clear local error and kept the channel open.
+    expect(logs.some((line) => line.includes("could not deliver a terminal response"))).toBe(true);
+    expect(broker.lossRecord).toBeNull();
+    expect(broker.state).toBe("open");
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
+  it("completes a request within the bound and delivers the real response", async () => {
+    const harness = createFakeChannelHarness();
+    const { telemetry, capture } = createTelemetryCapture();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: controllableForward(harness),
+      telemetry,
+      maxFrameBytes: 1000,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    harness.feed(requestFrame("ok-1", "POST"));
+    harness.resolveForward("ok-1", JSON.stringify({ ok: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The broker delivered the real response promptly with the completed outcome.
+    expect(harness.responses).toHaveLength(1);
+    const delivered = harness.responses[0]!;
+    expect(delivered.id).toBe("ok-1");
+    expect(delivered.status).toBe(200);
+    expect(delivered.outcome).toBe("completed");
+    expect(JSON.parse(delivered.body)).toEqual({ ok: true });
+
+    // The delivered response records an `ok` span, never an error, and never a loss.
+    const okSpans = capture.spans.filter((span) => span.dimensions.outcome === "ok");
+    expect(okSpans).toHaveLength(1);
+    const errorSpans = capture.spans.filter((span) => span.dimensions.outcome === "error");
+    expect(errorSpans).toHaveLength(0);
+    expect(broker.lossRecord).toBeNull();
+    expect(broker.state).toBe("open");
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
   it("maps a forward rejection for a safe method to a retryable response", async () => {
     const harness = createFakeChannelHarness();
     const broker = createDuplexBridgeBroker({
@@ -627,5 +854,93 @@ describe("duplex bridge broker request limits", () => {
       outcome: "indeterminate",
       retryable: false,
     });
+  });
+});
+
+
+/**
+ * A channel harness that captures the broker exit listener. `emitExit` invokes it,
+ * so a test drives one channel exit into the broker.
+ */
+function createExitChannelHarness(): {
+  channel: CommandManagedDuplexChannel;
+  emitExit: (exit: { exitCode: number | null; transportClosed?: boolean }) => void;
+} {
+  let exitListener:
+    | ((exit: { exitCode: number | null; transportClosed?: boolean }) => void)
+    | null = null;
+  const channel: CommandManagedDuplexChannel = {
+    write: () => undefined,
+    onData: () => undefined,
+    onExit: (listener) => {
+      exitListener = listener;
+    },
+    stop: () => undefined,
+    close: () => Promise.resolve(),
+  };
+  return {
+    channel,
+    emitExit: (exit) => {
+      if (!exitListener) throw new Error("The broker did not bind the exit listener.");
+      exitListener(exit);
+    },
+  };
+}
+
+describe("duplex bridge broker exit taxonomy", () => {
+  const brokers: DuplexBridgeBroker[] = [];
+
+  afterEach(async () => {
+    while (brokers.length > 0) {
+      const broker = brokers.pop();
+      if (broker) await broker.close();
+    }
+  });
+
+  it("records a transport close as a distinct loss, not a process exit", () => {
+    const { telemetry, capture } = createTelemetryCapture();
+    const harness = createExitChannelHarness();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: () =>
+        Promise.resolve({ status: 200, headers: {}, body: "" }),
+      telemetry,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A reason-less transport close carries the discriminator and no exit code.
+    harness.emitExit({ exitCode: null, transportClosed: true });
+
+    expect(broker.lossRecord?.reason).toBe("transport_closed");
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "transport_closed" });
+    const lossCounter = capture.counters.find(
+      (record) => record.metric === DUPLEX_COUNTER_LOSS_TOTAL,
+    );
+    expect(lossCounter?.dimensions.loss_reason).toBe("transport_closed");
+  });
+
+  it("records a numeric exit as a process exit", () => {
+    const { telemetry, capture } = createTelemetryCapture();
+    const harness = createExitChannelHarness();
+    const broker = createDuplexBridgeBroker({
+      channel: harness.channel,
+      forwardRequest: () =>
+        Promise.resolve({ status: 200, headers: {}, body: "" }),
+      telemetry,
+    });
+    brokers.push(broker);
+    broker.start();
+
+    // A numeric exit code is a real process exit, so the broker keeps the existing
+    // channel_exit -> provider_exit mapping.
+    harness.emitExit({ exitCode: 0 });
+
+    expect(broker.lossRecord?.reason).toBe("channel_exit");
+    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
+    const lossCounter = capture.counters.find(
+      (record) => record.metric === DUPLEX_COUNTER_LOSS_TOTAL,
+    );
+    expect(lossCounter?.dimensions.loss_reason).toBe("provider_exit");
   });
 });

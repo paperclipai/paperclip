@@ -14,6 +14,8 @@
 //     `sid` or `rid` to prove the host drops a mismatched-pair notification and
 //     counts a protocol error.
 //   - `exitCode`: when set, the fixture emits an exit notification after the data.
+//   - `transportClosed`: when true, the exit notification marks a reason-less
+//     transport close and carries no exit code.
 //   - `dataAfterExit`: an array of `{ chunk, sid? }`, same shape as `data`. The
 //     fixture emits these as data notifications after the exit notification, so a
 //     test can script a batch where a data frame arrives after the exit in the
@@ -52,11 +54,19 @@ function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
       },
     })}\n`;
   }
-  if (typeof directive.exitCode === "number") {
+  if (typeof directive.exitCode === "number" || directive.transportClosed === true) {
+    const exitParams = {
+      hostRouteId,
+      workerSessionId,
+      exitCode: typeof directive.exitCode === "number" ? directive.exitCode : null,
+    };
+    // A transport-close directive marks a reason-less transport close, so the
+    // fixture carries the discriminator the same way a real worker does.
+    if (directive.transportClosed === true) exitParams.transportClosed = true;
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "duplexChannel.exit",
-      params: { hostRouteId, workerSessionId, exitCode: directive.exitCode },
+      params: exitParams,
     })}\n`;
   }
   const dataAfterExit = Array.isArray(directive.dataAfterExit) ? directive.dataAfterExit : [];

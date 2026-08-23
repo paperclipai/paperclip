@@ -2828,9 +2828,19 @@ const plugin = definePlugin({
     session.onData((chunk) => {
       pluginContext?.duplexChannel.data(entry.hostRouteId, workerSessionId, chunk);
     });
-    // Forward the child exit one time. The host resolves the open route on it.
+    // Forward the child exit one time. The host resolves the open route on it. A
+    // numeric exit code is a real process exit; a resolved transport close carries
+    // `transportClosed`, so the host keeps the two apart in the loss taxonomy. A
+    // rejected wait is not a resolved transport close, so it reports no code and no
+    // transport-close mark.
     void session.wait().then(
-      (result) => pluginContext?.duplexChannel.exit(entry.hostRouteId, workerSessionId, result.exitCode),
+      (result) =>
+        pluginContext?.duplexChannel.exit(
+          entry.hostRouteId,
+          workerSessionId,
+          result.exitCode,
+          result.transportClosed,
+        ),
       () => pluginContext?.duplexChannel.exit(entry.hostRouteId, workerSessionId, null),
     );
     // Echo the host route id on the reply, so the host binds the exact pair.

@@ -8,6 +8,7 @@ import {
   DuplexFrameDecoder,
   decodeDuplexLine,
   encodeDuplexFrame,
+  encodeDuplexFrameChecked,
   type DuplexDecodeResult,
   type DuplexFrame,
 } from "./duplex-frame-codec.js";
@@ -33,10 +34,20 @@ interface Vector {
   expected: ExpectedResult[];
 }
 
+// One encode-bound vector: a frame, the size limit, and the expected checked
+// encode result. An ok result must also decode back to the same frame.
+interface EncodeVector {
+  name: string;
+  maxFrameBytes: number;
+  frame: DuplexFrame;
+  expected: { ok: true } | { ok: false; error: string };
+}
+
 interface Fixture {
   frameVersion: number;
   defaultMaxFrameBytes: number;
   vectors: Vector[];
+  encodeVectors: EncodeVector[];
 }
 
 const fixturePath = fileURLToPath(
@@ -308,5 +319,74 @@ describe("request id byte bound", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("id_too_large");
+  });
+});
+
+describe("size-checked encode", () => {
+  it("runs every shared encode vector and matches the expected result", () => {
+    // Every codec copy runs the same encode vectors. This copy proves it enforces
+    // the same bound the embedded gateway copy enforces.
+    for (const vector of fixture.encodeVectors) {
+      const result = encodeDuplexFrameChecked(vector.frame, vector.maxFrameBytes);
+      expect(result.ok).toBe(vector.expected.ok);
+      if (result.ok) {
+        // An ok line ends with one newline and decodes back to the same frame, so
+        // the encode guard never truncates or passes a bad frame through.
+        expect(result.line.endsWith("\n")).toBe(true);
+        expect(result.line.slice(0, -1)).not.toContain("\n");
+        const decoded = decodeDuplexLine(result.line.slice(0, -1));
+        expect(decoded.ok).toBe(true);
+        if (decoded.ok) expect(decoded.frame).toEqual(vector.frame);
+      } else if (!vector.expected.ok) {
+        expect(result.error.code).toBe(vector.expected.error);
+      }
+    }
+  });
+
+  it("rejects an over-bound frame with a typed outcome and never throws", () => {
+    const frame: DuplexFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id: "big",
+      status: 200,
+      headers: {},
+      body: "x".repeat(2_000),
+      outcome: "completed",
+    };
+    expect(() => encodeDuplexFrameChecked(frame, 1_000)).not.toThrow();
+    const result = encodeDuplexFrameChecked(frame, 1_000);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("frame_too_large");
+  });
+
+  it("measures the bound in bytes without the trailing newline, so the boundary is inclusive", () => {
+    // Build a frame whose encoded JSON is exactly N bytes. The guard measures the
+    // JSON without the newline, so N bytes encodes and N+1 bytes fails. This is the
+    // same boundary the decoder applies, so encode and decode agree exactly.
+    const base: DuplexFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id: "boundary",
+      status: 200,
+      headers: {},
+      body: "",
+      outcome: "completed",
+    };
+    const baseBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
+    const limit = baseBytes + 10;
+    const atLimit: DuplexFrame = { ...base, body: "x".repeat(10) };
+    expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(limit);
+    const okResult = encodeDuplexFrameChecked(atLimit, limit);
+    expect(okResult.ok).toBe(true);
+    const overResult = encodeDuplexFrameChecked({ ...base, body: "x".repeat(11) }, limit);
+    expect(overResult.ok).toBe(false);
+    if (!overResult.ok) expect(overResult.error.code).toBe("frame_too_large");
+  });
+
+  it("defaults the bound to the default max frame bytes", () => {
+    const frame: DuplexFrame = { version: DUPLEX_FRAME_VERSION, type: "heartbeat" };
+    const result = encodeDuplexFrameChecked(frame);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.line).toBe(encodeDuplexFrame(frame));
   });
 });

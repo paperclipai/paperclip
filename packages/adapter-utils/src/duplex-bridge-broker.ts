@@ -43,10 +43,12 @@
 
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 import {
+  DEFAULT_MAX_DUPLEX_FRAME_BYTES,
   DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES,
   DUPLEX_FRAME_VERSION,
   DuplexFrameDecoder,
   encodeDuplexFrame,
+  encodeDuplexFrameChecked,
   type DuplexFrame,
   type DuplexRequestFrame,
   type DuplexResponseFrame,
@@ -64,6 +66,7 @@ export type DuplexBrokerState = "opening" | "open" | "lost" | "closing" | "close
 /** The reason the broker classified a loss. The broker records it for metrics only. */
 export type DuplexBrokerLossReason =
   | "channel_exit"
+  | "transport_closed"
   | "stream_failure"
   | "protocol_failure"
   | "heartbeat_write_failure"
@@ -75,6 +78,8 @@ export type DuplexBrokerLossReason =
  * carries only the closed enum value. The map is total over the internal reasons,
  * so no raw text ever reaches the typed reason.
  *   - `channel_exit` -> `provider_exit`: the provider channel process exited.
+ *   - `transport_closed` -> `transport_closed`: the provider transport closed with
+ *     no exit data, so the loss is a transport close, not a process exit.
  *   - `stream_failure` -> `write_error`: a write to the channel failed.
  *   - `protocol_failure` -> `rpc_failure`: a malformed or mismatched frame.
  *   - `heartbeat_write_failure` -> `heartbeat_timeout`: the liveness write failed.
@@ -82,6 +87,7 @@ export type DuplexBrokerLossReason =
  */
 const BROKER_LOSS_REASON_TO_TYPED: Readonly<Record<DuplexBrokerLossReason, DuplexLossReason>> = {
   channel_exit: "provider_exit",
+  transport_closed: "transport_closed",
   stream_failure: "write_error",
   protocol_failure: "rpc_failure",
   heartbeat_write_failure: "heartbeat_timeout",
@@ -376,9 +382,12 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_DUPLEX_BROKER_HEARTBEAT_INTERVAL_MS;
   const closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_DUPLEX_BROKER_CLOSE_TIMEOUT_MS;
   const now = options.now ?? (() => Date.now());
-  const decoder = new DuplexFrameDecoder(
-    options.maxFrameBytes ? { maxFrameBytes: options.maxFrameBytes } : undefined,
-  );
+  // The one frame size bound the broker enforces on both sides. The decoder
+  // rejects an inbound frame over this bound, and the encode guard refuses to
+  // write an outbound frame over it. Encode and decode share one value, so a
+  // frame the broker writes always decodes on the peer.
+  const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_DUPLEX_FRAME_BYTES;
+  const decoder = new DuplexFrameDecoder({ maxFrameBytes });
 
   let state: DuplexBrokerState = "opening";
   let stopped = false;
@@ -452,10 +461,12 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     if (stopped) return;
     const afterOrderlyCompletion = orderlyCompletionSeq !== null;
     // A clean channel end that orders after a host-observed orderly completion is
-    // a normal teardown, not a loss. Stop cleanly, emit no loss event, and leave
-    // the run a success. This keeps the closed telemetry contract: an orderly
-    // close is not a loss and emits no loss event.
-    if (afterOrderlyCompletion && reason === "channel_exit") {
+    // a normal teardown, not a loss. A process exit and a reason-less transport
+    // close both end the channel, so both count as the normal teardown here. Stop
+    // cleanly, emit no loss event, and leave the run a success. This keeps the
+    // closed telemetry contract: an orderly close is not a loss and emits no loss
+    // event.
+    if (afterOrderlyCompletion && (reason === "channel_exit" || reason === "transport_closed")) {
       stopped = true;
       clearHeartbeat();
       clearPending();
@@ -491,14 +502,90 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     options.telemetry?.recordLoss(lossClass, BROKER_LOSS_REASON_TO_TYPED[reason] ?? "other");
   };
 
-  const writeFrame = (frame: DuplexFrame): boolean => {
+  const writeLine = (line: string): boolean => {
     try {
-      channel.write(encodeDuplexFrame(frame));
+      channel.write(line);
       return true;
     } catch (error) {
       recordLoss("stream_failure", errorMessage(error));
       return false;
     }
+  };
+
+  // The result of one bounded send. `sent` means the frame went out; `too_large`
+  // means the encoded frame exceeds the bound and the broker wrote nothing;
+  // `lost` means the write failed and the broker recorded the channel loss.
+  type SendResult = "sent" | "too_large" | "lost";
+
+  const trySendFrame = (frame: DuplexFrame): SendResult => {
+    // Enforce the frame size bound on every broker write. Report a size rejection
+    // as `too_large` without a channel loss; a broker-built frame over the bound
+    // is a defect, not a transport failure. A caller decides how to answer the
+    // request, so no size rejection ever drops the channel.
+    const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
+    if (!encoded.ok) return "too_large";
+    return writeLine(encoded.line) ? "sent" : "lost";
+  };
+
+  const writeFrame = (frame: DuplexFrame): boolean => {
+    // A control frame and the bounded terminal responses are always small, so the
+    // size guard is a no-op for them. Drop an oversized frame here without a
+    // channel loss and report the drop to the caller.
+    const result = trySendFrame(frame);
+    if (result === "too_large") {
+      options.logger?.(`Duplex broker dropped an oversized ${frame.type} frame.`);
+      return false;
+    }
+    return result === "sent";
+  };
+
+  const sendTerminalIndeterminate = (id: string): void => {
+    // Answer one request the broker cannot deliver with the real result. The
+    // request reached the host and may have changed state, so the response is
+    // non-retryable and carries the `indeterminate` outcome. The broker tries the
+    // full replacement first. When the frame bound rejects even the full
+    // replacement, the broker sends a minimal replacement that carries only the
+    // `indeterminate` outcome, so the gateway still ends the request and never
+    // waits for its full wait budget. When the bound rejects even the minimal
+    // replacement, the broker logs a clear local error and keeps the channel
+    // open; it records no channel loss.
+    const fullReplacement: DuplexResponseFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id,
+      status: 502,
+      headers: {
+        "content-type": "application/json",
+        "x-paperclip-bridge-outcome": "indeterminate",
+      },
+      body: JSON.stringify({
+        error: "upstream response too large to deliver",
+        outcome: "indeterminate",
+        retryable: false,
+      }),
+      outcome: "indeterminate",
+    };
+    if (trySendFrame(fullReplacement) !== "too_large") return;
+    // The bound rejects the full replacement. Send a minimal terminal response
+    // with empty headers and an empty body. The `indeterminate` outcome still
+    // rides the frame, so the gateway maps the request to a terminal 409.
+    const minimalReplacement: DuplexResponseFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id,
+      status: 502,
+      headers: {},
+      body: "",
+      outcome: "indeterminate",
+    };
+    if (trySendFrame(minimalReplacement) !== "too_large") return;
+    // The bound rejects even the minimal terminal response. The broker cannot
+    // deliver any frame for this request within the bound. Log a clear local
+    // error and keep the channel open for every other request. The gateway ends
+    // its own outstanding request on its wait budget.
+    options.logger?.(
+      `Duplex broker could not deliver a terminal response within the ${maxFrameBytes}-byte frame bound.`,
+    );
   };
 
   const respond = (
@@ -516,12 +603,6 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     // Do not write on a lost or closed channel. The gateway answers its own
     // outstanding request on loss, so a late write would go to a dead channel.
     if (state !== "open") return;
-    // Record the request span for the delivered request. The span carries the
-    // latency and the outcome only; no route, query, body, or token rides it.
-    options.telemetry?.recordRequest({
-      latencyMs: now() - entry.dispatchStartMs,
-      outcome: telemetryOutcome,
-    });
     const frame: DuplexResponseFrame = {
       version: DUPLEX_FRAME_VERSION,
       type: "response",
@@ -531,7 +612,28 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       body: result.body ?? "",
       outcome,
     };
-    writeFrame(frame);
+    const encoded = encodeDuplexFrameChecked(frame, maxFrameBytes);
+    if (!encoded.ok) {
+      // The host produced a result, but the response frame exceeds the size
+      // bound. Do not write the oversized frame and do not record a channel loss.
+      // The request reached the host and may have changed state, so the caller
+      // must not retry a possible mutation. Send a bounded, non-retryable terminal
+      // response marked `indeterminate` in its place. Record the request outcome
+      // as an error, never a loss. The channel stays open for every other request.
+      options.telemetry?.recordRequest({
+        latencyMs: now() - entry.dispatchStartMs,
+        outcome: "error",
+      });
+      sendTerminalIndeterminate(id);
+      return;
+    }
+    // Record the request span for the delivered request. The span carries the
+    // latency and the outcome only; no route, query, body, or token rides it.
+    options.telemetry?.recordRequest({
+      latencyMs: now() - entry.dispatchStartMs,
+      outcome: telemetryOutcome,
+    });
+    writeLine(encoded.line);
   };
 
   const respondSaturated = (id: string, retryable: boolean): void => {
@@ -813,7 +915,14 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     }
   };
 
-  const onExit = (): void => {
+  const onExit = (exit: { exitCode: number | null; transportClosed?: boolean }): void => {
+    // A reason-less transport close is not a process exit. Record it as a distinct
+    // loss, so a transport close stays legible in the loss taxonomy. A real process
+    // exit stays `channel_exit` -> `provider_exit`.
+    if (exit.transportClosed === true) {
+      recordLoss("transport_closed", "The sandbox channel transport closed with no exit.");
+      return;
+    }
     recordLoss("channel_exit", "The sandbox channel process exited.");
   };
 
