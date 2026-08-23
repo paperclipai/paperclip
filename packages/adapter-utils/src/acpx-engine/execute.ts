@@ -1075,17 +1075,27 @@ async function retainSanitizedCodexSessionsAfterClose(input: {
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<void> {
   if (!input.prepared.codexSessionRetention) return;
+  const { runHome, retainedSessionsDir } = input.prepared.codexSessionRetention;
   try {
     await retainSanitizedCodexSessionJsonl({
       retention: input.prepared.codexSessionRetention,
       onLog: input.onLog,
     });
-  } catch (err) {
-    await chmodPrivateTree(input.prepared.codexSessionRetention.runHome).catch(() => {});
-    await fs.rm(input.prepared.codexSessionRetention.retainedSessionsDir, { recursive: true, force: true }).catch(() => {});
+    // Fix A (KEWL-3852): delete the raw run home now that sanitized retention succeeded.
+    await fs.rm(runHome, { recursive: true, force: true });
     await input.onLog(
       "stderr",
-      `[paperclip] Failed to retain sanitized ACPX Codex session JSONL; raw run home is quarantined at "${input.prepared.codexSessionRetention.runHome}": ${err instanceof Error ? err.message : String(err)}\n`,
+      `[paperclip] Deleted raw Codex run home "${runHome}" after successful session retention.\n`,
+    );
+  } catch (err) {
+    // Retention failed — leave the run home in place as an explicit quarantine so it
+    // can be inspected or swept later.  The INCIDENT prefix is the signal KEWL-3853
+    // monitoring greps for unswept quarantines.
+    await chmodPrivateTree(runHome).catch(() => {});
+    await fs.rm(retainedSessionsDir, { recursive: true, force: true }).catch(() => {});
+    await input.onLog(
+      "stderr",
+      `[paperclip] INCIDENT: failed to retain sanitized ACPX Codex session JSONL; raw run home quarantined at "${runHome}": ${err instanceof Error ? err.message : String(err)}\n`,
     );
   }
 }

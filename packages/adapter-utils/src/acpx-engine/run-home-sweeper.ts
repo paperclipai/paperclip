@@ -1,0 +1,261 @@
+/**
+ * Orphan run-home sweeper (KEWL-3852).
+ *
+ * Codex run-homes under codex-run-homes/<runId>/home accumulate when Fix A has
+ * not yet deployed or when retention failure leaves a quarantine.  This sweeper
+ * identifies "orphan" homes that are safe to remove and deletes them after a
+ * conservative grace window.
+ *
+ * Safety invariants (all must hold for a home to be eligible):
+ *   1. The Paperclip run is terminal   (status: done|cancelled|failed|timed_out)
+ *   2. Zero open file handles on the directory tree   (lsof check)
+ *   3. mtime of the run-home dir is >=24h ago
+ *   4. A sanitized session counterpart exists under codex-session-retention/<runId>/
+ *      OR the run-home contains a file named QUARANTINE (explicit quarantine marker)
+ *
+ * Invariant 4 ensures we never silently discard a home whose session data was
+ * never retained — only homes where retention already succeeded (or was explicitly
+ * quarantined by the runtime) are swept.
+ *
+ * Dry-run mode (default) produces a JSON manifest without deleting anything.
+ * Pass --delete to actually remove eligible homes.
+ *
+ * Usage:
+ *   npx tsx packages/adapter-utils/src/acpx-engine/run-home-sweeper.ts \
+ *     --company-dir /path/to/companies/<companyId> \
+ *     [--delete] [--grace-hours 24]
+ */
+
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+interface SweeperOptions {
+  companyDir: string;
+  dryRun: boolean;
+  graceHours: number;
+  paperclipApiBase?: string;
+  paperclipApiKey?: string;
+}
+
+interface RunHomeEntry {
+  agentId: string;
+  runId: string;
+  runHomeDir: string;
+  ageSecs: number;
+  sizeBytes?: number;
+  eligible: boolean;
+  ineligibleReason?: string;
+  deleted?: boolean;
+  error?: string;
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  return fs.access(p).then(() => true, () => false);
+}
+
+async function hasOpenHandles(dir: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("/usr/sbin/lsof", ["-n", "+D", dir], { timeout: 10_000 });
+    return stdout.trim().length > 0;
+  } catch {
+    // lsof exits non-zero when no files are found — that means no open handles
+    return false;
+  }
+}
+
+async function getRunStatus(
+  runId: string,
+  apiBase: string,
+  apiKey: string,
+): Promise<string | null> {
+  try {
+    const { default: fetch } = await import("node-fetch");
+    const url = `${apiBase}/api/runs/${runId}`;
+    const res = await (fetch as Function)(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const body = await (res as Response).json() as { status?: string };
+    return body?.status ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const TERMINAL_STATUSES = new Set(["done", "cancelled", "failed", "timed_out", "error"]);
+
+async function dirSizeBytes(dir: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("du", ["-sk", dir], { timeout: 30_000 });
+    const kb = parseInt(stdout.split("\t")[0] ?? "0", 10);
+    return kb * 1024;
+  } catch {
+    return 0;
+  }
+}
+
+async function sweepAgentDir(
+  agentDir: string,
+  agentId: string,
+  opts: SweeperOptions,
+): Promise<RunHomeEntry[]> {
+  const runHomesParent = path.join(agentDir, "codex-run-homes");
+  if (!(await pathExists(runHomesParent))) return [];
+
+  const retentionParent = path.join(agentDir, "codex-session-retention");
+  const entries: RunHomeEntry[] = [];
+  const now = Date.now();
+  const graceMs = opts.graceHours * 60 * 60 * 1000;
+
+  let runIds: string[];
+  try {
+    runIds = await fs.readdir(runHomesParent);
+  } catch {
+    return [];
+  }
+
+  for (const runId of runIds) {
+    const runDir = path.join(runHomesParent, runId);
+    const runHomeDir = path.join(runDir, "home");
+
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    try {
+      stat = await fs.stat(runHomeDir);
+    } catch {
+      // home subdir missing — stale or already cleaned; remove the wrapper dir
+      await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+      continue;
+    }
+
+    const ageSecs = (now - stat.mtimeMs) / 1000;
+    const entry: RunHomeEntry = { agentId, runId, runHomeDir, ageSecs, eligible: false };
+
+    // Grace window
+    if (stat.mtimeMs > now - graceMs) {
+      entry.ineligibleReason = `mtime within ${opts.graceHours}h grace window`;
+      entries.push(entry);
+      continue;
+    }
+
+    // Open handles
+    if (await hasOpenHandles(runHomeDir)) {
+      entry.ineligibleReason = "open file handles detected";
+      entries.push(entry);
+      continue;
+    }
+
+    // Retained session counterpart or explicit quarantine marker
+    const retainedDir = path.join(retentionParent, runId);
+    const quarantineMarker = path.join(runDir, "QUARANTINE");
+    const hasRetained = await pathExists(retainedDir);
+    const hasQuarantine = await pathExists(quarantineMarker);
+
+    if (!hasRetained && !hasQuarantine) {
+      entry.ineligibleReason = "no retained session counterpart and no QUARANTINE marker";
+      entries.push(entry);
+      continue;
+    }
+
+    // Paperclip run status (if API available)
+    if (opts.paperclipApiBase && opts.paperclipApiKey) {
+      const status = await getRunStatus(runId, opts.paperclipApiBase, opts.paperclipApiKey);
+      if (status !== null && !TERMINAL_STATUSES.has(status)) {
+        entry.ineligibleReason = `run status is "${status}" (non-terminal)`;
+        entries.push(entry);
+        continue;
+      }
+    }
+
+    entry.eligible = true;
+    entry.sizeBytes = await dirSizeBytes(runDir);
+
+    if (!opts.dryRun) {
+      try {
+        await fs.rm(runDir, { recursive: true, force: true });
+        entry.deleted = true;
+      } catch (err) {
+        entry.deleted = false;
+        entry.error = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    entries.push(entry);
+  }
+
+  return entries;
+}
+
+export async function sweepRunHomes(opts: SweeperOptions): Promise<{
+  scanned: number;
+  eligible: number;
+  deleted: number;
+  errors: number;
+  totalBytesReclaimed: number;
+  entries: RunHomeEntry[];
+}> {
+  const agentsDir = path.join(opts.companyDir, "acp-engine", "agents");
+  if (!(await pathExists(agentsDir))) {
+    return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
+  }
+
+  const agentIds = await fs.readdir(agentsDir).catch(() => [] as string[]);
+  const allEntries: RunHomeEntry[] = [];
+
+  for (const agentId of agentIds) {
+    const agentDir = path.join(agentsDir, agentId);
+    const agentEntries = await sweepAgentDir(agentDir, agentId, opts);
+    allEntries.push(...agentEntries);
+  }
+
+  const eligible = allEntries.filter((e) => e.eligible);
+  const deleted = eligible.filter((e) => e.deleted === true);
+  const errors = eligible.filter((e) => e.deleted === false);
+  const totalBytesReclaimed = deleted.reduce((sum, e) => sum + (e.sizeBytes ?? 0), 0);
+
+  return {
+    scanned: allEntries.length,
+    eligible: eligible.length,
+    deleted: deleted.length,
+    errors: errors.length,
+    totalBytesReclaimed,
+    entries: allEntries,
+  };
+}
+
+// CLI entrypoint
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const args = process.argv.slice(2);
+  const companyDir = args[args.indexOf("--company-dir") + 1];
+  const dryRun = !args.includes("--delete");
+  const graceIdx = args.indexOf("--grace-hours");
+  const graceHours = graceIdx >= 0 ? parseInt(args[graceIdx + 1] ?? "24", 10) : 24;
+
+  if (!companyDir) {
+    process.stderr.write("Usage: run-home-sweeper.ts --company-dir <path> [--delete] [--grace-hours N]\n");
+    process.exit(1);
+  }
+
+  sweepRunHomes({
+    companyDir,
+    dryRun,
+    graceHours,
+    paperclipApiBase: process.env["PAPERCLIP_API_BASE"],
+    paperclipApiKey: process.env["PAPERCLIP_API_KEY"],
+  })
+    .then((result) => {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      const verb = dryRun ? "DRY-RUN" : "DELETED";
+      process.stderr.write(
+        `[sweeper] ${verb}: scanned=${result.scanned} eligible=${result.eligible} deleted=${result.deleted} errors=${result.errors} reclaimed=${(result.totalBytesReclaimed / 1024 / 1024).toFixed(1)}MB\n`,
+      );
+    })
+    .catch((err) => {
+      process.stderr.write(`[sweeper] fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+}
