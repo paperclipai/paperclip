@@ -1,7 +1,7 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { WebSocket } from "ws";
 
-type Frame = { type?: unknown; runId?: unknown; agentId?: unknown; kind?: unknown; message?: unknown; accepted?: unknown; error?: unknown };
+type Frame = { type?: unknown; event?: unknown; data?: unknown; runId?: unknown; agentId?: unknown; kind?: unknown; message?: unknown; accepted?: unknown; error?: unknown };
 const terminal = new Set(["completed", "failed", "cancelled"]);
 
 function text(value: unknown): string | null { return typeof value === "string" && value.trim() ? value.trim() : null; }
@@ -34,7 +34,10 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     const timer = setTimeout(() => finish({ exitCode: 1, signal: null, timedOut: true, errorMessage: "FirstMate run timed out.", errorCode: "FIRSTMATE_TIMEOUT" }), settings.timeoutMs);
     socket.on("error", () => finish({ exitCode: 1, signal: null, timedOut: false, errorMessage: "Could not reach FirstMate Gateway.", errorCode: "FIRSTMATE_UNREACHABLE" }));
     socket.on("message", async (raw) => {
-      let frame: Frame; try { frame = JSON.parse(String(raw)); } catch { return; }
+      let received: Frame; try { received = JSON.parse(String(raw)); } catch { return; }
+      const frame: Frame = received.type === "event" && received.event === "paperclip.run_event"
+        ? { ...asRecord(received.data), type: received.event }
+        : received;
       if (frame.type === "hello") {
         const taskId = text(asRecord(context.context.task).id) ?? `heartbeat:${context.runId}`;
         socket.send(JSON.stringify({ type: "paperclip.dispatch", runId: context.runId, agentId: context.agent.id, taskId, brief: brief(context.context), idempotencyKey: `paperclip:${context.runId}` }));

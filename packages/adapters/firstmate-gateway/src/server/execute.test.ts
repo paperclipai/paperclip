@@ -15,7 +15,7 @@ test("dispatches a Paperclip run and completes only on its matching terminal eve
       if (frame.type !== "paperclip.dispatch") return;
       socket.send(JSON.stringify({ type: "paperclip.dispatch_ack", runId: frame.runId, accepted: true }));
       socket.send(JSON.stringify({ type: "paperclip.run_event", runId: "other", agentId: frame.agentId, kind: "completed" }));
-      socket.send(JSON.stringify({ type: "paperclip.run_event", runId: frame.runId, agentId: frame.agentId, kind: "completed", message: "done" }));
+      socket.send(JSON.stringify({ type: "event", event: "paperclip.run_event", data: { runId: frame.runId, agentId: frame.agentId, kind: "completed", message: "done" } }));
     });
   });
   const result = await execute({
