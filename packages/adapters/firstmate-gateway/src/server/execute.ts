@@ -1,7 +1,7 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { WebSocket } from "ws";
 
-type Frame = { type?: unknown; runId?: unknown; agentId?: unknown; kind?: unknown; message?: unknown; accepted?: unknown };
+type Frame = { type?: unknown; runId?: unknown; agentId?: unknown; kind?: unknown; message?: unknown; accepted?: unknown; error?: unknown };
 const terminal = new Set(["completed", "failed", "cancelled"]);
 
 function text(value: unknown): string | null { return typeof value === "string" && value.trim() ? value.trim() : null; }
@@ -36,10 +36,16 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     socket.on("message", async (raw) => {
       let frame: Frame; try { frame = JSON.parse(String(raw)); } catch { return; }
       if (frame.type === "hello") {
-        socket.send(JSON.stringify({ type: "paperclip.dispatch", runId: context.runId, agentId: context.agent.id, taskId: text(asRecord(context.context.task).id), brief: brief(context.context), idempotencyKey: `paperclip:${context.runId}` }));
+        const taskId = text(asRecord(context.context.task).id) ?? `heartbeat:${context.runId}`;
+        socket.send(JSON.stringify({ type: "paperclip.dispatch", runId: context.runId, agentId: context.agent.id, taskId, brief: brief(context.context), idempotencyKey: `paperclip:${context.runId}` }));
         return;
       }
-      if (frame.type === "paperclip.dispatch_ack" && frame.runId === context.runId && frame.accepted === true) { acknowledged = true; await context.onLog("stdout", "FirstMate accepted Paperclip run.\n"); return; }
+      if (frame.type === "paperclip.dispatch_ack" && frame.runId === context.runId) {
+        if (frame.accepted === true) { acknowledged = true; await context.onLog("stdout", "FirstMate accepted Paperclip run.\n"); return; }
+        const reason = text(frame.error);
+        finish({ exitCode: 1, signal: null, timedOut: false, errorMessage: reason ? `FirstMate Gateway rejected the run: ${reason}.` : "FirstMate Gateway rejected the run.", errorCode: "FIRSTMATE_REJECTED" });
+        return;
+      }
       if (frame.type !== "paperclip.run_event" || frame.runId !== context.runId || frame.agentId !== context.agent.id || typeof frame.kind !== "string" || !terminal.has(frame.kind)) return;
       const message = text(frame.message) ?? `FirstMate ${frame.kind}.`;
       await context.onLog(frame.kind === "completed" ? "stdout" : "stderr", `${message}\n`);
