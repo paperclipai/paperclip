@@ -686,6 +686,43 @@ describe("agent live run routes", () => {
     expect(res.body).toMatchObject({ error: "Issue not found" });
   });
 
+  // 204 must not become an existence oracle for cross-tenant issues.
+  it("answers a cross-tenant issue with no active run identically to a missing issue", async () => {
+    // local_implicit actors have blanket company access.
+    const sessionActor = {
+      type: "board",
+      userId: "session-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    };
+
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-9",
+      companyId: "company-2",
+      executionRunId: null,
+      assigneeAgentId: "agent-1",
+      status: "done",
+    });
+    const crossTenant = await requestApp(
+      await createApp({}, sessionActor),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(null);
+    const missing = await requestApp(
+      await createApp({}, sessionActor),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    expect(crossTenant.status, JSON.stringify(crossTenant.body)).toBe(404);
+    expect(crossTenant.status).toBe(missing.status);
+    expect(crossTenant.body).toEqual(missing.body);
+    expect(mockHeartbeatService.getRunIssueSummary).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getActiveRunIssueSummaryForAgent).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("uses narrow run log metadata lookups (aligned tail: %s)", async (aligned) => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
