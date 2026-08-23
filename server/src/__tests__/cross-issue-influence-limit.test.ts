@@ -300,6 +300,10 @@ describe("cross-issue write grant (FAI-10132)", () => {
       }),
     ]);
     expect(fake.observedCount).toBe(0);
+    // The denial row is written after the locked run row is out of scope, so it
+    // has to carry the run's responsible user forward itself. A security denial
+    // that loses delegated attribution is worse than no row at all.
+    expect(fake.inserted[0]!.responsibleUserId).toBe("user-1");
   });
 
   it("allows the same write in the shadow phase but records what enforcement would have refused", async () => {

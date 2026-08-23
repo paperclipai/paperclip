@@ -105,7 +105,8 @@ export async function observeCrossIssueInfluence(
   if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
 
   const outcome = await db.transaction(async (tx): Promise<
-    { grantDenied: CrossIssueWriteGrantDecision; sourceIssueId: string } | { decision: CrossIssueInfluenceDecision | null }
+    | { grantDenied: CrossIssueWriteGrantDecision; sourceIssueId: string; runResponsibleUserId: string | null }
+    | { decision: CrossIssueInfluenceDecision | null }
   > => {
     const run = await tx
       .select({
@@ -152,8 +153,11 @@ export async function observeCrossIssueInfluence(
     });
     if (!grant.allowed) {
       // The audit row is written outside this transaction: the refusal throws,
-      // and a rollback would take the evidence of the refusal with it.
-      return { grantDenied: grant, sourceIssueId };
+      // and a rollback would take the evidence of the refusal with it. The run's
+      // responsible user rides along because the row is written after the
+      // locked run row is out of scope, and a denial must not lose delegated
+      // attribution the allowed rows keep.
+      return { grantDenied: grant, sourceIssueId, runResponsibleUserId: run.responsibleUserId ?? null };
     }
     if (grant.basis === null) {
       // Shadow phase. The write proceeds exactly as it does today; this row is
@@ -264,7 +268,10 @@ export async function observeCrossIssueInfluence(
   });
 
   if ("grantDenied" in outcome) {
-    await auditCrossIssueWriteGrantDenied(db, input, outcome.grantDenied, outcome.sourceIssueId);
+    await auditCrossIssueWriteGrantDenied(db, {
+      ...input,
+      responsibleUserId: input.responsibleUserId ?? outcome.runResponsibleUserId,
+    }, outcome.grantDenied, outcome.sourceIssueId);
     throw crossIssueWriteGrantError({ issueIdentifier: input.targetIssueIdentifier ?? null });
   }
   return outcome.decision;

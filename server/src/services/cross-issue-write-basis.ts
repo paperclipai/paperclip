@@ -21,6 +21,18 @@
  * record what *would* have been refused, allow the write. That mirrors how
  * `CROSS_ISSUE_INFLUENCE_ENFORCE_AT` was rolled out and is the only way the
  * cutover does not strand running agents.
+ *
+ * KNOWN GAP — the basis is resolved before the route's own mutation, in the
+ * counter's transaction. That transaction commits, and only then does the route
+ * write. A reassignment, reparent, or grant revocation landing in that gap
+ * leaves the decision stale: a write can proceed on authority revoked
+ * microseconds earlier. This is the same seam the run lock already has, and for
+ * the same reason — the counter must commit so a rolled-back mutation cannot
+ * refund cap budget. Closing it means re-resolving the basis inside each
+ * route's mutation transaction, the way callers that must not act on a
+ * terminalized run re-lock it with `lockLiveAgentRun`. That work belongs with
+ * arming enforcement, not before it: while the switch is unset the stale
+ * decision changes nothing, because every write is allowed either way.
  */
 
 import { and, eq, inArray, sql } from "drizzle-orm";
