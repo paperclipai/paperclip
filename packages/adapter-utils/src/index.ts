@@ -87,6 +87,16 @@ export { inferOpenAiCompatibleBiller } from "./billing.js";
 export { CACHED_INPUT_BUDGET_WEIGHT, weightedBudgetTokens } from "./token-budget.js";
 export { extractPaperclipDisposition, extractPaperclipDelegations, MAX_DELEGATIONS_PER_RUN, type ParsedDisposition, type ParsedDelegation } from "./disposition-marker.js";
 export {
+  extractCitations,
+  verifyCitations,
+  summarizeCitationVerdicts,
+  CITATION_SYMBOL_ADJACENCY_CHARS,
+  CITATION_LINE_TOLERANCE,
+  type ExtractedCitation,
+  type CitationVerdict,
+  type CitationCheckSummary,
+} from "./citation-verification.js";
+export {
   ADAPTER_LOGIN_PANEL_MODES,
   ADAPTER_LOGIN_SANDBOX_TRANSPORTS,
   ADAPTER_LOGIN_TIMEOUT_POLICIES,

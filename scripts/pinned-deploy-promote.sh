@@ -417,7 +417,7 @@ cmd_candidate_tests() {
   # mixing package + server paths under the root config leaves those runs undriven).
   local log="/tmp/candidate-tests.$$.log"; : > "$log"; local ok=1
   _cand_group() { local d="$1"; shift; (cd "$root/$d" && npx vitest run "$@" >> "$log" 2>&1) || { echo "candidate_tests: group $d failed" >> "$log"; ok=0; }; }
-  _cand_group packages/adapter-utils src/token-budget.test.ts src/acpx-engine/execute.test.ts src/disposition-marker.test.ts
+  _cand_group packages/adapter-utils src/token-budget.test.ts src/acpx-engine/execute.test.ts src/disposition-marker.test.ts src/citation-verification.test.ts
   _cand_group packages/adapters/claude-local src/server/parse.test.ts src/server/execute.acp-fallback.test.ts src/server/execute.disposition-reask.test.ts
   # 2026-08-23: disposition capture is the platform's terminal-state channel and
   # it has regressed silently twice. The shared extractor and every adapter parse

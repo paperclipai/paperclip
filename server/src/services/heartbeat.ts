@@ -192,6 +192,11 @@ import {
 } from "./batch-issue-pickup.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
+  extractCitations,
+  summarizeCitationVerdicts,
+  verifyCitations,
+} from "@paperclipai/adapter-utils";
+import {
   buildWorkspaceReadyComment,
   buildWorkspaceReadyMetadata,
   buildWorkspaceReadyPresentation,
@@ -11476,12 +11481,74 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       run,
       currentUserRedactionOptions,
     );
+    // See the call site below. Kept local to the heartbeat because it needs the
+    // run's resolved workspace root to turn a repo-relative citation into a
+    // real path.
+    async function verifyRunCitations(
+      targetRun: typeof heartbeatRuns.$inferSelect,
+      report: string | null,
+    ) {
+      if (!report) return;
+      const workspaceCwd = readNonEmptyString(
+        parseObject(parseObject(targetRun.contextSnapshot).paperclipWorkspace).cwd,
+      );
+      if (!workspaceCwd) return;
+      const citations = extractCitations(report);
+      if (citations.length === 0) return;
+      try {
+        const root = path.resolve(workspaceCwd);
+        const verdicts = await verifyCitations(citations, {
+          readFileLines: async (relativePath) => {
+            // Citation paths come from model output, so they are untrusted:
+            // resolve and refuse anything that escapes the workspace root
+            // rather than letting `../../` read arbitrary files.
+            const resolved = path.resolve(root, relativePath);
+            if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return null;
+            try {
+              return (await fs.readFile(resolved, "utf8")).split("\n");
+            } catch {
+              return null;
+            }
+          },
+        });
+        const summary = summarizeCitationVerdicts(verdicts);
+        if (summary.refuted === 0) return;
+        await logActivity(db, {
+          companyId: targetRun.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: targetRun.agentId,
+          runId: targetRun.id,
+          action: "run.citation_evidence_refuted",
+          entityType: "heartbeat_run",
+          entityId: targetRun.id,
+          details: {
+            label: `${summary.refuted} of ${summary.total} cited locations do not support the claim made about them`,
+            ...summary,
+          },
+        });
+      } catch {
+        // Verification is advisory; never let it fail a run finalization.
+      }
+    }
+
     const resultJson = parseObject(run.resultJson);
     const rawFinalReport = [
       readNonEmptyString(resultJson.summary),
       readNonEmptyString(resultJson.result),
       readNonEmptyString(resultJson.message),
     ].find((value): value is string => Boolean(value)) ?? null;
+    // Mechanical verification of `file:line` evidence (2026-08-23, TSMC-21344).
+    //
+    // Observation mode: this records what it finds and blocks nothing. The
+    // disposition work took the same route — capture and shadow-log first,
+    // enforce once the live signal was trusted — and a verifier that fires on
+    // honest evidence would simply get switched off.
+    //
+    // Only `refuted` is reported: a checkable claim the code contradicts.
+    // Citations with no adjacent symbol are UNCHECKED, never refuted.
+    await verifyRunCitations(run, rawFinalReport);
+
     const finalReport = redactSuccessfulRunHandoffEvidence(
       rawFinalReport,
       currentUserRedactionOptions,
