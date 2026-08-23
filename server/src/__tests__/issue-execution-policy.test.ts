@@ -2134,6 +2134,40 @@ describe("isEligibleIssueMonitorLive", () => {
     }), now)).toBe(true);
   });
 
+  it("treats persisted monitor columns as live when executionPolicy has no monitor", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorNotes: "Check deployment",
+      monitorScheduledBy: "assignee",
+      executionPolicy: { stages: [] },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: futureCheck,
+          lastTriggeredAt: null,
+          attemptCount: 0,
+          notes: "Check deployment",
+          scheduledBy: "assignee",
+          kind: "external_service",
+          serviceName: "github",
+          timeoutAt: null,
+          maxAttempts: 12,
+          recoveryPolicy: "wake_owner",
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+    }), now)).toBe(true);
+  });
+
   it("does not treat timestamps as coverage for ineligible assignees or statuses", () => {
     expect(isEligibleIssueMonitorLive(liveIssue({ assigneeUserId: "board-user" }), now)).toBe(false);
     expect(isEligibleIssueMonitorLive(liveIssue({ assigneeAgentId: null }), now)).toBe(false);
@@ -2182,6 +2216,7 @@ describe("isEligibleIssueMonitorLive", () => {
       executionPolicy: {
         monitor: {
           nextCheckAt: futureCheck,
+          notes: "Check deployment",
           serviceName: "github",
           maxAttempts: 12,
           externalRef: secret,
@@ -2192,7 +2227,11 @@ describe("isEligibleIssueMonitorLive", () => {
     expect(projection.monitorNextCheckAt).toBe(futureCheck);
     expect(projection.monitorAttemptCount).toBe(0);
     expect(projection.monitorEligibleLive).toBe(true);
-    expect(projection.executionPolicy?.monitor?.externalRef).toBe(REDACTED_ISSUE_MONITOR_EXTERNAL_REF);
+    expect(projection.executionPolicy?.monitor).toEqual(expect.objectContaining({
+      notes: "Check deployment",
+      nextCheckAt: futureCheck,
+      externalRef: REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+    }));
     expect(JSON.stringify(projection)).not.toContain(secret);
   });
 });

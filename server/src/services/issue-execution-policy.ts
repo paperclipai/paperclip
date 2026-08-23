@@ -280,6 +280,7 @@ function monitorBoundsFromPersisted(input: {
 }): IssueExecutionMonitorPolicy {
   return {
     nextCheckAt: input.nextCheckAt,
+    notes: input.policy?.monitor?.notes ?? input.persisted.notes ?? null,
     scheduledBy: input.persisted.scheduledBy ?? input.policy?.monitor?.scheduledBy ?? "assignee",
     kind: input.policy?.monitor?.kind ?? input.persisted.kind ?? undefined,
     serviceName: input.policy?.monitor?.serviceName ?? input.persisted.serviceName ?? undefined,
