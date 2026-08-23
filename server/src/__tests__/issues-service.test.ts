@@ -30,6 +30,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { ImportIssueRow } from "../services/import-write-types.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   clampIssueListLimit,
@@ -6069,6 +6070,47 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
       .where(eq(issues.parentId, sourceIssueId));
     expect(childrenRows).toHaveLength(2);
     expect(childrenRows.map((row) => row.id).sort()).toEqual([...first.childIssueIds].sort());
+  });
+
+  it("does not collide issue numbers between concurrent create() and importIssues()", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const svcA = issueService(db);
+    const svcB = issueService(db);
+
+    const importRow: ImportIssueRow = {
+      id: randomUUID(),
+      ref: "import-1",
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Imported issue",
+      description: null,
+      assigneeAgentId: null,
+      status: "todo",
+      priority: "medium",
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+
+    await Promise.all([
+      svcA.create(companyId, {
+        title: "Created concurrently",
+        description: null,
+        status: "todo",
+        priority: "medium",
+      }),
+      svcB.importIssues(companyId, [importRow]),
+    ]);
+
+    const rows = await db
+      .select({ n: issues.issueNumber })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    const numbers = rows.map((row) => row.n);
+    expect(new Set(numbers).size).toBe(numbers.length);
   });
 
   it("rejects another planning parent's accepted revision even when both issues share the assignee", async () => {
