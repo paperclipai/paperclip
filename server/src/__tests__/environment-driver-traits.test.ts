@@ -13,28 +13,24 @@ const EXPECTED_TRAITS: Record<string, Omit<EnvironmentDriverTraits, "driver">> =
     realizesWorkspace: true,
     runsWorkspaceOffHost: false,
     confinesStagedProjects: false,
-    workspaceSyncStrategy: "none",
     hasLeaseCapabilityModel: false,
   },
   ssh: {
     realizesWorkspace: true,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: false,
-    workspaceSyncStrategy: "ssh_git_import_export",
     hasLeaseCapabilityModel: false,
   },
   sandbox: {
     realizesWorkspace: true,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: true,
-    workspaceSyncStrategy: "sandbox_archive_upload_download",
     hasLeaseCapabilityModel: true,
   },
   plugin: {
     realizesWorkspace: false,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: false,
-    workspaceSyncStrategy: "provider_defined",
     hasLeaseCapabilityModel: false,
   },
 };
@@ -47,7 +43,6 @@ describe("environment driver traits", () => {
       expect(traits.realizesWorkspace).toBe(expected.realizesWorkspace);
       expect(traits.runsWorkspaceOffHost).toBe(expected.runsWorkspaceOffHost);
       expect(traits.confinesStagedProjects).toBe(expected.confinesStagedProjects);
-      expect(traits.workspaceSyncStrategy).toBe(expected.workspaceSyncStrategy);
       expect(traits.hasLeaseCapabilityModel).toBe(expected.hasLeaseCapabilityModel);
     });
   }

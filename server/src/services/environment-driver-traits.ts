@@ -14,7 +14,7 @@
  * instead of a driver-name condition.
  */
 
-import type { EnvironmentDriver, WorkspaceRealizationSyncStrategy } from "@paperclipai/shared";
+import type { EnvironmentDriver } from "@paperclipai/shared";
 import type { SandboxCapabilityKey } from "./environment-runtime.js";
 
 /**
@@ -111,13 +111,6 @@ export interface EnvironmentDriverTraits {
    */
   readonly confinesStagedProjects: boolean;
   /**
-   * The workspace sync strategy for the driver. Read by
-   * `buildWorkspaceRealizationRecord` (`workspace-realization.ts`) to select
-   * the sync plan the adapter follows to move a workspace onto the target
-   * and back.
-   */
-  readonly workspaceSyncStrategy: WorkspaceRealizationSyncStrategy;
-  /**
    * True when the driver resolves a per-lease capability snapshot that a
    * consumer reads today. Read by `resolveEnvironmentExecutionTarget`
    * (`environment-execution-target.ts`) to decide whether to call the
@@ -142,7 +135,6 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: true,
     runsWorkspaceOffHost: false,
     confinesStagedProjects: false,
-    workspaceSyncStrategy: "none",
     hasLeaseCapabilityModel: false,
   },
   ssh: {
@@ -150,7 +142,6 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: true,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: false,
-    workspaceSyncStrategy: "ssh_git_import_export",
     hasLeaseCapabilityModel: false,
   },
   sandbox: {
@@ -158,7 +149,6 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: true,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: true,
-    workspaceSyncStrategy: "sandbox_archive_upload_download",
     hasLeaseCapabilityModel: true,
   },
   plugin: {
@@ -166,7 +156,6 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: false,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: false,
-    workspaceSyncStrategy: "provider_defined",
     hasLeaseCapabilityModel: false,
   },
 };

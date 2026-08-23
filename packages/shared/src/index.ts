@@ -917,8 +917,6 @@ export type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
-  WorkspaceRealizationSyncStrategy,
-  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   SharedWorkspaceConcurrency,

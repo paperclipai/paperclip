@@ -67,8 +67,6 @@ import {
   deriveViteHmrPort,
   type Environment,
   type EnvironmentLease,
-  type WorkspaceRealizationSyncStrategy,
-  type WorkspaceRealizationTransport,
 } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
@@ -9088,7 +9086,7 @@ describe("workspace realization request additionalSources", () => {
   // Characterization test: this test must pass on the code before and after a
   // pure refactor of the driver-trait lookup. It pins today's behavior so the
   // refactor changes no field the record writes.
-  it("selects the sync plan, provider, and summary from the driver's traits", () => {
+  it("selects the provider and summary from the driver's traits", () => {
     const now = new Date(0);
     const workspace = buildRealizedWorkspace();
     const request = buildWorkspaceRealizationRequest({
@@ -9140,59 +9138,32 @@ describe("workspace realization request additionalSources", () => {
 
     const cases: Array<{
       driver: string;
-      transport: WorkspaceRealizationTransport;
-      strategy: WorkspaceRealizationSyncStrategy;
-      prepare: string;
-      syncBack: string | null;
       provider: string | null;
       summary: string;
     }> = [
       {
         driver: "local",
-        transport: "local",
-        strategy: "none",
-        prepare: "Use the realized local execution workspace directly.",
-        syncBack: null,
         provider: "local",
         summary: "Local workspace realized at /anchor.",
       },
       {
         driver: "ssh",
-        transport: "ssh",
-        strategy: "ssh_git_import_export",
-        prepare: "Import the local git workspace to the remote SSH workspace before adapter execution.",
-        syncBack:
-          "Export remote SSH workspace changes back to the local execution workspace after adapter execution.",
         provider: "ssh",
         summary: "SSH workspace realized at user@host:22:/anchor.",
       },
       {
         driver: "sandbox",
-        transport: "sandbox",
-        strategy: "sandbox_archive_upload_download",
-        prepare: "Upload a workspace archive into the sandbox filesystem before adapter execution.",
-        syncBack:
-          "Download a workspace archive from the sandbox and mirror it back locally after adapter execution.",
         provider: null,
         summary: "Sandbox workspace realized at /.",
       },
       {
         driver: "plugin",
-        transport: "plugin",
-        strategy: "provider_defined",
-        prepare: "Delegate workspace materialization to the plugin environment driver.",
-        syncBack: "Delegate result synchronization to the plugin environment driver.",
         provider: null,
         summary: "Plugin workspace realized at /anchor.",
       },
-      // An unknown driver string falls back to the "local" trait row: transport "local",
-      // strategy "none", and provider "local".
+      // An unknown driver string falls back to the "local" trait row: provider "local".
       {
         driver: "unknown-driver",
-        transport: "local",
-        strategy: "none",
-        prepare: "Use the realized local execution workspace directly.",
-        syncBack: null,
         provider: "local",
         summary: "Local workspace realized at /anchor.",
       },
@@ -9204,16 +9175,12 @@ describe("workspace realization request additionalSources", () => {
         lease,
         request,
       });
-      expect(record.transport).toBe(testCase.transport);
-      expect(record.sync.strategy).toBe(testCase.strategy);
-      expect(record.sync.prepare).toBe(testCase.prepare);
-      expect(record.sync.syncBack).toBe(testCase.syncBack);
       expect(record.provider).toBe(testCase.provider);
       expect(record.summary).toBe(testCase.summary);
     }
   });
 
-  it("gives the none sync plan for every driver when the realization mode is in_place", () => {
+  it("reads the in_place mode from the lease metadata", () => {
     const now = new Date(0);
     const workspace = buildRealizedWorkspace();
     const request = buildWorkspaceRealizationRequest({
@@ -9264,11 +9231,6 @@ describe("workspace realization request additionalSources", () => {
     const record = buildWorkspaceRealizationRecord({ environment, lease, request });
 
     expect(record.mode).toBe("in_place");
-    expect(record.sync).toEqual({
-      strategy: "none",
-      prepare: "Use the realized local execution workspace directly.",
-      syncBack: null,
-    });
   });
 
   it("reads a legacy request without additionalSources as an empty array", () => {

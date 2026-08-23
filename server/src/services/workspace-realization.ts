@@ -4,45 +4,9 @@ import type {
   ExecutionWorkspaceConfig,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
-  WorkspaceRealizationSyncStrategy,
 } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import { ENVIRONMENT_DRIVER_TRAITS, getEnvironmentDriverTraits } from "./environment-driver-traits.js";
-
-/**
- * The sync plan for each workspace sync strategy: the `strategy` tag the record
- * carries, the `prepare` step before adapter execution, and the `syncBack` step
- * after it (`null` when the strategy does not sync a result back).
- * `buildWorkspaceRealizationRecord` reads one row by the driver's
- * `workspaceSyncStrategy` trait.
- */
-const WORKSPACE_SYNC_PLANS: Record<
-  WorkspaceRealizationSyncStrategy,
-  { strategy: WorkspaceRealizationSyncStrategy; prepare: string; syncBack: string | null }
-> = {
-  none: {
-    strategy: "none",
-    prepare: "Use the realized local execution workspace directly.",
-    syncBack: null,
-  },
-  ssh_git_import_export: {
-    strategy: "ssh_git_import_export",
-    prepare: "Import the local git workspace to the remote SSH workspace before adapter execution.",
-    syncBack:
-      "Export remote SSH workspace changes back to the local execution workspace after adapter execution.",
-  },
-  sandbox_archive_upload_download: {
-    strategy: "sandbox_archive_upload_download",
-    prepare: "Upload a workspace archive into the sandbox filesystem before adapter execution.",
-    syncBack:
-      "Download a workspace archive from the sandbox and mirror it back locally after adapter execution.",
-  },
-  provider_defined: {
-    strategy: "provider_defined",
-    prepare: "Delegate workspace materialization to the plugin environment driver.",
-    syncBack: "Delegate result synchronization to the plugin environment driver.",
-  },
-};
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -234,9 +198,6 @@ export function buildWorkspaceRealizationRecord(input: {
   const pathAliases = readPathAliases(realizationMetadata.pathAliases ?? realizationMetadata.workspaceAliases);
   const outboundRestorePaths = readStringArray(realizationMetadata.outboundRestorePaths);
 
-  const sync =
-    mode === "in_place" ? WORKSPACE_SYNC_PLANS.none : WORKSPACE_SYNC_PLANS[traits.workspaceSyncStrategy];
-
   const provider =
     input.lease.provider ??
     (transport === "ssh" ? "ssh" : transport === "local" ? "local" : null);
@@ -256,7 +217,6 @@ export function buildWorkspaceRealizationRecord(input: {
     authoritativeRoot,
     pathAliases,
     outboundRestorePaths,
-    transport,
     provider,
     environmentId: input.environment.id,
     leaseId: input.lease.id,
@@ -286,7 +246,6 @@ export function buildWorkspaceRealizationRecord(input: {
       ...(username ? { username } : {}),
       ...(sandboxId ? { sandboxId } : {}),
     },
-    sync,
     bootstrap: {
       command: input.request.runtimeOverlay.provisionCommand,
     },
