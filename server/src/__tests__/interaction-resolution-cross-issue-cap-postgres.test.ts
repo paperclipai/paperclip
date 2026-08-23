@@ -477,8 +477,13 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
         .select({ action: activityLog.action })
         .from(activityLog)
         .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, targetIssueId)));
-      expect(targetActivity.map((row) => row.action)).toEqual([
+      // The shadow grade rides along: the grant check runs before the counter,
+      // so an attempt the cap refuses is still recorded as one enforcement
+      // would have denied. Both rows land in one transaction with no ordering
+      // guarantee between them, so compare them as a set.
+      expect(targetActivity.map((row) => row.action).sort()).toEqual([
         "issue.cross_issue_influence_cap_rejected",
+        "issue.cross_issue_write_grant_would_deny",
       ]);
     }, 30_000);
 

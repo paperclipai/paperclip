@@ -181,9 +181,10 @@ describeEmbeddedPostgres("cross-issue comment auto-approval grading (routes + po
       .post(`/api/issues/${targetIssueId}/comments`)
       .send({ body: APPROVAL_BODY });
 
-    // Observe mode: the write still lands exactly as it does today. Only the
-    // grade recorded against it changes.
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // Observe mode: the write still lands exactly as it does today — the route
+    // has always answered a created comment with 201. Only the grade recorded
+    // against it changes.
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
 
     const shadow = await db
       .select({ details: activityLog.details })
