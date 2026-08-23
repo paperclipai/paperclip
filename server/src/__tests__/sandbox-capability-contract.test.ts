@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT,
   SANDBOX_CAPABILITY_KEYS,
   buildSandboxCapabilityNarrowing,
   builtinSandboxProviderVerifiedMethods,
+  classifyEnvironmentCapabilities,
   resolveEffectiveSandboxCapabilities,
 } from "../services/environment-runtime.js";
 
@@ -382,6 +384,99 @@ describe("sandbox capability contract normalizer", () => {
       for (const key of SANDBOX_CAPABILITY_KEYS) {
         expect(effective[key]).toBe(false);
       }
+    }
+  });
+});
+
+describe("general runtime capability resolver — four-driver matrix", () => {
+  // A declaration that would grant every capability, paired with a worker
+  // method list that verifies every prerequisite. Used to probe each driver's
+  // static support ceiling: whatever the driver family cannot support must
+  // stay `false` even under the most permissive declaration and worker.
+  const DECLARE_ALL = {
+    reusableLeases: true,
+    nativeSyncIn: true,
+    nativeSyncOut: true,
+    persistentProcessSessions: true,
+    independentControlCommands: true,
+    incrementalSessionOutput: true,
+    concurrentSyncOperations: true,
+    duplexCommandStream: true,
+  };
+  const VERIFY_ALL = [...ALL_PLUGIN_METHODS, "duplexChannelOpen"];
+
+  it("test_local_and_ssh_drivers_support_no_capability_regardless_of_declaration_or_worker", () => {
+    // The `local` and `ssh` static support definitions name none of the eight
+    // capabilities, so the classifier resolves every field `false` even with a
+    // full declaration and a fully verified worker.
+    for (const driver of ["local", "ssh"] as const) {
+      const effective = classifyEnvironmentCapabilities({
+        verifiedMethods: VERIFY_ALL,
+        declared: DECLARE_ALL,
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+      });
+      for (const key of SANDBOX_CAPABILITY_KEYS) {
+        expect(effective[key]).toBe(false);
+      }
+    }
+  });
+
+  it("test_sandbox_and_plugin_drivers_support_the_whole_capability_set", () => {
+    // The `sandbox` and `plugin` static support definitions name every
+    // capability, so the classifier defers fully to the declaration, the
+    // verified worker methods, and the narrowing — the static gate adds no
+    // extra restriction for either driver.
+    for (const driver of ["sandbox", "plugin"] as const) {
+      const effective = classifyEnvironmentCapabilities({
+        verifiedMethods: VERIFY_ALL,
+        declared: DECLARE_ALL,
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+      });
+      for (const key of SANDBOX_CAPABILITY_KEYS) {
+        expect(effective[key]).toBe(true);
+      }
+      // The static gate changes nothing versus the ungated normalizer for
+      // these two drivers, so the two results match field for field.
+      expect(effective).toEqual(
+        resolveEffectiveSandboxCapabilities({ verifiedMethods: VERIFY_ALL, declared: DECLARE_ALL }),
+      );
+    }
+  });
+
+  it("test_sandbox_and_plugin_drivers_fail_closed_on_a_missing_worker_method_list", () => {
+    // A missing, undefined, or empty worker method list verifies no
+    // prerequisite, so every capability resolves `false` for a driver that
+    // supports the whole set, even under a full declaration. This is the
+    // fail-closed contract Phase 2 must keep for the live plugin worker path.
+    for (const driver of ["sandbox", "plugin"] as const) {
+      for (const verifiedMethods of [null, undefined, [] as string[]]) {
+        const effective = classifyEnvironmentCapabilities({
+          verifiedMethods,
+          declared: DECLARE_ALL,
+          supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+        });
+        for (const key of SANDBOX_CAPABILITY_KEYS) {
+          expect(effective[key]).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("test_narrowing_still_removes_a_capability_the_static_support_and_declaration_both_grant", () => {
+    // Per-target narrowing stays a separate, later gate: it removes a
+    // capability that the static support, the verified worker, and the
+    // declaration all grant. This holds for every driver whose static support
+    // names the capability.
+    for (const driver of ["sandbox", "plugin"] as const) {
+      const effective = classifyEnvironmentCapabilities({
+        verifiedMethods: VERIFY_ALL,
+        declared: DECLARE_ALL,
+        narrowing: { duplexCommandStream: false },
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+      });
+      expect(effective.duplexCommandStream).toBe(false);
+      // A capability the narrowing does not name is unaffected.
+      expect(effective.persistentProcessSessions).toBe(true);
     }
   });
 });
