@@ -61,6 +61,8 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_API_URL        # default http://127.0.0.1:3100
   PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # default 150
   PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN    # required, unique per approved deployment
+  PAPERCLIP_PINNED_DEPLOY_BOOT_PORT      # candidate boot-proof port (default 3399)
+  PAPERCLIP_PINNED_DEPLOY_BOOT_TIMEOUT_SECONDS # default 90
   PAPERCLIP_TEST_RATCHET_ENFORCE=1       # make test_ratchet blocking (default: observe only)
   PAPERCLIP_TEST_RATCHET_RECEIPT         # default STATE_DIR/test-ratchet-verdict.json
   PAPERCLIP_TEST_RATCHET_MAX_AGE_HOURS   # default 36
@@ -170,6 +172,7 @@ init_receipt() {
     "source_gate",
     "server_typecheck",
     "candidate_tests",
+    "candidate_boots",
     "test_ratchet"
   ],
   "deployPointerMutated": false,
@@ -444,6 +447,125 @@ cmd_candidate_tests() {
   fi
 }
 
+# Candidate boot proof (TSMC-21347, 2026-08-23).
+#
+# On 2026-08-23 a promote moved the deploy pointer, SIGTERM'd the running server
+# for the graceful handoff, and died before the restart completed. The staged
+# tree was missing server/node_modules and an unbuilt plugin SDK, so every
+# launchd retry died with `tsx: command not found` then ERR_MODULE_NOT_FOUND.
+# :3100 was down 16:11-16:14 and had to be repaired by hand.
+#
+# candidate_deps passes because it provisions the CANDIDATE root; nothing proved
+# the tree the pointer is about to swap to can actually START. That check was
+# being done by hand before every promote. This is that check, mechanised, and
+# it runs BEFORE the running server is ever signalled.
+#
+# The boot is real, not a file-existence guess — the outage's second cause (an
+# unbuilt workspace package) resolves at import time and no amount of `ls` would
+# have caught it. PAPERCLIP_IN_WORKTREE=1 makes the probe server suppress ALL
+# heartbeat scheduling (resolveHeartbeatSchedulingSuppression -> worktree_instance),
+# so it shares the database without ever claiming a run, and it listens on a
+# scratch port so it cannot contend with live :3100.
+CANDIDATE_BOOT_PORT="${PAPERCLIP_PINNED_DEPLOY_BOOT_PORT:-3399}"
+# 90s was not enough: the first real probe booted successfully but only after
+# the deadline, so the gate reported failure AND left the server running. A tsx
+# dev server on a busy box is slow to first health.
+CANDIDATE_BOOT_TIMEOUT_SEC="${PAPERCLIP_PINNED_DEPLOY_BOOT_TIMEOUT_SEC:-240}"
+
+# Kill a process and everything it spawned.
+#
+# ⛔ `kill $!` reaches only the subshell/pnpm parent. The first version did
+# exactly that and orphaned the real node server, which kept LISTENING on the
+# boot port after the gate had "cleaned up" — a probe that leaks a server is
+# worse than no probe. Walk the tree, then sweep the port as a backstop.
+kill_process_tree() {
+  local root_pid="$1" sig="${2:-TERM}" child
+  for child in $(pgrep -P "$root_pid" 2>/dev/null); do
+    kill_process_tree "$child" "$sig"
+  done
+  kill "-$sig" "$root_pid" 2>/dev/null || true
+}
+
+release_boot_port() {
+  local holder
+  holder="$(lsof -nP -iTCP:"$CANDIDATE_BOOT_PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $2}' || true)"
+  [ -n "$holder" ] || return 0
+  log "candidate_boots: sweeping leftover listener $holder on :$CANDIDATE_BOOT_PORT"
+  kill -TERM "$holder" 2>/dev/null || true
+  sleep 2
+  kill -KILL "$holder" 2>/dev/null || true
+}
+
+cmd_candidate_boots() {
+  if [ "$SKIP_HEAVY" = "1" ]; then
+    receipt_set_gate "candidate_boots" "pass" "skipped heavy (test mode)"
+    return 0
+  fi
+  local root="${PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT:-$CANDIDATE_ROOT}"
+  [ -d "$root" ] || fail "candidate root missing for candidate_boots: $root"
+
+  # Cheap structural checks first: they name the exact 2026-08-23 failures and
+  # cost nothing, so a broken tree fails in a second instead of ninety.
+  if [ ! -d "$root/server/node_modules" ]; then
+    receipt_set_gate "candidate_boots" "fail" "server/node_modules missing in candidate"
+    fail "candidate_boots: $root/server/node_modules is missing — the server cannot resolve tsx"
+  fi
+  if [ ! -f "$root/packages/plugins/sdk/dist/index.js" ]; then
+    receipt_set_gate "candidate_boots" "fail" "plugin-sdk dist missing in candidate"
+    fail "candidate_boots: $root/packages/plugins/sdk/dist/index.js is missing — workspace packages are unbuilt"
+  fi
+
+  # A stale listener would make the probe read another process's health and
+  # pass a tree that never booted.
+  if lsof -nP -iTCP:"$CANDIDATE_BOOT_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    release_boot_port
+    if lsof -nP -iTCP:"$CANDIDATE_BOOT_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+      receipt_set_gate "candidate_boots" "fail" "boot port :$CANDIDATE_BOOT_PORT is occupied"
+      fail "candidate_boots: port $CANDIDATE_BOOT_PORT is in use and could not be freed"
+    fi
+  fi
+
+  local log="/tmp/candidate-boot.$$.log"; : > "$log"
+  log "candidate_boots: booting candidate on port $CANDIDATE_BOOT_PORT (scheduling suppressed)"
+  (
+    cd "$root" || exit 1
+    PORT="$CANDIDATE_BOOT_PORT" \
+    PAPERCLIP_IN_WORKTREE=1 \
+    pnpm --filter @paperclipai/server dev >> "$log" 2>&1
+  ) &
+  local boot_pid=$!
+
+  local waited=0 healthy=0
+  while [ "$waited" -lt "$CANDIDATE_BOOT_TIMEOUT_SEC" ]; do
+    if ! kill -0 "$boot_pid" 2>/dev/null; then break; fi
+    if curl -s -m 5 -o /dev/null -w '%{http_code}' \
+        "http://127.0.0.1:$CANDIDATE_BOOT_PORT/api/health" 2>/dev/null | grep -q '^200$'; then
+      healthy=1
+      break
+    fi
+    sleep 3; waited=$((waited + 3))
+  done
+
+  kill_process_tree "$boot_pid" TERM
+  sleep 3
+  kill_process_tree "$boot_pid" KILL
+  # `set -e` is on and the probe is ALWAYS killed, so wait always reports the
+  # signal. Without `|| true` this aborted the gate with 143 before it could
+  # record its verdict — i.e. it failed every deploy, including the ones where
+  # the candidate booted perfectly. Found by running it, not by reading it.
+  wait "$boot_pid" 2>/dev/null || true
+  # Backstop: whatever the tree walk missed must not keep the port.
+  release_boot_port
+
+  if [ "$healthy" != "1" ]; then
+    tail -30 "$log" >&2 || true
+    receipt_set_gate "candidate_boots" "fail" "candidate did not answer /api/health within ${CANDIDATE_BOOT_TIMEOUT_SEC}s"
+    fail "candidate_boots: the staged tree does not boot — refusing to swap the pointer"
+  fi
+  rm -f "$log"
+  receipt_set_gate "candidate_boots" "pass" "candidate answered /api/health on :$CANDIDATE_BOOT_PORT"
+}
+
 # Test ratchet (2026-08-23). candidate_tests above is an ALLOWLIST — it can only
 # ever protect the suites someone remembered to list, so red accumulates
 # everywhere else unseen (the 08-22 shared-extractor refactor shipped with an
@@ -513,6 +635,7 @@ cmd_run_gates() {
   cmd_source_gate
   cmd_server_typecheck
   cmd_candidate_tests
+  cmd_candidate_boots
   cmd_test_ratchet
   if assert_gates_green "$(working_receipt_path)"; then
     log "all mandatory gates green"
@@ -909,6 +1032,7 @@ main() {
   case "$cmd" in
     prepare-candidate) cmd_prepare_candidate "$@" ;;
     run-gates) cmd_run_gates "$@" ;;
+    candidate-boots) cmd_candidate_boots "$@" ;;
     promote-pointer) cmd_promote_pointer "$@" ;;
     promote-and-restart) cmd_promote_and_restart "$@" ;;
     rollback-drill) cmd_rollback_drill "$@" ;;
