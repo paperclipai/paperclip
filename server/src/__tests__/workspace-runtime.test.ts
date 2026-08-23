@@ -36,6 +36,7 @@ import {
   realizeExecutionWorkspace,
   refreshRemoteTrackingBaseRef,
   releaseRuntimeServicesForRun,
+  UnresolvedWorkspaceBaseRefError,
   resetRuntimeServicesForTests,
   resolveRuntimeProvisionCommand,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
@@ -53,6 +54,7 @@ import {
   isLocalServiceRegistryCwdCompatible,
   isLocalServiceProcessOwnedBy,
   isLocalServiceProcessInWorkspace,
+  readLocalServiceProcessCwd,
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
@@ -70,6 +72,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+const RUNTIME_OWNED_GIT_BRANCH_METADATA = {
+  createdByRuntime: true,
+  gitBranchOwnershipVersion: 1,
+} as const;
 
 const execFileAsync = promisify(execFile);
 
@@ -189,6 +196,7 @@ async function expectPersistedBranchMismatchRejected(input: {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: input.expectedBranch,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: input.issueId,
@@ -249,6 +257,26 @@ async function advanceRemoteMaster(sourceRepo: string, remotePath: string, fileN
   await runGit(sourceRepo, ["commit", "-m", `Add ${fileName}`]);
   await runGit(sourceRepo, ["push", remotePath, "master"]);
   return readGit(sourceRepo, ["rev-parse", "master"]);
+}
+
+// Push a branch to the bare remote without leaving a local ref or a
+// remote-tracking ref in `repoRoot`. This reproduces a remote-only feature
+// branch: the clone was made before the push, so `repoRoot` learns the branch
+// only after an authenticated fetch of `origin/<branch>`.
+async function pushRemoteOnlyBranch(
+  sourceRepo: string,
+  remotePath: string,
+  branch: string,
+  fileName: string,
+) {
+  await runGit(sourceRepo, ["checkout", "-B", branch]);
+  await fs.writeFile(path.join(sourceRepo, fileName), `${fileName}\n`, "utf8");
+  await runGit(sourceRepo, ["add", fileName]);
+  await runGit(sourceRepo, ["commit", "-m", `Add ${fileName}`]);
+  await runGit(sourceRepo, ["push", remotePath, branch]);
+  const sha = await readGit(sourceRepo, ["rev-parse", branch]);
+  await runGit(sourceRepo, ["checkout", "master"]);
+  return sha;
 }
 
 function realizeWorktreeForTest(repoRoot: string, repoRef: string | null) {
@@ -717,8 +745,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
-
-    const first = await realizeExecutionWorkspace({
+    const realizationInput = {
       base: {
         baseCwd: repoRoot,
         source: "project_primary",
@@ -743,42 +770,27 @@ describe("realizeExecutionWorkspace", () => {
         name: "Codex Coder",
         companyId: "company-1",
       },
-    });
+    } satisfies Parameters<typeof realizeExecutionWorkspace>[0];
+
+    const first = await realizeExecutionWorkspace(realizationInput);
 
     expect(first.strategy).toBe("git_worktree");
     expect(first.created).toBe(true);
+    expect(first.branchCreatedByRuntime).toBe(true);
     expect(first.branchName).toBe("PAP-447-add-worktree-support");
     expect(first.cwd).toContain(path.join(".paperclip", "worktrees"));
     await expect(fs.stat(path.join(first.cwd, ".git"))).resolves.toBeTruthy();
 
     const second = await realizeExecutionWorkspace({
-      base: {
-        baseCwd: repoRoot,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: "HEAD",
-      },
-      config: {
-        workspaceStrategy: {
-          type: "git_worktree",
-          branchTemplate: "{{issue.identifier}}-{{slug}}",
-        },
-      },
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-447",
-        title: "Add Worktree Support",
-      },
-      agent: {
-        id: "agent-1",
-        name: "Codex Coder",
-        companyId: "company-1",
+      ...realizationInput,
+      recordedBranchOwnership: {
+        branchName: first.branchName!,
+        createdByRuntime: first.branchCreatedByRuntime,
       },
     });
 
     expect(second.created).toBe(false);
+    expect(second.branchCreatedByRuntime).toBe(true);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
   });
@@ -1016,6 +1028,111 @@ describe("realizeExecutionWorkspace", () => {
     expect(reused.warnings).toEqual([
       expect.stringContaining("is behind origin/master by 1 commit"),
     ]);
+  });
+
+  it("bases a fresh worktree on a remote-only branch supplied as fix/foo", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const remoteSha = await pushRemoteOnlyBranch(sourceRepo, remotePath, "fix/foo", "remote-only.txt");
+
+    // The clone never learned the branch: no local ref and no remote-tracking ref.
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", "fix/foo"])).rejects.toThrow();
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", "origin/fix/foo"])).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "fix/foo");
+
+    expect(workspace.created).toBe(true);
+    expect(workspace.repoRef).toBe("origin/fix/foo");
+    expect(workspace.baseRefSha).toBe(remoteSha);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(remoteSha);
+  });
+
+  it("bases a fresh worktree on a remote-only branch supplied as origin/fix/foo", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const remoteSha = await pushRemoteOnlyBranch(sourceRepo, remotePath, "fix/bar", "remote-only.txt");
+
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", "origin/fix/bar"])).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "origin/fix/bar");
+
+    expect(workspace.created).toBe(true);
+    expect(workspace.repoRef).toBe("origin/fix/bar");
+    expect(workspace.baseRefSha).toBe(remoteSha);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(remoteSha);
+  });
+
+  it("stops before git worktree add when the base ref is absent on origin", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+
+    const error = await realizeWorktreeForTest(repoRoot, "fix/does-not-exist").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unresolved = error as UnresolvedWorkspaceBaseRefError;
+    expect(unresolved.requestedRef).toBe("fix/does-not-exist");
+    expect(unresolved.recoveryIdentityRef).toBe("origin/fix/does-not-exist");
+    expect(unresolved.attemptedRefs).toEqual(["origin/fix/does-not-exist"]);
+    // No worktree directory was created for the fresh-create path.
+    await expect(
+      fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
+    ).rejects.toThrow();
+  });
+
+  it("gives equivalent spellings of one absent remote ref the same recovery identity", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+
+    // The unqualified form and the remote-tracking form name the same remote
+    // branch. Both must map to one `recoveryIdentityRef`, so recovery does not
+    // treat a spelling change as a new blocker.
+    const unqualified = await realizeWorktreeForTest(repoRoot, "fix/absent").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    const remoteTracking = await realizeWorktreeForTest(repoRoot, "origin/fix/absent").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    // The full remote-tracking spelling names the same branch as well. It must
+    // map to the same canonical recovery identity, not to its raw spelling.
+    const fullRemoteTracking = await realizeWorktreeForTest(repoRoot, "refs/remotes/origin/fix/absent").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(unqualified).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    expect(remoteTracking).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    expect(fullRemoteTracking).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unqualifiedError = unqualified as UnresolvedWorkspaceBaseRefError;
+    const remoteTrackingError = remoteTracking as UnresolvedWorkspaceBaseRefError;
+    const fullRemoteTrackingError = fullRemoteTracking as UnresolvedWorkspaceBaseRefError;
+    // Each error keeps its own operator spelling for the human notice.
+    expect(unqualifiedError.requestedRef).toBe("fix/absent");
+    expect(remoteTrackingError.requestedRef).toBe("origin/fix/absent");
+    expect(fullRemoteTrackingError.requestedRef).toBe("refs/remotes/origin/fix/absent");
+    // All three share one canonical recovery identity.
+    expect(unqualifiedError.recoveryIdentityRef).toBe("origin/fix/absent");
+    expect(remoteTrackingError.recoveryIdentityRef).toBe("origin/fix/absent");
+    expect(fullRemoteTrackingError.recoveryIdentityRef).toBe("origin/fix/absent");
+  });
+
+  it("surfaces an authenticated fetch failure as an unresolved base ref, not a crash", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    // Point origin at a path that no repository backs. The authenticated fetch
+    // fails, so the ref never resolves and the resolver reports the fetch error.
+    await runGit(repoRoot, ["remote", "set-url", "origin", path.join(os.tmpdir(), "paperclip-missing-remote.git")]);
+
+    const error = await realizeWorktreeForTest(repoRoot, "fix/unreachable").then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unresolved = error as UnresolvedWorkspaceBaseRefError;
+    expect(unresolved.requestedRef).toBe("fix/unreachable");
+    expect(unresolved.fetchError).toEqual(
+      expect.stringContaining("Could not refresh base ref origin/fix/unreachable"),
+    );
   });
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
@@ -2569,6 +2686,7 @@ describe("realizeExecutionWorkspace", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: expectedBranch,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: "issue-1",
@@ -2636,6 +2754,7 @@ describe("realizeExecutionWorkspace", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: "issue-detached",
@@ -2687,6 +2806,7 @@ describe("realizeExecutionWorkspace", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: expectedBranch,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: "issue-2",
@@ -2839,6 +2959,7 @@ describe("realizeExecutionWorkspace", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: initial.branchName,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: "issue-3",
@@ -2900,6 +3021,7 @@ describe("realizeExecutionWorkspace", () => {
           repoUrl: null,
           baseRef: "HEAD",
           branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
         issue: {
           id: "issue-diverged",
@@ -2973,6 +3095,7 @@ describe("realizeExecutionWorkspace", () => {
           repoUrl: null,
           baseRef: "HEAD",
           branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
         issue: {
           id: "issue-deleted-branch",
@@ -3054,6 +3177,7 @@ describe("realizeExecutionWorkspace", () => {
           repoUrl: null,
           baseRef: "HEAD",
           branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
         issue: {
           id: "issue-deleted-branch-flag-off",
@@ -3529,6 +3653,8 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
+    expect(workspace.branchCreatedByRuntime).toBe(true);
+
     const cleanup = await cleanupExecutionWorkspaceArtifacts({
       workspace: {
         id: "execution-workspace-1",
@@ -3542,7 +3668,8 @@ describe("realizeExecutionWorkspace", () => {
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
         metadata: {
-          createdByRuntime: true,
+          createdByRuntime: workspace.branchCreatedByRuntime,
+          gitBranchOwnershipVersion: 1,
         },
       },
       projectWorkspace: {
@@ -3559,6 +3686,83 @@ describe("realizeExecutionWorkspace", () => {
     ).resolves.toMatchObject({
       stdout: "",
     });
+  });
+
+  it("deletes a runtime-created branch at its verified tip after a reuse realization", async () => {
+    const repoRoot = await createTempRepo();
+    const realizationInput = {
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-reused-cleanup",
+        identifier: "PAP-17633",
+        title: "Preserve branch ownership across reuse",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    } satisfies Parameters<typeof realizeExecutionWorkspace>[0];
+
+    const initial = await realizeExecutionWorkspace(realizationInput);
+    expect(initial.branchCreatedByRuntime).toBe(true);
+    const verifiedBranchTip = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+
+    const reused = await realizeExecutionWorkspace({
+      ...realizationInput,
+      recordedBranchOwnership: {
+        branchName: initial.branchName!,
+        createdByRuntime: initial.branchCreatedByRuntime,
+      },
+    });
+    expect(reused.created).toBe(false);
+    expect(reused.branchCreatedByRuntime).toBe(true);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-reused-cleanup",
+        cwd: reused.cwd,
+        providerType: "git_worktree",
+        providerRef: reused.worktreePath,
+        branchName: reused.branchName,
+        repoUrl: reused.repoUrl,
+        baseRef: reused.repoRef,
+        projectId: reused.projectId,
+        projectWorkspaceId: reused.workspaceId,
+        sourceIssueId: "issue-reused-cleanup",
+        metadata: {
+          createdByRuntime: reused.branchCreatedByRuntime,
+          gitBranchOwnershipVersion: 1,
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+      expectedBranchHeadSha: verifiedBranchTip,
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(reused.cwd)).rejects.toThrow();
+    await expect(
+      execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${reused.branchName}`], {
+        cwd: repoRoot,
+      }),
+    ).rejects.toThrow();
   });
 
   it("keeps a runtime-created branch when its tip changes after guarded worktree removal", async () => {
@@ -3607,7 +3811,7 @@ describe("realizeExecutionWorkspace", () => {
         projectId: workspace.projectId,
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
-        metadata: { createdByRuntime: true },
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       projectWorkspace: {
         cwd: repoRoot,
@@ -3672,7 +3876,7 @@ describe("realizeExecutionWorkspace", () => {
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
         metadata: {
-          createdByRuntime: true,
+          ...RUNTIME_OWNED_GIT_BRANCH_METADATA,
         },
       },
       projectWorkspace: {
@@ -3747,7 +3951,7 @@ describe("realizeExecutionWorkspace", () => {
         projectWorkspaceId: workspace.workspaceId,
         sourceIssueId: "issue-1",
         metadata: {
-          createdByRuntime: true,
+          ...RUNTIME_OWNED_GIT_BRANCH_METADATA,
           worktreeInstanceRoot: instanceRoot,
         },
       },
@@ -4143,7 +4347,11 @@ describe("ensureRuntimeServicesForRun", () => {
           },
           adapterEnv: {},
         }),
-      ).rejects.toThrow(/Readiness check failed for http:\/\/127\.0\.0\.1:\d+\/api\/health: received HTTP 503/);
+        // The 503 health server must never pass readiness. Assert only that the
+        // readiness check fails for the health URL. Do not assert the exact reason
+        // string: under load the last probe near the deadline can get a small
+        // budget and abort with a timeout before it reads the HTTP 503 response.
+      ).rejects.toThrow(/Readiness check failed for http:\/\/127\.0\.0\.1:\d+\/api\/health/);
     } finally {
       await releaseRuntimeServicesForRun(runId);
     }
@@ -5070,7 +5278,46 @@ describe("readLocalServicePortOwner", () => {
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
   });
 
-  it("keeps a live registry record adoptable when cwd inspection is unsupported", async () => {
+  it("preserves newlines and trailing whitespace from Darwin lsof cwd output", async () => {
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-tools-"));
+    const previousPath = process.env.PATH;
+    const reportedCwd = path.join(os.tmpdir(), "paperclip-runtime-line\nbreak ");
+    const output = `p${process.pid}\0fcwd\0n${reportedCwd}\0\n`;
+    await fs.writeFile(
+      path.join(fakeBin, "lsof"),
+      `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)});\n`,
+      { mode: 0o755 },
+    );
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.PATH = fakeBin;
+
+    try {
+      await expect(readLocalServiceProcessCwd(process.pid)).resolves.toBe(reportedCwd);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null for invalid PIDs and a missing Darwin lsof binary", async () => {
+    await expect(readLocalServiceProcessCwd(-1)).resolves.toBeNull();
+
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-missing-lsof-"));
+    const previousPath = process.env.PATH;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.PATH = fakeBin;
+
+    try {
+      await expect(readLocalServiceProcessCwd(process.pid)).resolves.toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a live registry record adoptable when Darwin cwd inspection confirms it", async () => {
     try {
       await execFileAsync("lsof", ["-v"]);
     } catch {
@@ -5122,16 +5369,19 @@ describe("readLocalServicePortOwner", () => {
     }
   });
 
-  it("trusts unavailable cwd for registry records only off Linux", async () => {
+  it("trusts unavailable cwd for registry records only on unsupported platforms", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
-    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(true);
+    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(false);
 
     Object.defineProperty(process, "platform", { value: "linux" });
     await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(false);
+
+    Object.defineProperty(process, "platform", { value: "win32" });
+    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(true);
   });
 
   it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {
-    if (process.platform !== "linux") return;
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
     try {
       await execFileAsync("lsof", ["-v"]);
     } catch {
@@ -5220,6 +5470,114 @@ describe("readLocalServicePortOwner", () => {
       child.kill("SIGTERM");
       await new Promise<void>((resolve) => child.once("exit", () => resolve()));
       await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  });
+
+  it("adopts a port owner running inside the workspace when the registry record is gone", async () => {
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-adopt-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `adopt-port-owner-${randomUUID()}`;
+    const serviceKey = `adopt-port-owner-${randomUUID()}`;
+    // Detach, because managed runtime services also start detached
+    // (`detached: process.platform !== "win32"`). An attached child shares the
+    // runner's process group, so adoption would record the group leader — pnpm
+    // or a shell — and the command check would read that leader instead.
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "const server=require('node:http').createServer((req,res)=>res.end('ok')); server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+      ],
+      { cwd: workspace, stdio: ["ignore", "pipe", "inherit"], detached: true },
+    );
+    const port = await new Promise<number>((resolve, reject) => {
+      let output = "";
+      child.stdout?.on("data", (chunk) => {
+        output += String(chunk);
+        const value = Number.parseInt(output.trim(), 10);
+        if (Number.isInteger(value) && value > 0) resolve(value);
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`Port owner exited before listening: ${code ?? "unknown"}`)));
+    });
+
+    try {
+      // No registry record is written: this is the "registry lost, service still
+      // running" path that falls through to adoptLocalServiceFromPortOwner.
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: workspace,
+        port,
+      })).resolves.toMatchObject({ pid: expect.any(Number), port });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to adopt a listener whose cwd differs only by trailing whitespace", async () => {
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-ws-"));
+    // A sibling directory whose name is the workspace name plus one space.
+    // These are different directories, so a listener in one must not be
+    // adopted into the other.
+    const lookalike = `${workspace} `;
+    await fs.mkdir(lookalike, { recursive: true });
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `adopt-whitespace-${randomUUID()}`;
+    const serviceKey = `adopt-whitespace-${randomUUID()}`;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "const server=require('node:http').createServer((req,res)=>res.end('ok')); server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+      ],
+      { cwd: lookalike, stdio: ["ignore", "pipe", "inherit"], detached: true },
+    );
+    const port = await new Promise<number>((resolve, reject) => {
+      let output = "";
+      child.stdout?.on("data", (chunk) => {
+        output += String(chunk);
+        const value = Number.parseInt(output.trim(), 10);
+        if (Number.isInteger(value) && value > 0) resolve(value);
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`Port owner exited before listening: ${code ?? "unknown"}`)));
+    });
+
+    try {
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: workspace,
+        port,
+      })).resolves.toBeNull();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(lookalike, { recursive: true, force: true });
+      await fs.rm(workspace, { recursive: true, force: true });
     }
   });
 });
@@ -5467,6 +5825,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
         repoUrl: null,
         baseRef: "HEAD",
         branchName: input.expectedBranch,
+        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
       },
       issue: {
         id: input.ids.sourceIssueId,
@@ -5880,7 +6239,12 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
   });
 
   afterEach(async () => {
-    await resetRuntimeServicesForTests();
+    // Terminate the real child processes this block starts and persist their
+    // stopped rows before the row deletes below. A left-over child exits later
+    // and its detached exit handler then writes a workspace_runtime_services row
+    // that references the deleted project, which raises an unhandled foreign-key
+    // error in the next test.
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
     // Service control writes activity_log rows. Delete them before the company
     // delete so a lingering foreign-key row cannot block the company delete and
     // leak rows into the next test.
@@ -6919,6 +7283,12 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // Startup reconciliation starts real child processes and registers them.
+    // Terminate them and persist their stopped rows before the row deletes
+    // below. A left-over child exits later and its detached exit handler then
+    // writes a workspace_runtime_services row that references the deleted
+    // project, which raises an unhandled foreign-key error in the next test.
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
     // Startup reconciliation writes activity_log rows (for example, exposure
     // reservation drift). Delete those rows before the company delete. A stale
     // activity_log row holds a foreign key to the company and makes the company
@@ -7462,14 +7832,26 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-pnpm-reconcile-${randomUUID()}`;
 
-    const portProbe = net.createServer();
-    await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
-    const address = portProbe.address();
-    const port = typeof address === "object" && address ? address.port : null;
-    await new Promise<void>((resolve, reject) => {
-      portProbe.close((error) => error ? reject(error) : resolve());
-    });
-    if (!port) throw new Error("Failed to reserve pnpm reconciliation test port");
+    // Reserve a port outside the runtime exposure app-port range (42000-42999).
+    // The reconciler stores this port on the row. A port inside that range makes
+    // the reconciler treat the row as an exposure reservation and report drift,
+    // so the live service never reaches the adoption path this test verifies.
+    const reservePort = async () => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const probe = net.createServer();
+        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        const address = probe.address();
+        const candidate = typeof address === "object" && address ? address.port : null;
+        await new Promise<void>((resolve, reject) => {
+          probe.close((error) => error ? reject(error) : resolve());
+        });
+        if (candidate && candidate <= 55_535 && (candidate < 42_000 || candidate > 42_999)) {
+          return candidate;
+        }
+      }
+      throw new Error("Failed to reserve pnpm reconciliation test port outside the broker range");
+    };
+    const port = await reservePort();
 
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -8731,5 +9113,438 @@ describe("workspace realization request additionalSources", () => {
     expect(parsed).not.toBeNull();
     expect(parsed?.additionalSources).toEqual([]);
     expect(parsed?.runtimeOverlay.runtimeProvisionCommand).toBeNull();
+  });
+});
+
+describe("realizeExecutionWorkspace with an exact existing branch", () => {
+  function realizeExistingBranch(
+    repoRoot: string,
+    existingBranch: string,
+    strategyOverrides: Record<string, unknown> = {},
+    recordedBranchOwnership: Parameters<typeof realizeExecutionWorkspace>[0]["recordedBranchOwnership"] = null,
+  ) {
+    return realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          existingBranch,
+          ...strategyOverrides,
+        },
+      },
+      issue: {
+        id: "issue-pr-prep",
+        identifier: "PAP-9001",
+        title: "Prepare pull request for an existing branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recordedBranchOwnership,
+    });
+  }
+
+  function restoreExistingBranch(
+    repoRoot: string,
+    workspace: RealizedExecutionWorkspace,
+    metadata: Record<string, unknown>,
+  ) {
+    return ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: workspace.repoRef,
+      },
+      workspace: {
+        id: "execution-workspace-existing-branch",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: workspace.cwd,
+        providerRef: workspace.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: workspace.repoRef,
+        branchName: workspace.branchName,
+        metadata,
+      },
+      issue: {
+        id: "issue-pr-prep",
+        identifier: "PAP-9001",
+        title: "Restore an existing-branch pull request workspace",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+  }
+
+  async function createBranchWithCommit(repoRoot: string, branchName: string, fileName: string) {
+    const baseBranch = await readGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    await runGit(repoRoot, ["checkout", "-b", branchName]);
+    await fs.writeFile(path.join(repoRoot, fileName), `${fileName}\n`, "utf8");
+    await runGit(repoRoot, ["add", fileName]);
+    await runGit(repoRoot, ["commit", "-m", `Add ${fileName}`]);
+    await runGit(repoRoot, ["checkout", baseBranch]);
+    return readGit(repoRoot, ["rev-parse", branchName]);
+  }
+
+  it("attaches an isolated worktree checked out on exactly the requested branch", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/preexisting-work", "existing.txt");
+
+    const workspace = await realizeExistingBranch(repoRoot, "feature/preexisting-work");
+
+    expect(workspace.strategy).toBe("git_worktree");
+    expect(workspace.branchName).toBe("feature/preexisting-work");
+    // The worktree is freshly created, but the pinned branch pre-existed and
+    // stays operator-owned so terminal cleanup never deletes it.
+    expect(workspace.created).toBe(true);
+    expect(workspace.branchCreatedByRuntime).toBe(false);
+    expect(workspace.cwd).not.toBe(repoRoot);
+    expect(workspace.cwd).toContain(path.join(".paperclip", "worktrees"));
+    expect(await readGit(workspace.cwd, ["branch", "--show-current"])).toBe("feature/preexisting-work");
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(branchTip);
+    expect(await readGit(repoRoot, ["rev-parse", "feature/preexisting-work"])).toBe(branchTip);
+  });
+
+  it("reuses a registered legacy worktree that already has the branch checked out", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/legacy-checkout", "legacy.txt");
+    const legacyPath = path.join(repoRoot, ".worktrees", "legacy-checkout");
+    await runGit(repoRoot, ["worktree", "add", legacyPath, "feature/legacy-checkout"]);
+
+    const workspace = await realizeExistingBranch(repoRoot, "feature/legacy-checkout");
+
+    expect(workspace.cwd).toBe(path.resolve(legacyPath));
+    expect(workspace.branchName).toBe("feature/legacy-checkout");
+    expect(workspace.created).toBe(false);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(branchTip);
+    expect(await readGit(repoRoot, ["rev-parse", "feature/legacy-checkout"])).toBe(branchTip);
+  });
+
+  it("does not let exact-branch reuse inherit runtime ownership", async () => {
+    const repoRoot = await createTempRepo();
+    await createBranchWithCommit(repoRoot, "feature/operator-owned-reuse", "operator-reuse.txt");
+    const legacyPath = path.join(repoRoot, ".worktrees", "operator-owned-reuse");
+    await runGit(repoRoot, ["worktree", "add", legacyPath, "feature/operator-owned-reuse"]);
+
+    const workspace = await realizeExistingBranch(
+      repoRoot,
+      "feature/operator-owned-reuse",
+      {},
+      {
+        branchName: "feature/operator-owned-reuse",
+        createdByRuntime: true,
+      },
+    );
+
+    expect(workspace.created).toBe(false);
+    expect(workspace.branchCreatedByRuntime).toBe(false);
+  });
+
+  it("fails closed when the requested branch does not exist and creates nothing", async () => {
+    const repoRoot = await createTempRepo();
+
+    await expect(realizeExistingBranch(repoRoot, "feature/never-created")).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "existing_branch_not_found",
+          requestedExistingBranch: "feature/never-created",
+        }),
+      },
+    });
+
+    expect(await readGit(repoRoot, ["branch", "--list", "feature/never-created"])).toBe("");
+    expect(
+      existsSync(path.join(repoRoot, ".paperclip", "worktrees", "feature", "never-created")),
+    ).toBe(false);
+  });
+
+  it("fails closed instead of reconciling when the managed worktree path holds another branch", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/pinned", "pinned.txt");
+    const managedPath = path.join(repoRoot, ".paperclip", "worktrees", "feature/pinned");
+    await runGit(repoRoot, ["worktree", "add", "-b", "stale-occupant", managedPath]);
+
+    await expect(realizeExistingBranch(repoRoot, "feature/pinned")).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "existing_branch_worktree_not_reusable",
+          requestedExistingBranch: "feature/pinned",
+        }),
+      },
+    });
+
+    expect(await readGit(repoRoot, ["rev-parse", "feature/pinned"])).toBe(branchTip);
+    expect(await readGit(managedPath, ["branch", "--show-current"])).toBe("stale-occupant");
+  });
+
+  it("never fast-forwards an unstarted exact branch to a newer base ref", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const oldMaster = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+    await runGit(repoRoot, ["branch", "release/frozen", oldMaster]);
+
+    const first = await realizeExistingBranch(repoRoot, "release/frozen", { baseRef: "origin/master" });
+    expect(await readGit(first.cwd, ["rev-parse", "HEAD"])).toBe(oldMaster);
+
+    const newMaster = await advanceRemoteMaster(sourceRepo, remotePath, "advance.txt");
+    const reused = await restoreExistingBranch(repoRoot, first, {
+      createdByRuntime: false,
+      gitBranchOwnershipVersion: 1,
+    });
+
+    expect(reused?.cwd).toBe(first.cwd);
+    expect(await readGit(first.cwd, ["rev-parse", "HEAD"])).toBe(oldMaster);
+    expect(await readGit(repoRoot, ["rev-parse", "release/frozen"])).toBe(oldMaster);
+    expect(newMaster).not.toBe(oldMaster);
+  });
+
+  it.each(["forward branch", "detached commit"] as const)(
+    "fails closed when an operator-owned persisted worktree moves to a %s",
+    async (mismatchKind) => {
+      const repoRoot = await createTempRepo();
+      const branchName = `feature/operator-owned-${mismatchKind === "forward branch" ? "forward" : "detached"}`;
+      const branchTip = await createBranchWithCommit(repoRoot, branchName, "operator-owned-tip.txt");
+      const workspace = await realizeExistingBranch(repoRoot, branchName);
+
+      if (mismatchKind === "forward branch") {
+        await runGit(workspace.cwd, ["checkout", "-b", `${branchName}-other`]);
+      } else {
+        await runGit(workspace.cwd, ["checkout", "--detach"]);
+      }
+      await fs.writeFile(path.join(workspace.cwd, "unexpected-forward-work.txt"), "do not adopt\n", "utf8");
+      await runGit(workspace.cwd, ["add", "unexpected-forward-work.txt"]);
+      await runGit(workspace.cwd, ["commit", "-m", "Unexpected forward work"]);
+      const mismatchedHead = await readGit(workspace.cwd, ["rev-parse", "HEAD"]);
+
+      await expect(restoreExistingBranch(repoRoot, workspace, {
+        createdByRuntime: false,
+        gitBranchOwnershipVersion: 1,
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_not_reusable",
+            reasonCode: "branch_mismatch",
+          }),
+        },
+      });
+
+      expect(await readGit(repoRoot, ["rev-parse", `refs/heads/${branchName}`])).toBe(branchTip);
+      expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(mismatchedHead);
+      if (mismatchKind === "detached commit") {
+        expect(await readGit(workspace.cwd, ["branch", "--show-current"])).toBe("");
+      }
+    },
+  );
+
+  function cleanupWorkspaceInput(
+    workspace: RealizedExecutionWorkspace,
+    repoRoot: string,
+    expectedBranchHeadSha: string,
+  ) {
+    return {
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspace.cwd,
+        providerType: "git_worktree",
+        providerRef: workspace.worktreePath,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.repoRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.workspaceId,
+        sourceIssueId: "issue-pr-prep",
+        // Persist ownership the way the heartbeat does: from the branch
+        // ownership signal, never from worktree creation.
+        metadata: {
+          createdByRuntime: workspace.branchCreatedByRuntime,
+          gitBranchOwnershipVersion: 1,
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+      expectedBranchHeadSha,
+    };
+  }
+
+  it("terminal cleanup removes the worktree but preserves the attached pre-existing branch at its tip", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/operator-owned", "operator.txt");
+
+    const workspace = await realizeExistingBranch(repoRoot, "feature/operator-owned");
+    expect(workspace.created).toBe(true);
+    expect(workspace.branchCreatedByRuntime).toBe(false);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts(
+      cleanupWorkspaceInput(workspace, repoRoot, branchTip),
+    );
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspace.cwd)).rejects.toThrow();
+    expect(await readGit(repoRoot, ["rev-parse", "refs/heads/feature/operator-owned"])).toBe(branchTip);
+  });
+
+  it("treats unversioned legacy ownership as operator-owned during cleanup", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/legacy-owned", "legacy-owned.txt");
+    const workspace = await realizeExistingBranch(repoRoot, "feature/legacy-owned");
+    const cleanupInput = cleanupWorkspaceInput(workspace, repoRoot, branchTip);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      ...cleanupInput,
+      workspace: {
+        ...cleanupInput.workspace,
+        metadata: { createdByRuntime: true },
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspace.cwd)).rejects.toThrow();
+    expect(await readGit(repoRoot, ["rev-parse", "refs/heads/feature/legacy-owned"])).toBe(branchTip);
+  });
+
+  it("terminal cleanup preserves a pre-existing branch pinned via a literal branchTemplate", async () => {
+    const repoRoot = await createTempRepo();
+    const branchTip = await createBranchWithCommit(repoRoot, "feature/literal-pin", "literal.txt");
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/literal-pin",
+        },
+      },
+      issue: {
+        id: "issue-pr-prep",
+        identifier: "PAP-9002",
+        title: "Prepare pull request via a literal branch template",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(workspace.branchName).toBe("feature/literal-pin");
+    expect(workspace.created).toBe(true);
+    expect(workspace.branchCreatedByRuntime).toBe(false);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(branchTip);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts(
+      cleanupWorkspaceInput(workspace, repoRoot, branchTip),
+    );
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspace.cwd)).rejects.toThrow();
+    expect(await readGit(repoRoot, ["rev-parse", "refs/heads/feature/literal-pin"])).toBe(branchTip);
+  });
+
+  it("restoring a persisted workspace keeps the recorded branch ownership", async () => {
+    const repoRoot = await createTempRepo();
+    await createBranchWithCommit(repoRoot, "feature/persisted-ownership", "persisted-ownership.txt");
+    const first = await realizeExistingBranch(repoRoot, "feature/persisted-ownership");
+
+    const operatorOwned = await restoreExistingBranch(repoRoot, first, { createdByRuntime: false });
+    expect(operatorOwned?.branchCreatedByRuntime).toBe(false);
+
+    const legacyOwned = await restoreExistingBranch(repoRoot, first, { createdByRuntime: true });
+    expect(legacyOwned?.branchCreatedByRuntime).toBe(false);
+
+    const runtimeOwned = await restoreExistingBranch(repoRoot, first, RUNTIME_OWNED_GIT_BRANCH_METADATA);
+    expect(runtimeOwned?.branchCreatedByRuntime).toBe(true);
+  });
+
+  it("fails closed instead of recreating a missing branch from unversioned legacy ownership", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "feature/missing-operator-owned";
+    await createBranchWithCommit(repoRoot, branchName, "operator-owned.txt");
+    const first = await realizeExistingBranch(repoRoot, branchName);
+
+    await runGit(repoRoot, ["worktree", "remove", "--force", first.cwd]);
+    await runGit(repoRoot, ["branch", "-D", branchName]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: first.cwd,
+        providerRef: first.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName,
+        metadata: { createdByRuntime: true },
+      },
+      issue: {
+        id: "issue-pr-prep",
+        identifier: "PAP-9004",
+        title: "Restore a missing operator-owned branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toThrow(`operator-owned branch "${branchName}" no longer exists`);
+
+    await expect(fs.stat(first.cwd)).rejects.toThrow();
+    await expect(readGit(repoRoot, ["rev-parse", "--verify", branchName])).rejects.toThrow();
+  });
+
+  it("fails closed when an existing branch is pinned on a non-worktree strategy", async () => {
+    const repoRoot = await createTempRepo();
+    await createBranchWithCommit(repoRoot, "feature/wrong-mode", "wrong-mode.txt");
+
+    await expect(
+      realizeExistingBranch(repoRoot, "feature/wrong-mode", { type: "project_primary" }),
+    ).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "existing_branch_requires_git_worktree",
+        }),
+      },
+    });
   });
 });

@@ -14,6 +14,13 @@ updates:
     open-pull-requests-limit: 20
     labels:
       - "dependencies"
+    ignore:
+      # @types/node describes the APIs available in the supported Node runtime.
+      # Runtime major upgrades are deliberate compatibility changes, so keep
+      # Dependabot on the current major until the runtime baseline moves too.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: "/"

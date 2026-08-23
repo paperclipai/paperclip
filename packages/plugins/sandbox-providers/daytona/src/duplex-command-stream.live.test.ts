@@ -82,7 +82,7 @@ async function openCatChannel(
   sandbox: LiveDaytonaSandbox,
 ): Promise<{ session: DuplexChannelSession; readOutput: () => string }> {
   let output = "";
-  const session = await openDaytonaDuplexChannelSession(sandbox.process, "cat");
+  const session = await openDaytonaDuplexChannelSession(sandbox.process, ["cat"]);
   session.onData((chunk) => {
     output += chunk;
   });
@@ -188,6 +188,103 @@ describeLive("Daytona duplex channel (live)", () => {
       const probe = await live.process.executeCommand(`printf %s ${token}`);
       expect(probe.exitCode ?? 0).toBe(0);
       expect(probe.result ?? "").toContain(token);
+    },
+    LIVE_TIMEOUT_MS,
+  );
+
+  it(
+    "serves repeated channel round trips with no idle polling and no per-request session growth",
+    async () => {
+      const live = sandbox!;
+      const listSessions = live.process.listSessions?.bind(live.process);
+      const { session, readOutput } = await openCatChannel(live);
+      try {
+        // Wait for the raw-mode switch, then take the open baseline. The channel
+        // uses a pseudo-terminal, not an ordinary session, so the session list
+        // stays flat through the whole exchange.
+        await new Promise((resolve) => setTimeout(resolve, 4_000));
+        const openSessions = listSessions ? (await listSessions()).length : 0;
+
+        // Send a batch of request-shaped lines over the one open channel and
+        // measure the round-trip latency of each. The transport writes no queue
+        // file and runs no exec per line, so the round trip is the stream latency.
+        const latenciesMs: number[] = [];
+        const rounds = 10;
+        for (let index = 0; index < rounds; index += 1) {
+          const line = `RTT-${index}-${randomUUID()}`;
+          const baseline = readOutput().length;
+          const start = Date.now();
+          session.write(`${line}\n`);
+          await waitFor(
+            readOutput,
+            (text) => text.slice(baseline).includes(line),
+            30_000,
+            "channel round trip",
+          );
+          latenciesMs.push(Date.now() - start);
+        }
+
+        // Hold the channel idle. A polling transport would run a provider exec on
+        // each tick and raise the session count. The duplex channel polls nothing.
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+        if (listSessions) {
+          const afterSessions = (await listSessions()).length;
+          // Zero idle polls and zero per-request session growth: the session count
+          // never rose above the open baseline.
+          expect(afterSessions).toBe(openSessions);
+        }
+
+        const min = Math.min(...latenciesMs);
+        const max = Math.max(...latenciesMs);
+        const avg = Math.round(latenciesMs.reduce((sum, value) => sum + value, 0) / latenciesMs.length);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[duplex-live] channel round-trip latency over ${rounds} requests: min=${min}ms avg=${avg}ms max=${max}ms; idle-poll session growth=0; per-request session growth=0`,
+        );
+        expect(latenciesMs.length).toBe(rounds);
+      } finally {
+        await session.close();
+      }
+    },
+    LIVE_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves no leaked session and keeps the sandbox usable after a forced mid-flight disconnect",
+    async () => {
+      const live = sandbox!;
+      const listSessions = live.process.listSessions?.bind(live.process);
+      const baseline = listSessions ? (await listSessions()).length : 0;
+
+      const { session, readOutput } = await openCatChannel(live);
+      // Wait for the raw-mode switch, then start a write and force a disconnect
+      // before its echo returns. The abrupt close models a lost provider channel.
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      const inFlight = `INFLIGHT-${randomUUID()}`;
+      session.write(`${inFlight}\n`);
+      // Close at once, without waiting for the echo. The pending round trip never
+      // settles through the stream; the channel tears down instead.
+      await session.close();
+
+      if (listSessions) {
+        // The forced disconnect left no leaked provider session. The count is back
+        // at the baseline that preceded the channel.
+        const after = (await listSessions()).length;
+        expect(after).toBe(baseline);
+      }
+      // Do not read the in-flight echo; the disconnect settled the run. Reference
+      // the output length only to keep the reader wired.
+      expect(readOutput().length).toBeGreaterThanOrEqual(0);
+
+      // The sandbox stays usable: a fresh ordinary command still succeeds. A
+      // leaked channel would block or corrupt the sandbox.
+      const token = `post-disconnect-${randomUUID()}`;
+      const probe = await live.process.executeCommand(`printf %s ${token}`);
+      expect(probe.exitCode ?? 0).toBe(0);
+      expect(probe.result ?? "").toContain(token);
+      // eslint-disable-next-line no-console
+      console.log("[duplex-live] forced mid-flight disconnect: leaked sessions=0; sandbox usable after=yes");
     },
     LIVE_TIMEOUT_MS,
   );

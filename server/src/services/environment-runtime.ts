@@ -1080,9 +1080,10 @@ function adaptDuplexChannelHostSession(
     onData(listener: (chunk: string) => void): void {
       session.onData(listener);
     },
-    onExit(listener: (exit: { exitCode: number | null }) => void): void {
+    onExit(listener: (exit: { exitCode: number | null; transportClosed?: boolean }) => void): void {
       // `wait()` resolves one time with the exit and never rejects, so a single
-      // `then` bridges it to the one-time exit listener.
+      // `then` bridges it to the one-time exit listener. The exit carries
+      // `transportClosed`, so the broker tells a real exit from a transport close.
       void session.wait().then((exit) => {
         listener(exit);
       });

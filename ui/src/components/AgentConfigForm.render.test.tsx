@@ -742,6 +742,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("E2B · sandbox");
   });
 
+  it("shows the environment override for Kimi local agents", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "kimi_local" },
+    );
+    roots.push(result.root);
+
+    const text = result.container.textContent ?? "";
+    const selector = result.container.querySelector("select");
+
+    expect(text).toContain("Environment override");
+    expect(selector?.textContent).toContain("E2B · sandbox");
+  });
+
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
     const result = await renderForm(
       [
@@ -763,6 +785,27 @@ describe("AgentConfigForm environment selector", () => {
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
+  });
+
+  it("labels the platform-managed instance default by name, without the driver key", async () => {
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
+    const result = await renderForm([
+      makeEnvironment({
+        id: "managed-1",
+        name: "Paperclip Computer",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+        metadata: { managedByPaperclip: true },
+      }),
+    ]);
+    roots.push(result.root);
+
+    const selector = result.container.querySelector("select");
+
+    expect(selector?.textContent).toContain("Default: Paperclip Computer");
+    expect(selector?.textContent).toContain("Paperclip Computer");
+    expect(selector?.textContent).not.toContain("(sandbox)");
+    expect(selector?.textContent).not.toContain("· sandbox");
   });
 
   it("renders non-local adapter config fields in the Adapter card", async () => {
@@ -1237,6 +1280,73 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("shows the Login button for an agent with no own environment under the managed-sandbox-only policy", async () => {
+    // The agent has no own environment, so the login target resolves the same
+    // way as the adapter Test target. The managed-sandbox-only policy redirects
+    // that resolution from the hidden local environment to the managed sandbox.
+    // The login affordance must read the managed sandbox, so it shows after the
+    // auth-missing check. A login target that stayed local would hide the panel
+    // for the target the real run uses.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({
+          id: "local-1",
+          name: "Local",
+          driver: "local",
+          metadata: { defaultForInstance: true },
+        }),
+        makeEnvironment({
+          id: "managed-1",
+          name: "Managed",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+          metadata: { managedByPaperclip: true },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: null },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+  });
+
+  it("keeps the Login button hidden under the managed-sandbox-only policy when no managed sandbox is available", async () => {
+    // The policy is on, but no managed sandbox environment exists, so the login
+    // target resolution fails closed. The render catches that failure and
+    // resolves no login environment, so the affordance stays hidden. The Test
+    // surfaces the same case as a fail-closed error.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({
+          id: "local-1",
+          name: "Local",
+          driver: "local",
+          metadata: { defaultForInstance: true },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: null },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
 
     expect(findButton(result.container, "Log in")).toBeFalsy();
   });

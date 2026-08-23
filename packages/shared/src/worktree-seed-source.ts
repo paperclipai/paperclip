@@ -1,5 +1,6 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import path from "node:path";
+import { resolvePaperclipInstanceId } from "./home-paths.js";
 
 export type WorktreeSeedSourceDiagnostic = {
   configPath?: unknown;
@@ -22,8 +23,14 @@ export type RegisteredWorktreeSeedSourceInput = {
 };
 
 function readInstanceId(configPath: string, label: "source" | "target"): string {
-  const envPath = path.join(path.dirname(configPath), ".env");
+  const configDir = path.dirname(configPath);
+  const envPath = path.join(configDir, ".env");
   if (!existsSync(envPath)) {
+    // An instance-root config (`<home>/instances/<id>/config.json`) names its instance
+    // by directory rather than by an adjacent .env; worktree configs always ship one.
+    if (path.basename(path.dirname(configDir)) === "instances") {
+      return resolvePaperclipInstanceId(path.basename(configDir));
+    }
     throw new Error(`Registered ${label} Paperclip config is missing its adjacent .env instance pointer.`);
   }
   const contents = readFileSync(envPath, "utf8");
@@ -35,6 +42,56 @@ function readInstanceId(configPath: string, label: "source" | "target"): string 
     if (value) return value;
   }
   throw new Error(`Registered ${label} Paperclip config has no PAPERCLIP_INSTANCE_ID binding.`);
+}
+
+function errorCode(error: unknown): string {
+  return (error as NodeJS.ErrnoException | null)?.code ?? "unknown error";
+}
+
+/**
+ * Inspect a directory entry without following it, returning null only when it is absent.
+ *
+ * Any other failure means the declared path is unreadable or malformed, and a guess there
+ * would silently seed from a different instance.
+ */
+function inspectDeclaredEntry(entryPath: string, configPath: string, detail?: string): Stats | null {
+  try {
+    return lstatSync(entryPath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return null;
+    throw new Error(
+      `Registered base project workspace Paperclip config at ${configPath} cannot be inspected (${errorCode(error)}${detail ?? ""}).`,
+    );
+  }
+}
+
+/**
+ * Whether a base project workspace declares an instance config of its own.
+ *
+ * This tests directory entries and does not follow them. A dangling or aliased symlink,
+ * at the config itself or at the `.paperclip` directory holding it, still counts as a
+ * declared config, so the resolver rejects the malformed source instead of falling back
+ * to another one.
+ */
+export function baseWorkspaceDeclaresInstanceConfig(baseWorkspaceCwd: string): boolean {
+  const configDir = path.join(baseWorkspaceCwd, ".paperclip");
+  const configPath = path.join(configDir, "config.json");
+  if (inspectDeclaredEntry(configPath, configPath)) return true;
+
+  // The probe above resolves `.paperclip` before it reaches the config, so a broken link
+  // there also reports ENOENT. Only an absent or traversable `.paperclip` lets the caller
+  // name another source; a link that hides whatever it points at is malformed, not empty.
+  const configDirEntry = inspectDeclaredEntry(configDir, configPath, " on its .paperclip entry");
+  if (configDirEntry?.isSymbolicLink()) {
+    try {
+      statSync(configDir);
+    } catch (error) {
+      throw new Error(
+        `Registered base project workspace Paperclip config at ${configPath} cannot be inspected (${errorCode(error)} on its .paperclip symlink target).`,
+      );
+    }
+  }
+  return false;
 }
 
 function canonicalRegularFile(filePath: string, label: string): string {
@@ -81,10 +138,19 @@ export function resolveRegisteredWorktreeSeedSource(
     if (!lstatSync(canonicalBaseCwd).isDirectory()) {
       throw new Error(`Registered base project workspace is not a directory at ${canonicalBaseCwd}.`);
     }
-    registeredConfigPath = path.join(canonicalBaseCwd, ".paperclip", "config.json");
+    // A base workspace that is a plain checkout carries no instance config of its own.
+    // The caller's explicit source supplies it, and stays subject to every check below.
+    registeredConfigPath = baseWorkspaceDeclaresInstanceConfig(canonicalBaseCwd)
+      ? path.join(canonicalBaseCwd, ".paperclip", "config.json")
+      : null;
   }
 
-  const selectedPath = registeredConfigPath ?? explicitSource!;
+  const selectedPath = registeredConfigPath ?? explicitSource;
+  if (!selectedPath) {
+    throw new Error(
+      "Registered base project workspace has no Paperclip config of its own and no explicit source was provided.",
+    );
+  }
   const canonicalSourceConfigPath = canonicalRegularFile(selectedPath, "Registered source Paperclip config");
   if (registeredConfigPath && canonicalSourceConfigPath !== registeredConfigPath) {
     throw new Error("Registered source Paperclip config escapes the base project workspace or uses a symlink alias.");
@@ -127,10 +193,11 @@ export function resolveRegisteredWorktreeSeedSource(
  * Resolve a worktree seed source without granting authority to the seed manifest.
  *
  * A managed caller supplies the project-workspace cwd from its server-owned row.
- * An operator may instead supply an explicit source config. When both are present,
- * the explicit path must still equal the registered project-workspace config.
- * Manifest source fields are diagnostic assertions only and never select the
- * returned source.
+ * An operator may instead supply an explicit source config. A base workspace that
+ * carries its own `.paperclip/config.json` stays authoritative, so an explicit path
+ * must equal it; a base workspace that is a plain checkout has none, and the explicit
+ * path supplies the source. Manifest source fields are diagnostic assertions only and
+ * never select the returned source.
  */
 export function resolveCanonicalWorktreeSeedSource(input: RegisteredWorktreeSeedSourceInput & {
   manifestSource: WorktreeSeedSourceDiagnostic | null | undefined;

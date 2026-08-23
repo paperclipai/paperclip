@@ -83,6 +83,12 @@ export interface ExecutionWorkspaceStrategy {
   type: ExecutionWorkspaceStrategyType;
   baseRef?: string | null;
   branchTemplate?: string | null;
+  /**
+   * Pin the worktree to this exact pre-existing branch instead of rendering
+   * `branchTemplate`. Realization attaches (never creates) the branch and
+   * fails closed when the branch does not exist or is not safely attachable.
+   */
+  existingBranch?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
   runtimeProvisionCommand?: string | null;

@@ -17,6 +17,12 @@
  * keeps one bad frame from crashing the read loop.
  */
 
+import {
+  DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
+  type DuplexAggregateByteLedger,
+  type ReservationToken,
+} from "./duplex-aggregate-byte-ledger.js";
+
 /** The wire version this codec reads and writes. */
 export const DUPLEX_FRAME_VERSION = 1;
 
@@ -26,6 +32,20 @@ export const DUPLEX_FRAME_VERSION = 1;
  * character bound of the host duplex route.
  */
 export const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1_000_000;
+
+/**
+ * The maximum size of the frame `id` field, in bytes. The decoder rejects a
+ * request or a response frame that carries a longer id with an `id_too_large`
+ * protocol error. The read path returns the error; it never throws.
+ *
+ * The generated gateway builds each request id with `randomUUID()`, so a real id
+ * is 36 ASCII bytes. This bound of 256 bytes gives large headroom for that id and
+ * for any short future id scheme. The bound also caps the bytes the host broker
+ * retains per distinct request. The broker keeps one id per distinct dispatched
+ * request for the no-replay guarantee, so the id bound sets the per-id ceiling of
+ * that retained memory.
+ */
+export const DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES = 256;
 
 const NEWLINE_BYTE = 0x0a;
 const EMPTY = Buffer.alloc(0);
@@ -67,13 +87,18 @@ export interface DuplexResponseFrame {
 }
 
 /**
- * The READY control frame. The gateway sends it one time after it validates its
- * local listener address. The `address` field carries that validated address.
+ * The READY control frame. The gateway sends it one time after it binds the
+ * host-assigned listener port. READY is a liveness signal, not an address
+ * source. The frame carries exactly the frame version and the `nonce` string.
+ * The gateway echoes the nonce the host passed through the launch environment,
+ * so the host correlates the READY frame with this channel open. The frame
+ * carries no address data; the host builds the endpoint from its own stored
+ * port, never from the channel.
  */
 export interface DuplexReadyFrame {
   version: number;
   type: "ready";
-  address: string;
+  nonce: string;
 }
 
 /** The heartbeat control frame. Each side sends it on an interval to prove liveness. */
@@ -114,7 +139,9 @@ export type DuplexProtocolErrorCode =
   | "malformed_frame"
   | "unknown_type"
   | "version_mismatch"
-  | "frame_too_large";
+  | "frame_too_large"
+  | "id_too_large"
+  | "aggregate_bytes_exceeded";
 
 /** A decode-time protocol error. The read path returns it; it never throws. */
 export interface DuplexProtocolError {
@@ -126,6 +153,15 @@ export interface DuplexProtocolError {
 export type DuplexDecodeResult =
   | { ok: true; frame: DuplexFrame }
   | { ok: false; error: DuplexProtocolError };
+
+/**
+ * One size-checked encode result: one line, or a `frame_too_large` error. The
+ * shape mirrors {@link DuplexDecodeResult}, so the encode side reports the
+ * over-limit case as a typed outcome, not an exception.
+ */
+export type DuplexEncodeResult =
+  | { ok: true; line: string }
+  | { ok: false; error: { code: "frame_too_large"; message: string } };
 
 const RESPONSE_OUTCOMES: ReadonlySet<string> = new Set<DuplexResponseOutcome>([
   "completed",
@@ -153,6 +189,11 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return true;
 }
 
+/** Return true when the id byte size is within {@link DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES}. */
+function idWithinLimit(id: string): boolean {
+  return Buffer.byteLength(id, "utf8") <= DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES;
+}
+
 /**
  * Encode one frame to a single line of JSON with a trailing newline. `JSON.stringify`
  * escapes any newline inside a string value, so the returned line holds no
@@ -160,6 +201,30 @@ function isStringRecord(value: unknown): value is Record<string, string> {
  */
 export function encodeDuplexFrame(frame: DuplexFrame): string {
   return `${JSON.stringify(frame)}\n`;
+}
+
+/**
+ * Encode one frame to a single line and enforce the maximum frame size. The
+ * function measures the encoded JSON in bytes, without the trailing newline, so
+ * it matches the decoder bound exactly: a line the decoder accepts encodes, and a
+ * line the decoder rejects returns a `frame_too_large` result. The function never
+ * throws; it reports the over-limit case as a typed outcome.
+ *
+ * The size bound follows request and response bodies the host does not control,
+ * so an over-limit frame is an expected condition, not a programming error. Every
+ * write path that can carry a large body uses this function, so no path emits a
+ * frame the peer decoder rejects. The bound applies to every frame type; the
+ * guard is a no-op for a small control frame.
+ */
+export function encodeDuplexFrameChecked(
+  frame: DuplexFrame,
+  maxFrameBytes: number = DEFAULT_MAX_DUPLEX_FRAME_BYTES,
+): DuplexEncodeResult {
+  const json = JSON.stringify(frame);
+  if (Buffer.byteLength(json, "utf8") > maxFrameBytes) {
+    return { ok: false, error: { code: "frame_too_large", message: "frame exceeds the maximum size" } };
+  }
+  return { ok: true, line: `${json}\n` };
 }
 
 /**
@@ -220,6 +285,12 @@ function validateRequest(frame: Record<string, unknown>): DuplexDecodeResult {
   ) {
     return fail("malformed_frame", "request frame has a missing or wrong-typed field");
   }
+  // Bound the id byte size at the protocol level. The host broker retains one id
+  // per distinct dispatched request, so an unbounded id is a memory-exhaustion
+  // path. Reject an over-limit id as a protocol error; the read path never throws.
+  if (!idWithinLimit(frame.id)) {
+    return fail("id_too_large", "request frame id exceeds the maximum size");
+  }
   return ok(frame as unknown as DuplexRequestFrame);
 }
 
@@ -234,12 +305,26 @@ function validateResponse(frame: Record<string, unknown>): DuplexDecodeResult {
   ) {
     return fail("malformed_frame", "response frame has a missing or wrong-typed field");
   }
+  // Apply the same id byte bound to the response id. The host echoes the request
+  // id on the response, so the same rule keeps both frame ids under one ceiling.
+  if (!idWithinLimit(frame.id)) {
+    return fail("id_too_large", "response frame id exceeds the maximum size");
+  }
   return ok(frame as unknown as DuplexResponseFrame);
 }
 
 function validateReady(frame: Record<string, unknown>): DuplexDecodeResult {
-  if (typeof frame.address !== "string") {
-    return fail("malformed_frame", "ready frame has a missing or wrong-typed address");
+  // READY carries a liveness nonce, not an address. The schema is strict: a valid
+  // READY frame holds exactly `version`, `type`, and `nonce`. The decoder rejects
+  // an absent nonce, a wrong-typed nonce, or any extra field, so a READY frame
+  // that smuggles an `address`, a `port`, a `host`, or a URL never decodes.
+  if (typeof frame.nonce !== "string") {
+    return fail("malformed_frame", "ready frame has a missing or wrong-typed nonce");
+  }
+  for (const key of Object.keys(frame)) {
+    if (key !== "version" && key !== "type" && key !== "nonce") {
+      return fail("malformed_frame", "ready frame has an unexpected field");
+    }
   }
   return ok(frame as unknown as DuplexReadyFrame);
 }
@@ -266,6 +351,18 @@ function validateError(frame: Record<string, unknown>): DuplexDecodeResult {
 export interface DuplexFrameDecoderOptions {
   /** The maximum size of one frame, in bytes. Defaults to {@link DEFAULT_MAX_DUPLEX_FRAME_BYTES}. */
   maxFrameBytes?: number;
+  /**
+   * The process-owned aggregate byte ledger. When present, the decoder reserves
+   * the exact bytes of the raw partial frame it retains between chunks, and the
+   * peak replacement buffer it allocates on concat, against this ledger under the
+   * `decoder_buffer` owner. The host injects the same ledger object it injects at
+   * every other retention site, so one gauge bounds the aggregate retained bytes.
+   * When absent the decoder charges nothing and behaves as before.
+   *
+   * The generated sandbox decoder runs in a separate operating-system process. It
+   * cannot share this host ledger. It receives its own separate cap instead.
+   */
+  aggregateByteLedger?: DuplexAggregateByteLedger;
 }
 
 /**
@@ -286,15 +383,41 @@ export class DuplexFrameDecoder {
   private buffer: Buffer = EMPTY;
   private discarding = false;
   private readonly maxFrameBytes: number;
+  private readonly ledger: DuplexAggregateByteLedger | null;
+  /**
+   * The token for the bytes currently retained in `this.buffer`. Its byte amount
+   * equals `this.buffer.length` at the end of every `push`. It is `null` when the
+   * buffer is empty or the decoder has no ledger.
+   */
+  private retainedToken: ReservationToken | null = null;
 
   constructor(options: DuplexFrameDecoderOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_DUPLEX_FRAME_BYTES;
+    this.ledger = options.aggregateByteLedger ?? null;
   }
 
   /** Feed one chunk. Return the frames and protocol errors that complete on it. */
   push(chunk: Buffer | Uint8Array | string): DuplexDecodeResult[] {
     const incoming =
       typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
+
+    // Reserve the incoming bytes before the concat allocates the replacement
+    // buffer. The retained token already covers the current buffer, so the two
+    // tokens together cover the peak `old + incoming` allocation. A rejected
+    // reservation fails closed: the decoder drops the incoming chunk, releases
+    // the retained buffer, resynchronizes at the next newline, and reports the
+    // fixed aggregate rejection marker. It retains nothing uncharged.
+    let incomingToken: ReservationToken | null = null;
+    if (this.ledger && incoming.length > 0) {
+      incomingToken = this.ledger.reserve("decoder_buffer", incoming.length);
+      if (incomingToken === null) {
+        this.releaseRetained();
+        this.buffer = EMPTY;
+        this.discarding = true;
+        return [fail("aggregate_bytes_exceeded", DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED)];
+      }
+    }
+
     this.buffer =
       this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming]);
 
@@ -333,6 +456,54 @@ export class DuplexFrameDecoder {
       }
       results.push(decodeDuplexLine(line));
     }
+
+    // Reconcile the ledger to the bytes still retained in `this.buffer`. Release
+    // the old retained token and the incoming token, then reserve one token for
+    // the remainder. The remainder is a subset of the just-released
+    // `old + incoming` bytes, so this reserve always fits.
+    this.reconcileRetained(incomingToken);
     return results;
+  }
+
+  /**
+   * Release the retained-buffer token and drop the buffer. The host calls this at
+   * channel teardown, so the decoder never leaks a `decoder_buffer` token after
+   * the channel ends. A second call is a no-op, because the field is already
+   * `null`.
+   */
+  dispose(): void {
+    this.releaseRetained();
+    this.buffer = EMPTY;
+    this.discarding = false;
+  }
+
+  /** Release the retained-buffer token one time and clear the field. */
+  private releaseRetained(): void {
+    if (this.ledger && this.retainedToken) {
+      this.ledger.release(this.retainedToken);
+    }
+    this.retainedToken = null;
+  }
+
+  /**
+   * Move the ledger charge to the bytes still in `this.buffer`. Release the old
+   * retained token and the `incoming` token, then reserve one token for the
+   * remaining bytes. A `null` reserve here is an accounting defect, because the
+   * remainder never passes the just-released bytes; the decoder fails closed and
+   * drops the buffer so it retains nothing uncharged.
+   */
+  private reconcileRetained(incomingToken: ReservationToken | null): void {
+    if (!this.ledger) return;
+    this.releaseRetained();
+    if (incomingToken) {
+      this.ledger.release(incomingToken);
+    }
+    if (this.buffer.length > 0) {
+      this.retainedToken = this.ledger.reserve("decoder_buffer", this.buffer.length);
+      if (this.retainedToken === null) {
+        this.buffer = EMPTY;
+        this.discarding = true;
+      }
+    }
   }
 }

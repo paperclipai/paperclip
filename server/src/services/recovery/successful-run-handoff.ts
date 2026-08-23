@@ -17,7 +17,7 @@ export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+  "Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.";
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
   "## This issue still needs a next step",
   "## Successful run missing issue disposition",
@@ -212,15 +212,17 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
       sourceRunId: input.sourceRun?.id ?? null,
       sections: [
         {
-          title: "Recovery owner",
+          title: "Recovery",
           rows: [
             issueLinkRow("Source issue", input.issue),
             input.recoveryActionId
               ? keyValueRow("Recovery action", input.recoveryActionId)
               : issueLinkRow("Recovery issue", input.recoveryIssue),
-            agentLinkRow("Recovery owner", input.recoveryOwner),
+            input.recoveryOwner
+              ? agentLinkRow("Recovery owner", input.recoveryOwner)
+              : keyValueRow("Recovery owner", "Board decision required"),
             agentLinkRow("Source assignee", input.sourceAssignee),
-            keyValueRow("Suggested action", "choose and record a valid issue disposition without copying transcript content"),
+            keyValueRow("Suggested action", "inspect the evidence, then retry the original owner, explicitly reassign, or record a valid issue disposition"),
           ],
         },
         {

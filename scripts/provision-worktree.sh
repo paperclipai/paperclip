@@ -41,14 +41,26 @@ if [[ ! -d "$worktree_cwd" ]]; then
 fi
 
 canonical_base_cwd="$(cd "$base_cwd" && pwd -P)"
+if [[ -L "$canonical_base_cwd/.paperclip" && ! -d "$canonical_base_cwd/.paperclip" ]]; then
+  # A broken link hides whatever it points at, so the config below would read as absent
+  # on a workspace that is malformed rather than plain. Refuse instead of falling back.
+  echo "Registered base project workspace .paperclip is a broken symlink: $canonical_base_cwd/.paperclip" >&2
+  exit 1
+fi
 source_config_path="$canonical_base_cwd/.paperclip/config.json"
+if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+  # A base workspace that is a plain checkout carries no instance config of its own.
+  # Fall back to the control plane's own registered instance config, which is process
+  # state this workspace cannot rewrite.
+  source_config_path="${PAPERCLIP_CONFIG:-$paperclip_home/instances/$paperclip_instance_id/config.json}"
+fi
 if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
-  echo "Registered base project workspace has no canonical Paperclip config: $source_config_path" >&2
+  echo "Registered Paperclip seed source config is missing or is not a canonical file: $source_config_path" >&2
   exit 1
 fi
 canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
 if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
-  echo "Registered base project workspace Paperclip config uses a symlink alias: $source_config_path" >&2
+  echo "Registered Paperclip seed source config uses a symlink alias: $source_config_path" >&2
   exit 1
 fi
 source_env_path="$(dirname "$source_config_path")/.env"

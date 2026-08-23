@@ -26,6 +26,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   };
 });
 import {
+  buildAcpxRunSummary,
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -35,6 +36,8 @@ import {
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
+import { createDuplexBridgeBroker } from "../duplex-bridge-broker.js";
+import type { CommandManagedDuplexChannel } from "../command-managed-runtime.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -625,6 +628,362 @@ describe("shared ACPX engine runtime behavior", () => {
         tag: "agent_message_chunk",
       })}\n`,
     });
+  });
+
+  it("defaults run summaries to the final output segment without thought text", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Let me get oriented and inspect the PRs…",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield {
+              type: "text_delta",
+              text: "hidden chain of thought",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash (pending)",
+              title: "Bash",
+              status: "pending",
+              toolCallId: "tool-1",
+              tag: "tool_call",
+            };
+            yield {
+              type: "tool_call",
+              text: 'tool call (in_progress): {"command":"',
+              title: "tool call",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "tool_call",
+              text: "tool call (completed): apps",
+              title: "tool call",
+              status: "completed",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "text_delta",
+              text: "## Update\n\n- Checked PR status\n- Continue burn-in",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-default-traits-pin",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("## Update\n\n- Checked PR status\n- Continue burn-in");
+    expect(result.summary).not.toContain("Let me get oriented");
+    expect(result.summary).not.toContain("hidden chain of thought");
+    const toolCallEvents = logs
+      .map((entry) => {
+        try {
+          return JSON.parse(entry.text) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((parsed): parsed is Record<string, unknown> => parsed?.type === "acpx.tool_call");
+    // Every tool_call update reaches the run log — including in-progress
+    // updates with the unresolved placeholder title (their name is restored
+    // from the pending announcement). Nothing is coalesced or dropped for
+    // agents without the coalescePlaceholderToolUpdates trait.
+    expect(toolCallEvents.map((event) => [event.name, event.status])).toEqual([
+      ["Bash", "pending"],
+      ["Bash", "in_progress"],
+      ["Bash", "completed"],
+    ]);
+  });
+
+  it("does not allow configuration to include thought text in run summaries", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Let me get oriented and inspect the PRs…",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield {
+              type: "text_delta",
+              text: "hidden chain of thought",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash (pending)",
+              title: "Bash",
+              status: "pending",
+              toolCallId: "tool-1",
+              tag: "tool_call",
+            };
+            yield {
+              type: "tool_call",
+              text: 'tool call (in_progress): {"command":"',
+              title: "tool call",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "tool_call",
+              text: "tool call (completed): apps",
+              title: "tool call",
+              status: "completed",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "text_delta",
+              text: "## Update\n\n- Checked PR status\n- Continue burn-in",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-summary-last-segment",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        summaryStrategy: "full",
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("## Update\n\n- Checked PR status\n- Continue burn-in");
+    expect(result.summary).not.toContain("Let me get oriented");
+    expect(result.summary).not.toContain("hidden chain of thought");
+  });
+
+  it("treats a statusless initial tool call as an output-segment boundary", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Intermediate setup that must not be published",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash",
+              title: "Bash",
+              toolCallId: "tool-without-status",
+              tag: "tool_call",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash (completed)",
+              title: "Bash",
+              status: "completed",
+              toolCallId: "tool-without-status",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "text_delta",
+              text: "## Final update\n\n- Remediation verified",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-summary-statusless-tool-call",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("## Final update\n\n- Remediation verified");
+    expect(result.summary).not.toContain("Intermediate setup");
+  });
+
+  it("buildAcpxRunSummary prefers the last non-empty segment", () => {
+    expect(
+      buildAcpxRunSummary({
+        outputSegments: ["first plan", "second plan", "  final update  "],
+        fallback: "end_turn",
+      }),
+    ).toBe("final update");
+    expect(buildAcpxRunSummary({ outputSegments: ["", "  "], fallback: "end_turn" })).toBe("end_turn");
+  });
+
+  it("coalesces placeholder-title tool updates when the adapter opts in", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "tool_call",
+              text: "Bash (pending)",
+              title: "Bash",
+              status: "pending",
+              toolCallId: "tool-1",
+              tag: "tool_call",
+            };
+            yield {
+              type: "tool_call",
+              text: 'tool call (in_progress): {"command":"',
+              title: "tool call",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "tool_call",
+              text: 'tool call (in_progress): {"command":"ls',
+              title: "tool call",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "tool_call",
+              text: "Running: ls apps (in_progress)",
+              title: "Running: ls apps",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "tool_call",
+              text: "tool call (completed): apps\\npackage.json",
+              title: "tool call",
+              status: "completed",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-tool-call-coalesce",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        coalescePlaceholderToolUpdates: true,
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    const toolCallEvents = logs
+      .map((entry) => {
+        try {
+          return JSON.parse(entry.text) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((parsed): parsed is Record<string, unknown> => parsed?.type === "acpx.tool_call");
+    // The two placeholder-title in-progress updates are dropped; the pending
+    // announcement, the resolved-title in-progress update, and the terminal
+    // completed update all survive.
+    expect(toolCallEvents.map((event) => [event.name, event.status])).toEqual([
+      ["Bash", "pending"],
+      ["Running: ls apps", "in_progress"],
+      ["Bash", "completed"],
+    ]);
   });
 
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
@@ -5372,5 +5731,239 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // A minimal in-memory duplex channel. The test drives a channel exit to latch a
+  // real loss in a real broker, so the seam reads a real run disposition.
+  function createFakeDuplexChannel() {
+    let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
+    const channel: CommandManagedDuplexChannel = {
+      write(): void {},
+      onData(): void {},
+      onExit(listener: (exit: { exitCode: number | null }) => void): void {
+        exitListener = listener;
+      },
+      stop(): void {},
+      close(): Promise<void> {
+        return Promise.resolve();
+      },
+    };
+    return {
+      channel,
+      emitExit: (exit: { exitCode: number | null }) => exitListener?.(exit),
+    };
+  }
+
+  // Wrap a started real broker in a paperclip bridge handle. The handle exposes
+  // the same run-disposition surface the sandbox bridge exposes, so the seam runs
+  // against the real latch and the real orderly-completion mark.
+  function bridgeOverBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
+    const broker = createDuplexBridgeBroker({
+      channel: fake.channel,
+      forwardRequest: async () => ({ status: 200 }),
+    });
+    broker.start();
+    const markOrderlyCompletion = vi.fn(() => broker.markOrderlyCompletion());
+    const settleRunDisposition = vi.fn(() => broker.settleRunDisposition());
+    const stop = vi.fn(async () => {});
+    const handle = {
+      env: {
+        PAPERCLIP_API_URL: "http://127.0.0.1:1",
+        PAPERCLIP_API_KEY: "bridge-token",
+        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
+      },
+      readRunDisposition: () => broker.runDisposition,
+      settleRunDisposition,
+      markOrderlyCompletion,
+      stop,
+    };
+    return { broker, handle, markOrderlyCompletion, settleRunDisposition };
+  }
+
+  // A runtime whose one turn completes cleanly. The `beforeResult` hook runs at
+  // the exact point the ACP terminal resolves, so the test orders a duplex loss
+  // before the completion when it needs to.
+  function runtimeWithControlledResult(beforeResult?: () => void) {
+    return {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: (async () => {
+          beforeResult?.();
+          return { status: "completed" as const, stopReason: "end_turn" };
+        })(),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
+  // A runtime whose one turn fails. The `beforeResult` hook runs at the exact
+  // point the ACP terminal resolves, so the test orders channel activity before
+  // the failed finalization when it needs to.
+  function runtimeWithFailedResult(beforeResult?: () => void) {
+    return {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: (async () => {
+          beforeResult?.();
+          return { status: "failed" as const, error: new Error("agent failed") };
+        })(),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
+  async function setupRemoteSandbox() {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    const runner = createLocalSandboxRunner();
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner,
+    };
+    return { root, stateDir, localCwd, remoteCwd, executionTarget };
+  }
+
+  async function runRemote(
+    handle: unknown,
+    runtime: unknown,
+    sandbox: Awaited<ReturnType<typeof setupRemoteSandbox>>,
+  ) {
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
+      async () => handle as never,
+    );
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
+      async () => ({ agentCommand: null, stop: async () => {} }) as never,
+    );
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => runtime as never,
+    });
+    return await execute({
+      runId: "run-duplex-seam",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: sandbox.stateDir,
+        cwd: sandbox.localCwd,
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget: sandbox.executionTarget,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+  }
+
+  it("fails a completed run when the duplex channel was lost before the completion", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeDuplexChannel();
+    const { broker, handle, settleRunDisposition } = bridgeOverBroker(fake);
+    // Latch the loss before the ACP terminal resolves.
+    const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
+
+    const result = await runRemote(handle, runtime, sandbox);
+
+    // The lost channel overrides the nominally completed terminal to a failure.
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    // The message carries only the typed loss reason, not raw provider text.
+    expect(result.errorMessage).toContain("provider_exit");
+    expect(result.resultJson).toMatchObject({ status: "failed" });
+    // The seam read the disposition through the atomic settle step, and the
+    // latched loss kept the failure, so no orderly completion ordered.
+    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
+    expect(broker.runDisposition.failed).toBe(true);
+  });
+
+  it("keeps a completed run a success when the channel stays live, and a later teardown loss is benign", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeDuplexChannel();
+    const { broker, handle, settleRunDisposition } = bridgeOverBroker(fake);
+    // No loss before the completion.
+    const runtime = runtimeWithControlledResult();
+
+    const result = await runRemote(handle, runtime, sandbox);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode ?? null).toBeNull();
+    // The atomic settle step marked the orderly completion for the
+    // success-eligible terminal.
+    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
+    // A teardown loss ordered after the orderly completion is a normal teardown,
+    // so the run disposition stays a success.
+    fake.emitExit({ exitCode: 0 });
+    expect(broker.runDisposition.failed).toBe(false);
+  });
+
+  it("does not let a later completion or activity clear the loss latch", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeDuplexChannel();
+    const { broker, handle } = bridgeOverBroker(fake);
+    // Latch the loss before the ACP terminal resolves.
+    const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
+
+    const result = await runRemote(handle, runtime, sandbox);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    // A later orderly-completion mark and further channel activity cannot clear
+    // the latched loss.
+    broker.markOrderlyCompletion();
+    fake.emitExit({ exitCode: 0 });
+    expect(broker.runDisposition.failed).toBe(true);
+    expect(broker.runDisposition.lossReason).toBe("provider_exit");
+  });
+
+  it("marks an orderly completion on a failed terminal so the teardown loss emits no false loss", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeDuplexChannel();
+    const { broker, handle, markOrderlyCompletion } = bridgeOverBroker(fake);
+    // The turn fails, and no channel loss ordered before the finalization.
+    const runtime = runtimeWithFailedResult();
+
+    const result = await runRemote(handle, runtime, sandbox);
+
+    // The failed terminal stays a failure, but not a duplex loss.
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).not.toBe("duplex_channel_lost");
+    // The non-success-eligible terminal marked the orderly completion, so the
+    // teardown channel_exit orders after the mark and does not latch a loss.
+    expect(markOrderlyCompletion).toHaveBeenCalledTimes(1);
+    fake.emitExit({ exitCode: 0 });
+    expect(broker.runDisposition.failed).toBe(false);
   });
 });

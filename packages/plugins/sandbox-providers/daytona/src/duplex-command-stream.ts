@@ -45,6 +45,8 @@ export type {
   DaytonaPtyProcess,
 } from "./setup-token-pty.js";
 
+import { sendPtyInputInChunks } from "./pty-chunked-input.js";
+
 /**
  * A live duplex channel session for one command. The session allocates a real
  * pseudo-terminal in raw mode, streams the raw output, accepts host input, and
@@ -56,8 +58,13 @@ export interface DuplexChannelSession {
   onData(listener: (chunk: string) => void): void;
   /** Writes raw input bytes to the pseudo-terminal. */
   write(data: string): void;
-  /** Resolves with the child exit code when the command ends. */
-  wait(): Promise<{ exitCode: number | null }>;
+  /**
+   * Resolves when the command ends or the transport closes. A numeric `exitCode`
+   * is a real process exit. `transportClosed` is true when the pseudo-terminal
+   * socket closed with no exit data, so the caller can tell a real process exit
+   * from a reason-less transport close.
+   */
+  wait(): Promise<{ exitCode: number | null; transportClosed: boolean }>;
   /** Stops the child process. Safe to call more than one time. */
   kill(): void;
   /** Releases the session resources. Safe to call more than one time. */
@@ -74,6 +81,16 @@ export type DuplexChannelSessionOpener = (
   command: readonly string[],
 ) => Promise<DuplexChannelSession>;
 
+/**
+ * The typed, closed reason for a duplex channel write failure. The seam reports
+ * only this constant, never the raw provider error text. It maps to the host
+ * telemetry `write_error` loss reason.
+ */
+export const DAYTONA_DUPLEX_WRITE_ERROR_REASON = "write_error" as const;
+
+/** The typed reason a rejected host-to-sandbox write reports. */
+export type DaytonaDuplexWriteErrorReason = typeof DAYTONA_DUPLEX_WRITE_ERROR_REASON;
+
 /** The options for the Daytona duplex channel session. */
 export interface DaytonaDuplexChannelOptions {
   /** The working directory for the duplex channel PTY. Defaults to the sandbox default. */
@@ -84,6 +101,13 @@ export interface DaytonaDuplexChannelOptions {
    * stdout frame stream. Defaults to a per-channel path under `/tmp`.
    */
   diagnosticsPath?: string;
+  /**
+   * The write-error seam. The session calls it one time when a host-to-sandbox
+   * `sendInput` rejects. The session then ends the channel at once. The seam
+   * carries only the typed {@link DaytonaDuplexWriteErrorReason}; the raw provider
+   * error never reaches it.
+   */
+  onWriteError?: (reason: DaytonaDuplexWriteErrorReason) => void;
 }
 
 // The terminal size for the duplex channel PTY. The channel carries bytes, not a
@@ -183,6 +207,31 @@ export async function openDaytonaDuplexChannelSession(
   // frame newlines. The diagnostics redirect keeps the stdout frame stream clean.
   await handle.sendInput(buildDuplexChannelLaunchWrapper(command, diagnosticsPath));
 
+  // Report a host-to-sandbox write failure one time and end the channel at once.
+  // The seam carries only the typed reason; the raw provider error never leaves
+  // this scope. The channel end propagates the loss up through the exit.
+  //
+  // `channelTerminated` turns true on the first rejected chunk, before the early
+  // return, so a later queued write reads it and sends no chunk. Without the flag
+  // a queued write runs after the terminal kill and calls `sendInput` on the
+  // closed transport.
+  let channelTerminated = false;
+  let writeErrorReported = false;
+  const endOnWriteError = (): void => {
+    channelTerminated = true;
+    if (writeErrorReported) return;
+    writeErrorReported = true;
+    options?.onWriteError?.(DAYTONA_DUPLEX_WRITE_ERROR_REASON);
+    void handle.kill().catch(() => undefined);
+  };
+
+  // The tail of the write chain. The chunker awaits each chunk, so one write can
+  // suspend between its chunks. The chain runs each write after the previous
+  // write ends, so the chunks of two writes never interleave on the wire. The
+  // chain never rejects, because the chunker maps a rejected send to
+  // `endOnWriteError` and returns.
+  let writeChain: Promise<void> = Promise.resolve();
+
   return {
     onData(next: (chunk: string) => void): void {
       listener = next;
@@ -193,13 +242,38 @@ export async function openDaytonaDuplexChannelSession(
       }
     },
     write(data: string): void {
-      // Fire the input write. A write error must not throw into the transport, so
-      // the transport's stream stays the single result path.
-      void handle.sendInput(data).catch(() => undefined);
+      // Send the input as byte-bounded chunks under the provider message cap. A
+      // whole payload in one message can cross the cap and take the channel down,
+      // so the chunker slices the payload and sends each chunk in order. The chain
+      // runs this write after the previous write ends, so two writes keep their
+      // order and never interleave their chunks. A write error must not throw into
+      // the transport, so the transport's stream stays the single result path. On
+      // a rejected chunk, the chunker ends the channel one time through
+      // `endOnWriteError` and sends no later chunk. The raw provider error never
+      // reaches a sink.
+      //
+      // A rejected chunk terminalizes the channel and kills the transport. So this
+      // write skips the send when `channelTerminated` is true, and a queued write
+      // never calls `sendInput` on the closed transport.
+      writeChain = writeChain.then(() => {
+        if (channelTerminated) return;
+        return sendPtyInputInChunks(
+          (chunk) => handle.sendInput(chunk),
+          data,
+          endOnWriteError,
+        );
+      });
     },
-    async wait(): Promise<{ exitCode: number | null }> {
+    async wait(): Promise<{ exitCode: number | null; transportClosed: boolean }> {
       const result = await handle.wait();
-      return { exitCode: typeof result.exitCode === "number" ? result.exitCode : null };
+      if (typeof result.exitCode === "number") {
+        // A numeric exit code is a real process exit. The SDK parses it from the
+        // pseudo-terminal WebSocket close reason (for example `{"exitCode":0}`).
+        return { exitCode: result.exitCode, transportClosed: false };
+      }
+      // A non-numeric exit code marks a reason-less transport close: the socket
+      // closed with no exit data. It is a transport close, not a process exit.
+      return { exitCode: null, transportClosed: true };
     },
     kill(): void {
       void handle.kill().catch(() => undefined);

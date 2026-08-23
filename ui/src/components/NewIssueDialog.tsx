@@ -2239,7 +2239,7 @@ export function NewIssueDialog() {
                 )}
               >
                 <CurrentWorkModeIcon className="h-3 w-3" />
-                {currentWorkMode.shortLabel}
+                {currentWorkMode.label}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">

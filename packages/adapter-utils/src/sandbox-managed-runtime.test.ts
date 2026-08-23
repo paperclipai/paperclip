@@ -427,17 +427,17 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
     expect(runtimeStatuses).toEqual(expect.arrayContaining([
-      "config_sync:Syncing workspace to sandbox",
-      "config_sync:Syncing runtime assets to sandbox",
-      "restore:Restoring workspace from sandbox",
-      "finalize:Finalizing sandbox workspace",
+      "config_sync:Syncing workspace to environment",
+      "config_sync:Syncing runtime assets to environment",
+      "restore:Restoring workspace from environment",
+      "finalize:Finalizing workspace",
     ]));
     expect(runtimeStatuses).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^config_sync:Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
-      expect.stringMatching(/^config_sync:Syncing skills to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
-      expect.stringMatching(/^restore:Restoring workspace from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^config_sync:Syncing workspace to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^config_sync:Syncing skills to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^restore:Restoring workspace from environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
     ]));
-    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
+    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing workspace");
   });
 
   it.each(["workspace", "git-workspace"])(
@@ -645,11 +645,11 @@ describe("sandbox managed runtime", () => {
     // check above).
     expect(runtimeStatuses.some((status) => (
       status.phase === "config_sync" &&
-      /^Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+      /^Syncing workspace to environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
     ))).toBe(true);
     expect(runtimeStatuses.some((status) => (
       status.phase === "export" &&
-      /^Exporting git history from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+      /^Exporting git history from environment: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
     ))).toBe(true);
   });
 
@@ -1109,8 +1109,8 @@ describe("sandbox managed runtime", () => {
       },
     });
 
-    const uploadWorkspaceLines = lines.filter((line) => line.includes("Syncing workspace to sandbox"));
-    const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to sandbox"));
+    const uploadWorkspaceLines = lines.filter((line) => line.includes("Syncing workspace to environment"));
+    const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to environment"));
     expect(uploadWorkspaceLines.length).toBeGreaterThan(0);
     expect(uploadAssetLines.length).toBeGreaterThan(0);
     // 100 reported increments must be throttled to at most ~one line per 10% step.
@@ -1120,7 +1120,7 @@ describe("sandbox managed runtime", () => {
     expect(uploadWorkspaceLines.every((line) => /\(\d+\.\d\/\d+\.\d MB\)/.test(line))).toBe(true);
 
     await prepared.restoreWorkspace();
-    const restoreLines = lines.filter((line) => line.includes("Restoring workspace from sandbox"));
+    const restoreLines = lines.filter((line) => line.includes("Restoring workspace from environment"));
     expect(restoreLines.length).toBeGreaterThan(0);
     expect(restoreLines.length).toBeLessThanOrEqual(11);
     expect(restoreLines.some((line) => line.includes("100%"))).toBe(true);

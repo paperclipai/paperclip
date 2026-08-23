@@ -1740,7 +1740,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db.update(executionWorkspaces).set({
-      metadata: { createdByRuntime: true },
+      metadata: {
+        createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
+      },
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     let commitFailure = "";
     let refUpdateFailure = "";
@@ -4657,6 +4660,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
       metadata: {
         createdByRuntime: true,
+        gitBranchOwnershipVersion: 1,
         config: {
           cleanupCommand: "printf 'workspace cleanup\\n'",
         },
@@ -4695,5 +4699,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+
+    await db.update(executionWorkspaces).set({
+      metadata: { createdByRuntime: true },
+    }).where(eq(executionWorkspaces.id, executionWorkspaceId));
+    const legacyReadiness = await svc.getCloseReadiness(executionWorkspaceId);
+    expect(legacyReadiness?.git?.createdByRuntime).toBe(false);
+    expect(legacyReadiness?.plannedActions.map((action) => action.kind)).not.toContain("git_branch_delete");
   }, 20_000);
 });
