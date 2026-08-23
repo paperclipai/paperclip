@@ -252,6 +252,30 @@ export function isPidAlive(pid: number) {
   }
 }
 
+// `kill(pid, 0)` also succeeds for a process that has already terminated but
+// whose parent has not reaped it. A zombie cannot run, hold a listener or make
+// progress on a run; it is only waiting to be reaped. Judge it dead, matching
+// how isProcessGroupAlive() treats an all-zombie group.
+//
+// A positive result still means only that some process currently owns the PID.
+// PIDs are recycled, so this is a best-effort signal rather than proof that the
+// original child is the one still running.
+export function isProcessPidAlive(pid: number | null | undefined) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    // EPERM means the PID exists but is owned by another user.
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EPERM") return false;
+  }
+
+  if (process.platform === "linux") {
+    const state = readLinuxProcessState(pid);
+    if (state !== null) return state !== "Z" && state !== "X";
+  }
+  return true;
+}
+
 export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   if (process.platform === "win32") return false;
   if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
@@ -268,6 +292,29 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   return true;
 }
 
+// Returns the single-letter state field of /proc/<pid>/stat, or null when it
+// cannot be read. The command name is unquoted but may itself contain ")", so
+// the fields after it are located from the last ")" in the line.
+function readLinuxProcessStat(pid: number | string): { state: string; processGroupId: number } | null {
+  let stat: string;
+  try {
+    stat = fsSync.readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch {
+    // The process can exit while /proc is read.
+    return null;
+  }
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+  const state = fields[0];
+  if (!state) return null;
+  return { state, processGroupId: Number.parseInt(fields[2] ?? "", 10) };
+}
+
+function readLinuxProcessState(pid: number): string | null {
+  return readLinuxProcessStat(pid)?.state ?? null;
+}
+
 function readLinuxProcessGroupActivity(processGroupId: number): boolean | null {
   let entries: fsSync.Dirent[];
   try {
@@ -279,19 +326,10 @@ function readLinuxProcessGroupActivity(processGroupId: number): boolean | null {
   let foundMember = false;
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    try {
-      const stat = fsSync.readFileSync(`/proc/${entry.name}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      if (commandEnd < 0) continue;
-      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-      const state = fields[0];
-      const memberProcessGroupId = Number.parseInt(fields[2] ?? "", 10);
-      if (memberProcessGroupId !== processGroupId) continue;
-      foundMember = true;
-      if (state !== "Z" && state !== "X") return true;
-    } catch {
-      // The process can exit while /proc is scanned.
-    }
+    const member = readLinuxProcessStat(entry.name);
+    if (!member || member.processGroupId !== processGroupId) continue;
+    foundMember = true;
+    if (member.state !== "Z" && member.state !== "X") return true;
   }
 
   // kill(-pgid, 0) also succeeds for a group that contains only zombies. Such

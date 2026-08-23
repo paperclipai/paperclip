@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -302,6 +303,102 @@ async function spawnOrphanedProcessGroup() {
     processGroupId: leader.pid ?? null,
     descendantPid,
   };
+}
+
+function readLinuxProcessState(pid: number) {
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd < 0) return null;
+    return stat.slice(commandEnd + 1).trim().split(/\s+/)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForZombiePid(pid: number, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (readLinuxProcessState(pid) === "Z") return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return readLinuxProcessState(pid) === "Z";
+}
+
+// A killed process whose parent died with it is reparented to init, and an init
+// that does not reap leaves it as a zombie. `waitForPidExit` cannot see that
+// difference, so termination is judged from /proc: gone, or present but no
+// longer runnable.
+async function waitForPidStopped(pid: number, timeoutMs = 2_000) {
+  const stopped = () => {
+    const state = readLinuxProcessState(pid);
+    return state === null || state === "Z" || state === "X";
+  };
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (stopped()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return stopped();
+}
+
+// Reproduces the shape a server restart leaves behind: the pid recorded on the
+// run has exited but nobody has reaped it, so `kill(pid, 0)` still succeeds
+// while the process can no longer run.
+//
+// The zombie is anchored to a parent this test controls rather than to init:
+// the detached shell (a process-group leader thanks to `detached: true`) forks
+// a long-lived member and a short-lived one, then `exec`s into `sleep`. `exec`
+// keeps the pid, so the short-lived child's parent is now a `sleep` that never
+// calls wait(). The zombie therefore survives for the life of the group on any
+// host, whatever its init does with adopted orphans.
+async function spawnZombieLeadProcessGroup() {
+  const leader = spawn(
+    "/bin/sh",
+    [
+      "-c",
+      [
+        "sh -c 'exec sleep 300' &",
+        "echo descendant:$!",
+        "sh -c 'exit 0' &",
+        "echo zombie:$!",
+        "exec sleep 300",
+      ].join("\n"),
+    ],
+    {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+
+  let stdout = "";
+  leader.stdout?.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+
+  const readPid = (label: string) => {
+    const match = stdout.match(new RegExp(`${label}:(\\d+)`));
+    return match ? Number.parseInt(match[1] ?? "", 10) : Number.NaN;
+  };
+
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (Number.isInteger(readPid("descendant")) && Number.isInteger(readPid("zombie"))) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  const processGroupId = leader.pid ?? Number.NaN;
+  const descendantPid = readPid("descendant");
+  const zombiePid = readPid("zombie");
+  if (!Number.isInteger(processGroupId) || !Number.isInteger(descendantPid) || !Number.isInteger(zombiePid)) {
+    throw new Error(`Failed to capture zombie process group pids: ${stdout}`);
+  }
+
+  if (!(await waitForZombiePid(zombiePid))) {
+    throw new Error(`Expected pid ${zombiePid} to become an unreaped zombie, got state ${readLinuxProcessState(zombiePid)}`);
+  }
+
+  return { leader, processGroupId, descendantPid, zombiePid };
 }
 
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
@@ -2463,6 +2560,93 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+  });
+
+  it.skipIf(process.platform !== "linux")("reaps runs whose recorded pid is an unreaped zombie and still cleans up the live descendant group", async () => {
+    const orphan = await spawnZombieLeadProcessGroup();
+    childProcesses.add(orphan.leader);
+    cleanupPids.add(orphan.descendantPid);
+    expect(readLinuxProcessState(orphan.zombiePid)).toBe("Z");
+    expect(isPidAlive(orphan.descendantPid)).toBe(true);
+
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: orphan.zombiePid,
+      processGroupId: orphan.processGroupId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    // The live orphaned descendant is only reachable through the process-group
+    // cleanup branch, which the zombie pid used to short-circuit.
+    expect(await waitForPidStopped(orphan.descendantPid, 2_000)).toBe(true);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("descendant process group");
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      unmanagedBackgroundTask: {
+        kind: "orphaned_process_group_cleanup",
+        stopped: true,
+        processPid: orphan.zombiePid,
+        processGroupId: orphan.processGroupId,
+      },
+    });
+  });
+
+  it.skipIf(process.platform !== "linux")("reports hot-restart runs whose recorded pid is an unreaped zombie as lost instead of adopting them", async () => {
+    const orphan = await spawnZombieLeadProcessGroup();
+    childProcesses.add(orphan.leader);
+    cleanupPids.add(orphan.descendantPid);
+    expect(readLinuxProcessState(orphan.zombiePid)).toBe("Z");
+
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: orphan.zombiePid,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
+    });
+
+    await withTempPaperclipHome(async () => {
+      const heartbeat = heartbeatService(db);
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      });
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-03-19T00:07:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        lostRunIds: [runId],
+      });
+
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.resultJson).not.toMatchObject({ hotRestart: { adopted: true } });
+    });
   });
 
   it("blocks the issue when process-loss retry is exhausted and the immediate continuation recovery also fails", async () => {

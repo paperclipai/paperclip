@@ -177,7 +177,7 @@ import {
 import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
-import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
+import { isProcessGroupAlive, isProcessPidAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
@@ -6292,22 +6292,6 @@ export function buildPaperclipTaskMarkdown(input: {
   return lines.join("\n");
 }
 
-// A positive liveness check means some process currently owns the PID.
-// On Linux, PIDs can be recycled, so this is a best-effort signal rather
-// than proof that the original child is still alive.
-function isProcessAlive(pid: number | null | undefined) {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "EPERM") return true;
-    if (code === "ESRCH") return false;
-    return false;
-  }
-}
-
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -10567,7 +10551,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
-      const processPidAlive = isProcessAlive(processPid);
+      const processPidAlive = isProcessPidAlive(processPid);
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
         classify(candidate, "lost", "missing_process_metadata", patch);
@@ -13589,7 +13573,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      const processPidAlive = tracksLocalChild && run.processPid && isProcessPidAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
         (processPidAlive || processGroupAlive) &&
