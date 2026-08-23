@@ -9377,6 +9377,7 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/interactions/:interactionId/expire-stale",
+    validate(z.object({})),
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
@@ -9392,12 +9393,12 @@ export function issueRoutes(
         res.status(403).json({ error: "Only agent actors can stale-out their own pending interaction cards through this route; use the board reject/accept routes instead" });
         return;
       }
-      if (issue.assigneeAgentId !== actor.agentId) {
-        res.status(403).json({ error: "Only the current assignee agent of this issue can stale-out its pending interaction cards" });
-        return;
-      }
       if (!actor.agentId) {
         res.status(403).json({ error: "Agent actor missing identity" });
+        return;
+      }
+      if (issue.assigneeAgentId !== actor.agentId) {
+        res.status(403).json({ error: "Only the current assignee agent of this issue can stale-out its pending interaction cards" });
         return;
       }
       const interaction = await issueThreadInteractionsSvc.expireStaleInteractionForAssigneeAgent(
