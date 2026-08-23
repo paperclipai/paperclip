@@ -32,12 +32,14 @@ test("uses a stable synthetic task ID for a taskless heartbeat", async () => {
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const port = (server.address() as { port: number }).port;
   let dispatchedTaskId: unknown;
+  let dispatchedBrief: unknown;
   server.on("connection", (socket) => {
     socket.send(JSON.stringify({ type: "hello", role: "events" }));
     socket.on("message", (raw) => {
       const frame = JSON.parse(String(raw));
       if (frame.type !== "paperclip.dispatch") return;
       dispatchedTaskId = frame.taskId;
+      dispatchedBrief = frame.brief;
       socket.send(JSON.stringify({ type: "paperclip.dispatch_ack", runId: frame.runId, accepted: true }));
       socket.send(JSON.stringify({ type: "paperclip.run_event", runId: frame.runId, agentId: frame.agentId, kind: "completed", message: "done" }));
     });
@@ -53,6 +55,7 @@ test("uses a stable synthetic task ID for a taskless heartbeat", async () => {
   });
 
   assert.equal(dispatchedTaskId, "heartbeat:run-taskless");
+  assert.equal(dispatchedBrief, "Paperclip heartbeat: confirm receipt and report connectivity healthy; make no changes.");
   assert.equal(result.exitCode, 0);
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });

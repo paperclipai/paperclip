@@ -8,7 +8,7 @@ function text(value: unknown): string | null { return typeof value === "string" 
 function asRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function brief(context: Record<string, unknown>): string {
   const task = asRecord(context.task);
-  const title = text(task.title) ?? text(context.title) ?? "Paperclip task";
+  const title = text(task.title) ?? text(context.title) ?? "Paperclip heartbeat: confirm receipt and report connectivity healthy; make no changes.";
   const description = text(task.description) ?? text(context.description) ?? "";
   return description ? `${title}\n\n${description}` : title;
 }
