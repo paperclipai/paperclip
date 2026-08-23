@@ -59,6 +59,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  findStillBlockedDependencyWakeSuppression,
 } from "../issue-dependency-wakeups.js";
 import {
   evaluateAgentInvokabilityFromDb,
@@ -8040,6 +8041,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           terminalSuppressionMs: DEPENDENCY_WAKE_TERMINAL_SUPPRESSION_MS,
         });
         if (existingWake) {
+          result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        // TSMC-21321: backstop candidates are always status=blocked. If we already
+        // delivered (or cancelled) a blockers_resolved wake for this dependent
+        // recently — even under a different ready-state digest — hold further
+        // backstop emits on the escalating cooldown so key-churn cannot burn the
+        // fleet (TSR-5723). Route-time resolution of a brand-new blocker edge
+        // still wakes via the issue update path.
+        const stillBlockedHold = await findStillBlockedDependencyWakeSuppression(db, {
+          companyId,
+          dependentIssueId: candidate.id,
+        });
+        if (stillBlockedHold) {
           result.existingWakeSkipped += 1;
           continue;
         }
