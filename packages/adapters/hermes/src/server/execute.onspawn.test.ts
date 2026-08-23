@@ -205,3 +205,92 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     }
   });
 });
+
+function lastRunArgs(): string[] {
+  const mocked = vi.mocked(serverUtils.runChildProcess);
+  const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+  return lastCall[2] as string[];
+}
+
+describe("hermes-local quiet default and prompt-echo guard (#11976)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes -Q when quiet is unset so runtime matches the schema default", async () => {
+    const { ctx } = makeCtx();
+    await execute(ctx as any);
+    expect(lastRunArgs()).toContain("-Q");
+  });
+
+  it("passes -Q when quiet is true", async () => {
+    const { ctx } = makeCtx({ quiet: true });
+    await execute(ctx as any);
+    expect(lastRunArgs()).toContain("-Q");
+  });
+
+  it("omits -Q when quiet is explicitly false", async () => {
+    const { ctx } = makeCtx({ quiet: false });
+    await execute(ctx as any);
+    expect(lastRunArgs()).not.toContain("-Q");
+  });
+
+  it("rejects a Query: # prompt echo even when exit code is 0", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "Query: # Agent instructions\nYou are the CTO of Evermail.\n",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx({ quiet: false });
+    const result = await execute(ctx as any);
+
+    expect(result.resultJson).toMatchObject({ result: "" });
+    expect(result.summary).toBeUndefined();
+    expect(result.errorMessage).toMatch(/echoed the input prompt/i);
+  });
+
+  it("rejects stdout as the agent response when exit code is non-zero", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "Looks like a model answer but the process failed.\n",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.resultJson).toMatchObject({ result: "" });
+    expect(result.summary).toBeUndefined();
+    expect(result.errorMessage).toBe("Hermes exited with code 1");
+  });
+
+  it("keeps a successful quiet-mode response", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "Patched quiet default.\n\nsession_id: sess_abc123\n",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.resultJson).toMatchObject({
+      result: "Patched quiet default.",
+      session_id: "sess_abc123",
+    });
+    expect(result.summary).toBe("Patched quiet default.");
+  });
+});

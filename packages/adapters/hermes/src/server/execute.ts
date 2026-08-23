@@ -226,6 +226,9 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
+/** Hermes non-quiet mode echoes the prompt as "Query: # ..." on provider failure. */
+const PROMPT_ECHO_REGEX = /^\s*Query:\s*#/m;
+
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
@@ -415,8 +418,9 @@ export async function execute(
   }
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // Use -Q (quiet) to get clean output: just response + session_id line.
+  // Default true so runtime matches config-schema and README (#11976).
+  const useQuiet = cfgBoolean(config.quiet) !== false;
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
@@ -543,6 +547,18 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  // Never treat a prompt echo or non-zero exit stdout as agent output (#11976).
+  if (
+    parsed.response &&
+    (PROMPT_ECHO_REGEX.test(parsed.response) ||
+      (result.exitCode !== 0 && result.exitCode != null))
+  ) {
+    if (PROMPT_ECHO_REGEX.test(parsed.response) && !parsed.errorMessage) {
+      parsed.errorMessage =
+        "Hermes echoed the input prompt instead of producing a response (provider failure or quiet mode off).";
+    }
+    parsed.response = undefined;
+  }
 
   await ctx.onLog(
     "stdout",
