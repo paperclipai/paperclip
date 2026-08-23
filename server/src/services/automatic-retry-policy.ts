@@ -39,6 +39,31 @@ export function readQuotaFailureResetAt(
   return Number.isNaN(resetAt.getTime()) ? null : resetAt;
 }
 
+/**
+ * A provider's stated reset time is a CLAIM, not a fact, and it can be wrong in
+ * the expensive direction. Codex quotes a weekly window ("try again at Aug 27th,
+ * 2026 9:02 AM"). On 2026-08-23 a rejection quoted Aug 27 while the pool had in
+ * fact been reset that morning, sat at 94% free, and genuinely resets Aug 30.
+ *
+ * An over-long claim is self-sustaining: a parked lane cannot produce the
+ * successful run that clears its own cooldown, because
+ * findAgentActiveProviderQuotaCooldown stops at the first success it walks back
+ * to and a parked lane never runs. Honouring Aug 27 verbatim would have idled a
+ * healthy lane for four days while credit sat unused.
+ *
+ * Cap the honoured cooldown so the lane always re-probes. This keeps nearly all
+ * the benefit -- a lane retrying every 2h instead of every few seconds is ~99%
+ * fewer doomed requests -- while bounding the cost of a wrong claim to one
+ * wasted probe per interval instead of days of silence.
+ */
+export const QUOTA_COOLDOWN_MAX_MS = 2 * 60 * 60 * 1000;
+
+export function clampQuotaCooldown(resetAt: Date | null, now: Date = new Date()): Date | null {
+  if (!resetAt || resetAt.getTime() <= now.getTime()) return null;
+  const cap = now.getTime() + QUOTA_COOLDOWN_MAX_MS;
+  return resetAt.getTime() > cap ? new Date(cap) : resetAt;
+}
+
 export function buildQuotaCooldownCopy(
   run: QuotaFailureCandidate | null | undefined,
 ): string {

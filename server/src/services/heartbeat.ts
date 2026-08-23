@@ -115,6 +115,7 @@ import { NativeToolCallTelemetryCollector } from "./native-tool-call-telemetry.j
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import {
   buildQuotaCooldownCopy,
+  clampQuotaCooldown,
   isQuotaExhaustedFailureRun,
   readQuotaFailureResetAt,
 } from "./automatic-retry-policy.js";
@@ -4711,9 +4712,9 @@ function readActiveQuotaCooldown(
   now: Date = new Date(),
 ): Date | null {
   if (!isQuotaExhaustedFailureRun(run)) return null;
-  const resetAt = readQuotaFailureResetAt(run);
-  if (!resetAt || resetAt.getTime() <= now.getTime()) return null;
-  return resetAt;
+  // Bounded: a provider's stated reset is a claim, and a parked lane cannot
+  // produce the success that would clear an over-long one. See clampQuotaCooldown.
+  return clampQuotaCooldown(readQuotaFailureResetAt(run), now);
 }
 
 export function isTokenBudgetExhaustedRun(
