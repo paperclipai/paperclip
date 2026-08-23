@@ -434,9 +434,16 @@ export function readChangesRequestedExecutorAgentId(input: {
   if (state?.status !== CHANGES_REQUESTED_STATUS) return null;
   const returnAssignee = state.returnAssignee;
   if (returnAssignee?.type !== "agent") return null;
-  const agentId = returnAssignee.agentId ?? null;
-  if (!agentId) return null;
-  return agentId;
+  const returnAssigneeAgentId = returnAssignee.agentId ?? null;
+  if (!returnAssigneeAgentId) return null;
+  const assigneeAgentId = input.assigneeAgentId ?? null;
+  if (!assigneeAgentId) return returnAssigneeAgentId;
+  const leftoverParticipantAgentId =
+    state.currentParticipant?.type === "agent" ? (state.currentParticipant.agentId ?? null) : null;
+  if (assigneeAgentId !== returnAssigneeAgentId && assigneeAgentId !== leftoverParticipantAgentId) {
+    return assigneeAgentId;
+  }
+  return returnAssigneeAgentId;
 }
 
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
