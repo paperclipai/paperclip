@@ -92,7 +92,7 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 Paperclip data, including the embedded PostgreSQL cluster, defaults to
 `./data/docker-paperclip`.
 
-To use the separate PostgreSQL 17 service instead, configure `.env` and enable
+To use the separate PostgreSQL 18 service instead, configure `.env` and enable
 its Compose profile:
 
 ```dotenv
@@ -106,7 +106,8 @@ The PostgreSQL service is health-checked before Paperclip starts. Its data
 source defaults to the Docker named volume `postgres-data`; set
 `POSTGRES_DATA_DIR` to an absolute host path when host-managed storage is
 preferred. Changing this setting selects a different, initially empty database
-location; existing data is not migrated automatically.
+location; existing data is not migrated automatically. PostgreSQL 18 keeps the
+cluster in a major-version subdirectory inside this data source.
 
 The root `docker-compose.yml` also includes an nginx TLS proxy. By default it
 generates a self-signed certificate for `localhost` into the `proxy-certs`
