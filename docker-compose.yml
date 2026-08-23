@@ -89,7 +89,6 @@ services:
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         DOCKER_GID: ${DOCKER_GID:-992}
-#        APP_VERSION: ${PAPERCLIP_IMAGE_VERSION:-v2026.707.0}
     container_name: paperclip
     restart: unless-stopped
     depends_on:
@@ -129,7 +128,7 @@ services:
       PAPERCLIP_CONFIG: /paperclip/instances/default/config.json
       PAPERCLIP_DEPLOYMENT_MODE: authenticated
       PAPERCLIP_DEPLOYMENT_EXPOSURE: private
-#      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "true"
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       PAPERCLIP_AUTH_SECRET: "${PAPERCLIP_AUTH_SECRET:-}"
       PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-localhost,127.0.0.1}"
