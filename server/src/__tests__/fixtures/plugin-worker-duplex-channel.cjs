@@ -21,6 +21,9 @@
 //     and never lets the exit crowd a data frame out of the pre-open hold.
 //   - `echoInput`: when true, the fixture echoes each `duplexChannelWrite` back as
 //     one data notification for the bound session.
+//   - `writeReplyDelayMs`: when a positive number, the fixture delays each
+//     `duplexChannelWrite` reply by that many milliseconds, so a test proves the
+//     host holds the pending-write reservation until the RPC settles.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
@@ -124,6 +127,8 @@ rl.on("line", (line) => {
       closeMode,
       echoInput: directive.echoInput === true,
       noWriteReply: mode === "no-write-reply",
+      writeReplyDelayMs:
+        typeof directive.writeReplyDelayMs === "number" ? directive.writeReplyDelayMs : 0,
       emitAfterCloseChunk:
         typeof directive.emitAfterCloseChunk === "string" ? directive.emitAfterCloseChunk : null,
     });
@@ -195,7 +200,14 @@ rl.on("line", (line) => {
         },
       });
     }
-    send({ jsonrpc: "2.0", id: message.id, result: null });
+    const replyWrite = () => send({ jsonrpc: "2.0", id: message.id, result: null });
+    if (entry.writeReplyDelayMs > 0) {
+      // Delay the write reply, so the host holds the pending-write reservation for
+      // a measurable time before the RPC settles.
+      setTimeout(replyWrite, entry.writeReplyDelayMs);
+    } else {
+      replyWrite();
+    }
     return;
   }
 

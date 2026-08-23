@@ -162,6 +162,7 @@ describe("DuplexAggregateByteLedger", () => {
       "seen_request_id",
       "decoder_buffer",
       "readiness_buffer",
+      "pending_write",
     ]);
   });
 });

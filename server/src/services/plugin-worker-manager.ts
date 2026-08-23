@@ -2314,11 +2314,43 @@ export function createPluginWorkerHandle(
         void terminalizeDuplexChannelRoute(route);
         return;
       }
+      // Reserve the exact UTF-8 byte count of a host→worker write against the
+      // aggregate ledger before `callInternal` retains the payload. A pending write
+      // RPC holds `params.data` until it settles, so this reservation bounds the
+      // aggregate host→worker pending-write bytes across every route. Compute the
+      // byte count with `Buffer.byteLength`, not `data.length`, because one
+      // character can encode as several UTF-8 bytes. A stop request carries no
+      // payload, so it reserves nothing. When no ledger is present, admit the write
+      // with no token (a unit test constructs the handle this way).
+      let pendingWriteToken: ReservationToken | null = null;
+      if (method === "duplexChannelWrite" && duplexAggregateByteLedger) {
+        const data = (params as HostToWorkerMethods["duplexChannelWrite"][0]).data;
+        const bytes = Buffer.byteLength(data, "utf8");
+        pendingWriteToken = duplexAggregateByteLedger.reserve("pending_write", bytes);
+        if (!pendingWriteToken) {
+          // The reservation would pass the aggregate ceiling. Retain nothing, do
+          // not enqueue the RPC, and end the route fail-closed with the aggregate
+          // marker, not the route-busy marker.
+          log.warn(
+            { pluginId, reason: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED },
+            "duplex pending write reservation rejected",
+          );
+          void terminalizeDuplexChannelRoute(route);
+          return;
+        }
+      }
       route.pendingRequests += 1;
       void callInternal(method, params, duplexChannelOpenTimeoutMs)
         .catch(() => {})
         .finally(() => {
           route.pendingRequests -= 1;
+          // Release the pending-write token one time, after the RPC settles on any
+          // path: success, error, timeout, worker exit, or shutdown. The token is
+          // not in `route.retainedTokens`, so route terminalization never releases
+          // it; only this settlement releases it.
+          if (pendingWriteToken) {
+            duplexAggregateByteLedger?.release(pendingWriteToken);
+          }
         });
     };
 
