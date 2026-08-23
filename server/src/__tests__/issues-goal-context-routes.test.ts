@@ -576,4 +576,66 @@ describe.sequential("issue goal context routes", () => {
     expect(new Date(full.body.monitorNextCheckAt).toISOString()).toBe(compact.body.issue.monitorNextCheckAt);
     expect(compact.body.issue.monitorEligibleLive).toBe(true);
   });
+
+  it("projects persisted-only monitor metadata into heartbeat-context", async () => {
+    const secret = "https://example.test/pr/12?token=secret";
+    const nextCheckAt = new Date("2026-08-23T18:00:00.000Z");
+    const monitoredIssue = {
+      ...legacyProjectLinkedIssue,
+      status: "in_progress",
+      workMode: "standard",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      assigneeUserId: null,
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 1,
+      executionPolicy: { stages: [] },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: nextCheckAt.toISOString(),
+          lastTriggeredAt: null,
+          attemptCount: 1,
+          notes: "Check deployment",
+          scheduledBy: "assignee",
+          kind: "external_service",
+          serviceName: "github",
+          maxAttempts: 12,
+          externalRef: secret,
+          timeoutAt: null,
+          recoveryPolicy: "wake_owner",
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(monitoredIssue);
+
+    const [full, compact] = await Promise.all([
+      request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111"),
+      request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context"),
+    ]);
+
+    expect(full.status).toBe(200);
+    expect(compact.status).toBe(200);
+    expect(compact.body.issue.monitorEligibleLive).toBe(true);
+    expect(compact.body.issue.monitorStatus).toBe("scheduled");
+    expect(compact.body.issue.monitorNextCheckAt).toBe(nextCheckAt.toISOString());
+    expect(compact.body.issue.executionPolicy?.monitor).toEqual(expect.objectContaining({
+      kind: "external_service",
+      serviceName: "github",
+      maxAttempts: 12,
+      externalRef: "[redacted]",
+    }));
+    expect(JSON.stringify(compact.body)).not.toContain(secret);
+    expect(new Date(full.body.monitorNextCheckAt).toISOString()).toBe(compact.body.issue.monitorNextCheckAt);
+  });
 });

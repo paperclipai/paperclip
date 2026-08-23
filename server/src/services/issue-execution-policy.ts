@@ -168,10 +168,10 @@ function derivePersistedMonitorState(input: {
     scheduledByRaw === "assignee" || scheduledByRaw === "board" ? scheduledByRaw : null;
   const metadata = scheduledMonitor ? monitorMetadataFromPolicy(scheduledMonitor) : monitorMetadataFromState(fromState);
 
-  if (nextCheckAt) {
+  if (scheduledMonitor?.nextCheckAt) {
     return {
       status: "scheduled",
-      nextCheckAt,
+      nextCheckAt: isoString(input.issue.monitorNextCheckAt) ?? scheduledMonitor.nextCheckAt ?? fromState?.nextCheckAt ?? null,
       lastTriggeredAt,
       attemptCount,
       notes,
@@ -193,7 +193,35 @@ function derivePersistedMonitorState(input: {
     };
   }
 
-  if (fromState?.status === "triggered" || lastTriggeredAt || attemptCount > 0) {
+  if (fromState?.status === "triggered") {
+    return {
+      status: "triggered",
+      nextCheckAt: null,
+      lastTriggeredAt,
+      attemptCount,
+      notes,
+      scheduledBy,
+      ...metadata,
+      clearedAt: null,
+      clearReason: null,
+    };
+  }
+
+  if (nextCheckAt) {
+    return {
+      status: "scheduled",
+      nextCheckAt,
+      lastTriggeredAt,
+      attemptCount,
+      notes,
+      scheduledBy,
+      ...metadata,
+      clearedAt: null,
+      clearReason: null,
+    };
+  }
+
+  if (lastTriggeredAt || attemptCount > 0) {
     return {
       status: "triggered",
       nextCheckAt: null,
@@ -302,13 +330,9 @@ export function isEligibleIssueMonitorLive(issue: IssueLike, now: Date = new Dat
   const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
   const state = parseIssueExecutionState(issue.executionState);
   const persisted = derivePersistedMonitorState({ issue, state, policy });
-  if (!persisted || persisted.status === "cleared") return false;
+  if (!persisted || persisted.status !== "scheduled") return false;
 
-  const nextCheckAt =
-    toMillisecondIso(issue.monitorNextCheckAt) ??
-    persisted.nextCheckAt ??
-    policy?.monitor?.nextCheckAt ??
-    null;
+  const nextCheckAt = persisted.nextCheckAt ?? policy?.monitor?.nextCheckAt ?? null;
   if (!nextCheckAt) return false;
 
   const attemptCount = issue.monitorAttemptCount ?? persisted.attemptCount ?? 0;
@@ -320,19 +344,59 @@ export type CompactIssueMonitorProjection = {
   monitorNextCheckAt: string | null;
   monitorAttemptCount: number;
   monitorEligibleLive: boolean;
+  monitorStatus: IssueExecutionMonitorState["status"] | null;
   executionPolicy: IssueExecutionPolicy | null;
 };
+
+function compactMonitorPolicyFromPersisted(
+  persisted: IssueExecutionMonitorState,
+): IssueExecutionMonitorPolicy | null {
+  if (persisted.status !== "scheduled" || !persisted.nextCheckAt) return null;
+  return {
+    nextCheckAt: persisted.nextCheckAt,
+    notes: persisted.notes ?? null,
+    scheduledBy: persisted.scheduledBy ?? "assignee",
+    kind: persisted.kind ?? undefined,
+    serviceName: persisted.serviceName ?? undefined,
+    externalRef: redactIssueMonitorExternalRef(persisted.externalRef),
+    timeoutAt: persisted.timeoutAt ?? undefined,
+    maxAttempts: persisted.maxAttempts ?? undefined,
+    recoveryPolicy: persisted.recoveryPolicy ?? undefined,
+  };
+}
+
+function compactExecutionPolicy(
+  policy: IssueExecutionPolicy | null,
+  monitor: IssueExecutionMonitorPolicy | null,
+): IssueExecutionPolicy | null {
+  if (!monitor) return policy;
+  return {
+    mode: policy?.mode ?? "normal",
+    commentRequired: policy?.commentRequired ?? true,
+    stages: policy?.stages ?? [],
+    monitor,
+    ...(policy?.reviewPreset ? { reviewPreset: policy.reviewPreset } : {}),
+    ...(policy?.authorizationPolicy ? { authorizationPolicy: policy.authorizationPolicy } : {}),
+    ...(policy?.maxReviewRounds != null ? { maxReviewRounds: policy.maxReviewRounds } : {}),
+  };
+}
 
 export function compactIssueMonitorProjection(
   issue: IssueLike,
   now: Date = new Date(),
 ): CompactIssueMonitorProjection {
   const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+  const state = parseIssueExecutionState(issue.executionState);
+  const persisted = derivePersistedMonitorState({ issue, state, policy });
+  const compactMonitor = policy?.monitor ?? (persisted ? compactMonitorPolicyFromPersisted(persisted) : null);
   return {
-    monitorNextCheckAt: toMillisecondIso(issue.monitorNextCheckAt) ?? policy?.monitor?.nextCheckAt ?? null,
-    monitorAttemptCount: issue.monitorAttemptCount ?? 0,
+    monitorNextCheckAt: persisted?.status === "scheduled"
+      ? persisted.nextCheckAt ?? compactMonitor?.nextCheckAt ?? null
+      : null,
+    monitorAttemptCount: issue.monitorAttemptCount ?? persisted?.attemptCount ?? 0,
     monitorEligibleLive: isEligibleIssueMonitorLive(issue, now),
-    executionPolicy: policy,
+    monitorStatus: persisted?.status ?? null,
+    executionPolicy: compactExecutionPolicy(policy, compactMonitor),
   };
 }
 

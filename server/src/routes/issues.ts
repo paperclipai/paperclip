@@ -6470,6 +6470,7 @@ export function issueRoutes(
         monitorNextCheckAt: compactMonitor.monitorNextCheckAt,
         monitorAttemptCount: compactMonitor.monitorAttemptCount,
         monitorEligibleLive: compactMonitor.monitorEligibleLive,
+        monitorStatus: compactMonitor.monitorStatus,
         executionPolicy: compactMonitor.executionPolicy,
       },
       ancestors: ancestors.map((ancestor) => ({

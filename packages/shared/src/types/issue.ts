@@ -411,6 +411,7 @@ export interface IssueBlockerAttentionIssueSummary {
   monitorNextCheckAt?: string | null;
   monitorAttemptCount?: number;
   monitorEligibleLive?: boolean;
+  monitorStatus?: IssueExecutionMonitorStateStatus | null;
   executionPolicy?: unknown;
 }
 

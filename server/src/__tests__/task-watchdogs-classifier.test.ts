@@ -441,6 +441,45 @@ describe("task watchdog subtree classifier", () => {
     expect(JSON.stringify(result)).not.toMatch(/task_watchdog_stop:/);
   });
 
+  it("does not treat a stale timestamp as coverage after the monitor has triggered", () => {
+    const result = classify({
+      issues: [issue({
+        status: "in_progress",
+        monitorNextCheckAt: "2026-08-23T18:00:00.000Z",
+        monitorAttemptCount: 1,
+        executionPolicy: { stages: [] },
+        executionState: {
+          status: "idle",
+          currentStageId: null,
+          currentStageIndex: null,
+          currentStageType: null,
+          currentParticipant: null,
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: {
+            status: "triggered",
+            nextCheckAt: null,
+            lastTriggeredAt: "2026-08-23T17:00:00.000Z",
+            attemptCount: 1,
+            notes: null,
+            scheduledBy: "assignee",
+            kind: "external_service",
+            serviceName: "github",
+            maxAttempts: 12,
+            clearedAt: null,
+            clearReason: null,
+          },
+        },
+      })],
+    });
+
+    expect(result.state).toBe("stopped");
+    if (result.state !== "stopped") return;
+    expect(result.stopFingerprint).toMatch(/^task_watchdog_stop:/);
+  });
+
   it("does not treat ineligible monitor timestamps as coverage", () => {
     const userAssigned = classify({
       issues: [issue({
