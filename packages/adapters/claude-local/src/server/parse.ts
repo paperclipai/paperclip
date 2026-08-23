@@ -171,7 +171,20 @@ export function parseClaudeStreamJson(stdout: string) {
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
   const rawSummary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
-  const { disposition, cleanedText } = extractPaperclipDisposition(rawSummary);
+  let { disposition, cleanedText } = extractPaperclipDisposition(rawSummary);
+  // 2026-08-23: on deep runs claude states the PAPERCLIP_DISPOSITION line mid-run
+  // but its final result message summarizes without repeating it, so extracting
+  // only from the final message misses it (measured: 1 of 3 stated markers captured).
+  // Fall back to the full assistant transcript (last marker wins) — the line is
+  // already there, so no re-ask/extra turn is needed. cleanedText stays the
+  // human-facing final summary regardless.
+  if (!disposition) {
+    const transcript = assistantTexts.join("\n\n");
+    if (transcript && transcript !== rawSummary) {
+      const fromTranscript = extractPaperclipDisposition(transcript).disposition;
+      if (fromTranscript) disposition = fromTranscript;
+    }
+  }
   const mergedResultJson = disposition
     ? {
         ...finalResult,

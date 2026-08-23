@@ -150,7 +150,7 @@ describe("claude_local ACP startup fallback", () => {
         id: "msg-cap",
         content: [{ type: "text", text: "working" }],
         usage: {
-          input_tokens: 95_000,
+          input_tokens: 100_000,
           cache_creation_input_tokens: 1,
           cache_read_input_tokens: 90_000,
           output_tokens: 1,
@@ -182,14 +182,14 @@ describe("claude_local ACP startup fallback", () => {
       errorCode: "token_budget_exhausted",
       clearSession: true,
       usage: {
-        inputTokens: 95_001,
+        inputTokens: 100_001,
         cachedInputTokens: 90_000,
         outputTokens: 1,
       },
       resultJson: {
         stopReason: "token_budget_exhausted",
         maxTokensPerRun: 100_000,
-        observedTokens: 104_002,
+        observedTokens: 101_802,
       },
     });
   });
@@ -243,7 +243,7 @@ describe("claude_local ACP startup fallback", () => {
         content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: {} }],
         usage: {
           input_tokens: 1,
-          cache_creation_input_tokens: 20_000,
+          cache_creation_input_tokens: 22_000,
           cache_read_input_tokens: 30_000,
           output_tokens: 10,
         },
@@ -257,7 +257,7 @@ describe("claude_local ACP startup fallback", () => {
         content: [{ type: "tool_use", id: "tool-2", name: "Bash", input: {} }],
         usage: {
           input_tokens: 1,
-          cache_creation_input_tokens: 10_000,
+          cache_creation_input_tokens: 12_000,
           cache_read_input_tokens: 20_000,
           output_tokens: 10,
         },
@@ -282,9 +282,11 @@ describe("claude_local ACP startup fallback", () => {
 
     const result = await execute(buildContext({ maxTokensPerRun: 40_000 }) as never);
 
-    // Budget-weighted (TSMC-20840): observed = (20_001 + 10_001 fresh) + 20 out
-    // + 0.1 * 50_000 cached = 35_022; weighted next-turn projection from msg-2
-    // = 10_001 + 0.1 * 20_000 = 12_001; 35_022 + 12_001 >= 40_000.
+    // Budget-weighted (cache-read weight 0.02 since 2026-08-23): observed =
+    // (22_001 + 12_001 fresh incl. creation) + 20 out + 0.02 * 50_000 cached =
+    // 35_022; next-turn projection from msg-2 = 12_001 + 0.02 * 20_000 = 12_401;
+    // 35_022 + 12_401 >= 40_000 stops before the tool call. Creation (full weight)
+    // carries the budget so the predictive stop survives the lower cache weight.
     expect(result).toMatchObject({
       errorCode: "token_budget_exhausted",
       clearSession: true,
@@ -292,7 +294,7 @@ describe("claude_local ACP startup fallback", () => {
         stopReason: "token_budget_exhausted",
         maxTokensPerRun: 40_000,
         observedTokens: 35_022,
-        predictedNextTurnTokens: 12_001,
+        predictedNextTurnTokens: 12_401,
       },
     });
   });

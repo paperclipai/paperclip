@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CACHED_INPUT_BUDGET_WEIGHT } from "@paperclipai/adapter-utils";
 import {
   claudeModelUsageTotals,
   claudeAssistantMessageUsage,
@@ -64,6 +65,41 @@ describe("parseClaudeStreamJson", () => {
       }),
     });
   });
+
+  it("recovers a PAPERCLIP_DISPOSITION stated mid-run when the final result omits it", () => {
+    const stdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "session-x", model: "claude-sonnet" }),
+      JSON.stringify({
+        type: "assistant",
+        session_id: "session-x",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: [
+                "Completed the fix across the batch.",
+                'PAPERCLIP_DISPOSITION: {"status":"done","hasBlocker":false}',
+              ].join("\n"),
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "result",
+        session_id: "session-x",
+        result: "Summary: shipped the change; targeted tests green.",
+        usage: { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 4 },
+      }),
+    ].join("\n");
+
+    expect(parseClaudeStreamJson(stdout)).toMatchObject({
+      sessionId: "session-x",
+      summary: "Summary: shipped the change; targeted tests green.",
+      resultJson: expect.objectContaining({
+        disposition: { status: "done", hasBlocker: false },
+      }),
+    });
+  });
 });
 
 describe("claudeAssistantMessageUsage", () => {
@@ -83,8 +119,9 @@ describe("claudeAssistantMessageUsage", () => {
     })).toEqual({
       messageId: "msg-1",
       inputTokensForTurn: 26_924,
-      // 9_787 fresh + floor(0.1 * 17_137) cached (TSMC-20840 weighting).
-      weightedInputTokensForTurn: 11_500,
+      // 9_787 fresh + floor(CACHED_INPUT_BUDGET_WEIGHT * 17_137) cached
+      // (cache-read weight; 0.02 since 2026-08-23 — see token-budget.ts).
+      weightedInputTokensForTurn: 9_787 + Math.floor(CACHED_INPUT_BUDGET_WEIGHT * 17_137),
       hasToolUse: false,
       usage: {
         inputTokens: 9_787,

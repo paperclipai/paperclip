@@ -1488,7 +1488,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.resultJson).toMatchObject({
       stopReason: "token_budget_exhausted",
       maxTokensPerRun: 40_000,
-      observedTokens: 41_500,
+      observedTokens: 36_300,
     });
     expect(result.usage).toEqual({ inputTokens: 30_000, outputTokens: 5_000, cachedInputTokens: 65_000 });
   });
