@@ -5374,11 +5374,17 @@ export function issueRoutes(
    */
   async function assertNoAgentDelegationCycle(input: {
     actorType: string;
+    actorAgentId: string | null | undefined;
     parentIssueId: string | null | undefined;
     assigneeAgentId: string | null | undefined;
   }) {
     if (input.actorType !== "agent") return;
     if (!input.parentIssueId || !input.assigneeAgentId) return;
+    // An agent decomposing its own work into a child assigned to itself is not
+    // delegating the work back up the chain. This is a normal shape for
+    // idempotent refinement routines. Keep guarding the actual bounce case,
+    // where a different agent assigns the child back to an ancestor's creator.
+    if (input.actorAgentId === input.assigneeAgentId) return;
     const ancestor = await svc.findOpenAncestorCreatedByAgent(input.parentIssueId, input.assigneeAgentId);
     if (!ancestor) return;
     throw conflict(
@@ -8556,6 +8562,7 @@ export function issueRoutes(
     );
     await assertNoAgentDelegationCycle({
       actorType: req.actor.type,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
       parentIssueId: typeof effectiveParentId === "string" ? effectiveParentId : null,
       assigneeAgentId: normalizedAssigneeAgentId ?? null,
     });
@@ -8826,6 +8833,7 @@ export function issueRoutes(
     );
     await assertNoAgentDelegationCycle({
       actorType: req.actor.type,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
       parentIssueId: parent.id,
       assigneeAgentId: normalizedAssigneeAgentId ?? null,
     });

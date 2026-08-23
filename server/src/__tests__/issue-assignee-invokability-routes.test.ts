@@ -15,6 +15,7 @@ const agentStatusById: Record<string, string> = {
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  count: vi.fn(async () => 1),
   findOpenAncestorCreatedByAgent: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
@@ -307,6 +308,39 @@ describe("agent delegation cycle guard", () => {
     expect(res.body.details).toMatchObject({ code: "delegation_cycle" });
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.findOpenAncestorCreatedByAgent).toHaveBeenCalledWith(parent.id, IDLE_AGENT_ID);
+  });
+
+  it("allows an idempotent refinement child assigned by a PM to itself", async () => {
+    const parent = makeIssue({
+      createdByAgentId: AGENT_ACTOR_ID,
+      assigneeAgentId: AGENT_ACTOR_ID,
+    });
+    mockIssueService.getById.mockResolvedValue(parent);
+    mockIssueService.create.mockResolvedValue(makeIssue({
+      id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      parentId: parent.id,
+      assigneeAgentId: AGENT_ACTOR_ID,
+    }));
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/companies/${parent.companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "Refinar plano",
+        description: "Refinamento idempotente do card",
+        assigneeAgentId: AGENT_ACTOR_ID,
+        idempotencyKey: "trello-refinement:card-id",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).not.toHaveBeenCalled();
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      parent.companyId,
+      expect.objectContaining({
+        assigneeAgentId: AGENT_ACTOR_ID,
+        idempotencyKey: "trello-refinement:card-id",
+      }),
+    );
   });
 
   it("allows the same child when no open ancestor was created by the assignee", async () => {
