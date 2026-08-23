@@ -82,7 +82,8 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 ### Root Compose stack (embedded PostgreSQL by default)
 
 The root Compose stack starts Paperclip with its embedded PostgreSQL by default.
-It also starts Redis and the nginx TLS proxy.
+It also starts Redis. The nginx TLS proxy is optional and stays disabled unless
+the `proxy` profile is enabled.
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
@@ -96,10 +97,10 @@ To use the separate PostgreSQL 18 service instead, configure `.env` and enable
 its Compose profile:
 
 ```dotenv
-COMPOSE_PROFILES=postgres
 POSTGRES_PASSWORD=change-me
-DATABASE_URL=postgres://paperclip:change-me@postgres:5432/paperclip
+DATABASE_URL=postgres://paperclip:***@postgres:5432/paperclip
 POSTGRES_DATA_DIR=postgres-data
+COMPOSE_PROFILES=${POSTGRES_PASSWORD:+postgres}
 ```
 
 The PostgreSQL service is health-checked before Paperclip starts. Its data
@@ -109,9 +110,15 @@ preferred. Changing this setting selects a different, initially empty database
 location; existing data is not migrated automatically. PostgreSQL 18 keeps the
 cluster in a major-version subdirectory inside this data source.
 
-The root `docker-compose.yml` also includes an nginx TLS proxy. By default it
-generates a self-signed certificate for `localhost` into the `proxy-certs`
-Docker volume, publishes the Paperclip port only on
+When `DATABASE_URL` points to a remote PostgreSQL server, set only
+`DATABASE_URL` and leave `POSTGRES_PASSWORD` unset. The profile expression then
+stays empty and Compose does not build, create, or start the local PostgreSQL
+service. You can always enable it explicitly with
+`docker compose --profile postgres up`.
+
+The root `docker-compose.yml` also includes an optional nginx TLS proxy. When
+enabled, it generates a self-signed certificate for `localhost` into the
+`proxy-certs` Docker volume, publishes the Paperclip port only on
 `127.0.0.1:${PAPERCLIP_PORT:-3100}`, and publishes proxy ports `80` and `443`.
 The Paperclip container also resolves `host.docker.internal` through Docker's
 host gateway. Host-specific domains and real certificate mounts belong in
@@ -125,7 +132,14 @@ PAPERCLIP_PUBLIC_URL=https://paperclip.example.com
 PAPERCLIP_ALLOWED_HOSTNAMES=paperclip.example.com
 PAPERCLIP_TLS_SERVER_NAME=paperclip.example.com
 PAPERCLIP_TLS_CERT_ALT_NAMES=DNS:paperclip.example.com,DNS:localhost,IP:127.0.0.1
+# Keep this line after POSTGRES_PASSWORD and PAPERCLIP_TLS_SERVER_NAME.
+COMPOSE_PROFILES=${POSTGRES_PASSWORD:+postgres}${PAPERCLIP_TLS_SERVER_NAME:+${POSTGRES_PASSWORD:+,}proxy}
 ```
+
+This expression independently enables PostgreSQL when `POSTGRES_PASSWORD` is
+set and the proxy when `PAPERCLIP_TLS_SERVER_NAME` is set. You can always enable
+the proxy explicitly with `docker compose --profile proxy up`. Without its
+profile, Compose does not build, create, or start the proxy service.
 
 For a real certificate, keep only the host-specific bind mounts in a local
 override similar to this:

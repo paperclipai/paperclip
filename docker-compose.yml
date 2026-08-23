@@ -1,20 +1,24 @@
 # Paperclip docker-compose
 #
-# By default the production stack starts Redis, Paperclip with embedded
-# PostgreSQL, and the TLS proxy. A plain `docker compose down` removes those
-# containers before deleting the project network.
+# By default the production stack starts Redis and Paperclip with embedded
+# PostgreSQL. Optional profile services are created only when enabled.
 #
 # Profiles
 #   postgres  — separate PostgreSQL server instead of Paperclip's embedded one
-#               Also set POSTGRES_PASSWORD and DATABASE_URL in .env.
+#               Enable explicitly or through COMPOSE_PROFILES after setting
+#               POSTGRES_PASSWORD and DATABASE_URL in .env.
 #   ollama    — Ollama local-LLM server
 #               Also set OLLAMA_HOST in .env, e.g.:
 #               OLLAMA_HOST=http://ollama:11434
+#   proxy     — nginx TLS reverse proxy
+#               Enable explicitly or through COMPOSE_PROFILES after setting
+#               PAPERCLIP_TLS_SERVER_NAME in .env.
 #
 # Examples
 #   docker compose up
 #   docker compose --profile postgres up                # use separate PostgreSQL
 #   docker compose --profile ollama up                  # also start Ollama
+#   docker compose --profile proxy up                   # also start TLS proxy
 
 services:
 
@@ -147,6 +151,7 @@ services:
   # Nginx reverse-proxy with TLS termination
   # ---------------------------------------------------------------------------
   proxy:
+    profiles: [proxy]
     image: paperclip-nginx-selfsigned:local
     build:
       context: ./docker/nginx
