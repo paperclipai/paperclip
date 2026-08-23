@@ -126,6 +126,13 @@ async function seedPolicyProjectRun(input: {
   agentFixedCwd: string;
   isolatedWorkspacesEnabled: boolean;
   issueCount?: number;
+  assigneeAdapterOverrides?: Record<string, unknown>;
+  /**
+   * Whether the issues are pinned to the project's primary workspace. Pinning is what makes the
+   * dispatch path *expect* a project workspace, so a run that opts out of one has to be seeded
+   * unpinned or it fails a workspace-validation guard before ever reaching the adapter.
+   */
+  linkProjectWorkspace?: boolean;
 }) {
   const { db } = input;
   const issueCount = input.issueCount ?? 1;
@@ -192,7 +199,7 @@ async function seedPolicyProjectRun(input: {
       id,
       companyId,
       projectId,
-      projectWorkspaceId,
+      ...(input.linkProjectWorkspace === false ? {} : { projectWorkspaceId }),
       title: `Policy-governed task ${index + 1}`,
       status: "todo" as const,
       workMode: "standard" as const,
@@ -201,6 +208,9 @@ async function seedPolicyProjectRun(input: {
       responsibleUserId: "responsible-user",
       issueNumber: index + 1,
       identifier: `${issuePrefix}-${index + 1}`,
+      ...(input.assigneeAdapterOverrides
+        ? { assigneeAdapterOverrides: input.assigneeAdapterOverrides }
+        : {}),
     })),
   );
 
@@ -313,6 +323,61 @@ describeEmbeddedPostgres("project execution workspace policy suppressed by the i
     expect(finishedRun?.stdoutExcerpt ?? "").toContain("Isolated Workspaces");
   }, 60_000);
 
+  // The warning has to name the workspace the run actually got, not the one the common case gets.
+  // An assignee override that opts out of the project workspace sends the run to the agent's own
+  // fixed cwd, so a message hardcoded to "the shared project workspace" would point an operator at
+  // a checkout their work never touched — the opposite of the diagnosis this fix exists to give.
+  it("names the agent's own workspace when the run opted out of the project workspace", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const agentFixedCwd = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-agent-fixed-cwd-")));
+    tempRoots.push(agentFixedCwd);
+
+    const { agentId, issueId } = await seedPolicyProjectRun({
+      db,
+      repoRoot,
+      agentFixedCwd,
+      isolatedWorkspacesEnabled: false,
+      assigneeAdapterOverrides: { useProjectWorkspace: false },
+      linkProjectWorkspace: false,
+    });
+
+    let adapterWorkspace: ReturnType<typeof readAdapterWorkspace> | null = null;
+    adapterExecute.mockImplementationOnce(async (adapterInput: unknown) => {
+      adapterWorkspace = readAdapterWorkspace(adapterInput);
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Suppressed policy test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    expect(run).not.toBeNull();
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finishedRun?.status).toBe("succeeded");
+
+    // Where the run actually landed: the agent's own workspace, nowhere near the shared checkout.
+    expect(adapterWorkspace?.cwd).not.toBe(repoRoot);
+    expect(adapterWorkspace?.mode).toBe("agent_default");
+    // ...and what the warning tells the operator, which must be the same place.
+    expect(finishedRun?.stdoutExcerpt ?? "").toContain(
+      "This project configures an execution workspace policy",
+    );
+    expect(finishedRun?.stdoutExcerpt ?? "").toContain("the agent's own configured workspace");
+    expect(finishedRun?.stdoutExcerpt ?? "").not.toContain("shared project workspace");
+  }, 60_000);
+
   // The counterpart to the case above, and the one that decides where the bug actually lives. The
   // upstream report blames the agent's fixed `adapterConfig.cwd` for overriding the policy. With the
   // instance flag on, the very same seed — same stale agent cwd, same project policy — puts every
@@ -364,18 +429,26 @@ describeEmbeddedPostgres("project execution workspace policy suppressed by the i
       );
     }
 
-    expect(adapterWorkspaces).toHaveLength(2);
+    // An agent with pending assigned issues re-wakes itself, so the number of runs the adapter
+    // sees is timing-dependent and asserting on it is a flake. Settle those extra runs first,
+    // then assert the invariant that actually refutes the report: a worktree per issue, however
+    // many runs each issue took.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    expect(adapterWorkspaces.length).toBeGreaterThanOrEqual(issueIds.length);
     for (const workspace of adapterWorkspaces) {
       expect(workspace.strategy).toBe("git_worktree");
       // Neither the shared project checkout nor the agent's stale fixed cwd.
       expect(workspace.cwd).not.toBe(repoRoot);
       expect(workspace.cwd).not.toBe(agentFixedCwd);
     }
-    expect(adapterWorkspaces[0]!.cwd).not.toBe(adapterWorkspaces[1]!.cwd);
+    // One distinct worktree per issue: a repeat run for an issue rejoins that issue's worktree
+    // rather than stacking onto another issue's, which is exactly what the report says it cannot do.
+    expect(new Set(adapterWorkspaces.map((workspace) => workspace.cwd)).size).toBe(issueIds.length);
 
     // The reporter's step 4: `git worktree list` shows one worktree per issue, not one shared
     // checkout. The main checkout is the first line, so two issues means three lines.
     const worktreeList = await readGit(repoRoot, ["worktree", "list"]);
-    expect(worktreeList.split("\n")).toHaveLength(3);
+    expect(worktreeList.split("\n")).toHaveLength(issueIds.length + 1);
   }, 90_000);
 });

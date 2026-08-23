@@ -165,60 +165,151 @@ export function gateProjectExecutionWorkspacePolicy(
 }
 
 /**
- * Every policy field the gate discards, other than the two that only describe the policy itself
- * (`enabled` marks it active, `allowIssueOverride` scopes it). A policy carrying none of these
- * changes nothing when applied, so its suppression is not worth a warning.
+ * A low-trust review run is isolated regardless of what anything else asked for. Shared by the
+ * dispatch path and by the suppressed-policy diagnosis below so the two never drift.
  */
-const PROJECT_EXECUTION_WORKSPACE_POLICY_BEHAVIOUR_KEYS = [
-  "sharedWorkspaceConcurrency",
-  "defaultMode",
-  "defaultProjectWorkspaceId",
-  "environmentId",
-  "workspaceStrategy",
-  "workspaceRuntime",
-  "branchPolicy",
-  "pullRequestPolicy",
-  "runtimePolicy",
-  "cleanupPolicy",
-  "authorizationPolicy",
-] as const satisfies readonly (keyof ProjectExecutionWorkspacePolicy)[];
+export function applyLowTrustWorkspaceIsolation(
+  mode: ParsedExecutionWorkspaceMode,
+  lowTrustReview: boolean,
+): ParsedExecutionWorkspaceMode {
+  return lowTrustReview && mode === "shared_workspace" ? "isolated_workspace" : mode;
+}
 
 /**
- * Describe a project execution workspace policy that is configured but inert.
+ * Key-order-independent structural comparison, so an equal value written differently stays equal.
+ * An empty record collapses to null: it carries no fields, so setting a config key to `{}` and
+ * leaving that key unset configure the same thing.
+ */
+function stableJson(value: unknown): string {
+  return (
+    JSON.stringify(value, (_key, nested: unknown) => {
+      if (!nested || typeof nested !== "object" || Array.isArray(nested)) return nested;
+      const entries = Object.entries(nested as Record<string, unknown>).sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      );
+      return entries.length > 0 ? Object.fromEntries(entries) : null;
+    }) ?? "null"
+  );
+}
+
+type ExecutionWorkspaceControlInput = {
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+  legacyUseProjectWorkspace: boolean | null;
+  agentConfig: Record<string, unknown>;
+  lowTrustReview: boolean;
+};
+
+/**
+ * Everything the isolated-workspaces gate can change about a run's workspace: the mode, the
+ * shared-workspace concurrency, and the two adapter-config keys workspace control rewrites.
+ */
+function resolveExecutionWorkspaceControl(input: ExecutionWorkspaceControlInput) {
+  const mode = applyLowTrustWorkspaceIsolation(
+    resolveExecutionWorkspaceMode({
+      projectPolicy: input.projectPolicy,
+      issueSettings: input.issueSettings,
+      legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+    }),
+    input.lowTrustReview,
+  );
+  const adapterConfig = buildExecutionWorkspaceAdapterConfig({
+    agentConfig: input.agentConfig,
+    projectPolicy: input.projectPolicy,
+    issueSettings: input.issueSettings,
+    mode,
+    legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+  });
+  return {
+    mode,
+    sharedWorkspaceConcurrency: resolveSharedWorkspaceConcurrency({
+      projectPolicy: input.projectPolicy,
+      issueSettings: input.issueSettings,
+    }),
+    // Fingerprint the *effective* strategy, not the raw config key: an absent key and an explicit
+    // `project_primary` resolve to the same strategy, so they must not read as a difference.
+    adapterConfigFingerprint: stableJson([
+      {
+        ...(parseExecutionWorkspaceStrategy(adapterConfig.workspaceStrategy) ?? {}),
+        type: resolveEffectiveWorkspaceStrategyType(mode, adapterConfig),
+      },
+      adapterConfig.workspaceRuntime ?? null,
+    ]),
+  };
+}
+
+/** How the run's resolved mode reads to an operator diagnosing where their work landed. */
+const WORKSPACE_PHRASE_BY_MODE: Record<ParsedExecutionWorkspaceMode, string> = {
+  shared_workspace: "the shared project workspace",
+  isolated_workspace: "an isolated workspace",
+  operator_branch: "an operator branch workspace",
+  agent_default: "the agent's own configured workspace",
+};
+
+/**
+ * Describe a project execution workspace policy that is configured but not applied.
  *
  * {@link gateProjectExecutionWorkspacePolicy} drops the whole policy when the isolated-workspaces
  * instance feature is off, and downstream resolution then cannot tell "this project has no policy"
- * apart from "this project's policy was discarded": the run silently falls back to the shared
- * project workspace while the project API keeps echoing the policy back exactly as configured.
- * Callers use this to name the discard on the run instead of leaving the operator to infer it from
- * a checkout that never got its worktrees.
+ * apart from "this project's policy was discarded": the run silently falls back while the project
+ * API keeps echoing the policy back exactly as configured. Callers use this to name the discard on
+ * the run instead of leaving the operator to infer it from a checkout that never got its worktrees.
+ *
+ * The warning fires only when the gate actually changes the run, established by resolving workspace
+ * control both ways rather than by inspecting which fields the policy happens to carry: a policy
+ * persisting accepted defaults (`defaultMode: "shared_workspace"`, `sharedWorkspaceConcurrency:
+ * "auto"`, empty sub-objects) resolves identically with and without the gate and stays silent. It
+ * names the workspace the run resolved to rather than assuming the shared project checkout, which
+ * an `agent_default` override or a low-trust review run would not be.
  *
  * Returns null whenever there is nothing to warn about — the policy is applied, absent, disabled,
- * or requests no behaviour at all.
+ * or changes nothing.
  */
-export function describeSuppressedProjectExecutionWorkspacePolicy(
-  projectPolicy: ProjectExecutionWorkspacePolicy | null,
-  isolatedWorkspacesEnabled: boolean,
-): string | null {
-  if (isolatedWorkspacesEnabled) return null;
-  if (!projectPolicy?.enabled) return null;
-  const requestsBehaviour = PROJECT_EXECUTION_WORKSPACE_POLICY_BEHAVIOUR_KEYS.some((key) => {
-    const value = projectPolicy[key];
-    return value !== undefined && value !== null;
+export function describeSuppressedProjectExecutionWorkspacePolicy(input: {
+  /** The parsed, *ungated* project policy — the one the gate is about to discard. */
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  /** The parsed, *ungated* issue settings; the same gate drops these alongside the policy. */
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+  legacyUseProjectWorkspace: boolean | null;
+  agentConfig: Record<string, unknown>;
+  lowTrustReview: boolean;
+  isolatedWorkspacesEnabled: boolean;
+}): string | null {
+  if (input.isolatedWorkspacesEnabled) return null;
+  if (!input.projectPolicy?.enabled) return null;
+
+  const shared = {
+    legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+    agentConfig: input.agentConfig,
+    lowTrustReview: input.lowTrustReview,
+  };
+  // What the run would get with the flag on, against what it is actually getting with it off.
+  const applied = resolveExecutionWorkspaceControl({
+    ...shared,
+    projectPolicy: input.projectPolicy,
+    issueSettings: input.issueSettings,
   });
-  if (!requestsBehaviour) return null;
+  const suppressed = resolveExecutionWorkspaceControl({ ...shared, projectPolicy: null, issueSettings: null });
+  if (
+    applied.mode === suppressed.mode &&
+    applied.sharedWorkspaceConcurrency === suppressed.sharedWorkspaceConcurrency &&
+    applied.adapterConfigFingerprint === suppressed.adapterConfigFingerprint
+  ) {
+    return null;
+  }
 
   const details = [
-    ...(projectPolicy.defaultMode ? [`default mode "${projectPolicy.defaultMode}"`] : []),
-    ...(projectPolicy.workspaceStrategy?.type
-      ? [`workspace strategy "${projectPolicy.workspaceStrategy.type}"`]
+    ...(input.projectPolicy.defaultMode ? [`default mode "${input.projectPolicy.defaultMode}"`] : []),
+    ...(input.projectPolicy.workspaceStrategy?.type
+      ? [`workspace strategy "${input.projectPolicy.workspaceStrategy.type}"`]
       : []),
   ];
   const detailSuffix = details.length > 0 ? ` (${details.join(", ")})` : "";
   return (
     `This project configures an execution workspace policy${detailSuffix}, but the "Isolated Workspaces" ` +
-    "instance feature is disabled, so the policy is not applied and this run uses the shared project " +
-    'workspace. Enable "Isolated Workspaces" in instance settings for the project policy to take effect.'
+    `instance feature is disabled, so the policy is not applied and this run uses ` +
+    `${WORKSPACE_PHRASE_BY_MODE[suppressed.mode]} instead. Enable "Isolated Workspaces" in instance ` +
+    "settings for the project policy to take effect."
   );
 }
 

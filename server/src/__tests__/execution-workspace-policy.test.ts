@@ -534,15 +534,28 @@ describe("execution workspace policy helpers", () => {
   });
 
   describe("describeSuppressedProjectExecutionWorkspacePolicy", () => {
+    function describeSuppressed(
+      overrides: Partial<Parameters<typeof describeSuppressedProjectExecutionWorkspacePolicy>[0]>,
+    ) {
+      return describeSuppressedProjectExecutionWorkspacePolicy({
+        projectPolicy: null,
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+        agentConfig: {},
+        lowTrustReview: false,
+        isolatedWorkspacesEnabled: false,
+        ...overrides,
+      });
+    }
+
     it("names the discarded mode and strategy when the instance flag is off", () => {
-      const warning = describeSuppressedProjectExecutionWorkspacePolicy(
-        {
+      const warning = describeSuppressed({
+        projectPolicy: {
           enabled: true,
           defaultMode: "isolated_workspace",
           workspaceStrategy: { type: "git_worktree", baseRef: "main" },
         },
-        false,
-      );
+      });
       expect(warning).toContain("isolated_workspace");
       expect(warning).toContain("git_worktree");
       expect(warning).toContain("Isolated Workspaces");
@@ -550,40 +563,124 @@ describe("execution workspace policy helpers", () => {
     });
 
     it("names the discarded mode when the policy sets no explicit strategy", () => {
-      const warning = describeSuppressedProjectExecutionWorkspacePolicy(
-        { enabled: true, defaultMode: "operator_branch" },
-        false,
-      );
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "operator_branch" },
+      });
       expect(warning).toContain("operator_branch");
       expect(warning).not.toContain("git_worktree");
     });
 
     it("stays silent when the policy is actually applied", () => {
       expect(
-        describeSuppressedProjectExecutionWorkspacePolicy(
-          {
+        describeSuppressed({
+          projectPolicy: {
             enabled: true,
             defaultMode: "isolated_workspace",
             workspaceStrategy: { type: "git_worktree" },
           },
-          true,
-        ),
+          isolatedWorkspacesEnabled: true,
+        }),
       ).toBeNull();
     });
 
     it("stays silent when the project configured no active policy", () => {
-      expect(describeSuppressedProjectExecutionWorkspacePolicy(null, false)).toBeNull();
+      expect(describeSuppressed({})).toBeNull();
+      expect(describeSuppressed({ projectPolicy: { enabled: false } })).toBeNull();
+    });
+
+    // A policy row can be persisted with `enabled: true` and nothing else. It resolves to the same
+    // workspace with and without the gate, so naming it would be noise rather than a signal.
+    it("stays silent when an enabled policy requests no workspace behaviour", () => {
+      expect(describeSuppressed({ projectPolicy: { enabled: true } })).toBeNull();
+    });
+
+    // The API accepts and persists the resolution defaults verbatim, so plenty of rows carry them.
+    // Suppressing such a policy resolves to exactly the same workspace it would with the flag on,
+    // and warning every run about a difference that does not exist is pure noise.
+    it("stays silent for a policy that only restates the resolution defaults", () => {
       expect(
-        describeSuppressedProjectExecutionWorkspacePolicy({ enabled: false }, false),
+        describeSuppressed({
+          projectPolicy: {
+            enabled: true,
+            defaultMode: "shared_workspace",
+            allowIssueOverride: true,
+            sharedWorkspaceConcurrency: "auto",
+            workspaceStrategy: { type: "project_primary" },
+            workspaceRuntime: {},
+          },
+        }),
       ).toBeNull();
     });
 
-    // A policy row can be persisted with `enabled: true` and nothing else. It still changes
-    // nothing when applied, so naming it would be noise rather than a signal.
-    it("stays silent when an enabled policy requests no workspace behaviour", () => {
+    // ...but the same default-looking policy is not inert once the agent carries its own workspace
+    // strategy: applying the policy strips it, suppressing the policy leaves it in place.
+    it("warns when suppressing a default-looking policy leaves the agent's own strategy standing", () => {
       expect(
-        describeSuppressedProjectExecutionWorkspacePolicy({ enabled: true }, false),
+        describeSuppressed({
+          projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+          agentConfig: { workspaceStrategy: { type: "git_worktree" } },
+        }),
+      ).toContain("shared project workspace");
+    });
+
+    it("warns when suppression only changes the shared-workspace concurrency", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" },
+        }),
+      ).toContain("Isolated Workspaces");
+    });
+
+    // The report's fear is that the run lands on the shared checkout, but a run whose assignee
+    // override opts out of the project workspace lands on the agent's own cwd instead. Naming the
+    // shared checkout there would point the operator at the wrong directory entirely.
+    it("names the agent's own workspace when the run opted out of the project workspace", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        legacyUseProjectWorkspace: false,
+      });
+      expect(warning).toContain("the agent's own configured workspace");
+      expect(warning).not.toContain("shared project workspace");
+    });
+
+    // A low-trust review run is isolated whatever the flag says, so calling this run's workspace
+    // the shared project checkout would be plainly wrong. The isolation the policy asked for is
+    // already in force; only the git_worktree strategy is still suppressed.
+    it("names an isolated workspace when a low-trust review run isolates the run anyway", () => {
+      const warning = describeSuppressed({
+        projectPolicy: {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree" },
+        },
+        lowTrustReview: true,
+      });
+      expect(warning).toContain("an isolated workspace");
+      expect(warning).not.toContain("shared project workspace");
+    });
+
+    // ...and once the strategy matches too, low-trust isolation leaves nothing suppressed at all.
+    it("stays silent when low-trust isolation already matches the policy in full", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+            workspaceStrategy: { type: "project_primary" },
+          },
+          lowTrustReview: true,
+        }),
       ).toBeNull();
+    });
+
+    // Issue-level settings ride the same gate as the project policy, so the counterfactual has to
+    // drop both — otherwise a pinned issue mode makes the two worlds look identical.
+    it("names the fallback workspace when the gate drops pinned issue settings too", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+        issueSettings: { mode: "isolated_workspace" },
+      });
+      expect(warning).toContain("the shared project workspace");
     });
 
     // The suppressed warning has to survive the exact round trip the dispatch path takes:
@@ -596,9 +693,7 @@ describe("execution workspace policy helpers", () => {
         workspaceStrategy: { type: "git_worktree", baseRef: "main" },
       });
       expect(gateProjectExecutionWorkspacePolicy(parsed, false)).toBeNull();
-      expect(describeSuppressedProjectExecutionWorkspacePolicy(parsed, false)).toContain(
-        "isolated_workspace",
-      );
+      expect(describeSuppressed({ projectPolicy: parsed })).toContain("isolated_workspace");
     });
   });
 });

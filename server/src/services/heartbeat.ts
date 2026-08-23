@@ -196,6 +196,7 @@ import {
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
+  applyLowTrustWorkspaceIsolation,
   buildExecutionWorkspaceAdapterConfig,
   describeSuppressedProjectExecutionWorkspacePolicy,
   gateProjectExecutionWorkspacePolicy,
@@ -14320,30 +14321,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       parsedProjectExecutionWorkspacePolicy,
       isolatedWorkspacesEnabled,
     );
-    // The gate returns null for a discarded policy exactly as it does for a project that never
-    // configured one, so without this the run is indistinguishable from an unconfigured project
-    // while the project API keeps echoing the policy back. Name the discard on the run instead.
-    const suppressedProjectExecutionWorkspacePolicyWarning =
-      describeSuppressedProjectExecutionWorkspacePolicy(
-        parsedProjectExecutionWorkspacePolicy,
-        isolatedWorkspacesEnabled,
-      );
-    if (suppressedProjectExecutionWorkspacePolicyWarning) {
-      logger.warn(
-        {
-          event: "project_execution_workspace_policy_suppressed",
-          companyId: agent.companyId,
-          agentId: agent.id,
-          runId: run.id,
-          issueId,
-          projectId: projectContext?.id ?? null,
-          projectDefaultMode: parsedProjectExecutionWorkspacePolicy?.defaultMode ?? null,
-          projectWorkspaceStrategyType:
-            parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
-        },
-        "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
-      );
-    }
     const trustPreset = resolveCoreTrustPreset({
       companyId: agent.companyId,
       agent: {
@@ -14384,10 +14361,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
-    const requestedExecutionWorkspaceMode =
-      trustPreset.kind === "low_trust_review" && resolvedExecutionWorkspaceMode === "shared_workspace"
-        ? "isolated_workspace"
-        : resolvedExecutionWorkspaceMode;
+    const lowTrustReview = trustPreset.kind === "low_trust_review";
+    const requestedExecutionWorkspaceMode = applyLowTrustWorkspaceIsolation(
+      resolvedExecutionWorkspaceMode,
+      lowTrustReview,
+    );
+    // The gate returns null for a discarded policy exactly as it does for a project that never
+    // configured one, so without this the run is indistinguishable from an unconfigured project
+    // while the project API keeps echoing the policy back. Name the discard on the run instead.
+    // Resolved here rather than at the gate so the warning can name the workspace this run
+    // actually resolved to instead of assuming the shared project checkout.
+    const suppressedProjectExecutionWorkspacePolicyWarning =
+      describeSuppressedProjectExecutionWorkspacePolicy({
+        projectPolicy: parsedProjectExecutionWorkspacePolicy,
+        issueSettings: parsedIssueExecutionWorkspaceSettings,
+        legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        agentConfig: config,
+        lowTrustReview,
+        isolatedWorkspacesEnabled,
+      });
+    if (suppressedProjectExecutionWorkspacePolicyWarning) {
+      logger.warn(
+        {
+          event: "project_execution_workspace_policy_suppressed",
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId,
+          projectId: projectContext?.id ?? null,
+          projectDefaultMode: parsedProjectExecutionWorkspacePolicy?.defaultMode ?? null,
+          projectWorkspaceStrategyType:
+            parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
+          resolvedExecutionWorkspaceMode: requestedExecutionWorkspaceMode,
+        },
+        "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
+      );
+    }
     const issueRef = issueContext
       ? {
           id: issueContext.id,
