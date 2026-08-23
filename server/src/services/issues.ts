@@ -87,7 +87,12 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  compactIssueMonitorProjection,
+  isEligibleIssueMonitorLive,
+  normalizeIssueExecutionPolicy,
+} from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -1939,13 +1944,30 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 };
 type IssueBlockerAttentionInputNode =
   Pick<
     IssueBlockerAttentionNode,
-    "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
+    | "id"
+    | "companyId"
+    | "parentId"
+    | "identifier"
+    | "title"
+    | "status"
+    | "assigneeAgentId"
+    | "assigneeUserId"
   >
-  & { executionRunId?: string | null };
+  & {
+    executionRunId?: string | null;
+    executionPolicy?: Record<string, unknown> | null;
+    executionState?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | string | null;
+    monitorAttemptCount?: number | null;
+  };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -2376,6 +2398,10 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2400,6 +2426,10 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issues)
         .where(
@@ -2438,6 +2468,10 @@ async function listIssueBlockerAttentionMap(
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
+          executionPolicy: row.executionPolicy,
+          executionState: row.executionState,
+          monitorNextCheckAt: row.monitorNextCheckAt,
+          monitorAttemptCount: row.monitorAttemptCount,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -2650,6 +2684,9 @@ async function listIssueBlockerAttentionMap(
     if (explicitWaitingIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
+    if (isEligibleIssueMonitorLive(node)) {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
     if (node.assigneeUserId && node.status !== "cancelled") {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
@@ -2758,7 +2795,8 @@ async function listIssueBlockerAttentionMap(
       node.status === "in_progress" ||
       activeIssueIds.has(node.id) ||
       explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId)
+      Boolean(node.assigneeUserId) ||
+      isEligibleIssueMonitorLive(node)
     ) return true;
 
     const nextSeen = new Set(seen);
@@ -2854,6 +2892,10 @@ async function listIssueBlockerAttentionMap(
             id: terminalBlockerNode.id,
             identifier: terminalBlockerNode.identifier,
             title: terminalBlockerNode.title,
+            status: terminalBlockerNode.status,
+            assigneeAgentId: terminalBlockerNode.assigneeAgentId,
+            assigneeUserId: terminalBlockerNode.assigneeUserId,
+            ...compactIssueMonitorProjection(terminalBlockerNode),
           }
         : null,
     }));

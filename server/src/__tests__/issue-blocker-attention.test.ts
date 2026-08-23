@@ -100,6 +100,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originId?: string | null;
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
+    executionPolicy?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number;
     description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -117,6 +120,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
+      executionPolicy: input.executionPolicy ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      monitorAttemptCount: input.monitorAttemptCount ?? 0,
       description: input.description ?? null,
     });
     return id;
@@ -992,6 +998,83 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(rows.map((row) => row.id)).toEqual([assignedParentId]);
 
     await expect(svc.count(companyId, { attention: "blocked", assigneeAgentId: agentId })).resolves.toBe(1);
+  });
+
+  it("classifies an eligible scheduled monitor leaf as covered and live", async () => {
+    const { companyId, agentId } = await createCompany("PBM");
+    const parentId = await insertIssue({ companyId, identifier: "PBM-1", title: "Parent", status: "blocked" });
+    const nextCheckAt = new Date("2026-08-23T18:00:00.000Z");
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBM-2",
+      title: "Monitor leaf",
+      status: "in_progress",
+      parentId,
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 0,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          serviceName: "github",
+          maxAttempts: 12,
+        },
+      },
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      blockingTreeLive: true,
+      terminalBlocker: expect.objectContaining({
+        id: blockerId,
+        identifier: "PBM-2",
+        status: "in_progress",
+        monitorNextCheckAt: nextCheckAt.toISOString(),
+        monitorEligibleLive: true,
+      }),
+    });
+  });
+
+  it("does not treat an exhausted monitor timestamp as coverage", async () => {
+    const { companyId, agentId } = await createCompany("PBE");
+    const parentId = await insertIssue({ companyId, identifier: "PBE-1", title: "Parent", status: "blocked" });
+    const nextCheckAt = new Date("2026-08-23T18:00:00.000Z");
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBE-2",
+      title: "Exhausted monitor leaf",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 12,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          maxAttempts: 12,
+        },
+      },
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      coveredBlockerCount: 0,
+      blockingTreeLive: true,
+      terminalBlocker: expect.objectContaining({
+        id: blockerId,
+        monitorEligibleLive: false,
+      }),
+    });
   });
 
   it("rejects malformed assigneeAgentId filter values on the blocked-inbox path", async () => {

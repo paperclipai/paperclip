@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  compactIssueMonitorProjection,
+  isEligibleIssueMonitorLive,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -2083,5 +2090,109 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+});
+
+describe("isEligibleIssueMonitorLive", () => {
+  const agentId = coderAgentId;
+  const futureCheck = "2026-08-23T18:00:00.000Z";
+  const pastCheck = "2026-08-23T16:00:00.000Z";
+  const now = new Date("2026-08-23T17:00:00.000Z");
+
+  function liveIssue(overrides: Record<string, unknown> = {}) {
+    return {
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      monitorNextCheckAt: futureCheck,
+      monitorAttemptCount: 0,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: futureCheck,
+          serviceName: "github",
+          maxAttempts: 12,
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it("treats a future eligible monitor as live", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue(), now)).toBe(true);
+  });
+
+  it("treats a due-but-unfired eligible monitor as live", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorNextCheckAt: pastCheck,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: pastCheck,
+          serviceName: "github",
+          maxAttempts: 12,
+        },
+      },
+    }), now)).toBe(true);
+  });
+
+  it("does not treat timestamps as coverage for ineligible assignees or statuses", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({ assigneeUserId: "board-user" }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ assigneeAgentId: null }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ status: "blocked" }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ status: "backlog" }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ status: "done" }), now)).toBe(false);
+  });
+
+  it("does not treat exhausted or cleared monitors as live", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorAttemptCount: 12,
+      executionPolicy: {
+        monitor: { nextCheckAt: futureCheck, maxAttempts: 12 },
+      },
+    }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorNextCheckAt: null,
+      executionPolicy: { stages: [] },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "cleared",
+          nextCheckAt: null,
+          lastTriggeredAt: null,
+          attemptCount: 1,
+          notes: null,
+          scheduledBy: "assignee",
+          clearedAt: now.toISOString(),
+          clearReason: "manual",
+        },
+      },
+    }), now)).toBe(false);
+  });
+
+  it("projects compact monitor fields with redacted externalRef", () => {
+    const secret = "https://example.test/deploy?token=secret";
+    const projection = compactIssueMonitorProjection(liveIssue({
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: futureCheck,
+          serviceName: "github",
+          maxAttempts: 12,
+          externalRef: secret,
+        },
+      },
+    }), now);
+
+    expect(projection.monitorNextCheckAt).toBe(futureCheck);
+    expect(projection.monitorAttemptCount).toBe(0);
+    expect(projection.monitorEligibleLive).toBe(true);
+    expect(projection.executionPolicy?.monitor?.externalRef).toBe(REDACTED_ISSUE_MONITOR_EXTERNAL_REF);
+    expect(JSON.stringify(projection)).not.toContain(secret);
   });
 });

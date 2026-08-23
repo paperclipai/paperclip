@@ -23,6 +23,7 @@ import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import { isEligibleIssueMonitorLive } from "./issue-execution-policy.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -74,6 +75,10 @@ export type TaskWatchdogClassifierIssue = Pick<
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
+  executionPolicy?: IssueRow["executionPolicy"] | Record<string, unknown> | null;
+  executionState?: IssueRow["executionState"] | Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 };
 
 export type TaskWatchdogClassifierPath = {
@@ -411,12 +416,14 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...included.filter((issue) => isEligibleIssueMonitorLive(issue)).map((issue) => issue.id),
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason:
+        "At least one issue in the watched subtree has a live run, queued wake, scheduled retry, or eligible issue monitor.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };
@@ -875,6 +882,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           origin_kind,
           updated_at,
           created_at,
+          execution_policy,
+          execution_state,
+          monitor_next_check_at,
+          monitor_attempt_count,
           0 AS depth
         FROM issues
         WHERE company_id = ${companyId}
@@ -894,6 +905,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.origin_kind,
           child.updated_at,
           child.created_at,
+          child.execution_policy,
+          child.execution_state,
+          child.monitor_next_check_at,
+          child.monitor_attempt_count,
           watched_issues.depth + 1
         FROM issues child
         JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -914,7 +929,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        execution_policy AS "executionPolicy",
+        execution_state AS "executionState",
+        monitor_next_check_at AS "monitorNextCheckAt",
+        monitor_attempt_count AS "monitorAttemptCount"
       FROM watched_issues
     `);
 

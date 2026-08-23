@@ -540,4 +540,40 @@ describe.sequential("issue goal context routes", () => {
       ],
     }));
   });
+
+  it("projects monitorNextCheckAt and redacted eligibility fields on heartbeat-context", async () => {
+    const secret = "https://example.test/pr/12?token=secret";
+    const nextCheckAt = new Date("2026-08-23T18:00:00.123Z");
+    const monitoredIssue = {
+      ...legacyProjectLinkedIssue,
+      status: "in_progress",
+      workMode: "standard",
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 1,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          serviceName: "github",
+          maxAttempts: 12,
+          externalRef: secret,
+        },
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(monitoredIssue);
+
+    const [full, compact] = await Promise.all([
+      request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111"),
+      request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context"),
+    ]);
+
+    expect(full.status).toBe(200);
+    expect(compact.status).toBe(200);
+    expect(compact.body.issue.monitorNextCheckAt).toBe(nextCheckAt.toISOString());
+    expect(compact.body.issue.monitorAttemptCount).toBe(1);
+    expect(compact.body.issue.monitorEligibleLive).toBe(true);
+    expect(compact.body.issue.executionPolicy?.monitor?.externalRef).toBe("[redacted]");
+    expect(JSON.stringify(compact.body)).not.toContain(secret);
+    expect(new Date(full.body.monitorNextCheckAt).toISOString()).toBe(compact.body.issue.monitorNextCheckAt);
+    expect(compact.body.issue.monitorEligibleLive).toBe(true);
+  });
 });

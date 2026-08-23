@@ -387,4 +387,105 @@ describe("task watchdog subtree classifier", () => {
 
     expect(result.state).toBe("not_applicable");
   });
+
+  it("treats an eligible future monitor on a terminal leaf as a live subtree", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "blocked" }),
+        issue({
+          id: childId,
+          identifier: "PAP-2",
+          parentId: sourceId,
+          status: "in_progress",
+          monitorNextCheckAt: "2026-08-23T18:00:00.000Z",
+          monitorAttemptCount: 0,
+          executionPolicy: {
+            monitor: {
+              nextCheckAt: "2026-08-23T18:00:00.000Z",
+              serviceName: "github",
+              maxAttempts: 12,
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [childId],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/task_watchdog_stop:/);
+  });
+
+  it("treats a due-but-unfired eligible monitor as live", () => {
+    const result = classify({
+      issues: [
+        issue({
+          status: "in_progress",
+          monitorNextCheckAt: "2026-08-23T16:00:00.000Z",
+          monitorAttemptCount: 0,
+          executionPolicy: {
+            monitor: {
+              nextCheckAt: "2026-08-23T16:00:00.000Z",
+              maxAttempts: 12,
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [sourceId],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/task_watchdog_stop:/);
+  });
+
+  it("does not treat ineligible monitor timestamps as coverage", () => {
+    const userAssigned = classify({
+      issues: [issue({
+        status: "in_progress",
+        assigneeUserId: "board-user",
+        monitorNextCheckAt: "2026-08-23T18:00:00.000Z",
+      })],
+    });
+    const blocked = classify({
+      issues: [issue({
+        status: "blocked",
+        monitorNextCheckAt: "2026-08-23T18:00:00.000Z",
+      })],
+    });
+    const exhausted = classify({
+      issues: [issue({
+        status: "in_progress",
+        monitorNextCheckAt: "2026-08-23T18:00:00.000Z",
+        monitorAttemptCount: 12,
+        executionPolicy: {
+          monitor: { nextCheckAt: "2026-08-23T18:00:00.000Z", maxAttempts: 12 },
+        },
+      })],
+    });
+    const noAgent = classify({
+      issues: [issue({
+        status: "in_progress",
+        assigneeAgentId: null,
+        monitorNextCheckAt: "2026-08-23T18:00:00.000Z",
+      })],
+    });
+
+    expect(userAssigned.state).toBe("stopped");
+    expect(blocked.state).toBe("stopped");
+    expect(exhausted.state).toBe("stopped");
+    expect(noAgent.state).toBe("stopped");
+  });
+
+  it("still emits a stop fingerprint for a true in_progress stall with no monitor", () => {
+    const result = classify({
+      issues: [issue({ status: "in_progress", monitorNextCheckAt: null })],
+    });
+
+    expect(result.state).toBe("stopped");
+    if (result.state !== "stopped") return;
+    expect(result.stopFingerprint).toMatch(/^task_watchdog_stop:/);
+  });
 });
