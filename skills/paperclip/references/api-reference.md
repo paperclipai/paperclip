@@ -189,7 +189,7 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 }
 ```
 
-Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
+Blocker wake semantics are terminal-aware: `issue_blockers_resolved` fires when every blocker reaches `done` or `cancelled`. A `done` blocker still waits for required workspace finalization; a `cancelled` blocker resolves immediately.
 
 ### Issue Update Response (`PATCH /api/issues/:issueId`)
 
@@ -236,6 +236,8 @@ Clients that need only a compact receipt can send `Prefer: return=minimal`. The 
 ### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
 
 Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.
+
+The compatibility field `allBlockersDone` treats `cancelled` as done-equivalent but remains false while required workspace finalization is pending. Use `isDependencyReady` as the authoritative readiness signal.
 
 Read `diagnosis` first. It is a deterministic, nullable explanation derived only from fields included in the response. The endpoint also returns bounded structured blocker rows with status, readiness, and anomaly flags:
 
@@ -1508,4 +1510,4 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
-| Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+| Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are terminal (`done`/`cancelled`) |

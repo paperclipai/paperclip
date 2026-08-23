@@ -4362,6 +4362,41 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("does not apply the done-only workspace-finalize barrier to cancelled blockers", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, blockerId));
+
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      blockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [],
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+      expect.objectContaining({ id: dependentId, assigneeAgentId }),
+    ]);
+    await expect(svc.checkout(dependentId, assigneeAgentId, ["blocked"], null)).resolves.toMatchObject({
+      id: dependentId,
+      status: "in_progress",
+    });
+  });
+
   it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -4441,6 +4476,34 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
       issueId: blockedId,
       blockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+  });
+
+  it("treats mixed done and cancelled blockers as dependency-ready", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const doneBlockerId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: doneBlockerId, companyId, title: "Done blocker", status: "done", priority: "medium" },
+      { id: cancelledBlockerId, companyId, title: "Cancelled blocker", status: "cancelled", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked", status: "blocked", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [doneBlockerId, cancelledBlockerId] });
+
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      blockerIssueIds: expect.arrayContaining([doneBlockerId, cancelledBlockerId]),
       unresolvedBlockerIssueIds: [],
       unresolvedBlockerCount: 0,
       allBlockersDone: true,

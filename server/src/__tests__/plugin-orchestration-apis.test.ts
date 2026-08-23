@@ -6,11 +6,13 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   approvals,
   assets,
   companies,
+  companySkills,
   companyMemberships,
   costEvents,
   createDb,
@@ -107,6 +109,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(costEvents);
     await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(issueRelations);
     await db.delete(issueComments);
     await db.delete(issueThreadInteractions);
@@ -118,6 +121,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
+    await db.delete(companySkills);
     await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
@@ -673,6 +677,68 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         reason: "mission_advance",
       }),
     ).rejects.toThrow("Issue is blocked by unresolved blockers");
+  });
+
+  it("allows plugin wakeups when blockers are done or cancelled", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const responsibleUserId = randomUUID();
+    const doneBlockerIssueId = randomUUID();
+    const cancelledBlockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: doneBlockerIssueId,
+        companyId,
+        title: "Done blocker",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: cancelledBlockerIssueId,
+        companyId,
+        title: "Cancelled blocker",
+        status: "cancelled",
+        priority: "medium",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Ready issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: doneBlockerIssueId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: cancelledBlockerIssueId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+    ]);
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    await expect(
+      services.issues.requestWakeup({
+        issueId: blockedIssueId,
+        companyId,
+        reason: "mission_advance",
+      }),
+    ).resolves.toMatchObject({ queued: true });
   });
 
   it("narrows orchestration cost summaries by subtree and billing code", async () => {
