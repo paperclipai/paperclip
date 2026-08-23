@@ -86,9 +86,9 @@ import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import {
   createDuplexAggregateByteLedgerTelemetry,
   DuplexAggregateByteLedger,
-  resolveDuplexAggregateCeilingBytes,
   type DuplexAggregateByteLedgerMetricSink,
 } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
+import { resolveDuplexAggregateCeilingBytesFromEnv } from "./duplex-aggregate-ceiling-env.js";
 import { DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL } from "@paperclipai/adapter-utils/duplex-telemetry";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -769,17 +769,17 @@ export async function startServer(): Promise<StartedServer> {
   // one shared gauge bounds every host-side retention site.
   //
   // The optional operator override reads PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES.
-  // A missing override uses the documented default. A present invalid, non-finite,
-  // zero, negative, non-integer, unsafe, or over-maximum value does not fail
-  // startup. The host process is multi-tenant, so one invalid environment value
-  // must not brick the whole host. The resolver rejects the invalid override and
-  // returns the safe default. The reporter logs the rejection loudly at error, so
-  // the misconfiguration stays visible while the host stays up. The log line
-  // carries only the rejected numeric value.
-  const duplexAggregateCeilingOverrideRaw =
-    process.env.PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES?.trim();
-  const duplexAggregateCeilingBytes = resolveDuplexAggregateCeilingBytes(
-    duplexAggregateCeilingOverrideRaw ? Number(duplexAggregateCeilingOverrideRaw) : undefined,
+  // An absent variable uses the documented default. A present invalid, blank,
+  // whitespace-only, non-finite, zero, negative, non-integer, unsafe, or
+  // over-maximum value does not fail startup. The host process is multi-tenant, so
+  // one invalid environment value must not brick the whole host. The helper sends
+  // the raw string to the resolver, so a present blank value is invalid, not
+  // absent. The resolver rejects the invalid override and returns the safe default.
+  // The reporter logs the rejection loudly at error, so the misconfiguration stays
+  // visible while the host stays up. The log line carries only the rejected numeric
+  // value, never the raw string.
+  const duplexAggregateCeilingBytes = resolveDuplexAggregateCeilingBytesFromEnv(
+    process.env.PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
     (rejectedValue) => {
       logger.error(
         { rejectedValue },
