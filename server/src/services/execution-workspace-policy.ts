@@ -164,6 +164,64 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
+/**
+ * Every policy field the gate discards, other than the two that only describe the policy itself
+ * (`enabled` marks it active, `allowIssueOverride` scopes it). A policy carrying none of these
+ * changes nothing when applied, so its suppression is not worth a warning.
+ */
+const PROJECT_EXECUTION_WORKSPACE_POLICY_BEHAVIOUR_KEYS = [
+  "sharedWorkspaceConcurrency",
+  "defaultMode",
+  "defaultProjectWorkspaceId",
+  "environmentId",
+  "workspaceStrategy",
+  "workspaceRuntime",
+  "branchPolicy",
+  "pullRequestPolicy",
+  "runtimePolicy",
+  "cleanupPolicy",
+  "authorizationPolicy",
+] as const satisfies readonly (keyof ProjectExecutionWorkspacePolicy)[];
+
+/**
+ * Describe a project execution workspace policy that is configured but inert.
+ *
+ * {@link gateProjectExecutionWorkspacePolicy} drops the whole policy when the isolated-workspaces
+ * instance feature is off, and downstream resolution then cannot tell "this project has no policy"
+ * apart from "this project's policy was discarded": the run silently falls back to the shared
+ * project workspace while the project API keeps echoing the policy back exactly as configured.
+ * Callers use this to name the discard on the run instead of leaving the operator to infer it from
+ * a checkout that never got its worktrees.
+ *
+ * Returns null whenever there is nothing to warn about — the policy is applied, absent, disabled,
+ * or requests no behaviour at all.
+ */
+export function describeSuppressedProjectExecutionWorkspacePolicy(
+  projectPolicy: ProjectExecutionWorkspacePolicy | null,
+  isolatedWorkspacesEnabled: boolean,
+): string | null {
+  if (isolatedWorkspacesEnabled) return null;
+  if (!projectPolicy?.enabled) return null;
+  const requestsBehaviour = PROJECT_EXECUTION_WORKSPACE_POLICY_BEHAVIOUR_KEYS.some((key) => {
+    const value = projectPolicy[key];
+    return value !== undefined && value !== null;
+  });
+  if (!requestsBehaviour) return null;
+
+  const details = [
+    ...(projectPolicy.defaultMode ? [`default mode "${projectPolicy.defaultMode}"`] : []),
+    ...(projectPolicy.workspaceStrategy?.type
+      ? [`workspace strategy "${projectPolicy.workspaceStrategy.type}"`]
+      : []),
+  ];
+  const detailSuffix = details.length > 0 ? ` (${details.join(", ")})` : "";
+  return (
+    `This project configures an execution workspace policy${detailSuffix}, but the "Isolated Workspaces" ` +
+    "instance feature is disabled, so the policy is not applied and this run uses the shared project " +
+    'workspace. Enable "Isolated Workspaces" in instance settings for the project policy to take effect.'
+  );
+}
+
 type ParseIssueExecutionWorkspaceSettingsOptions = {
   includeEnvironmentId?: boolean;
 };

@@ -197,6 +197,7 @@ import {
 } from "./run-scratch.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
+  describeSuppressedProjectExecutionWorkspacePolicy,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   isUnrunnableWorktreeCombo,
@@ -14319,6 +14320,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       parsedProjectExecutionWorkspacePolicy,
       isolatedWorkspacesEnabled,
     );
+    // The gate returns null for a discarded policy exactly as it does for a project that never
+    // configured one, so without this the run is indistinguishable from an unconfigured project
+    // while the project API keeps echoing the policy back. Name the discard on the run instead.
+    const suppressedProjectExecutionWorkspacePolicyWarning =
+      describeSuppressedProjectExecutionWorkspacePolicy(
+        parsedProjectExecutionWorkspacePolicy,
+        isolatedWorkspacesEnabled,
+      );
+    if (suppressedProjectExecutionWorkspacePolicyWarning) {
+      logger.warn(
+        {
+          event: "project_execution_workspace_policy_suppressed",
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId,
+          projectId: projectContext?.id ?? null,
+          projectDefaultMode: parsedProjectExecutionWorkspacePolicy?.defaultMode ?? null,
+          projectWorkspaceStrategyType:
+            parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
+        },
+        "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
+      );
+    }
     const trustPreset = resolveCoreTrustPreset({
       companyId: agent.companyId,
       agent: {
@@ -15486,6 +15511,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
+      ...(suppressedProjectExecutionWorkspacePolicyWarning
+        ? [suppressedProjectExecutionWorkspacePolicyWarning]
+        : []),
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),

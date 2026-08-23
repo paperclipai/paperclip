@@ -6,6 +6,7 @@ import {
 import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
+  describeSuppressedProjectExecutionWorkspacePolicy,
   gateProjectExecutionWorkspacePolicy,
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -530,5 +531,74 @@ describe("execution workspace policy helpers", () => {
         true,
       ),
     ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+  });
+
+  describe("describeSuppressedProjectExecutionWorkspacePolicy", () => {
+    it("names the discarded mode and strategy when the instance flag is off", () => {
+      const warning = describeSuppressedProjectExecutionWorkspacePolicy(
+        {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+        },
+        false,
+      );
+      expect(warning).toContain("isolated_workspace");
+      expect(warning).toContain("git_worktree");
+      expect(warning).toContain("Isolated Workspaces");
+      expect(warning).toContain("shared project workspace");
+    });
+
+    it("names the discarded mode when the policy sets no explicit strategy", () => {
+      const warning = describeSuppressedProjectExecutionWorkspacePolicy(
+        { enabled: true, defaultMode: "operator_branch" },
+        false,
+      );
+      expect(warning).toContain("operator_branch");
+      expect(warning).not.toContain("git_worktree");
+    });
+
+    it("stays silent when the policy is actually applied", () => {
+      expect(
+        describeSuppressedProjectExecutionWorkspacePolicy(
+          {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+            workspaceStrategy: { type: "git_worktree" },
+          },
+          true,
+        ),
+      ).toBeNull();
+    });
+
+    it("stays silent when the project configured no active policy", () => {
+      expect(describeSuppressedProjectExecutionWorkspacePolicy(null, false)).toBeNull();
+      expect(
+        describeSuppressedProjectExecutionWorkspacePolicy({ enabled: false }, false),
+      ).toBeNull();
+    });
+
+    // A policy row can be persisted with `enabled: true` and nothing else. It still changes
+    // nothing when applied, so naming it would be noise rather than a signal.
+    it("stays silent when an enabled policy requests no workspace behaviour", () => {
+      expect(
+        describeSuppressedProjectExecutionWorkspacePolicy({ enabled: true }, false),
+      ).toBeNull();
+    });
+
+    // The suppressed warning has to survive the exact round trip the dispatch path takes:
+    // the persisted JSON is parsed first, and only the parsed policy reaches the gate.
+    it("describes a policy parsed straight from the persisted project column", () => {
+      const parsed = parseProjectExecutionWorkspacePolicy({
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        allowIssueOverride: true,
+        workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+      });
+      expect(gateProjectExecutionWorkspacePolicy(parsed, false)).toBeNull();
+      expect(describeSuppressedProjectExecutionWorkspacePolicy(parsed, false)).toContain(
+        "isolated_workspace",
+      );
+    });
   });
 });
