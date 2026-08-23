@@ -146,6 +146,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+const mockAssertCrossIssueWriteFence = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -188,6 +189,7 @@ function registerRouteMocks() {
 
   vi.doMock("../services/cross-issue-influence-limit.js", () => ({
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+    assertCrossIssueWriteFence: mockAssertCrossIssueWriteFence,
     crossIssueInfluenceLimitError: vi.fn(),
     crossIssueInfluenceRunContextError: () => new HttpError(
       403,
@@ -552,6 +554,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockLogActivity.mockClear();
     mockObserveCrossIssueInfluence.mockReset();
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
+    mockAssertCrossIssueWriteFence.mockReset();
+    mockAssertCrossIssueWriteFence.mockResolvedValue(undefined);
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockExternalObjectService.getIssueSummaries.mockClear();
@@ -1038,6 +1042,59 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(401);
     expect(res.body.error).toBe("Agent run id required");
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
+  // FAI-10132: a fenced PATCH that also carries a comment persists two rows.
+  // Splitting them across two transactions lets an authority revocation landing
+  // between the commits refuse the comment after the field update has already
+  // been written, so the caller reads a 403 for a status change that stuck.
+  // Both rows must therefore commit together.
+  it("commits a fenced field update and its bundled comment in one transaction", async () => {
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      fence: {
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        responsibleUserId: null,
+        sourceIssueId: "88888888-8888-4888-8888-888888888888",
+        targetIssueId: issueId,
+        targetIssueIdentifier: "PAP-1649",
+        kind: "update",
+        basisAtCheck: "actor_is_target_assignee",
+        enforceAt: null,
+      },
+    } as never);
+    const runContextDb = createRunContextDb();
+    const openedTransactions: unknown[] = [];
+    // One fresh handle per transaction, so two writes sharing a handle is proof
+    // they shared a transaction.
+    const db = {
+      ...runContextDb,
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
+        const tx = { ...runContextDb, transaction: runContextDb.transaction };
+        openedTransactions.push(tx);
+        return callback(tx);
+      },
+    };
+
+    const res = await request(await createApp(ownerActor(), db))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Handing over", comment: "over to QA" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    // Third argument of update, fifth of addComment.
+    const updateTx = mockIssueService.update.mock.calls[0][2];
+    const commentTx = mockIssueService.addComment.mock.calls[0][4];
+    expect(openedTransactions).toContain(updateTx);
+    expect(commentTx).toBe(updateTx);
+    // And the fence was re-asserted inside it rather than in a second one.
+    expect(mockAssertCrossIssueWriteFence).toHaveBeenCalled();
+    for (const call of mockAssertCrossIssueWriteFence.mock.calls) {
+      expect((call as unknown[])[1]).toBe(updateTx);
+    }
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {

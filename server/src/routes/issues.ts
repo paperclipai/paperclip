@@ -10024,6 +10024,17 @@ export function issueRoutes(
       // A pending cross-issue fence must be re-asserted in the same transaction
       // as the update, so this path stops being optional for those writes.
       || hasPendingCrossIssueWriteFences(req);
+    // A bundled PATCH persists two rows: the field update and the comment. With
+    // a fence pending those are one authorized cross-issue write, so they have
+    // to commit together — re-asserting the fence in a second transaction can
+    // refuse the comment *after* the field update has already landed, leaving
+    // the request half applied and the caller reading a 403 for a status change
+    // that persisted. The insert is therefore hoisted into the update
+    // transaction; reference and external syncing stay post-commit, and an
+    // unfenced request keeps the pooled two-statement path unchanged.
+    const bundleCommentWithUpdate = Boolean(commentBody) && shouldUseTransactionalIssueUpdate
+      && hasPendingCrossIssueWriteFences(req);
+    let comment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
@@ -10055,6 +10066,21 @@ export function issueRoutes(
           }
 
           await persistReviewTransitionActivity(tx, updated);
+
+          // Last statement in the transaction so the comment keeps its position
+          // after any stop-relay comment this update wrote, exactly as it does
+          // on the unfenced path.
+          if (bundleCommentWithUpdate && commentBody) {
+            comment = await svc.addComment(id, commentBody, {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+              onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+            }, {
+              authorizationReason: issueMutationAuthorizationReason,
+              sourceTrust: await sourceTrustForActorWrite(updated, actor),
+            }, tx);
+          }
 
           return updated;
         });
@@ -10484,12 +10510,14 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
     let lostReviewPathRef: string | null = null;
     if (commentBody) {
+      // Safe to read as the "before" summary even when the bundled insert
+      // already committed the row: a comment contributes references only once
+      // `syncComment` runs, which is the next statement.
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await addCommentWithCrossIssueWriteFence(req, [id, commentBody, {
+      const created = comment ?? await addCommentWithCrossIssueWriteFence(req, [id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
@@ -10498,8 +10526,9 @@ export function issueRoutes(
         authorizationReason: issueMutationAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(issue, actor),
       }]);
-      await issueReferencesSvc.syncComment(comment.id);
-      await externalObjectsSvc.syncCommentSafely(comment.id);
+      comment = created;
+      await issueReferencesSvc.syncComment(created.id);
+      await externalObjectsSvc.syncCommentSafely(created.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
         commentReferenceSummaryBefore,
@@ -10525,8 +10554,8 @@ export function issueRoutes(
         entityType: "issue",
         entityId: issue.id,
         details: {
-          commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          commentId: created.id,
+          bodySnippet: created.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
           authorizationReason: issueMutationAuthorizationReason,
@@ -10551,7 +10580,7 @@ export function issueRoutes(
 
       const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
         issue,
-        comment,
+        created,
         {
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
