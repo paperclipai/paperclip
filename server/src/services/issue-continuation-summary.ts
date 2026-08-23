@@ -106,6 +106,18 @@ function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previou
     return "Inspect the failed run, fix the cause, and resume from the most recent concrete action above.";
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
+  // The issue is actively in_progress, so any earlier "wait for review/board"
+  // guidance carried forward from a prior in_review/blocked stint is stale --
+  // the wait already ended, or this run couldn't have executed at all.
+  // Carrying it forward verbatim causes the *next* queued continuation to be
+  // wrongly parked as a false "no live execution path" escalation.
+  if (
+    issue.status === "in_progress" &&
+    previousNextAction &&
+    WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(previousNextAction)
+  ) {
+    return "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+  }
   return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
 }
 

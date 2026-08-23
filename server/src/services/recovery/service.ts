@@ -4207,6 +4207,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result.issueIds.push(issue.id);
             continue;
           }
+
+          // Deliberate-wait cancellation with no real blocker/child issue to
+          // attach it to. Escalate here with accurate copy instead of falling
+          // through to the generic "live execution disappeared" branch below,
+          // which would misreport a routine, non-crash cancellation as a lost
+          // execution path.
+          const waitingOnReviewUpdated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            notice: {
+              body:
+                "Paperclip cancelled a queued continuation for this assigned `in_progress` issue because its " +
+                "continuation summary said the executor should wait for reviewer feedback or approval, but no " +
+                "blocking issue or dependency was found to attach that wait to. Moving it to `blocked` so it " +
+                "is visible for intervention.",
+              title: "Continuation paused for review, no linked blocker",
+              tone: "danger",
+            },
+          });
+          if (waitingOnReviewUpdated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
         }
 
         if (classification.kind === "non_retryable") {
