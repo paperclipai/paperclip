@@ -154,6 +154,61 @@ describePython("the descriptor-bound read helper script", () => {
     expect(runScript(link).status).not.toBe(0);
   });
 
+  it("rejects an intermediate-path symlink ancestor and never follows it", () => {
+    // The attacker swaps an ancestor directory of the session home for a symlink
+    // to an attacker-controlled tree. That tree holds a valid-looking 0600
+    // credential. A single composite-path open with `O_NOFOLLOW` would follow the
+    // ancestor symlink, because `O_NOFOLLOW` protects only the final component.
+    // The per-component walk opens the ancestor with its own no-follow open, so
+    // the read fails closed and returns no bytes.
+    const evil = path.join(root, "evil-target");
+    mkdirSync(path.join(evil, "session"), { recursive: true, mode: 0o700 });
+    const file = path.join(evil, "session", AUTH_JSON_FILE_NAME);
+    writeFileSync(file, '{"stolen":true}', { mode: 0o600 });
+    chmodSync(file, 0o600);
+    // `ancestor` is a symlink to the attacker tree. The home path routes through it.
+    const ancestor = path.join(root, "ancestor-symlink");
+    symlinkSync(evil, ancestor);
+    const home = path.join(ancestor, "session");
+    const { status, stdout } = runScript(home);
+    expect(status).not.toBe(0);
+    // The read leaked no bytes from the attacker tree.
+    expect(stdout.trim()).toBe("");
+  });
+
+  it("fails closed when an ancestor is swapped to a symlink between two reads", () => {
+    // The first read sees a real ancestor and returns the private credential. An
+    // attacker then swaps the ancestor for a symlink to an attacker tree with a
+    // valid-looking credential. The second read walks the ancestor with a
+    // no-follow open, so it fails closed and never returns the attacker bytes.
+    const base = mkdtempSync(path.join(root, "swap-"));
+    const mid = path.join(base, "mid");
+    mkdirSync(path.join(mid, "session"), { recursive: true, mode: 0o700 });
+    const goodFile = path.join(mid, "session", AUTH_JSON_FILE_NAME);
+    writeFileSync(goodFile, '{"good":true}', { mode: 0o600 });
+    chmodSync(goodFile, 0o600);
+    const home = path.join(mid, "session");
+
+    const first = runScript(home);
+    expect(first.status).toBe(0);
+    expect(Buffer.from(first.stdout.trim(), "base64").toString("utf8")).toBe('{"good":true}');
+
+    // The attacker tree carries a same-shape credential.
+    const evil = path.join(base, "evil");
+    mkdirSync(path.join(evil, "session"), { recursive: true, mode: 0o700 });
+    const evilFile = path.join(evil, "session", AUTH_JSON_FILE_NAME);
+    writeFileSync(evilFile, '{"evil":true}', { mode: 0o600 });
+    chmodSync(evilFile, 0o600);
+
+    // Swap the ancestor `mid` for a symlink to the attacker tree.
+    rmSync(mid, { recursive: true, force: true });
+    symlinkSync(evil, mid);
+
+    const second = runScript(home);
+    expect(second.status).not.toBe(0);
+    expect(second.stdout.trim()).toBe("");
+  });
+
   it("reads a hardlink credential inside the private home", () => {
     // A hardlink is not a symlink. The no-follow open allows it, and the fstat
     // sees a regular file. A hardlink inside the private `0700` home is not a

@@ -1,13 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   composeLaunchLine,
+  createDaytonaLoginHomeFs,
   createDaytonaLoginPtySessionOpener,
   encodePosixShellArg,
   openDaytonaLoginPtySession,
+  type DaytonaExecResult,
   type DaytonaLoginHomeFs,
   type DaytonaPtyCreateOptions,
   type DaytonaPtyHandle,
   type DaytonaPtyProcess,
+  type DaytonaSandboxExec,
   type LoginHomeInspection,
   type LoginPtyLaunchDescriptor,
 } from "./login-pty.js";
@@ -454,6 +461,122 @@ describe("openDaytonaLoginPtySession — session mechanics", () => {
     await openDaytonaLoginPtySession(process, createFakeHomeFs(), CLAUDE, { cwd: "/workspace" });
 
     expect(process.createOptions?.cwd).toBe("/workspace");
+  });
+});
+
+describe("openDaytonaLoginPtySession — ancestor symlink", () => {
+  it("starts no pseudo-terminal when the home filesystem check fails closed", async () => {
+    // A symlinked login-root ancestor makes the descriptor-relative inspection fail
+    // closed. The session opener must reject before it opens the terminal, so no
+    // pseudo-terminal starts and the login command never runs.
+    const process = createFakeProcess();
+    let created = false;
+    const fs: DaytonaLoginHomeFs = {
+      async loginUserId(): Promise<number> {
+        return LOGIN_UID;
+      },
+      async inspect(): Promise<LoginHomeInspection> {
+        throw new Error("LOGIN_PTY_HOME_REJECTED");
+      },
+      async createDirectory(): Promise<void> {
+        created = true;
+      },
+    };
+
+    await expect(openDaytonaLoginPtySession(process, fs, CODEX)).rejects.toThrow(
+      "LOGIN_PTY_HOME_REJECTED",
+    );
+    // The provider never created the directory and never opened the terminal.
+    expect(created).toBe(false);
+    expect(process.createCount).toBe(0);
+  });
+});
+
+// The real login-home filesystem runs a Python helper on the sandbox. A host with
+// no python3 skips these tests. The fake exec runs the helper locally, so the
+// descriptor-relative walk is tested against a real filesystem.
+function hasPython3(): boolean {
+  const probe = spawnSync("python3", ["--version"], { encoding: "utf8" });
+  return probe.status === 0;
+}
+
+const describePython = hasPython3() ? describe : describe.skip;
+
+describePython("createDaytonaLoginHomeFs — descriptor-relative walk", () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(tmpdir(), "daytona-login-home-"));
+  });
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  // A local exec surface. It runs the composed command with `/bin/sh -c`, so the
+  // real Python helper runs against the local filesystem.
+  function createLocalExec(): DaytonaSandboxExec {
+    return {
+      async executeCommand(command: string): Promise<DaytonaExecResult> {
+        const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+        return { exitCode: result.status ?? undefined, result: result.stdout ?? "" };
+      },
+    };
+  }
+
+  const UUID = "11111111-2222-4333-8444-555555555555";
+
+  it("reports a not-yet-created target as absent", async () => {
+    const fs = createDaytonaLoginHomeFs(createLocalExec());
+    const home = path.join(root, "absent-root", UUID);
+    const inspection = await fs.inspect(home);
+    expect(inspection.exists).toBe(false);
+  });
+
+  it("creates the login root and the session home relative to a trusted descriptor", async () => {
+    const fs = createDaytonaLoginHomeFs(createLocalExec());
+    const home = path.join(root, "clean-root", UUID);
+    await fs.createDirectory(home, "700");
+    const inspection = await fs.inspect(home);
+    expect(inspection.exists).toBe(true);
+    expect(inspection.isSymlink).toBe(false);
+    expect(inspection.isDirectory).toBe(true);
+    expect(inspection.mode).toBe("700");
+    expect(inspection.ownerUid).toBe(process.getuid ? process.getuid() : inspection.ownerUid);
+  });
+
+  it("rejects a pre-existing session home target", async () => {
+    const fs = createDaytonaLoginHomeFs(createLocalExec());
+    const home = path.join(root, "exists-root", UUID);
+    await fs.createDirectory(home, "700");
+    // A second create of the same target fails, because the target exists.
+    await expect(fs.createDirectory(home, "700")).rejects.toThrow("LOGIN_PTY_HOME_REJECTED");
+  });
+
+  it("fails the inspection closed when the login root is a symlink", async () => {
+    // Pre-place a symlink at the login-root ancestor. The descriptor-relative walk
+    // opens the root with a no-follow open, so the inspection fails closed.
+    const fs = createDaytonaLoginHomeFs(createLocalExec());
+    const attacker = path.join(root, "inspect-attacker");
+    mkdirSync(attacker, { mode: 0o700 });
+    const rootLink = path.join(root, "inspect-symlink-root");
+    symlinkSync(attacker, rootLink);
+    const home = path.join(rootLink, UUID);
+    await expect(fs.inspect(home)).rejects.toThrow("LOGIN_PTY_HOME_REJECTED");
+  });
+
+  it("fails the creation closed when the login root is a pre-placed symlink", async () => {
+    // Pre-place a symlink at the login-root ancestor that points at an attacker
+    // tree. The creation opens the root with a no-follow open after the tolerant
+    // `mkdir`, so it fails closed and creates no directory in the attacker tree.
+    const fs = createDaytonaLoginHomeFs(createLocalExec());
+    const attacker = path.join(root, "create-attacker");
+    mkdirSync(attacker, { mode: 0o700 });
+    const rootLink = path.join(root, "create-symlink-root");
+    symlinkSync(attacker, rootLink);
+    const home = path.join(rootLink, UUID);
+    await expect(fs.createDirectory(home, "700")).rejects.toThrow("LOGIN_PTY_HOME_REJECTED");
+    // The creation placed no session home inside the attacker tree.
+    expect(existsSync(path.join(attacker, UUID))).toBe(false);
   });
 });
 

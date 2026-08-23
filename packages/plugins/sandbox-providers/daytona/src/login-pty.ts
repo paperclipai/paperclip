@@ -16,11 +16,16 @@
 //
 // Session home: the module revalidates the descriptor and the home shape, then
 // creates the exact UUID directory as a NEW directory with mode 0700, owned by the
-// login user. It rejects a pre-existing target, a symlink, a non-directory, a
-// wrong owner, and a wrong mode. It uses no recursive delete. It re-checks the
-// directory with a no-symlink check before it opens the terminal and again before
-// it sends the launch input, so a symlink swapped in after creation fails before
-// the launch.
+// login user. The inspection and the creation open the filesystem root, then walk
+// each path component with a no-follow, directory-only open, so a symlink at any
+// ancestor (the login root or a directory above it) fails closed. A single
+// composite `stat` or `mkdir` follows a symlink at an ancestor; the per-component
+// walk does not. The creation creates the login root if the root is absent and the
+// UUID directory as a NEW directory, both relative to an open trusted descriptor.
+// The module rejects a pre-existing target, a symlink, a non-directory, a wrong
+// owner, and a wrong mode. It uses no recursive delete. It re-checks the directory
+// with a no-symlink walk before it opens the terminal and again before it sends the
+// launch input, so a symlink swapped in after creation fails before the launch.
 //
 // Dependency boundary: this provider plugin ships standalone (the workspace
 // excludes `packages/plugins/sandbox-providers/**`). So the module imports no
@@ -229,16 +234,23 @@ export interface LoginHomeInspection {
 
 /**
  * The narrow filesystem surface the session home operations need. The production
- * surface runs commands on the sandbox; a unit test injects a fake. The
- * inspection is a no-follow inspection, so a symlink at the target reports the
- * link, not the target.
+ * surface runs commands on the sandbox; a unit test injects a fake. The inspection
+ * and the creation walk each path component with a no-follow open, so a symlink at
+ * any ancestor fails closed and a symlink at the target reports the link.
  */
 export interface DaytonaLoginHomeFs {
   /** Resolves the user id of the login user that runs the pseudo-terminal. */
   loginUserId(): Promise<number>;
-  /** Inspects `path` without following a symlink. */
+  /**
+   * Inspects `path` without following a symlink at the target or at any ancestor.
+   * It rejects (throws) when an ancestor is a symlink or a non-directory.
+   */
   inspect(path: string): Promise<LoginHomeInspection>;
-  /** Creates `path` as a NEW directory with the octal `mode`. It fails when the path exists. */
+  /**
+   * Creates `path` as a NEW directory with the octal `mode`. It creates the login
+   * root ancestor if the root is absent. It fails when the target path exists or
+   * when an ancestor is a symlink. It follows no composite pathname.
+   */
   createDirectory(path: string, mode: string): Promise<void>;
 }
 
@@ -420,12 +432,149 @@ export async function openDaytonaLoginPtySession(
 }
 
 /**
- * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs
- * short commands on the sandbox to inspect and create the session home. It
- * inspects a path with a no-follow inspection, so a symlink at the target reports
- * the link. It creates the directory with `mkdir` and no `-p`, so the create
- * fails when the path exists. The real filesystem operations land against a live
- * sandbox; a unit test injects a fake surface instead.
+ * The Python inspection helper. The provider runs it on the sandbox as
+ * `python3 -c <script> <path>`. The Python runtime is present in the login sandbox
+ * image. The script opens the filesystem root, then walks each ancestor of the
+ * final path component with a no-follow, directory-only open. A single composite
+ * `stat` follows a symlink at an ancestor, so the walk opens every ancestor with
+ * its own no-follow open. The script then reads the final component with `lstat`,
+ * so a symlink at the final component reports the link, not the target.
+ *
+ * The script prints one line and sets one exit code:
+ * - a missing ancestor or a missing final component prints `ABSENT` and exits 0;
+ * - an existing final component prints `<type>|<octal-mode>|<uid>` and exits 0,
+ *   where `<type>` is `symlink`, `directory`, or `other`;
+ * - a symlink or a non-directory at any ancestor prints nothing and exits 3, so
+ *   the caller fails closed on an ancestor symlink.
+ */
+const LOGIN_HOME_INSPECT_SCRIPT = `import os, stat, sys
+
+path = sys.argv[1]
+if not path.startswith("/"):
+    raise SystemExit(3)
+parts = [c for c in path.split("/") if c]
+if not parts:
+    raise SystemExit(3)
+
+fds = []
+try:
+    dfd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    fds.append(dfd)
+    for part in parts[:-1]:
+        try:
+            ndfd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=dfd,
+            )
+        except FileNotFoundError:
+            sys.stdout.write("ABSENT")
+            raise SystemExit(0)
+        except OSError:
+            raise SystemExit(3)
+        fds.append(ndfd)
+        dfd = ndfd
+    try:
+        st = os.lstat(parts[-1], dir_fd=dfd)
+    except FileNotFoundError:
+        sys.stdout.write("ABSENT")
+        raise SystemExit(0)
+    except OSError:
+        raise SystemExit(3)
+    if stat.S_ISLNK(st.st_mode):
+        ftype = "symlink"
+    elif stat.S_ISDIR(st.st_mode):
+        ftype = "directory"
+    else:
+        ftype = "other"
+    sys.stdout.write("%s|%o|%d" % (ftype, stat.S_IMODE(st.st_mode), st.st_uid))
+    raise SystemExit(0)
+finally:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+`;
+
+/**
+ * The Python creation helper. The provider runs it on the sandbox as
+ * `python3 -c <script> <path> <octal-mode>`. The script opens the filesystem root,
+ * then walks each ancestor above the login root with a no-follow, directory-only
+ * open. It creates the login root (the second-to-last component) if the root is
+ * absent, then opens the root with a no-follow open, so a symlink at the root
+ * fails closed. It creates the final component as a NEW directory relative to the
+ * root descriptor, so a pre-existing target fails and the create never follows a
+ * symlink. It exits 0 on success and non-zero on every failure.
+ *
+ * The no-follow open of the root after the create closes the swap window: an
+ * attacker that replaces the root with a symlink between the create and the open
+ * fails the open.
+ */
+const LOGIN_HOME_CREATE_SCRIPT = `import os, sys
+
+path = sys.argv[1]
+mode = int(sys.argv[2], 8)
+if not path.startswith("/"):
+    raise SystemExit(1)
+parts = [c for c in path.split("/") if c]
+if len(parts) < 2:
+    raise SystemExit(1)
+
+fds = []
+try:
+    dfd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    fds.append(dfd)
+    for part in parts[:-2]:
+        try:
+            ndfd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=dfd,
+            )
+        except OSError:
+            raise SystemExit(1)
+        fds.append(ndfd)
+        dfd = ndfd
+    root = parts[-2]
+    try:
+        os.mkdir(root, 0o700, dir_fd=dfd)
+    except FileExistsError:
+        pass
+    except OSError:
+        raise SystemExit(1)
+    try:
+        rfd = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=dfd,
+        )
+    except OSError:
+        raise SystemExit(1)
+    fds.append(rfd)
+    try:
+        os.mkdir(parts[-1], mode, dir_fd=rfd)
+    except OSError:
+        raise SystemExit(1)
+    raise SystemExit(0)
+finally:
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+`;
+
+/**
+ * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs a
+ * fixed Python helper on the sandbox to inspect and create the session home. Each
+ * helper opens the filesystem root, then walks each path component with a
+ * no-follow, directory-only open, so a symlink at any ancestor fails closed. The
+ * inspection reads the final component with `lstat`, so a symlink at the target
+ * reports the link. The creation creates the login root if absent and the session
+ * home as a NEW directory, both relative to an open trusted descriptor, so no
+ * operation follows a composite pathname. The real filesystem operations land
+ * against a live sandbox; a unit test injects a fake surface instead.
  */
 export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLoginHomeFs {
   return {
@@ -438,28 +587,37 @@ export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLogin
       return uid;
     },
     async inspect(path: string): Promise<LoginHomeInspection> {
-      // Read the file type, the octal mode, and the owner uid with a no-follow
-      // inspection. GNU `stat` does not dereference a symlink without `-L`, so a
-      // symlink reports its own type. A non-zero exit means the path is absent.
-      const encoded = encodePosixShellArg(path);
-      const out = await exec.executeCommand(`stat -c '%F|%a|%u' -- ${encoded} 2>/dev/null`);
+      // Read the file type, the octal mode, and the owner uid with a descriptor
+      // relative no-follow walk. A non-zero exit means a symlink or a non-directory
+      // at an ancestor, so the read fails closed. An `ABSENT` line means the target
+      // does not exist yet, which is the safe precondition for a create.
+      const script = encodePosixShellArg(LOGIN_HOME_INSPECT_SCRIPT);
+      const encodedPath = encodePosixShellArg(path);
+      const out = await exec.executeCommand(`python3 -c ${script} ${encodedPath} 2>/dev/null`);
+      if ((out.exitCode ?? 0) !== 0) {
+        throw new Error(LOGIN_PTY_HOME_REJECTED);
+      }
       const text = (out.result ?? "").trim();
-      if ((out.exitCode ?? 0) !== 0 || text.length === 0) {
+      if (text.length === 0 || text === "ABSENT") {
         return { exists: false, isSymlink: false, isDirectory: false, mode: "", ownerUid: null };
       }
       const [fileType = "", mode = "", ownerText = ""] = text.split("|");
       const ownerUid = Number.parseInt(ownerText, 10);
       return {
         exists: true,
-        isSymlink: fileType === "symbolic link",
+        isSymlink: fileType === "symlink",
         isDirectory: fileType === "directory",
         mode,
         ownerUid: Number.isInteger(ownerUid) ? ownerUid : null,
       };
     },
     async createDirectory(path: string, mode: string): Promise<void> {
-      const encoded = encodePosixShellArg(path);
-      const out = await exec.executeCommand(`mkdir -m ${mode} -- ${encoded}`);
+      const script = encodePosixShellArg(LOGIN_HOME_CREATE_SCRIPT);
+      const encodedPath = encodePosixShellArg(path);
+      const encodedMode = encodePosixShellArg(mode);
+      const out = await exec.executeCommand(
+        `python3 -c ${script} ${encodedPath} ${encodedMode} 2>/dev/null`,
+      );
       if ((out.exitCode ?? 0) !== 0) {
         throw new Error(LOGIN_PTY_HOME_REJECTED);
       }

@@ -7,13 +7,16 @@
 // `cat` on the same pathname let an attacker swap the file between the two steps.
 //
 // This module runs one fixed, server-controlled operation inside the sandbox
-// instead. The operation opens the verified session home without a symlink
-// follow, opens `auth.json` relative to that directory descriptor without a
-// symlink follow, runs `fstat` on the opened descriptor, and reads only from that
-// same descriptor. The `fstat` check requires a regular file, login-user
-// ownership, exact mode `0600`, and a bounded size. A missing file, a symlink, a
-// non-regular file, a wrong owner, a wrong mode, or an oversize file returns one
-// fixed, non-secret error.
+// instead. The operation opens the filesystem root, then walks each path
+// component of the session home with no symlink follow. `O_NOFOLLOW` protects
+// only the final component of one open, so the operation opens every intermediate
+// component with a separate no-follow open. A symlink at any ancestor fails the
+// walk. The operation then opens `auth.json` relative to the final directory
+// descriptor without a symlink follow, runs `fstat` on the opened descriptor, and
+// reads only from that same descriptor. The `fstat` check requires a regular
+// file, login-user ownership, exact mode `0600`, and a bounded size. A missing
+// file, a symlink at any component, a non-regular file, a wrong owner, a wrong
+// mode, or an oversize file returns one fixed, non-secret error.
 //
 // The provider exposes no descriptor application programming interface (API), so
 // this module runs a fixed helper program in the sandbox through the environment
@@ -51,14 +54,21 @@ export const DEVICE_LOGIN_AUTH_READ_ERROR =
  * `python3 -c <script> <sessionHome> [expectedUid]`. The Python runtime is
  * present in the login sandbox image. The script:
  *
- * - opens the session home with `O_NOFOLLOW` and `O_DIRECTORY`, so a symlink home
- *   or a non-directory home fails;
- * - opens `auth.json` relative to that directory descriptor with `O_NOFOLLOW`, so
- *   a symlink credential fails and a missing credential fails;
+ * - opens the filesystem root, then opens each session-home path component in turn
+ *   with `O_NOFOLLOW` and `O_DIRECTORY`, relative to the previous directory
+ *   descriptor, so a symlink at any component (the final home or any ancestor)
+ *   fails;
+ * - opens `auth.json` relative to the final directory descriptor with
+ *   `O_NOFOLLOW`, so a symlink credential fails and a missing credential fails;
  * - runs `fstat` on the opened descriptor and requires a regular file, the
  *   expected owner, exact mode `0600`, and a size at or below the bound;
  * - reads only from that same descriptor and stops if the byte count passes the
  *   bound.
+ *
+ * A per-component no-follow walk closes the intermediate-path symlink hole:
+ * `O_NOFOLLOW` on one open protects only the final component, so a single
+ * composite-path open follows a symlink at an ancestor. The walk opens every
+ * ancestor with its own no-follow open, so the read never leaves the trusted tree.
  *
  * The `expectedUid` argument is optional. The server omits it, so the helper uses
  * the login user's own id (the helper runs as the login user in the sandbox). A
@@ -76,13 +86,31 @@ def fail():
     sys.stderr.write("AUTH_READ_FAILED\\n")
     raise SystemExit(1)
 
-dfd = -1
+if not home.startswith("/"):
+    fail()
+parts = [c for c in home.split("/") if c]
+if not parts:
+    fail()
+
+fds = []
 ffd = -1
 try:
     try:
-        dfd = os.open(home, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC)
+        dfd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError:
         fail()
+    fds.append(dfd)
+    for part in parts:
+        try:
+            ndfd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=dfd,
+            )
+        except OSError:
+            fail()
+        fds.append(ndfd)
+        dfd = ndfd
     try:
         ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dfd)
     except OSError:
@@ -111,9 +139,9 @@ finally:
             os.close(ffd)
         except OSError:
             pass
-    if dfd >= 0:
+    for fd in fds:
         try:
-            os.close(dfd)
+            os.close(fd)
         except OSError:
             pass
 `;
