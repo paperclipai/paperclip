@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyIssueGraphLiveness } from "../services/issue-liveness.ts";
+import { classifyIssueReviewPaths } from "../services/recovery/issue-graph-liveness.ts";
 
 const companyId = "company-1";
 const managerId = "manager-1";
@@ -536,6 +537,38 @@ describe("issue graph liveness classifier", () => {
 
       expect(findings, testCase.name).toEqual([]);
     }
+  });
+
+  it("does not treat leftover currentParticipant as a review path after changes_requested on in_progress", () => {
+    const reviewIssueId = "review-1";
+    const leftoverReviewerId = "reviewer-1";
+    const input = {
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+          executionState: {
+            status: "changes_requested",
+            currentParticipant: { type: "agent", agentId: leftoverReviewerId },
+            returnAssignee: { type: "agent", agentId: coderId },
+          },
+        }),
+      ],
+      relations: [],
+      agents: [
+        agent(),
+        manager,
+        agent({ id: leftoverReviewerId, name: "Reviewer", reportsTo: managerId }),
+      ],
+    };
+
+    expect(classifyIssueReviewPaths(input, input.issues[0])).toEqual([]);
+    expect(classifyIssueGraphLiveness(input).some((finding) =>
+      finding.issueId === reviewIssueId && finding.state === "invalid_review_participant",
+    )).toBe(false);
   });
 
   it("does not treat a participant retained after changes are requested as an active review path", () => {

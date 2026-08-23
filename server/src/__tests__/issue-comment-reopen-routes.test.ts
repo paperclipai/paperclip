@@ -3538,4 +3538,81 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     ));
   });
+
+  it("wakes returnAssignee for board-override CHANGES_REQUESTED, not the reviewer or board user", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "in_progress",
+        comment: "Return this Build to the executor",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.executionState).toMatchObject({
+      status: "changes_requested",
+      currentStageId: policy.stages[0].id,
+    });
+    expect(res.body.executionState).not.toBeNull();
+    expect(res.body.assigneeAgentId).toBe("22222222-2222-4222-8222-222222222222");
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "execution_changes_requested",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          executionStage: expect.objectContaining({
+            wakeRole: "executor",
+            allowedActions: ["address_changes", "resubmit"],
+          }),
+        }),
+      }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "33333333-3333-4333-8333-333333333333",
+      expect.anything(),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "local-board",
+      expect.anything(),
+    );
+  });
 });

@@ -421,6 +421,24 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+/** `changes_requested` is executor work for returnAssignee, not a live review path. */
+export function readChangesRequestedExecutorAgentId(input: {
+  status: string;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  executionState?: unknown;
+}): string | null {
+  if (input.status !== "in_progress") return null;
+  if (input.assigneeUserId) return null;
+  const state = parseIssueExecutionState(input.executionState);
+  if (state?.status !== CHANGES_REQUESTED_STATUS) return null;
+  const returnAssignee = state.returnAssignee;
+  if (returnAssignee?.type !== "agent") return null;
+  const agentId = returnAssignee.agentId ?? null;
+  if (!agentId) return null;
+  return agentId;
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };
@@ -611,6 +629,63 @@ function buildChangesRequestedState(
   };
 }
 
+function applyChangesRequestedHandoff(input: {
+  patch: Record<string, unknown>;
+  existingState: IssueExecutionState;
+  activeStage: IssueExecutionStage;
+  policy: IssueExecutionPolicy;
+  actor: IssueExecutionStagePrincipal | null;
+  commentBody: string | null | undefined;
+  issue: IssueLike;
+}): TransitionResult {
+  if (!input.commentBody?.trim()) {
+    throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+  }
+  if (!input.existingState.returnAssignee) {
+    throw unprocessable("This execution stage has no return assignee");
+  }
+  const decision = {
+    stageId: input.activeStage.id,
+    stageType: input.activeStage.type,
+    outcome: "changes_requested" as const,
+    body: input.commentBody.trim(),
+  };
+  const actorIsHuman = input.actor?.type === "user";
+  const nextRounds = actorIsHuman ? 0 : (input.existingState.changesRequestedCount ?? 0) + 1;
+  if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
+    const escalationUserId = reviewEscalationUserId(input.issue);
+    if (escalationUserId) {
+      buildPendingStagePatch({
+        patch: input.patch,
+        previous: input.existingState,
+        policy: input.policy,
+        stage: input.activeStage,
+        participant: { type: "user", agentId: null, userId: escalationUserId },
+        returnAssignee: input.existingState.returnAssignee,
+        reviewRequest: input.existingState.reviewRequest ?? null,
+        changesRequestedCount: nextRounds,
+      });
+      return {
+        patch: input.patch,
+        decision,
+        workflowControlledAssignment: true,
+      };
+    }
+  }
+  input.patch.status = "in_progress";
+  Object.assign(input.patch, patchForPrincipal(input.existingState.returnAssignee));
+  input.patch.executionState = buildChangesRequestedState(
+    input.existingState,
+    input.activeStage,
+    nextRounds,
+  );
+  return {
+    patch: input.patch,
+    decision,
+    workflowControlledAssignment: true,
+  };
+}
+
 function buildPendingStagePatch(input: {
   patch: Record<string, unknown>;
   previous: IssueExecutionState | null;
@@ -706,6 +781,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (activeStage) {
+    if (!existingState) return { patch };
     const currentParticipant =
       existingState?.currentParticipant ??
       selectStageParticipant(activeStage, {
@@ -849,55 +925,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
-        if (!input.commentBody?.trim()) {
-          throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
-        }
-        if (!existingState?.returnAssignee) {
-          throw unprocessable("This execution stage has no return assignee");
-        }
-        const decision = {
-          stageId: activeStage.id,
-          stageType: activeStage.type,
-          outcome: "changes_requested" as const,
-          body: input.commentBody.trim(),
-        };
-        // Human decisions reset the round counter: the cap exists to stop
-        // unattended agent↔agent ping-pong, not to limit human review.
-        const actorIsHuman = actor?.type === "user";
-        const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
-        if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
-          const escalationUserId = reviewEscalationUserId(input.issue);
-          if (escalationUserId) {
-            // Rounds exhausted: keep the stage pending but hand it to the
-            // responsible human instead of bouncing back to the implementer.
-            // The recorded changes-requested decision carries the reviewer's
-            // reasoning; the human approves, requests changes (resetting the
-            // counter), or re-scopes.
-            buildPendingStagePatch({
-              patch,
-              previous: existingState,
-              policy: input.policy,
-              stage: activeStage,
-              participant: { type: "user", agentId: null, userId: escalationUserId },
-              returnAssignee: existingState.returnAssignee,
-              reviewRequest: effectiveReviewRequest,
-              changesRequestedCount: nextRounds,
-            });
-            return {
-              patch,
-              decision,
-              workflowControlledAssignment: true,
-            };
-          }
-        }
-        patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
-        patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
-        return {
+        return applyChangesRequestedHandoff({
           patch,
-          decision,
-          workflowControlledAssignment: true,
-        };
+          existingState,
+          activeStage,
+          policy: input.policy,
+          actor,
+          commentBody: input.commentBody,
+          issue: input.issue,
+        });
       }
     }
 
@@ -910,6 +946,17 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
+      if (requestedStatus === "in_progress") {
+        return applyChangesRequestedHandoff({
+          patch,
+          existingState,
+          activeStage,
+          policy: input.policy,
+          actor,
+          commentBody: input.commentBody,
+          issue: input.issue,
+        });
+      }
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
         patch.executionState = null;
         return { patch };

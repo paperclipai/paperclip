@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, readChangesRequestedExecutorAgentId } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -418,15 +418,115 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.assigneeAgentId).toBe(coderAgentId);
       expect(result.patch.executionState).toMatchObject({
         status: "changes_requested",
+        currentStageId: reviewStageId,
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "changes_requested",
+      });
+      expect(result.patch.executionState).not.toBeNull();
+      expect((result.patch.executionState as { currentParticipant?: { agentId?: string } }).currentParticipant?.agentId)
+        .not.toBe(coderAgentId);
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "changes_requested",
+      });
+      expect(readChangesRequestedExecutorAgentId({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionState: result.patch.executionState,
+      })).toBe(coderAgentId);
+    });
+
+    it("board/human participant requests changes → returns to executor without dissolving the stage", () => {
+      const boardReviewPolicy = makePolicy([
+        { type: "review", participants: [{ type: "user", userId: boardUserId }] },
+      ]);
+      const boardReviewStageId = boardReviewPolicy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: boardReviewPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: boardReviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "user", userId: boardUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: boardReviewPolicy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        commentBody: "Please address the board notes",
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageId: boardReviewStageId,
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "changes_requested",
+      });
+      expect(result.decision).toMatchObject({
+        outcome: "changes_requested",
+        stageId: boardReviewStageId,
+      });
+    });
+
+    it("board override CHANGES_REQUESTED preserves the gate and assigns returnAssignee", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        allowBoardOverride: true,
+        commentBody: "Return the same Build to the executor",
+      });
+
+      expect(result.patch.executionState).not.toBeNull();
+      expect(result.patch).not.toEqual({ executionState: null });
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageId: reviewStageId,
         currentStageType: "review",
         returnAssignee: { type: "agent", agentId: coderAgentId },
         lastDecisionOutcome: "changes_requested",
       });
       expect(result.decision).toMatchObject({
         stageId: reviewStageId,
-        stageType: "review",
         outcome: "changes_requested",
       });
+      expect(result.workflowControlledAssignment).toBe(true);
     });
 
     it("executor re-submits after changes → returns to same review stage", () => {

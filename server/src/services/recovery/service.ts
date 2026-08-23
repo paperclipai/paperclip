@@ -47,6 +47,7 @@ import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  readChangesRequestedExecutorAgentId,
 } from "../issue-execution-policy.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -103,6 +104,7 @@ const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueR
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
+const EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON = "execution_changes_requested";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX = "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -339,7 +341,11 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
 
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
-  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+  expectedRetryReason:
+    | "assignment_recovery"
+    | "issue_continuation_needed"
+    | typeof EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON
+    | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
 ) {
   if (!latestRun) return false;
 
@@ -1150,8 +1156,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
-    reason: "issue_assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
-    retryReason: "assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
+    reason: "issue_assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
+    retryReason: "assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     source: string;
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
@@ -4081,17 +4087,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
-      const executionState = issue.status === "in_review"
-        ? parseIssueExecutionState(issue.executionState)
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const pendingExecutionState = issue.status === "in_review" && executionState?.status === "pending"
+        ? executionState
         : null;
-      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
       const participantAgentId = currentParticipant?.type === "agent" ? currentParticipant.agentId : null;
-      const agentId = issue.status === "in_review" && participantAgentId
-        ? participantAgentId
-        : issue.assigneeAgentId;
+      const changesRequestedExecutorAgentId = readChangesRequestedExecutorAgentId(issue);
+      const agentId = changesRequestedExecutorAgentId
+        ?? (issue.status === "in_review" && participantAgentId
+          ? participantAgentId
+          : issue.assigneeAgentId);
       if (!agentId) {
         result.skipped += 1;
         continue;
@@ -4711,25 +4719,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         const classification = classifyContinuationFailure(latestRun);
 
         if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
-          const resolved = await resolveContinuationWaitingOnReview(issue);
-          if (resolved) {
-            result.waitingOnReviewResolved += 1;
-            result.issueIds.push(issue.id);
+          if (!changesRequestedExecutorAgentId) {
+            const resolved = await resolveContinuationWaitingOnReview(issue);
+            if (resolved) {
+              result.waitingOnReviewResolved += 1;
+              result.issueIds.push(issue.id);
+              continue;
+            }
+
+            const outcome = await reconcileDispositionRepair(issue, latestRun);
+            if (outcome === "queued") {
+              result.continuationRequeued += 1;
+              result.dispositionRepairRequeued += 1;
+              result.issueIds.push(issue.id);
+            } else if (outcome === "escalated") {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
             continue;
           }
-
-          const outcome = await reconcileDispositionRepair(issue, latestRun);
-          if (outcome === "queued") {
-            result.continuationRequeued += 1;
-            result.dispositionRepairRequeued += 1;
-            result.issueIds.push(issue.id);
-          } else if (outcome === "escalated") {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
-          continue;
         }
 
         if (classification.kind === "non_retryable") {
@@ -4755,7 +4765,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (
+          changesRequestedExecutorAgentId &&
+          didAutomaticRecoveryFail(latestRun, EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON)
+        ) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            notice: {
+              body:
+                "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                "execution disappeared, but it still has no live execution path. " +
+                "Moving it to `blocked` so it is visible for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (
+          !changesRequestedExecutorAgentId &&
+          didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")
+        ) {
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,
@@ -4806,9 +4845,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
-        reason: "issue_continuation_needed",
-        retryReason: "issue_continuation_needed",
-        source: "issue.continuation_recovery",
+        reason: changesRequestedExecutorAgentId
+          ? EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: changesRequestedExecutorAgentId
+          ? EXECUTION_CHANGES_REQUESTED_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: changesRequestedExecutorAgentId
+          ? "issue.execution_changes_requested_recovery"
+          : "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
       });
       if (queued) {

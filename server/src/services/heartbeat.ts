@@ -168,6 +168,7 @@ import {
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  readChangesRequestedExecutorAgentId,
 } from "./issue-execution-policy.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
@@ -3788,6 +3789,7 @@ function didAutomaticRecoveryFail(
   expectedRetryReason:
     | "assignment_recovery"
     | "issue_continuation_needed"
+    | "execution_changes_requested"
     | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
 ) {
   if (!latestRun) return false;
@@ -12871,6 +12873,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: issues.id,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
       })
@@ -12901,6 +12904,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !hasResolvedInteractionEvidence &&
       (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
     ) {
+      const changesRequestedExecutorAgentId = readChangesRequestedExecutorAgentId(issue);
       const queuedWake = parseObject(context.paperclipWake);
       const queuedContinuationSummary =
         readNonEmptyString(parseObject(context.paperclipContinuationSummary).body) ??
@@ -12909,7 +12913,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? null
         : await getIssueContinuationSummaryDocument(db, issueId);
       const continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
-      if (continuationSummaryParksExecutor(continuationSummaryBody)) {
+      if (
+        !changesRequestedExecutorAgentId &&
+        continuationSummaryParksExecutor(continuationSummaryBody)
+      ) {
         return {
           stale: true,
           errorCode: "issue_continuation_waiting_on_review",
@@ -17601,12 +17608,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const changesRequestedExecutorAgentId = readChangesRequestedExecutorAgentId(issue);
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
-        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+        didAutomaticRecoveryFail(
+          run,
+          issue.status === "todo"
+            ? "assignment_recovery"
+            : changesRequestedExecutorAgentId
+              ? "execution_changes_requested"
+              : "issue_continuation_needed",
+        );
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
@@ -17630,10 +17645,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
-      const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
+      const retryReason = issue.status === "todo"
+        ? "assignment_recovery"
+        : changesRequestedExecutorAgentId
+          ? "execution_changes_requested"
+          : "issue_continuation_needed";
+      const recoveryReason = issue.status === "todo"
+        ? "issue_assignment_recovery"
+        : changesRequestedExecutorAgentId
+          ? "execution_changes_requested"
+          : "issue_continuation_needed";
       const recoverySource =
-        issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
+        issue.status === "todo"
+          ? "issue.assignment_recovery"
+          : changesRequestedExecutorAgentId
+            ? "issue.execution_changes_requested_recovery"
+            : "issue.continuation_recovery";
       const now = new Date();
       const recoveryContextSnapshot = withRecoveryModelProfileHint({
         issueId: issue.id,

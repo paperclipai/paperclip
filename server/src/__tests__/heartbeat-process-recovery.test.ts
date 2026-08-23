@@ -694,6 +694,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    executionState?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -800,6 +801,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
         startedAt: input.status === "in_progress" ? now : null,
+        executionState: input.executionState ?? null,
       },
     ]);
 
@@ -2424,6 +2426,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+  });
+
+  it("requeues changes_requested executor recovery instead of blocking after a failed executor run", async () => {
+    const reviewerId = randomUUID();
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const recoveryRun = runs.find((row) => row.id !== runId);
+    expect(recoveryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      wakeReason: "execution_changes_requested",
+      retryReason: "execution_changes_requested",
+      retryOfRunId: runId,
+    });
+    expect(recoveryRun?.agentId).toBe(agentId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body?.includes("retried continuation"))).toBe(false);
   });
 
   it("blocks the issue when process-loss retry is exhausted and the immediate continuation recovery also fails", async () => {
@@ -6866,6 +6913,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakes.some((row) => row.reason === "run_liveness_continuation")).toBe(false);
   });
+  it("requeues changes_requested executor work instead of blocking after a generic continuation failure", async () => {
+    const reviewerId = randomUUID();
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db.update(issues).set({
+      executionState: {
+        status: "changes_requested",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const queued = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const recoveryRun = queued.find((row) =>
+      (row.contextSnapshot as Record<string, unknown> | null)?.retryReason === "execution_changes_requested",
+    );
+    expect(recoveryRun?.contextSnapshot).toMatchObject({
+      wakeReason: "execution_changes_requested",
+      retryReason: "execution_changes_requested",
+    });
+    expect(recoveryRun?.agentId).toBe(agentId);
+    expect(recoveryRun?.agentId).not.toBe(reviewerId);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
   it("blocks stranded in-progress work after the continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
