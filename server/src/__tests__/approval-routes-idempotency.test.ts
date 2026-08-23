@@ -25,6 +25,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   listReviewAttention: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -139,6 +140,7 @@ describe("approval routes idempotent retries", () => {
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.listReviewAttention.mockReset();
+    mockIssueService.update.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
@@ -151,6 +153,7 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+    mockIssueService.update.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -542,5 +545,159 @@ describe("approval routes idempotent retries", () => {
     const engineerWakes = wakeCalls.filter((call: any[]) => call[0] === "engineer-agent");
     // Only one wake for the requester — not a second one from queueLinkedIssueAssigneeWakes
     expect(engineerWakes).toHaveLength(1);
+  });
+
+  it("wakes the card requester on rejection so they can handle the rejected card", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-12",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-12",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "engineer-issue", assigneeAgentId: "engineer-agent", status: "in_review" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-12/reject")
+      .send({ decisionNote: "needs rework" });
+
+    expect(res.status).toBe(200);
+
+    const wakeCalls = mockHeartbeatService.wakeup.mock.calls;
+    const engineerWake = wakeCalls.find((call: any[]) => call[0] === "engineer-agent");
+    expect(engineerWake).toBeDefined();
+    expect(engineerWake[1]).toMatchObject({
+      reason: "approval_rejected",
+      payload: expect.objectContaining({
+        approvalId: "approval-12",
+        approvalStatus: "rejected",
+      }),
+    });
+  });
+
+  it("auto-transitions in_review linked issues to in_progress on rejection", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-13",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-13",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "blocked-issue", assigneeAgentId: "engineer-agent", status: "in_review" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-13/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "blocked-issue",
+      expect.objectContaining({ status: "in_progress" }),
+    );
+  });
+
+  it("does not transition already-in_progress or done linked issues on rejection", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-14",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-14",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "progress-issue", assigneeAgentId: "engineer-agent", status: "in_progress" },
+      { id: "done-issue", assigneeAgentId: "engineer-agent", status: "done" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-14/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("wakes assignees of linked issues with a different agent than the card requester on reject", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-15",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "engineer-agent",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-15",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "engineer-agent",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "engineer-issue", assigneeAgentId: "engineer-agent", status: "in_review" },
+      { id: "ceo-issue", assigneeAgentId: "ceo-agent", status: "in_review" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-15/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+
+    const wakeCalls = mockHeartbeatService.wakeup.mock.calls;
+    // Engineer woken as the card requester
+    const engineerWake = wakeCalls.find((call: any[]) => call[0] === "engineer-agent");
+    expect(engineerWake).toBeDefined();
+    // CEO woken as a linked-issue assignee with a different agent
+    const ceoWake = wakeCalls.find((call: any[]) => call[0] === "ceo-agent");
+    expect(ceoWake).toBeDefined();
+    expect(ceoWake[1]).toMatchObject({
+      reason: "approval_rejected",
+      idempotencyKey: "approval-assignee:approval-15:ceo-issue:rejected",
+    });
   });
 });
