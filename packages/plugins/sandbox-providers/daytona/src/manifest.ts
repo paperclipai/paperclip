@@ -67,7 +67,13 @@ const manifest: PaperclipPluginManifestV1 = {
       supportsTemplateDelete: true,
       // Daytona hosts an interactive login on a real pseudo-terminal. It is the
       // only bundled provider that implements the login pseudo-terminal methods,
-      // so it advertises the capability.
+      // so it advertises the capability. The runtime contract has one host
+      // prerequisite: the sandbox needs an executable `python3`, because the
+      // session home helpers and the credential reader run `python3`. The login
+      // opener verifies `python3` before any session home side effect, so a
+      // sandbox image or snapshot without `python3` fails the login closed with a
+      // legible reason. This keeps the advertised capability consistent with the
+      // runtime contract.
       supportsLoginPty: true,
       configSchema: {
         type: "object",

@@ -102,6 +102,8 @@ const SESSION_HOME_PATTERN =
 export const LOGIN_PTY_DESCRIPTOR_REJECTED = "LOGIN_PTY_DESCRIPTOR_REJECTED";
 /** The fixed non-secret error a rejected session home directory returns. */
 export const LOGIN_PTY_HOME_REJECTED = "LOGIN_PTY_HOME_REJECTED";
+/** The fixed non-secret error an absent `python3` runtime returns. */
+export const LOGIN_PTY_PYTHON_MISSING = "LOGIN_PTY_PYTHON_MISSING";
 
 /**
  * Encodes one value as a single POSIX shell argument. It wraps the value in
@@ -239,6 +241,13 @@ export interface LoginHomeInspection {
  * any ancestor fails closed and a symlink at the target reports the link.
  */
 export interface DaytonaLoginHomeFs {
+  /**
+   * Verifies that the sandbox has an executable `python3`. The session home
+   * helpers and the credential reader run `python3`, so the login needs it. It
+   * throws {@link LOGIN_PTY_PYTHON_MISSING} when `python3` is absent, so the
+   * login fails closed with a legible reason before any session home side effect.
+   */
+  assertPythonAvailable(): Promise<void>;
   /** Resolves the user id of the login user that runs the pseudo-terminal. */
   loginUserId(): Promise<number>;
   /**
@@ -359,6 +368,11 @@ export async function openDaytonaLoginPtySession(
   options?: DaytonaLoginPtyOptions,
 ): Promise<LoginPtySession> {
   assertDescriptor(descriptor);
+  // Verify the `python3` runtime before any session home side effect. The
+  // session home helpers and the credential reader run `python3`, so an absent
+  // runtime fails the login. The check fails closed here with a legible reason,
+  // instead of a generic home or credential-read failure deep in the flow.
+  await fs.assertPythonAvailable();
   // Create and validate the session home before the terminal opens.
   await prepareSessionHome(fs, descriptor.sessionHome);
   // Re-check the directory with a no-symlink check before `createPty`.
@@ -578,6 +592,16 @@ finally:
  */
 export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLoginHomeFs {
   return {
+    async assertPythonAvailable(): Promise<void> {
+      // Run a no-op `python3` program. A present runtime exits 0. An absent
+      // runtime exits non-zero (a shell reports 127 for a missing command), so
+      // the login fails closed with a legible reason before the session home
+      // helpers run. The helpers and the credential reader both need `python3`.
+      const out = await exec.executeCommand("python3 -c '' 2>/dev/null");
+      if ((out.exitCode ?? 0) !== 0) {
+        throw new Error(LOGIN_PTY_PYTHON_MISSING);
+      }
+    },
     async loginUserId(): Promise<number> {
       const out = await exec.executeCommand("id -u");
       const uid = Number.parseInt((out.result ?? "").trim(), 10);
