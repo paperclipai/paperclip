@@ -11067,6 +11067,22 @@ export function heartbeatService(
           "failed to append run event for lease-release terminalization",
         );
       });
+
+      // The run half of the invariant is not the whole invariant: agents.status
+      // only ever leaves "running" through finalizeAgentStatus. Without this
+      // call the run row is terminal while the agent row stays "running" with no
+      // live run behind it, and it stays that way until that agent happens to
+      // finish some later run. finalizeAgentStatus re-reads the agent, no-ops on
+      // paused/terminated, and recomputes from the running-run count, so a
+      // concurrently live second run still holds the agent at "running".
+      await finalizeAgentStatus(terminalRun.agentId, terminalStatus, terminalRun.error ?? null, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(terminalRun),
+      }).catch((agentStatusErr) => {
+        logger.warn(
+          { err: agentStatusErr, runId: run.id, agentId: terminalRun.agentId },
+          "failed to finalize agent status after lease-release terminalization",
+        );
+      });
     }
     return terminalRun ?? run;
   }
