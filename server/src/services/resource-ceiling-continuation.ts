@@ -1,6 +1,7 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issueComments } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issueComments } from "@paperclipai/db";
+import { ISSUE_PROGRESS_ACTIVITY_ACTIONS } from "./issue-rewake-throttle.js";
 
 /**
  * Bounded auto-continuation for resource-ceiling stops (TSMC-20820).
@@ -89,6 +90,81 @@ export async function countResourceCeilingContinuationRounds(
     )
     .limit(RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW + 1);
   return rows.length;
+}
+
+/**
+ * How many grants to inspect when computing the PROGRESS-AWARE count. The
+ * plain counter can stop at cap+1 because every row counts; here a productive
+ * round does not consume budget, so a long-running card may legitimately hold
+ * many more grants than the cap and we must see all of them to judge.
+ */
+export const RESOURCE_CEILING_CONTINUATION_PROGRESS_SAMPLE_LIMIT = 64;
+
+/**
+ * Progress-aware round counter (TSMC-21320).
+ *
+ * The plain counter above counts GRANTS, so the cap trips on repetition alone.
+ * That parks genuinely-progressing deep work: measured 2026-08-23, TSR-5723
+ * had three successful continuations — each leaving real issue-visible state —
+ * and was still blocked for fresh-card supersede, forcing a manual unblock.
+ * Round-based work (benches, staged QA, consolidations) is exactly the shape
+ * that spends a full turn budget per round and keeps delivering.
+ *
+ * The cap exists to stop UNPRODUCTIVE burn, so only unproductive rounds should
+ * spend it. A granted round counts against the cap unless its run left
+ * issue-visible progress — the same narrow definition the re-wake throttle
+ * uses (ISSUE_PROGRESS_ACTIVITY_ACTIONS: a comment alone is not progress;
+ * a mutation, document, work product, child issue, or scheduled continuation
+ * is). Monotonicity is preserved: a run's progress is a historical fact, so
+ * the count only falls as rounds age out of the window, exactly as before.
+ */
+export async function countUnproductiveResourceCeilingContinuationRounds(
+  db: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    now?: Date;
+  },
+): Promise<{ unproductive: number; granted: number; productive: number }> {
+  const now = input.now ?? new Date();
+  const cutoff = new Date(now.getTime() - RESOURCE_CEILING_CONTINUATION_WINDOW_MS);
+  const rows = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.scheduledRetryReason, RESOURCE_CEILING_CONTINUATION_RETRY_REASON),
+        gte(heartbeatRuns.createdAt, cutoff),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+      ),
+    )
+    .limit(RESOURCE_CEILING_CONTINUATION_PROGRESS_SAMPLE_LIMIT);
+
+  const granted = rows.length;
+  if (granted === 0) return { unproductive: 0, granted: 0, productive: 0 };
+
+  const runIds = rows.map((row) => row.id);
+  const progressRows = await db
+    .select({ runId: activityLog.runId })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        inArray(activityLog.runId, runIds),
+        inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+      ),
+    );
+
+  const productiveRunIds = new Set(
+    progressRows.map((row) => row.runId).filter((runId): runId is string => Boolean(runId)),
+  );
+  const productive = rows.filter((row) => productiveRunIds.has(row.id)).length;
+  return { unproductive: granted - productive, granted, productive };
 }
 
 /**

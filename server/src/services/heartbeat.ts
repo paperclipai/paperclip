@@ -156,6 +156,7 @@ import {
   buildResourceCeilingCapComment,
   computeResourceCeilingContinuationDelayMs,
   countResourceCeilingContinuationRounds,
+  countUnproductiveResourceCeilingContinuationRounds,
   findRecentResourceCeilingCapComment,
   type ResourceCeilingContinuationCause,
 } from "./resource-ceiling-continuation.js";
@@ -11216,12 +11217,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const now = new Date();
-    const roundsConsumed = await countResourceCeilingContinuationRounds(db, {
+    // TSMC-21320: spend the cap on UNPRODUCTIVE rounds only. Counting grants
+    // parked genuinely-progressing deep work (TSR-5723: three successful
+    // continuations, each leaving real issue state, still blocked for
+    // supersede). A round that moved the issue does not consume budget.
+    const continuationRounds = await countUnproductiveResourceCeilingContinuationRounds(db, {
       companyId: run.companyId,
       agentId: run.agentId,
       issueId,
       now,
     });
+    const roundsConsumed = continuationRounds.unproductive;
 
     if (roundsConsumed >= RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW) {
       const existingCapComment = await findRecentResourceCeilingCapComment(db, {
@@ -11253,6 +11259,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueId,
           cause,
           roundsConsumed,
+          // Progress-aware breakdown (TSMC-21320): `roundsConsumed` counts only
+          // the unproductive grants. Surfacing all three makes the verdict
+          // auditable — "5 unproductive of 9 granted" is a very different story
+          // from "5 of 5", and only the first justifies stopping.
+          grantedRounds: continuationRounds.granted,
+          productiveRounds: continuationRounds.productive,
           cap: RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
           windowMs: RESOURCE_CEILING_CONTINUATION_WINDOW_MS,
         },
