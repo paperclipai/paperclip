@@ -15892,9 +15892,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // not a stale queued run whose owner moved on: 46/46 judge wakes over 48h
     // died here as "assignee changed" on cards whose assignee never changed
     // (2026-08-22; TSM-5693 sat 9.9 days in_review behind it).
+    // 2026-08-23: board-api wakes carry triggeredBy "board" — same deliberate intent.
+    const explicitWakeActor = readNonEmptyString(context.triggeredBy);
     const isExplicitUserWakeForIssue =
       readNonEmptyString(context.wakeSource) === "on_demand" &&
-      readNonEmptyString(context.triggeredBy) === "user";
+      (explicitWakeActor === "user" || explicitWakeActor === "board");
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const authorizedSourceScopedRecovery = wakeReason === "source_scoped_recovery_action" && recoveryActionId
       ? await db
@@ -21784,9 +21786,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
+      // A per-run governor stop (token budget / max turns) is a bounded stop of ONE
+      // run, not a lane fault: the agent must stay idle so the next wake runs.
+      // 2026-08-22: 5 claude lanes flipped to `error` on token_budget_exhausted and
+      // sat dark until a board reset (FoundingEngineer, Forge, ...).
+      const failedRunErrorCode = readNonEmptyString(failedRun?.errorCode) ?? null;
+      const governorStop =
+        failedRunErrorCode === "token_budget_exhausted" ||
+        failedRunErrorCode === "max_turns_exhausted" ||
+        isTokenBudgetExhaustedRun(failedRun);
       await finalizeAgentStatus(agent.id, "failed", message, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-        keepIdleOnFailure: isWorkspaceSyncConflictFailure(message),
+        keepIdleOnFailure: isWorkspaceSyncConflictFailure(message) || governorStop,
       });
     }
     } catch (outerErr) {
