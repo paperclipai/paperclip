@@ -4,7 +4,6 @@ import type { Db } from "@paperclipai/db";
 import { companySecrets, companySecretVersions, environmentLeases } from "@paperclipai/db";
 import type {
   Environment,
-  EnvironmentDriver,
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
@@ -219,56 +218,15 @@ export function builtinSandboxProviderVerifiedMethods(
   return methods;
 }
 
-/**
- * The static capability support definition for one environment driver. It names
- * the eight capabilities the driver family can support at all. A capability the
- * definition does not name resolves `false` for the driver, whatever a
- * declaration, a verified verb, or a narrowing says. The general classifier
- * reads this static definition for a built-in driver in place of a live worker
- * method list.
- *
- * The definition is the code-level ground truth for a driver. It replaces a
- * driver-identity condition: a consumer asks the classifier for a capability
- * instead of a matching the driver name.
- */
-export interface EnvironmentDriverCapabilitySupport {
-  readonly driver: EnvironmentDriver;
-  /** The capability keys the driver family can support. */
-  readonly supportedCapabilities: ReadonlySet<SandboxCapabilityKey>;
-}
-
-const NO_CAPABILITY_SUPPORT: ReadonlySet<SandboxCapabilityKey> = new Set<SandboxCapabilityKey>();
-const ALL_CAPABILITY_SUPPORT: ReadonlySet<SandboxCapabilityKey> = new Set<SandboxCapabilityKey>(
-  SANDBOX_CAPABILITY_KEYS,
-);
-
-/**
- * The static capability support for the four environment drivers.
- *
- * - `local` runs commands on the host file system with no provider capability
- *   model, so it supports none of the eight capabilities. Every capability
- *   resolves `false`.
- * - `ssh` runs commands on a remote host through the SSH transport with no
- *   provider capability model, so it supports none of the eight capabilities
- *   either.
- * - `sandbox` runs the full provider capability model. A built-in provider maps
- *   its own methods through {@link builtinSandboxProviderVerifiedMethods}, and a
- *   plugin-backed provider reports live worker methods, so the driver can support
- *   every capability. The classifier still intersects the per-provider
- *   declaration, the verified methods, and the per-lease narrowing.
- * - `plugin` resolves its capabilities from the live plugin worker method list,
- *   so it can support every capability. The classifier intersects the live
- *   verified methods and the declaration.
- */
-export const ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT: Record<
-  EnvironmentDriver,
-  EnvironmentDriverCapabilitySupport
-> = {
-  local: { driver: "local", supportedCapabilities: NO_CAPABILITY_SUPPORT },
-  ssh: { driver: "ssh", supportedCapabilities: NO_CAPABILITY_SUPPORT },
-  sandbox: { driver: "sandbox", supportedCapabilities: ALL_CAPABILITY_SUPPORT },
-  plugin: { driver: "plugin", supportedCapabilities: ALL_CAPABILITY_SUPPORT },
-};
+// `EnvironmentDriverCapabilitySupport` and `ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT`
+// now live in the dependency-leaf module `environment-driver-traits.ts`, next to
+// the other static per-driver traits. Re-export both names here so an existing
+// import of this module keeps resolving.
+export {
+  ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT,
+  type EnvironmentDriverCapabilitySupport,
+} from "./environment-driver-traits.js";
+import { ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT } from "./environment-driver-traits.js";
 
 /**
  * The one general capability classifier. It resolves each of the eight effective
@@ -3659,6 +3617,22 @@ export function environmentRuntimeService(
     ): Promise<EffectiveSandboxCapabilities | null> {
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       return (await driver?.effectiveSandboxCapabilities?.(input)) ?? null;
+    },
+
+    /**
+     * Resolve the general per-lease capability snapshot through the driver's
+     * {@link EnvironmentRuntimeDriver.resolveCapabilities}. Unlike {@link
+     * effectiveSandboxCapabilities}, every registered driver implements this
+     * method, so it returns a full snapshot for any registered driver. It
+     * returns `null` only when the lease's driver is not registered — never as
+     * a stand-in for "every capability denied".
+     */
+    async resolveCapabilities(
+      input: EnvironmentDriverLeaseInput,
+    ): Promise<EffectiveSandboxCapabilities | null> {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver) return null;
+      return await driver.resolveCapabilities(input);
     },
 
     async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {

@@ -6,6 +6,7 @@ import type {
   WorkspaceRealizationRequest,
 } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
+import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -170,10 +171,9 @@ export function buildWorkspaceRealizationRecord(input: {
 }): WorkspaceRealizationRecord {
   const leaseMetadata = input.lease.metadata ?? {};
   const providerMetadata = input.providerMetadata ?? {};
-  const transport =
-    input.environment.driver === "ssh" || input.environment.driver === "sandbox" || input.environment.driver === "plugin"
-      ? input.environment.driver
-      : "local";
+  // An unknown or absent driver resolves to the "local" transport, same as
+  // today's fallback.
+  const transport = getEnvironmentDriverTraits(input.environment.driver)?.workspaceTransport ?? "local";
   const remotePath =
     readString(providerMetadata.remoteCwd) ??
     readString(leaseMetadata.remoteCwd) ??

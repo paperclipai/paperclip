@@ -373,7 +373,7 @@ async function buildSandboxRunner(input: {
     syncIn: vi.fn(),
     syncOut: vi.fn(),
     openDuplexChannel,
-    effectiveSandboxCapabilities: vi.fn(async () =>
+    resolveCapabilities: vi.fn(async () =>
       input.snapshot ? Object.freeze({ ...input.snapshot }) : null,
     ),
   } as unknown as EnvironmentRuntimeService;
