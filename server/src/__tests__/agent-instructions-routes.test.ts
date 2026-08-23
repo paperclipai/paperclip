@@ -40,6 +40,13 @@ const mockEnvironmentService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 const mockFindServerAdapter = vi.hoisted(() => vi.fn());
+// assertAdapterConfigConstraints (routes/agents.ts) calls requireServerAdapter to
+// validate adapterConfig.model against the adapter's exported catalog. It was
+// absent from this mock, so every PATCH that reached that check threw
+// "No requireServerAdapter export is defined" and the route answered 500 —
+// four tests red on the live branch, and NOT a product defect: the export is
+// real in adapters/registry.ts and works in production.
+const mockRequireServerAdapter = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -78,6 +85,7 @@ vi.mock("../services/environments.js", () => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: mockFindServerAdapter,
+  requireServerAdapter: mockRequireServerAdapter,
   // undefined → shouldMaterializeRuntimeSkillsForAdapter falls back to the
   // legacy adapter set, which is the pre-registry behavior these tests assume.
   findActiveServerAdapter: vi.fn(() => undefined),
@@ -121,6 +129,7 @@ function registerModuleMocks() {
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: mockFindServerAdapter,
+    requireServerAdapter: mockRequireServerAdapter,
     findActiveServerAdapter: vi.fn(() => undefined),
     listAdapterModels: vi.fn(),
   }));
@@ -224,6 +233,11 @@ describe("agent instructions bundle routes", () => {
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
+    // No `models` key → assertAdapterConfigConstraints skips catalog validation,
+    // matching findServerAdapter above. These tests cover instructions/skill
+    // carry-over on adapter switch; model-catalog validation is covered by the
+    // adapter-registry suites.
+    mockRequireServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       reason: "allow_explicit_grant",
