@@ -31,14 +31,26 @@ export type AgentRunRow = {
   contextSnapshot: unknown;
 };
 
-const AGENT_RUN_COLUMNS = {
-  id: heartbeatRuns.id,
-  companyId: heartbeatRuns.companyId,
-  agentId: heartbeatRuns.agentId,
-  status: heartbeatRuns.status,
-  responsibleUserId: heartbeatRuns.responsibleUserId,
-  contextSnapshot: heartbeatRuns.contextSnapshot,
-};
+/**
+ * Built on call, not at module scope.
+ *
+ * `authorization.ts` imports this module, and it is imported in turn by suites
+ * that partially mock `@paperclipai/db`. Reading `heartbeatRuns.*` while the
+ * module initializes makes the import itself fail against any such mock that
+ * does not happen to re-export this table — a load-time landmine for callers
+ * that never touch run authority. Dereferencing inside the query keeps the
+ * dependency where it is actually used.
+ */
+function agentRunColumns() {
+  return {
+    id: heartbeatRuns.id,
+    companyId: heartbeatRuns.companyId,
+    agentId: heartbeatRuns.agentId,
+    status: heartbeatRuns.status,
+    responsibleUserId: heartbeatRuns.responsibleUserId,
+    contextSnapshot: heartbeatRuns.contextSnapshot,
+  };
+}
 
 /**
  * Normalizes a caller-supplied run id into something safe to hand a query.
@@ -65,7 +77,7 @@ export async function loadAgentRunRow(
   const lookupId = agentRunLookupId(runId);
   if (!lookupId) return null;
   return await dbOrTx
-    .select(AGENT_RUN_COLUMNS)
+    .select(agentRunColumns())
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, lookupId))
     .then((rows) => (rows[0] ?? null) as AgentRunRow | null);
@@ -87,7 +99,7 @@ export async function lockLiveAgentRun(
   const lookupId = agentRunLookupId(input.runId);
   if (!lookupId || !input.agentId) return null;
   const run = await tx
-    .select(AGENT_RUN_COLUMNS)
+    .select(agentRunColumns())
     .from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.id, lookupId),

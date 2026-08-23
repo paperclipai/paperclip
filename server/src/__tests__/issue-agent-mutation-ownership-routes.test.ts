@@ -2059,12 +2059,18 @@ describe("agent issue mutation checkout ownership", () => {
       watchdogIssueId?: string | null;
       ancestryParentId?: string | null;
       watchdogRows?: Record<string, unknown>[];
+      runStatus?: string;
     } = {}) {
       const watchedIssueId = options.watchedIssueId ?? issueId;
       const runRows = [{
         id: watchdogRunId,
         companyId,
         agentId: peerAgentId,
+        // Watchdog scope is a grant the run carries while it executes, so the
+        // stub has to carry the status a real executing run has. Leaving it off
+        // modelled a run in no state at all, which is not a thing the database
+        // can hold (FAI-9983).
+        status: options.runStatus ?? "running",
         contextSnapshot: { taskWatchdog: { watchedIssueId, stopFingerprint: "task_watchdog_stop:test" } },
       }];
       const watchdogRows = options.watchdogRows ?? [{
@@ -2126,6 +2132,26 @@ describe("agent issue mutation checkout ownership", () => {
         explanation: "Watchdog test boundary default.",
       }));
     }
+
+    it.each([
+      ["succeeded"],
+      ["failed"],
+      // Not terminal, and deliberately not executing: recovery parks a run here
+      // while it waits to retry, so no process is behind it to speak for it.
+      ["scheduled_retry"],
+    ])("denies a %s watchdog run the scope its live counterpart gets", async (runStatus) => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+
+      const app = await createApp(watchdogActor(), createWatchdogDb({ runStatus }));
+      const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Watchdog finding" });
+
+      // Same actor, same watchdog row, same watched issue as the passing case
+      // below — only the run's liveness differs. Replaying a finished watchdog
+      // run by id must not reacquire subtree write powers (FAI-9983).
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
 
     it("lets a watchdog run comment on a watched issue assigned to a different agent", async () => {
       denyBaseBoundary();
