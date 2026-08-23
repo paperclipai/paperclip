@@ -2353,8 +2353,20 @@ function runDuplexGateway() {
         failRequest(frame.id, "duplex response body_chunk is not canonical base64");
         return;
       }
+      if (decoded.length === 0) {
+        failRequest(frame.id, "duplex response body_chunk is empty");
+        return;
+      }
       if (asm.received + decoded.length > asm.bodyByteCount) {
         failRequest(frame.id, "duplex response body overruns the declared size");
+        return;
+      }
+      const isFinal = asm.received + decoded.length === asm.bodyByteCount;
+      if (
+        decoded.length > DUPLEX_BODY_CHUNK_RAW_BYTES ||
+        (!isFinal && decoded.length !== DUPLEX_BODY_CHUNK_RAW_BYTES)
+      ) {
+        failRequest(frame.id, "duplex response body_chunk has the wrong size");
         return;
       }
       asm.nextSeq += 1;
