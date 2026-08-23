@@ -26,7 +26,6 @@ export default defineConfig({
     maxConcurrency: 1,
     maxWorkers: 1,
     minWorkers: 1,
-    testTimeout: 15000,
     pool: "forks",
     sequence: {
       concurrent: false,
