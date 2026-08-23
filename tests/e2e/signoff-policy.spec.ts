@@ -87,6 +87,15 @@ async function invokeHeartbeat(
     data: {
       reason: "issue_assigned",
       payload: { issueId, taskId: issueId, taskKey: issueId },
+      // Each helper call stands in for a distinct agent turn, so it wants a
+      // genuinely fresh run. Without saying so the issue-rewake throttle
+      // (PAP-13775) is right to skip the second wake: this suite's adapter is a
+      // no-op, so every prior run for the pair looks like a run that finished
+      // without making issue-visible progress. A skipped wake used to be
+      // survivable because the helper could fall back on an old run id; now
+      // that a run id has to be live to carry authority, the skip leaves the
+      // caller with nothing to speak as.
+      forceFreshSession: true,
     },
   });
   expect(res.ok()).toBe(true);
