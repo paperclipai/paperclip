@@ -7884,7 +7884,13 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
-    res.json(await issueRunPresence.activeRun(issue));
+    const activeRun = await issueRunPresence.activeRun(issue);
+    // 204 keeps "no active run" distinct from 404 "no such issue".
+    if (!activeRun) {
+      res.status(204).end();
+      return;
+    }
+    res.json(activeRun);
   });
 
   return router;
