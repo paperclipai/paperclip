@@ -432,12 +432,14 @@ describe("adapter device-login routes", () => {
     expect(harness.acquisitions).toHaveLength(0);
   });
 
-  it("starts a device login for a third adapter that declares the displayed-code capability", async () => {
-    // A third adapter, not the Codex adapter, declares a displayed-code login
-    // capability. The guard reads the registry capability, not the adapter name,
-    // so the adapter passes the guard and starts a session. This proves no
-    // adapter-name branch remains in the guard path. The test overrides an
-    // existing adapter type so the strict request schema accepts it.
+  it("rejects a displayed-code adapter that has no mapped login command key", async () => {
+    // A third adapter declares a displayed-code login capability, but its adapter
+    // type maps to no login command key. The login opener resolves the command
+    // key from the closed command map, so this adapter would fail at command
+    // resolution after the route creates session state. The guard keeps admission
+    // consistent with the command map, so it rejects the adapter with a fixed 400
+    // before any lease. The test overrides an existing adapter type so the strict
+    // request schema accepts it.
     const app = await createApp();
     const { registerServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter({
@@ -460,12 +462,48 @@ describe("adapter device-login routes", () => {
         .post(loginPath(COMPANY_1, "gemini_local"))
         .send({ environmentId: SANDBOX_ENV_1 });
 
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(harness.acquisitions).toHaveLength(0);
+    } finally {
+      unregisterServerAdapter("gemini_local");
+    }
+  });
+
+  it("starts a device login for a non-Codex adapter that maps to a login command key", async () => {
+    // A non-Codex adapter type that maps to a login command key declares a
+    // displayed-code login capability. The guard reads the registry capability
+    // and the command map, not the adapter name, so the adapter passes the guard
+    // and starts a session. This proves no adapter-name branch remains in the
+    // guard path. The test overrides the mapped `claude_local` type with a
+    // displayed-code capability so the guard admits it.
+    const app = await createApp();
+    const { registerServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      type: "claude_local",
+      execute: async () => {
+        throw new Error("not used");
+      },
+      testEnvironment: async () => {
+        throw new Error("not used");
+      },
+      loginCapability: {
+        panelMode: "displayed_code",
+        timeoutPolicy: "caller_bounded",
+        getCommand: () => "vendor login",
+        parsePrompt: () => null,
+      },
+    });
+    try {
+      const res = await request(app)
+        .post(loginPath(COMPANY_1, "claude_local"))
+        .send({ environmentId: SANDBOX_ENV_1 });
+
       expect(res.status, JSON.stringify(res.body)).toBe(201);
       expect(res.body).toMatchObject({ environmentId: SANDBOX_ENV_1, status: "starting" });
       expect(harness.acquisitions).toHaveLength(1);
-      expect(harness.acquisitions[0]).toMatchObject({ adapterType: "gemini_local" });
+      expect(harness.acquisitions[0]).toMatchObject({ adapterType: "claude_local" });
     } finally {
-      unregisterServerAdapter("gemini_local");
+      unregisterServerAdapter("claude_local");
     }
   });
 

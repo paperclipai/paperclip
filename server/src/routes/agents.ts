@@ -63,6 +63,7 @@ import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } f
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
+import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -1240,13 +1241,24 @@ export function agentRoutes(
   }
 
   // The device-login route drives a login that shows a one-time code on a real
-  // pseudo-terminal. It serves any adapter whose registry login capability
-  // declares the displayed-code panel mode. The guard reads the panel mode, not
-  // the adapter name, so a new adapter with the same panel mode passes with no
-  // code change. It rejects an adapter with no matching capability with a fixed
-  // 400.
+  // pseudo-terminal. It serves an adapter whose registry login capability
+  // declares the displayed-code panel mode and whose trusted adapter type maps
+  // to a login command key. The guard reads the panel mode and the command map,
+  // not the adapter name, so a new adapter that satisfies both passes with no
+  // guard code change. It rejects an adapter with no matching capability, and an
+  // adapter with no mapped command key, with the same fixed 400.
+  //
+  // The command-map check keeps admission consistent with the closed command
+  // map. The login opener resolves the command key from the same map. An adapter
+  // that declares the displayed-code capability but has no mapped key would pass
+  // the panel-mode check, then fail at command resolution after the route
+  // creates session state. The guard rejects it before any session or lease side
+  // effect.
   function assertDeviceLoginAdapter(type: string): void {
     if (getRegistryLoginCapability(type)?.panelMode !== "displayed_code") {
+      throw badRequest(`Adapter "${type}" does not support a device login.`);
+    }
+    if (!isLoginCommandSupportedAdapterType(type)) {
       throw badRequest(`Adapter "${type}" does not support a device login.`);
     }
   }

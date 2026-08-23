@@ -51,6 +51,16 @@ export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
 }
 
 /**
+ * Reports whether the trusted adapter type maps to a login command key. The
+ * admission guard reads this predicate, so an adapter type with no mapped key
+ * fails closed at admission. The device login opener resolves the same closed
+ * map later, so admission and command resolution stay consistent.
+ */
+export function isLoginCommandSupportedAdapterType(adapterType: string): boolean {
+  return ADAPTER_TYPE_TO_LOGIN_COMMAND_KEY[adapterType] !== undefined;
+}
+
+/**
  * The fixed root for a login session home. The server derives one per-session
  * home under this root. The path shape is exact, so the provider revalidates it
  * before it touches the filesystem.
