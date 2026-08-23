@@ -36,6 +36,49 @@ MAX_WORKERS="${PAPERCLIP_TEST_RATCHET_MAX_WORKERS:-2}"
 # top of a storm is an outage.
 MAX_LOAD="${PAPERCLIP_TEST_RATCHET_MAX_LOAD:-80}"
 COOLDOWN_SEC="${PAPERCLIP_TEST_RATCHET_COOLDOWN_SEC:-20}"
+# Live-health watchdog. Load is a proxy; what actually matters is whether the
+# control plane still answers. On 2026-08-23 an unbounded run stretched
+# /api/health from 0.18s to 4.2s and aborted an in-flight promote (its
+# pre-flight probe is curl -m 5). A shard can run for many minutes, so checking
+# load only BETWEEN shards is not enough — this polls during them and kills the
+# shard the moment the server starts suffering.
+HEALTH_URL="${PAPERCLIP_TEST_RATCHET_HEALTH_URL:-http://127.0.0.1:3100/api/health}"
+HEALTH_MAX_SEC="${PAPERCLIP_TEST_RATCHET_HEALTH_MAX_SEC:-2}"
+HEALTH_POLL_SEC="${PAPERCLIP_TEST_RATCHET_HEALTH_POLL_SEC:-10}"
+HEALTH_STRIKES="${PAPERCLIP_TEST_RATCHET_HEALTH_STRIKES:-3}"
+
+# One probe: prints "ok" only when the control plane answers 200 fast enough.
+health_ok() {
+  local out code secs
+  out="$(curl -s -m 8 -o /dev/null -w '%{http_code} %{time_total}' "$HEALTH_URL" 2>/dev/null)" || return 1
+  code="${out%% *}"; secs="${out##* }"
+  [ "$code" = "200" ] || return 1
+  awk -v a="$secs" -v b="$HEALTH_MAX_SEC" 'BEGIN{exit !(a<=b)}'
+}
+
+# Watchdog: polls health while $1 (a shard pid) runs; kills it after
+# HEALTH_STRIKES consecutive bad probes. Strikes reset on recovery so a single
+# slow sample never aborts a run.
+watch_health() {
+  local target_pid="$1" strikes=0
+  while kill -0 "$target_pid" 2>/dev/null; do
+    if health_ok; then
+      strikes=0
+    else
+      strikes=$((strikes + 1))
+      log "health probe failed (${strikes}/${HEALTH_STRIKES})"
+      if [ "$strikes" -ge "$HEALTH_STRIKES" ]; then
+        log "ABORTING SHARD: control plane unhealthy ${strikes} consecutive probes — the fleet comes first"
+        kill -TERM "$target_pid" 2>/dev/null
+        sleep 5
+        kill -KILL "$target_pid" 2>/dev/null
+        return 1
+      fi
+    fi
+    sleep "$HEALTH_POLL_SEC"
+  done
+  return 0
+}
 
 log() { echo "[test-ratchet-run $(date '+%H:%M:%S')] $*" >&2; }
 
@@ -61,10 +104,20 @@ if [ -e "$LEASE_DIR/owner.json" ]; then
   exit 3
 fi
 
+# Health gates FIRST: it is a cheap, decisive probe, and an unhealthy control
+# plane should be refused immediately rather than after a ten-minute load wait.
+# Never start against an already-suffering server — that is exactly the state
+# where adding test load does real damage.
+if ! health_ok; then
+  log "REFUSING: control plane at $HEALTH_URL is not answering 200 within ${HEALTH_MAX_SEC}s."
+  exit 3
+fi
+
 if ! wait_for_quiet 600; then
   log "REFUSING: machine too busy to measure honestly (a loaded run inflates failures)."
   exit 3
 fi
+
 
 cd "$ROOT" || { log "cannot cd $ROOT"; exit 1; }
 mkdir -p "$SHARD_DIR"; rm -f "$SHARD_DIR"/*.json 2>/dev/null
@@ -85,6 +138,7 @@ SHARD_LIST="$(
 
 results_args=""
 shard_count=0
+ABORTED_BY_WATCHDOG=0
 while IFS= read -r pkg; do
   [ -n "$pkg" ] || continue
   [ -d "$ROOT/$pkg" ] || continue
@@ -96,7 +150,15 @@ while IFS= read -r pkg; do
   wait_for_quiet 600 || { log "aborting remaining shards: box stayed busy"; break; }
   log "shard: $pkg"
   ( cd "$ROOT/$pkg" && nice -n 19 npx vitest run \
-      --reporter=json --outputFile="$out" --maxWorkers="$MAX_WORKERS" >/dev/null 2>&1 )
+      --reporter=json --outputFile="$out" --maxWorkers="$MAX_WORKERS" >/dev/null 2>&1 ) &
+  shard_pid=$!
+  if ! watch_health "$shard_pid"; then
+    log "shard $pkg aborted by the health watchdog; stopping the whole run"
+    rm -f "$out"
+    ABORTED_BY_WATCHDOG=1
+    break
+  fi
+  wait "$shard_pid" 2>/dev/null
   if [ -f "$out" ]; then
     results_args="$results_args --results $out"
     shard_count=$((shard_count + 1))
@@ -106,6 +168,12 @@ while IFS= read -r pkg; do
 done <<EOF
 $SHARD_LIST
 EOF
+
+if [ "$ABORTED_BY_WATCHDOG" = "1" ]; then
+  log "REFUSING to publish a verdict: the run was aborted to protect the control plane."
+  log "A partial run is not a measurement — no receipt written, baseline untouched."
+  exit 3
+fi
 
 if [ "$shard_count" -eq 0 ]; then
   log "no shard results produced"; exit 1
