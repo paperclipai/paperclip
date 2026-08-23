@@ -78,6 +78,51 @@ function coerceBlockerText(value: unknown): string | null {
   return null;
 }
 
+// The statuses the platform's own contracts offer: the four terminal choices in
+// the disposition contract, plus the "continuing" the acpx/hermes re-ask prompts
+// invite. 2026-08-23: the 2026-08-22 shared-extractor rewrite dropped the
+// per-adapter allowlists and accepted ANY non-empty status string, so free-text
+// values ("in_progress", "todo") were recorded as dispositions the heartbeat
+// then had no rule for — and the antigravity suite's "rejects malformed or
+// unsupported disposition prose" case had been red on the live branch ever
+// since. Anything outside this set is not a disposition.
+const DISPOSITION_STATUSES = new Set([
+  "done",
+  "cancelled",
+  "in_review",
+  "blocked",
+  "continuing",
+]);
+
+const BARE_STATUS_VALUES = new Set(["done", "cancelled", "in_review", "blocked"]);
+
+// Reads `": "done"` / `: "done"` / ` "done"` immediately after the marker and
+// returns the span to strip (including the enclosing `{"MARKER": "done"}`
+// wrapper when there is one) so the human-facing summary stays clean.
+function readBareStatusValue(
+  text: string,
+  searchFrom: number,
+): { status: string; spanEnd: number; wrapperStart: number | null } | null {
+  const window = text.slice(searchFrom, Math.min(text.length, searchFrom + 40));
+  const match = /^["`]?\s*:\s*["`]?\s*"([a-z_]+)"/.exec(window)
+    ?? /^["`]?\s*:\s*([a-z_]+)\b/.exec(window);
+  if (!match) return null;
+  const status = match[1].trim().toLowerCase();
+  if (!BARE_STATUS_VALUES.has(status)) return null;
+  let spanEnd = searchFrom + match[0].length;
+  let wrapperStart: number | null = null;
+  // `{"PAPERCLIP_DISPOSITION": "done"}` — swallow the wrapper braces too.
+  const markerIndex = searchFrom - PAPERCLIP_DISPOSITION_MARKER.length;
+  if (text.slice(Math.max(0, markerIndex - 2), markerIndex).endsWith('{"')) {
+    const close = text.indexOf("}", spanEnd);
+    if (close !== -1 && close - spanEnd <= 4) {
+      wrapperStart = markerIndex - 2;
+      spanEnd = close + 1;
+    }
+  }
+  return { status, spanEnd, wrapperStart };
+}
+
 export function extractPaperclipDisposition(text: string): {
   disposition: ParsedDisposition | null;
   cleanedText: string;
@@ -106,7 +151,21 @@ export function extractPaperclipDisposition(text: string): {
         break;
       }
     }
-    if (braceIndex === -1) continue;
+    if (braceIndex === -1) {
+      // 2026-08-23: gemini/antigravity states the marker with a BARE STRING
+      // value — `{"PAPERCLIP_DISPOSITION": "done"}` or `PAPERCLIP_DISPOSITION:
+      // "done"` — so there is no object to scan and the marker was discarded.
+      // Accept the string form, but ONLY for an exact known status, so prose
+      // that merely names the marker can never move issue state.
+      const bare = readBareStatusValue(text, searchFrom);
+      if (!bare) continue;
+      lastValid = {
+        disposition: { status: bare.status, hasBlocker: false },
+        spanStart: bare.wrapperStart ?? markerIndex,
+        spanEnd: bare.spanEnd,
+      };
+      continue;
+    }
 
     const jsonText = scanBalancedJsonObject(text, braceIndex);
     if (!jsonText) continue;
@@ -150,8 +209,8 @@ export function extractPaperclipDisposition(text: string): {
       }
     }
 
-    const status = typeof parsed.status === "string" ? parsed.status.trim() : "";
-    if (!status) continue;
+    const status = typeof parsed.status === "string" ? parsed.status.trim().toLowerCase() : "";
+    if (!DISPOSITION_STATUSES.has(status)) continue;
 
     const blockerText = coerceBlockerText(parsed.blocker)
       ?? (status === "blocked"
@@ -189,8 +248,10 @@ export function extractPaperclipDisposition(text: string): {
           : rawDisposition && typeof rawDisposition === "object" && !Array.isArray(rawDisposition)
             ? (rawDisposition as Record<string, unknown>)
             : null;
-        const status = candidate && typeof candidate.status === "string" ? candidate.status.trim() : "";
-        if (candidate && status) {
+        const status = candidate && typeof candidate.status === "string"
+          ? candidate.status.trim().toLowerCase()
+          : "";
+        if (candidate && DISPOSITION_STATUSES.has(status)) {
           const blockerText = coerceBlockerText(candidate.blocker)
             ?? (status === "blocked"
               ? coerceBlockerText(candidate.summary) ?? coerceBlockerText(candidate.reason)

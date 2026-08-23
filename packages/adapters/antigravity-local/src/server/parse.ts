@@ -15,6 +15,8 @@ export interface ParsedAntigravityOutput {
     blocker?: string;
     reviewer?: string;
   } | null;
+  /** The agy CLI's own verdict on the turn: SUCCESS / CANCELED / ERROR. */
+  resultStatus: string | null;
 }
 
 export interface AntigravityQuotaExhaustedMatch {
@@ -77,6 +79,12 @@ function readUsageRecord(value: unknown): TokenUsage {
     asRecord(root.tokenUsage),
     asRecord(asRecord(root.response).usage),
     asRecord(asRecord(root.response).usageMetadata),
+    // 2026-08-23: the agy CLI wraps its terminal payload as
+    // {"event":"result","result":{...,"usage":{...}}}. Without these two
+    // candidates every antigravity run reported ZERO tokens (91/91 succeeded
+    // runs in 24h), so the weighted token governor could never see the lane.
+    asRecord(root.result),
+    asRecord(asRecord(root.result).usage),
   ];
   let inputTokens = 0;
   let cachedInputTokens = 0;
@@ -88,6 +96,9 @@ function readUsageRecord(value: unknown): TokenUsage {
     ]));
     cachedInputTokens = Math.max(cachedInputTokens, firstTokenCount(candidate, [
       "cachedInputTokens", "cached_input_tokens", "cachedTokens", "cached_tokens",
+      // agy reports its cache hits as cache_read_tokens; without it the lane
+      // reported zero cached input even once the envelope was readable.
+      "cacheReadTokens", "cache_read_tokens",
       "cachedContentTokenCount", "cacheReadInputTokens",
     ]));
     outputTokens = Math.max(outputTokens, firstTokenCount(candidate, [
@@ -118,11 +129,33 @@ function parseDispositionRecord(value: unknown): ParsedAntigravityOutput["dispos
 
 
 function readEventText(event: Record<string, unknown>): string | null {
+  // The agy CLI names its discriminator `event`, not `type`
+  // ({"event":"result","result":{"response":"..."}}), and carries the model
+  // text at result.response. Keying only on `type` made every terminal event
+  // non-terminal-like: 91/91 succeeded antigravity runs in 24h recorded an
+  // EMPTY summary and 0% disposition capture — the marker was emitted and then
+  // thrown away before the shared extractor ever saw it. Accept both
+  // discriminators and both text locations.
   const type = typeof event.type === "string" ? event.type.toLowerCase() : "";
+  const eventName = typeof event.event === "string" ? event.event.toLowerCase() : "";
   const role = typeof event.role === "string" ? event.role.toLowerCase() : "";
-  const terminalLike = /result|final|assistant|message|text/.test(type) || role === "assistant";
+  const terminalLike =
+    /result|final|assistant|message|text/.test(type) ||
+    /result|final|assistant|message|text/.test(eventName) ||
+    role === "assistant";
   if (!terminalLike) return null;
-  for (const value of [event.result, event.text, event.message, event.content, asRecord(event.response).text]) {
+  const resultRecord = asRecord(event.result);
+  for (const value of [
+    event.result,
+    event.text,
+    event.message,
+    event.content,
+    asRecord(event.response).text,
+    resultRecord.response,
+    resultRecord.text,
+    resultRecord.message,
+    resultRecord.content,
+  ]) {
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
   }
   return null;
@@ -136,6 +169,11 @@ function readEventText(event: Record<string, unknown>): string | null {
 export function inspectAntigravityStream(stdout: string) {
   let sessionId: string | null = null;
   let summary: string | null = null;
+  // The agy CLI reports its OWN verdict on the turn in the result envelope
+  // (SUCCESS / CANCELED / ERROR). Paperclip judged these runs only by exit code,
+  // so a CANCELED turn with an empty response was stored as a successful run:
+  // 68 of 91 "succeeded" antigravity runs in 24h were CANCELED and 9 were ERROR.
+  let resultStatus: string | null = null;
   const usage: TokenUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
   let sawJsonEvent = false;
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -157,8 +195,12 @@ export function inspectAntigravityStream(stdout: string) {
     usage.cachedInputTokens = Math.max(usage.cachedInputTokens, eventUsage.cachedInputTokens);
     usage.outputTokens = Math.max(usage.outputTokens, eventUsage.outputTokens);
     summary = readEventText(event) ?? summary;
+    const statusCandidate = asRecord(event.result).status ?? event.status;
+    if (typeof statusCandidate === "string" && statusCandidate.trim()) {
+      resultStatus = statusCandidate.trim().toUpperCase();
+    }
   }
-  return { sessionId, summary, usage, sawJsonEvent };
+  return { sessionId, summary, usage, sawJsonEvent, resultStatus };
 }
 
 export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntigravityOutput {
@@ -176,6 +218,7 @@ export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntig
     errorMessage: null,
     usage: stream.usage,
     disposition,
+    resultStatus: stream.resultStatus,
   };
 }
 

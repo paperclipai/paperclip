@@ -100,6 +100,29 @@ import {
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
 
+// The structured run-disposition contract for issue-scoped claude runs. Every
+// other lane already carries this in its prompt (acpx engine, hermes,
+// antigravity); claude_local carried it nowhere, which is why it sat at ~26%
+// capture all week while the lanes that inject it sit at 99-100%.
+const CLAUDE_DISPOSITION_CONTRACT = [
+  "## Run disposition (required)",
+  "",
+  "Record the real issue state through Paperclip as you normally would. Then, whether or not that write succeeded, make the FINAL line of your response exactly this record so the platform can read your decision even when a status PATCH fails:",
+  "",
+  'PAPERCLIP_DISPOSITION: {"status":"done|cancelled|in_review|blocked","hasBlocker":true|false,"blocker":"<short reason, only when blocked>"}',
+  "",
+  "A prose status sentence is not a disposition. Do not omit the line because the PATCH succeeded — the line is how the run is recorded.",
+].join("\n");
+
+// One bounded follow-up turn in the SAME session when a clean run states no
+// disposition, mirroring the acpx engine and hermes (both went to ~100% capture
+// the day their re-ask shipped). Never more than one re-ask per run.
+const CLAUDE_DISPOSITION_REASK_TIMEOUT_SEC = 90;
+const CLAUDE_DISPOSITION_REASK_PROMPT =
+  "Your previous reply did not end with the required PAPERCLIP_DISPOSITION line. " +
+  "Reply with exactly ONE line and nothing else, reflecting the work you just did on this issue: " +
+  'PAPERCLIP_DISPOSITION: {"status":"done|cancelled|in_review|blocked","hasBlocker":true|false,"blocker":"<named blocker, or empty>"}';
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -818,6 +841,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
+  const issueScopedRun =
+    asString(parseObject(context.paperclipIssue).id, "").trim().length > 0 ||
+    asString(context.issueId, "").trim().length > 0 ||
+    asString(context.taskId, "").trim().length > 0;
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     resumedSession: Boolean(sessionId),
     // The task-context markdown is the authoritative brief on this lane; keep
@@ -832,12 +859,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  // 2026-08-23 (disposition gap): the structured disposition contract lived ONLY
+  // in the GET /issues/:id/heartbeat-context response, so this lane received it
+  // only when the agent happened to curl that endpoint. Measured over 89
+  // succeeded issue-bound claude runs: 66 never fetched it and none of those
+  // stated a marker, while 68% of the runs that DID see it complied — and zero
+  // stated markers were lost to the parser. Carry the contract in the prompt
+  // like every other lane, in last (highest-recency) position.
+  const dispositionContractNote = issueScopedRun ? CLAUDE_DISPOSITION_CONTRACT : "";
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
     renderedPrompt,
+    dispositionContractNote,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
@@ -1019,6 +1055,89 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
     return { proc, parsedStream, parsed };
+  };
+
+  // Bounded in-run disposition re-ask. Runs only after a clean, successful
+  // attempt that stated nothing: one resumed turn, hard-capped turns/time, and
+  // skipped entirely when the token budget is already spent so it can never be
+  // the thing that pushes a run over the governor's cap.
+  const readAttemptDisposition = (attempt: {
+    parsedStream: ReturnType<typeof parseClaudeStreamJson>;
+  }) => {
+    const resultJson = attempt.parsedStream.resultJson;
+    if (!resultJson) return null;
+    const disposition = (resultJson as Record<string, unknown>).disposition;
+    return disposition && typeof disposition === "object" ? disposition : null;
+  };
+
+  const maybeReaskDisposition = async <
+    T extends {
+      proc: RunProcessResult;
+      parsedStream: ReturnType<typeof parseClaudeStreamJson>;
+      parsed: Record<string, unknown> | null;
+    },
+  >(attempt: T): Promise<T> => {
+    if (!issueScopedRun) return attempt;
+    if (tokenBudgetExceeded) return attempt;
+    if (attempt.proc.timedOut) return attempt;
+    if ((attempt.proc.exitCode ?? 0) !== 0) return attempt;
+    // Same success test toAdapterResult applies (`parsedSucceeded`) rather than
+    // isClaudeCompletedSuccessResult, which additionally demands a
+    // `terminal_reason` some CLI builds omit — a run that exited 0 with a
+    // success result is exactly the run we want a disposition from.
+    if (!attempt.parsed) return attempt;
+    if (asString(attempt.parsed.subtype, "").trim().toLowerCase() !== "success") return attempt;
+    if (attempt.parsed.is_error === true) return attempt;
+    if (readAttemptDisposition(attempt)) return attempt;
+    const reaskSessionId =
+      attempt.parsedStream.sessionId || asString(attempt.parsed.session_id, "").trim();
+    if (!reaskSessionId) return attempt;
+
+    const reaskArgs = buildClaudeArgs(reaskSessionId, undefined).filter((arg, index, all) => {
+      if (arg === "--max-turns") return false;
+      return all[index - 1] !== "--max-turns";
+    });
+    reaskArgs.push("--max-turns", "2");
+    await onLog("stdout", "[paperclip] disposition re-ask: one bounded turn in the same session\n");
+    let reaskProc: RunProcessResult;
+    try {
+      reaskProc = await runAdapterExecutionTargetProcess(
+        runId,
+        runtimeExecutionTarget,
+        command,
+        reaskArgs,
+        {
+          cwd,
+          env,
+          stdin: CLAUDE_DISPOSITION_REASK_PROMPT,
+          timeoutSec: CLAUDE_DISPOSITION_REASK_TIMEOUT_SEC,
+          graceSec,
+          onSpawn,
+          // Deliberately the raw logger: the budget-accounting logger would let
+          // the re-ask flip tokenBudgetExceeded and fail an otherwise clean run.
+          onLog,
+          localProcessSandbox,
+        },
+      );
+    } catch {
+      return attempt;
+    }
+    const reaskStream = parseClaudeStreamJson(reaskProc.stdout);
+    const reaskDisposition = readAttemptDisposition({ parsedStream: reaskStream });
+    if (!reaskDisposition) {
+      await onLog("stdout", "[paperclip] disposition re-ask: still no disposition stated\n");
+      return attempt;
+    }
+    await onLog(
+      "stdout",
+      `[paperclip] disposition re-ask: captured ${asString((reaskDisposition as Record<string, unknown>).status, "unknown")}\n`,
+    );
+    const mergedResultJson = { ...(attempt.parsedStream.resultJson ?? {}), disposition: reaskDisposition };
+    return {
+      ...attempt,
+      parsedStream: { ...attempt.parsedStream, resultJson: mergedResultJson },
+      parsed: mergedResultJson,
+    };
   };
 
   const toAdapterResult = (
@@ -1387,6 +1506,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       fallbackSessionId = null;
       clearSessionOnMissingSession = true;
     }
+
+    finalAttempt = await maybeReaskDisposition(finalAttempt);
 
     const result = toAdapterResult(finalAttempt, { fallbackSessionId, clearSessionOnMissingSession });
 

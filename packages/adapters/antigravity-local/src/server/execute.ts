@@ -473,6 +473,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         forceKillTimer = null;
       }
       const parsed = parseAntigravityOutput(proc.stdout, proc.stderr);
+      if (parsed.resultStatus && parsed.resultStatus !== "SUCCESS") {
+        // Visibility only: the run's success/failure classification is unchanged
+        // here on purpose (68 of 91 succeeded runs in one day carry CANCELED, so
+        // reclassifying is an operator decision, not a silent one).
+        await onLog(
+          "stderr",
+          `[paperclip] Antigravity reported turn status ${parsed.resultStatus} with ${parsed.summary.trim() ? "a response" : "an EMPTY response"}.\n`,
+        );
+      }
       const finalObserved = weightedBudgetTokens(parsed.usage);
       tokenBudgetObserved = Math.max(tokenBudgetObserved, finalObserved);
       if (finalObserved > maxTokensPerRun) tokenBudgetExceeded = true;
@@ -578,6 +587,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
           : {
             ...(attempt.parsed.disposition ? { disposition: attempt.parsed.disposition } : {}),
+            ...(attempt.parsed.resultStatus ? { agyResultStatus: attempt.parsed.resultStatus } : {}),
+            ...(attempt.parsed.resultStatus && attempt.parsed.resultStatus !== "SUCCESS"
+              ? { stopReason: `antigravity_${attempt.parsed.resultStatus.toLowerCase()}` }
+              : {}),
           },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),

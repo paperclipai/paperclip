@@ -34,3 +34,45 @@ describe("extractPaperclipDelegations", () => {
     expect(extractPaperclipDisposition(text).disposition?.status).toBe("done");
   });
 });
+
+describe("bare string-valued marker (gemini/antigravity, 2026-08-23)", () => {
+  it("captures the fenced wrapped-string form the antigravity lane emits", () => {
+    // Verbatim shape from run f54af589 (2026-08-22): the marker as a JSON key
+    // with a bare STRING value inside a fenced block. The object-only scan
+    // found no "{" after the marker and discarded it.
+    const text = [
+      "I have left a comment on the review issue and closed it as done.",
+      "",
+      "```json",
+      '{"PAPERCLIP_DISPOSITION": "done"}',
+      "```",
+    ].join("\n");
+    const out = extractPaperclipDisposition(text);
+    expect(out.disposition?.status).toBe("done");
+    expect(out.disposition?.hasBlocker).toBe(false);
+    expect(out.cleanedText).not.toContain("PAPERCLIP_DISPOSITION");
+  });
+
+  it("captures the unfenced wrapped-string form", () => {
+    const text = 'Marked the follow-up in the Paperclip API.\n\n{"PAPERCLIP_DISPOSITION": "blocked"}\n';
+    expect(extractPaperclipDisposition(text).disposition?.status).toBe("blocked");
+  });
+
+  it("captures a bare colon-and-status line", () => {
+    expect(extractPaperclipDisposition("Work parked.\nPAPERCLIP_DISPOSITION: in_review").disposition?.status)
+      .toBe("in_review");
+  });
+
+  it("still prefers the object form and lets the last marker win", () => {
+    const text = '{"PAPERCLIP_DISPOSITION": "done"}\nPAPERCLIP_DISPOSITION: {"status":"blocked","blocker":"needs key"}';
+    const out = extractPaperclipDisposition(text);
+    expect(out.disposition?.status).toBe("blocked");
+    expect(out.disposition?.blocker).toBe("needs key");
+  });
+
+  it("rejects a non-status string so prose can never move issue state", () => {
+    expect(extractPaperclipDisposition('{"PAPERCLIP_DISPOSITION": "probably fine"}').disposition).toBeNull();
+    expect(extractPaperclipDisposition("Remember to emit PAPERCLIP_DISPOSITION when finishing.").disposition)
+      .toBeNull();
+  });
+});
