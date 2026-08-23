@@ -11638,6 +11638,68 @@ export function issueRoutes(
   );
 
   router.post(
+    "/issues/:id/interactions/:interactionId/expire-stale",
+    validate(z.object({})),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      if (req.actor.type === "agent" && req.actor.runId &&
+        !(await assertTaskWatchdogIssueMutationAllowed(req, res, issue, { allowWatchdogIssue: false }))) {
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      if (actor.actorType !== "agent") {
+        res.status(403).json({ error: "Only agent actors can stale-out their own pending interaction cards through this route; use the board reject/accept routes instead" });
+        return;
+      }
+      if (!actor.agentId) {
+        res.status(403).json({ error: "Agent actor missing identity" });
+        return;
+      }
+      if (issue.assigneeAgentId !== actor.agentId) {
+        res.status(403).json({ error: "Only the current assignee agent of this issue can stale-out its pending interaction cards" });
+        return;
+      }
+      const interaction = await issueThreadInteractionsSvc.expireStaleInteractionForAssigneeAgent(
+        {
+          id: issue.id,
+          companyId: issue.companyId,
+          assigneeAgentId: issue.assigneeAgentId ?? null,
+        },
+        interactionId,
+        {
+          agentId: actor.agentId,
+          userId: null,
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_expired",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          source: "issue.interaction.expire_stale",
+          result: interaction.result,
+        },
+      });
+
+      res.json(interaction);
+    },
+  );
+
+  router.post(
     "/issues/:id/interactions/:interactionId/respond",
     validate(respondIssueThreadInteractionSchema),
     async (req, res) => {
