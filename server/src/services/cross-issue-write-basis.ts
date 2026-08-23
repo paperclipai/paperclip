@@ -9,36 +9,56 @@
  * count against the cap — so a prompt-injected agent's reach is its own work
  * tree rather than the whole company for the life of its run.
  *
- * The bases below are not invented. They are the classification of 190
- * `issue.cross_issue_influence_observed` rows over 2026-08-20..23: 164 of them
- * (86%) fall under these structural relationships, and the 26 that do not are
- * two named patterns (monitor-to-repair-ticket correlation, and the
- * cross-agent handoff PATCH that `AGENTS.md` mandates) which is what
- * `explicit_permission_grant` exists to cover.
+ * Every basis here is a *structural* relationship between the run's own issue
+ * and the target, or an exact scoped grant. There is deliberately no basis of
+ * the shape "the target happens to be unassigned": that was the FAI-10134
+ * blocking finding 2 — it left every board-held and human-held ticket in the
+ * company writable by any standard agent, 20 per run, which is the reach this
+ * issue exists to remove. Traffic that legitimately reports onto a board-held
+ * ticket is covered by the delegation tree (ancestor/descendant) or, for a
+ * standing routing duty, by an `issues:cross-write` grant scoped to the
+ * projects or assignees it covers.
+ *
+ * Authority is also split by operation (FAI-10134 finding 2, second half). The
+ * two weakest links — "we share a parent" and "we came from the same routine" —
+ * are correlations, not delegation. They carry enough standing to *say*
+ * something on the other ticket and no standing to change its state, so they
+ * authorize comments only; a PATCH or an interaction resolution needs a basis
+ * that names real authority over the target.
  *
  * Nothing here enforces until `CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT` is set —
  * see `evaluateCrossIssueWriteGrant`. Unset means observe: resolve the basis,
  * record what *would* have been refused, allow the write. That mirrors how
  * `CROSS_ISSUE_INFLUENCE_ENFORCE_AT` was rolled out and is the only way the
- * cutover does not strand running agents.
+ * cutover does not strand running agents. An unset switch observes; an
+ * *invalid* switch is a startup failure, not a silent downgrade to observe.
  *
- * KNOWN GAP — the basis is resolved before the route's own mutation, in the
- * counter's transaction. That transaction commits, and only then does the route
- * write. A reassignment, reparent, or grant revocation landing in that gap
- * leaves the decision stale: a write can proceed on authority revoked
- * microseconds earlier. This is the same seam the run lock already has, and for
- * the same reason — the counter must commit so a rolled-back mutation cannot
- * refund cap budget. Closing it means re-resolving the basis inside each
- * route's mutation transaction, the way callers that must not act on a
- * terminalized run re-lock it with `lockLiveAgentRun`. That work belongs with
- * arming enforcement, not before it: while the switch is unset the stale
- * decision changes nothing, because every write is allowed either way.
+ * Time-of-check/time-of-use: the basis is resolved twice. Once in the counter
+ * transaction, before the cap is spent, so an unauthorized write never spends
+ * budget; and once more inside the transaction that actually persists the
+ * mutation, via `assertCrossIssueWriteFence`, which takes `FOR SHARE` locks on
+ * every row the decision reads — the two endpoints, the ancestor chain between
+ * them, and the grant row. A reassignment, reparent, or grant revocation either
+ * commits before those locks (the re-resolution sees it and the mutation rolls
+ * back with zero rows written) or blocks behind them until the mutation
+ * commits. That closes FAI-10134 blocking finding 1.
  */
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues, principalPermissionGrants } from "@paperclipai/db";
 import { scopeAllows } from "./authorization.js";
+import {
+  CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV,
+  parseCrossIssueWriteGrantEnforceAt,
+} from "./cross-issue-write-enforcement-config.js";
+
+export {
+  CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV,
+  CrossIssueWriteGrantConfigError,
+  assertCrossIssueWriteGrantEnforceAtConfig,
+  parseCrossIssueWriteGrantEnforceAt,
+} from "./cross-issue-write-enforcement-config.js";
 
 /** Standing grant that covers cross-issue writes with no structural basis. */
 export const CROSS_ISSUE_WRITE_PERMISSION_KEY = "issues:cross-write" as const;
@@ -55,7 +75,6 @@ export const CROSS_ISSUE_WRITE_BASES = [
   "target_is_descendant_of_source",
   "target_shares_parent_with_source",
   "actor_is_target_assignee",
-  "target_has_no_agent_assignee",
   "actor_created_target",
   "same_routine_origin",
   "explicit_permission_grant",
@@ -63,11 +82,43 @@ export const CROSS_ISSUE_WRITE_BASES = [
 
 export type CrossIssueWriteBasis = (typeof CROSS_ISSUE_WRITE_BASES)[number];
 
+/**
+ * What the write is about to do. A comment adds a message to a thread; a
+ * mutation changes issue state or resolves an interaction on someone else's
+ * ticket. The second needs the stronger basis.
+ */
+export type CrossIssueWriteOperation = "comment" | "mutation";
+
+/**
+ * Bases that authorize a comment and nothing more. "Same parent" and "same
+ * routine execution" say the two tickets are *related*; neither says this agent
+ * has authority over the target.
+ */
+export const CROSS_ISSUE_WRITE_COMMENT_ONLY_BASES: ReadonlySet<CrossIssueWriteBasis> = new Set([
+  "target_shares_parent_with_source",
+  "same_routine_origin",
+]);
+
+export function crossIssueWriteBasisAuthorizes(
+  basis: CrossIssueWriteBasis,
+  operation: CrossIssueWriteOperation,
+) {
+  return operation === "comment" || !CROSS_ISSUE_WRITE_COMMENT_ONLY_BASES.has(basis);
+}
+
 export type CrossIssueWriteAuthority = {
-  /** The first basis that held, or null when none did. */
+  /** The first basis that held for this operation, or null when none did. */
   basis: CrossIssueWriteBasis | null;
   /** Present only when `basis` is `explicit_permission_grant`. */
   grantScope?: Record<string, unknown> | null;
+  /**
+   * Set when a basis held for a comment but not for this mutation. Recorded so
+   * the shadow dataset can separate "no relationship at all" from "related, but
+   * only far enough to comment".
+   */
+  commentOnlyBasis?: CrossIssueWriteBasis | null;
+  /** Whether the target is held by a human. Audit context, never a basis. */
+  targetAssigneeUserId?: string | null;
 };
 
 type IssueFacts = {
@@ -75,6 +126,7 @@ type IssueFacts = {
   parentId: string | null;
   projectId: string | null;
   assigneeAgentId: string | null;
+  assigneeUserId: string | null;
   createdByAgentId: string | null;
   originKind: string;
   originId: string | null;
@@ -82,11 +134,35 @@ type IssueFacts = {
 };
 
 /**
- * `db` is the transaction handle from `observeCrossIssueInfluence`, so the
- * basis is resolved against the same snapshot that locked the run row. A
- * reparent committed mid-decision cannot flip the answer underneath us.
+ * `db` is the transaction handle from `observeCrossIssueInfluence` or from the
+ * route's persistence transaction, so the basis is resolved against one
+ * snapshot. With `lockAuthorityInputs` the reads also take `FOR SHARE`, which
+ * is what makes the persistence-time re-resolution binding through commit.
  */
 type BasisReader = Pick<Db, "select" | "execute">;
+
+type ResolveOptions = {
+  /**
+   * Take `FOR SHARE` on every row the decision reads. Use inside the
+   * transaction that persists the write: a concurrent reassignment, reparent,
+   * or grant revocation then cannot commit between the check and the write.
+   */
+  lockAuthorityInputs?: boolean;
+};
+
+async function lockIssueRows(db: BasisReader, companyId: string, issueIds: string[]) {
+  const distinct = [...new Set(issueIds)];
+  if (distinct.length === 0) return;
+  // Raw SQL because drizzle's `.for()` builder is not available on every
+  // transaction handle shape this module is called with, and the lock is the
+  // only thing this statement is for.
+  await db.execute(sql`
+    SELECT id FROM issues
+    WHERE company_id = ${companyId}
+      AND id IN (${sql.join(distinct.map((id) => sql`${id}`), sql`, `)})
+    FOR SHARE
+  `);
+}
 
 async function loadIssueFacts(
   db: BasisReader,
@@ -99,6 +175,7 @@ async function loadIssueFacts(
       parentId: issues.parentId,
       projectId: issues.projectId,
       assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
       createdByAgentId: issues.createdByAgentId,
       originKind: issues.originKind,
       originId: issues.originId,
@@ -148,7 +225,20 @@ async function explicitGrantScope(
   db: BasisReader,
   companyId: string,
   actorAgentId: string,
+  lock: boolean,
 ): Promise<Record<string, unknown> | null | undefined> {
+  if (lock) {
+    // `FOR SHARE` on the grant row: a revocation racing the mutation either
+    // lands before this and is seen, or waits for the mutation's transaction.
+    await db.execute(sql`
+      SELECT id FROM principal_permission_grants
+      WHERE company_id = ${companyId}
+        AND principal_type = 'agent'
+        AND principal_id = ${actorAgentId}
+        AND permission_key = ${CROSS_ISSUE_WRITE_PERMISSION_KEY}
+      FOR SHARE
+    `);
+  }
   const grant = await db
     .select({ scope: principalPermissionGrants.scope })
     .from(principalPermissionGrants)
@@ -178,8 +268,13 @@ export async function resolveCrossIssueWriteBasis(
     actorAgentId: string;
     sourceIssueId: string;
     targetIssueId: string;
+    operation: CrossIssueWriteOperation;
   },
+  options: ResolveOptions = {},
 ): Promise<CrossIssueWriteAuthority> {
+  const lock = options.lockAuthorityInputs === true;
+  if (lock) await lockIssueRows(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
+
   const facts = await loadIssueFacts(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
   const source = facts.get(input.sourceIssueId) ?? null;
   const target = facts.get(input.targetIssueId) ?? null;
@@ -188,16 +283,33 @@ export async function resolveCrossIssueWriteBasis(
   // no basis to name, so it falls through to deny.
   if (!target) return { basis: null };
 
-  if (target.assigneeAgentId === input.actorAgentId) return { basis: "actor_is_target_assignee" };
-  // Already an explicit allow in authorization.ts ("the issue has no agent
-  // assignee"). Reproduced here so the inversion does not silently revoke it:
-  // 26% of observed traffic is agents reporting onto board-held tickets.
-  if (!target.assigneeAgentId) return { basis: "target_has_no_agent_assignee" };
-  if (target.createdByAgentId === input.actorAgentId) return { basis: "actor_created_target" };
+  const targetAssigneeUserId = target.assigneeUserId ?? null;
+  // The first basis that held for *any* operation, kept so a mutation refused
+  // for being comment-grade is distinguishable in the audit trail from a write
+  // with no relationship at all.
+  let commentOnlyBasis: CrossIssueWriteBasis | null = null;
+  const accept = (basis: CrossIssueWriteBasis): CrossIssueWriteAuthority | null => {
+    if (crossIssueWriteBasisAuthorizes(basis, input.operation)) {
+      return { basis, commentOnlyBasis: null, targetAssigneeUserId };
+    }
+    commentOnlyBasis ??= basis;
+    return null;
+  };
+  const deny = (): CrossIssueWriteAuthority => ({ basis: null, commentOnlyBasis, targetAssigneeUserId });
+
+  if (target.assigneeAgentId === input.actorAgentId) {
+    const held = accept("actor_is_target_assignee");
+    if (held) return held;
+  }
+  if (target.createdByAgentId === input.actorAgentId) {
+    const held = accept("actor_created_target");
+    if (held) return held;
+  }
 
   if (source) {
     if (source.parentId && source.parentId === target.parentId) {
-      return { basis: "target_shares_parent_with_source" };
+      const held = accept("target_shares_parent_with_source");
+      if (held) return held;
     }
     if (
       source.originKind === "routine_execution" &&
@@ -206,34 +318,51 @@ export async function resolveCrossIssueWriteBasis(
       source.originKind === target.originKind &&
       source.originFingerprint === target.originFingerprint
     ) {
-      return { basis: "same_routine_origin" };
+      const held = accept("same_routine_origin");
+      if (held) return held;
     }
 
     const ancestors = await loadAncestors(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
+    if (lock) {
+      // Lock every edge the walk relied on. A reparent anywhere in the chain
+      // rewrites one of these rows, so it now blocks behind the mutation.
+      await lockIssueRows(db, input.companyId, [
+        ...(ancestors.get(input.sourceIssueId) ?? []),
+        ...(ancestors.get(input.targetIssueId) ?? []),
+      ]);
+    }
     if (ancestors.get(input.sourceIssueId)?.has(input.targetIssueId)) {
-      return { basis: "target_is_ancestor_of_source" };
+      const held = accept("target_is_ancestor_of_source");
+      if (held) return held;
     }
     if (ancestors.get(input.targetIssueId)?.has(input.sourceIssueId)) {
-      return { basis: "target_is_descendant_of_source" };
+      const held = accept("target_is_descendant_of_source");
+      if (held) return held;
     }
   }
 
-  const grantScope = await explicitGrantScope(db, input.companyId, input.actorAgentId);
+  const grantScope = await explicitGrantScope(db, input.companyId, input.actorAgentId, lock);
   if (grantScope !== undefined) {
-    // `requireStructuredScope` is the whole point: an `issues:cross-write` row
-    // with an empty scope must confer nothing, or the grant becomes exactly the
-    // company-wide permit this issue exists to remove.
+    // `requireStructuredScope` rejects an empty scope; `requireRecognizedConstraint`
+    // rejects a *non-empty* scope that constrains nothing this evaluator
+    // understands (`{"note":"scoped"}`). Without the second one an unrecognized
+    // key set reads as "unconstrained but non-empty" and the grant silently
+    // becomes exactly the company-wide permit this issue exists to remove
+    // (FAI-10134 blocking finding 3).
     const covered = await scopeAllows(
       db as Db,
       input.companyId,
       grantScope,
       { projectId: target.projectId, assigneeAgentId: target.assigneeAgentId },
-      { requireStructuredScope: true },
+      { requireStructuredScope: true, requireRecognizedConstraint: true },
     );
-    if (covered) return { basis: "explicit_permission_grant", grantScope };
+    if (covered) {
+      const held = accept("explicit_permission_grant");
+      if (held) return { ...held, grantScope };
+    }
   }
 
-  return { basis: null };
+  return deny();
 }
 
 export type CrossIssueWriteGrantMode = "observe" | "enforce";
@@ -242,6 +371,8 @@ export type CrossIssueWriteGrantDecision = {
   allowed: boolean;
   mode: CrossIssueWriteGrantMode;
   basis: CrossIssueWriteBasis | null;
+  commentOnlyBasis: CrossIssueWriteBasis | null;
+  targetAssigneeUserId: string | null;
   enforceAt: string | null;
 };
 
@@ -249,17 +380,14 @@ export type CrossIssueWriteGrantDecision = {
  * Cutover switch. Unset (the shipped default) means observe forever: every
  * write is still allowed and the ones that would have been refused are audited,
  * which is the dataset the enforcement decision needs. Set it to an ISO
- * timestamp to arm the denial from that instant.
+ * timestamp to arm the denial from that instant. An unparseable value throws —
+ * see `parseCrossIssueWriteGrantEnforceAt`; `loadConfig` calls the same parser
+ * at startup so this never surfaces mid-request.
  */
 export function crossIssueWriteGrantEnforceAt(
   env: NodeJS.ProcessEnv = process.env,
 ): Date | null {
-  const raw = env.CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT?.trim();
-  if (!raw) return null;
-  const parsed = new Date(raw);
-  // An unparseable date must not read as "enforce now" or as a silent skip of
-  // an intended cutover — fail to the safe side and stay in observe.
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  return parseCrossIssueWriteGrantEnforceAt(env[CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV]);
 }
 
 export function evaluateCrossIssueWriteGrant(input: {
@@ -274,6 +402,8 @@ export function evaluateCrossIssueWriteGrant(input: {
     allowed: input.authority.basis !== null || mode === "observe",
     mode,
     basis: input.authority.basis,
+    commentOnlyBasis: input.authority.commentOnlyBasis ?? null,
+    targetAssigneeUserId: input.authority.targetAssigneeUserId ?? null,
     enforceAt: enforceAt ? enforceAt.toISOString() : null,
   };
 }

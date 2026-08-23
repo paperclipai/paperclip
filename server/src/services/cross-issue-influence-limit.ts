@@ -6,6 +6,7 @@ import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   type CrossIssueWriteGrantDecision,
+  type CrossIssueWriteOperation,
   evaluateCrossIssueWriteGrant,
   resolveCrossIssueWriteBasis,
 } from "./cross-issue-write-basis.js";
@@ -26,12 +27,47 @@ const CROSS_ISSUE_WRITE_GRANT_WOULD_DENY_ACTIVITY = "issue.cross_issue_write_gra
  */
 export type CrossIssueInfluenceKind = "comment" | "update" | "interaction_resolution";
 
+/**
+ * A comment adds a message to someone else's thread; a PATCH or an interaction
+ * resolution changes their ticket's state. The second needs a basis that names
+ * authority over the target, not just a relationship to it — see
+ * `CROSS_ISSUE_WRITE_COMMENT_ONLY_BASES`.
+ */
+export function crossIssueWriteOperationForKind(kind: CrossIssueInfluenceKind): CrossIssueWriteOperation {
+  return kind === "comment" ? "comment" : "mutation";
+}
+
+/**
+ * Everything the persistence-time re-check needs to resolve the same decision
+ * again, under locks, inside the transaction that actually writes. Produced only
+ * when enforcement is armed — in observe mode the re-check could not refuse
+ * anything, so it is not worth the queries.
+ */
+export type CrossIssueWriteFence = {
+  companyId: string;
+  runId: string;
+  agentId: string;
+  responsibleUserId: string | null;
+  sourceIssueId: string;
+  targetIssueId: string;
+  targetIssueIdentifier: string | null;
+  kind: CrossIssueInfluenceKind;
+  /** The basis that held at cap time, for the drift audit row. */
+  basisAtCheck: CrossIssueWriteGrantDecision["basis"];
+  enforceAt: string | null;
+};
+
 export type CrossIssueInfluenceDecision = {
   allowed: boolean;
   mode: "log_only" | "enforce";
   count: number;
   cap: number;
   enforceAt: string;
+  /**
+   * Present when enforcement is armed. The route must re-assert it inside the
+   * transaction that persists the write — see `assertCrossIssueWriteFence`.
+   */
+  fence?: CrossIssueWriteFence | null;
 };
 
 export function crossIssueWriteGrantError(context: { issueIdentifier?: string | null } = {}) {
@@ -147,6 +183,7 @@ export async function observeCrossIssueInfluence(
         actorAgentId: input.agentId,
         sourceIssueId,
         targetIssueId: input.targetIssueId,
+        operation: crossIssueWriteOperationForKind(input.kind),
       }),
       now: input.now,
       enforceAt: input.enforceGrantAt,
@@ -181,6 +218,8 @@ export async function observeCrossIssueInfluence(
             targetIssueId: input.targetIssueId,
             targetIssueIdentifier: input.targetIssueIdentifier ?? null,
             basis: null,
+            commentOnlyBasis: grant.commentOnlyBasis,
+            targetAssigneeUserId: grant.targetAssigneeUserId,
             grantMode: grant.mode,
             grantEnforceAt: grant.enforceAt,
           },
@@ -200,6 +239,7 @@ export async function observeCrossIssueInfluence(
         targetIssueId: input.targetIssueId,
         kind: input.kind,
         basis: null,
+        commentOnlyBasis: grant.commentOnlyBasis,
         mode: grant.mode,
         enforceAt: grant.enforceAt,
       }, "cross-issue write has no grant basis and would be denied under enforcement");
@@ -264,7 +304,25 @@ export async function observeCrossIssueInfluence(
       logger.warn(logContext, "cross-issue influence cap exceeded");
     }
 
-    return { decision };
+    // The fence exists only to be re-asserted under locks at persistence time,
+    // and only enforcement can act on it. In observe mode the re-check could
+    // refuse nothing, so it is not worth the extra statements.
+    const fence: CrossIssueWriteFence | null = grant.mode === "enforce"
+      ? {
+        companyId: input.companyId,
+        runId: input.runId,
+        agentId: input.agentId,
+        responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
+        sourceIssueId,
+        targetIssueId: input.targetIssueId,
+        targetIssueIdentifier: input.targetIssueIdentifier ?? null,
+        kind: input.kind,
+        basisAtCheck: grant.basis,
+        enforceAt: grant.enforceAt,
+      }
+      : null;
+
+    return { decision: { ...decision, fence } };
   });
 
   if ("grantDenied" in outcome) {
@@ -335,6 +393,82 @@ async function auditCrossIssueWriteGrantDenied(
     mode: grant.mode,
     enforceAt: grant.enforceAt,
   }, "cross-issue write denied: no grant basis");
+}
+
+const CROSS_ISSUE_WRITE_GRANT_REVOKED_ACTIVITY = "issue.cross_issue_write_grant_revoked_in_flight";
+
+/**
+ * Re-assert the authority the cap gate resolved, inside the transaction that is
+ * about to persist the write, with `FOR SHARE` on every row the decision reads
+ * (FAI-10134 blocking finding 1).
+ *
+ * `tx` must be the persistence transaction: the locks it takes are what makes
+ * this binding. A reassignment, reparent, or grant revocation racing the write
+ * either commits before these locks — in which case the re-resolution sees it,
+ * this throws, and drizzle rolls the mutation back with zero rows written — or
+ * it blocks behind them until the mutation commits. `auditDb` is the pooled
+ * handle, deliberately *not* `tx`, so the evidence row survives that rollback.
+ */
+export async function assertCrossIssueWriteFence(
+  auditDb: Db,
+  tx: Parameters<typeof resolveCrossIssueWriteBasis>[0],
+  fence: CrossIssueWriteFence | null | undefined,
+) {
+  if (!fence) return;
+  const authority = await resolveCrossIssueWriteBasis(
+    tx,
+    {
+      companyId: fence.companyId,
+      actorAgentId: fence.agentId,
+      sourceIssueId: fence.sourceIssueId,
+      targetIssueId: fence.targetIssueId,
+      operation: crossIssueWriteOperationForKind(fence.kind),
+    },
+    { lockAuthorityInputs: true },
+  );
+  if (authority.basis !== null) return;
+
+  const context = {
+    event: "cross_issue_write_grant",
+    companyId: fence.companyId,
+    runId: fence.runId,
+    agentId: fence.agentId,
+    sourceIssueId: fence.sourceIssueId,
+    targetIssueId: fence.targetIssueId,
+    kind: fence.kind,
+    basisAtCheck: fence.basisAtCheck,
+    basisAtWrite: null,
+    enforceAt: fence.enforceAt,
+  };
+  try {
+    await auditDb.insert(activityLog).values({
+      companyId: fence.companyId,
+      actorType: "agent",
+      actorId: fence.agentId,
+      agentId: fence.agentId,
+      runId: fence.runId,
+      responsibleUserId: fence.responsibleUserId,
+      action: CROSS_ISSUE_WRITE_GRANT_REVOKED_ACTIVITY,
+      entityType: "issue",
+      entityId: fence.targetIssueId,
+      details: {
+        kind: fence.kind,
+        sourceIssueId: fence.sourceIssueId,
+        targetIssueId: fence.targetIssueId,
+        targetIssueIdentifier: fence.targetIssueIdentifier,
+        basisAtCheck: fence.basisAtCheck,
+        basisAtWrite: null,
+        commentOnlyBasis: authority.commentOnlyBasis ?? null,
+        targetAssigneeUserId: authority.targetAssigneeUserId ?? null,
+        grantMode: "enforce",
+        grantEnforceAt: fence.enforceAt,
+      },
+    });
+  } catch (err) {
+    logger.warn({ ...context, err }, "Failed to audit a cross-issue write refused for revoked authority");
+  }
+  logger.warn(context, "cross-issue write refused: authority revoked between the cap gate and the write");
+  throw crossIssueWriteGrantError({ issueIdentifier: fence.targetIssueIdentifier });
 }
 
 export function crossIssueInfluenceLimitError(

@@ -120,6 +120,16 @@ export type IssueThreadInteractionServiceOptions = {
   wakeup?: InteractionWakeup;
   pullRequestCacheTtlMs?: number;
   now?: () => Date;
+  /**
+   * Runs as the first statement of every transaction this service opens.
+   * The issue routes pass the cross-issue write fence here (FAI-10132): a
+   * resolution reaching a ticket outside the run's own issue re-checks its
+   * authority under `FOR SHARE` locks, and throwing rolls the whole resolution
+   * back rather than leaving a partially applied one. Hanging it on the service
+   * rather than on each resolution entry point is deliberate — a future
+   * resolution path cannot forget to fence itself.
+   */
+  preCommitAuthorityGuard?: (tx: Db) => Promise<void>;
 };
 
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
@@ -1441,6 +1451,19 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
 }
 
 export function issueThreadInteractionService(db: Db, opts: IssueThreadInteractionServiceOptions = {}) {
+  /**
+   * Every transaction in this service goes through here so the authority guard
+   * cannot be skipped by adding a new resolution path. Without a guard
+   * configured this is `db.transaction` verbatim.
+   */
+  const guardedTransaction: Db["transaction"] = ((callback: (tx: Db) => Promise<unknown>, ...rest: unknown[]) =>
+    (db.transaction as unknown as (
+      cb: (tx: Db) => Promise<unknown>,
+      ...args: unknown[]
+    ) => Promise<unknown>)(async (tx: Db) => {
+      await opts.preCommitAuthorityGuard?.(tx);
+      return callback(tx);
+    }, ...rest)) as unknown as Db["transaction"];
   const pullRequestStateCache = new Map<string, { state: PullRequestMergeState; checkedAt: number }>();
   const now = opts.now ?? (() => new Date());
   const defaultPullRequestStateResolver = opts.resolvePullRequestState
@@ -1579,7 +1602,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const now = new Date();
-    const result = await db.transaction(async (tx) => {
+    const result = await guardedTransaction(async (tx) => {
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
       // the verdict write. Terminal issue transitions also lock the issue
@@ -1748,7 +1771,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     }
 
     const now = new Date();
-    const updated = await db.transaction(async (tx) => {
+    const updated = await guardedTransaction(async (tx) => {
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -2020,7 +2043,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       proposalId: string,
       execution: { status: "executed" | "failed"; errorCode?: string | null },
     ) => {
-      const updated = await db.transaction(async (tx) => {
+      const updated = await guardedTransaction(async (tx) => {
         // Verdict and terminal-transition paths lock issue -> proposal ->
         // interaction. Take the same order before recording the receipt so a
         // concurrent rejection or issue close cannot deadlock here.
@@ -2217,7 +2240,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const { row, replacementInteractionId } of supersededRows) {
-        const updated = await db.transaction(async (tx) => {
+        const updated = await guardedTransaction(async (tx) => {
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -2366,7 +2389,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         // transitions and against concurrent confirmations on the same issue.
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
-        const result = await db.transaction(async (tx) => {
+        const result = await guardedTransaction(async (tx) => {
           const [issueRow] = await tx
             .select({ status: issues.status })
             .from(issues)
@@ -2604,7 +2627,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdWakeTargets: IssueWakeTarget[] = [];
 
-      await db.transaction(async (tx) => {
+      await guardedTransaction(async (tx) => {
         const resolvedAt = new Date();
         const [claimed] = await tx
           .update(issueThreadInteractions)
@@ -2734,7 +2757,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
-      const submission = await db.transaction(async (tx) => {
+      const submission = await guardedTransaction(async (tx) => {
         const current = await tx
           .select()
           .from(issueThreadInteractions)
@@ -3184,7 +3207,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         // committed is in flight and cannot be recalled — the card still
         // expires and the execution result lands on it via the gateway's
         // lifecycle reflection.
-        const updated = await db.transaction(async (tx) => {
+        const updated = await guardedTransaction(async (tx) => {
           await resolveLinkedToolActionRequests(tx, row, {
             status: "expired",
             fromStatuses: ["pending", "approved"],
@@ -3255,7 +3278,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       // "approved" is revoked too — the request can be approved from the tool
       // review queue while the card is still pending, and an executable
       // request must not outlive a withdrawn card.
-      const updated = await db.transaction(async (tx) => {
+      const updated = await guardedTransaction(async (tx) => {
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],

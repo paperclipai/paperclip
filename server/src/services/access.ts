@@ -7,7 +7,8 @@ import {
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { conflict } from "../errors.js";
+import { crossIssueWriteGrantScopeError } from "@paperclipai/shared";
+import { badRequest, conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
@@ -17,6 +18,20 @@ type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
 };
+
+/**
+ * `issues:cross-write` is the one grant whose whole contract is "narrow". An
+ * unscoped one — or one scoped only on keys the authorization evaluator does
+ * not recognize — is refused at save time so the stored grant and the evaluated
+ * grant cannot disagree (FAI-10132 / FAI-10134 finding 3). Every other
+ * permission key keeps its existing scope contract untouched.
+ */
+export function assertGrantScopesAreSaveable(grants: readonly GrantInput[]) {
+  for (const grant of grants) {
+    const error = crossIssueWriteGrantScopeError(grant.permissionKey, grant.scope ?? null);
+    if (error) throw badRequest(error, { permissionKey: grant.permissionKey });
+  }
+}
 
 type MemberArchiveInput = {
   reassignment?: {
@@ -128,6 +143,7 @@ export function accessService(db: Db) {
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
+    assertGrantScopesAreSaveable(grants);
     const member = await getMemberById(companyId, memberId);
     if (!member) return null;
 
@@ -170,6 +186,7 @@ export function accessService(db: Db) {
     },
     grantedByUserId: string | null,
   ) {
+    assertGrantScopesAreSaveable(data.grants);
     return db.transaction(async (tx) => {
       await tx.execute(sql`
         select ${companyMemberships.id}
@@ -573,6 +590,7 @@ export function accessService(db: Db) {
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
+    assertGrantScopesAreSaveable(grants);
     await db.transaction(async (tx) => {
       await tx
         .delete(principalPermissionGrants)
@@ -674,6 +692,7 @@ export function accessService(db: Db) {
       return;
     }
 
+    assertGrantScopesAreSaveable([{ permissionKey, scope }]);
     await ensureMembership(companyId, principalType, principalId, "member", "active");
 
     const existing = await db

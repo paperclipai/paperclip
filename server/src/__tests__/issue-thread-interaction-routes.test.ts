@@ -96,16 +96,20 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
         if (keys.includes("count")) {
           return resolved([{ count: mockCrossIssueInfluence.priorCount }]);
         }
-        // Issue facts for the cross-issue write basis resolver. Both issues are
-        // modelled with no agent assignee, so the resolver lands on
-        // `target_has_no_agent_assignee` and these cases keep exercising the
-        // cap rather than the authority decision.
+        // Issue facts for the cross-issue write basis resolver. The target is
+        // modelled as held by the acting agent, so the resolver lands on
+        // `actor_is_target_assignee` and these cases keep exercising the cap
+        // rather than the authority decision. ("The target has no agent
+        // assignee" stopped being a basis in FAI-10134 — an unassigned target
+        // here would make every one of these a grant denial.)
         if (keys.includes("originFingerprint")) {
+          const actingAgentId = mockRunAttribution.value?.agentId ?? null;
           return resolved([mockCrossIssueInfluence.sourceIssueId, ISSUE_ID].map((id) => ({
             id,
             parentId: null,
             projectId: null,
-            assigneeAgentId: null,
+            assigneeAgentId: id === ISSUE_ID ? actingAgentId : null,
+            assigneeUserId: null,
             createdByAgentId: null,
             originKind: "manual",
             originId: null,

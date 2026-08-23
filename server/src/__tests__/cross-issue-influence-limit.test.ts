@@ -8,9 +8,12 @@ import {
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.ts";
 import {
+  CrossIssueWriteGrantConfigError,
+  assertCrossIssueWriteGrantEnforceAtConfig,
   crossIssueWriteGrantEnforceAt,
   evaluateCrossIssueWriteGrant,
 } from "../services/cross-issue-write-basis.ts";
+import { crossIssueWriteGrantScopeError } from "@paperclipai/shared";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
@@ -24,9 +27,11 @@ function issueRow(overrides: Record<string, unknown> = {}) {
     id: TARGET_ISSUE_ID,
     parentId: null,
     projectId: null,
-    // Unassigned by default: the `target_has_no_agent_assignee` basis, which is
-    // the single most common shape in the observed traffic (26%).
+    // Unassigned by default. That used to be a basis of its own; it is not one
+    // any more (FAI-10134 finding 2), so a default row is a *deny* under
+    // enforcement unless the test gives it a real relationship.
     assigneeAgentId: null,
+    assigneeUserId: null,
     createdByAgentId: null,
     originKind: "manual",
     originId: null,
@@ -46,9 +51,12 @@ function counterDb(
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  // Default fixture: the actor already owns the target, so the counter-focused
+  // tests below exercise the cap with an uncontested basis and no shadow row.
+  // Basis-focused tests pass `issues` explicitly.
   const issueRows = basisOverrides.issues ?? [
     issueRow({ id: SOURCE_ISSUE_ID }),
-    issueRow({ id: TARGET_ISSUE_ID }),
+    issueRow({ id: TARGET_ISSUE_ID, assigneeAgentId: AGENT_ID }),
   ];
   const resolved = (rows: unknown[]) => ({
     then: (resolve: (value: unknown[]) => unknown) => resolve(rows),
@@ -323,7 +331,6 @@ describe("cross-issue write grant (FAI-10132)", () => {
 
   it.each([
     ["the actor owns the target", { assigneeAgentId: AGENT_ID }, "actor_is_target_assignee"],
-    ["the target has no agent assignee", { assigneeAgentId: null }, "target_has_no_agent_assignee"],
     ["the actor created the target", { assigneeAgentId: OTHER_AGENT_ID, createdByAgentId: AGENT_ID }, "actor_created_target"],
   ] as const)("allows and names the basis when %s", async (_label, targetOverrides, basis) => {
     const fake = counterDb(0, {}, {
@@ -357,6 +364,50 @@ describe("cross-issue write grant (FAI-10132)", () => {
     expect((fake.inserted[0]!.details as { basis: string }).basis).toBe(basis);
   });
 
+  // FAI-10134 blocking finding 2: "the target happens to be unassigned" is no
+  // longer a basis, and it was never checked against `assigneeUserId`, so a
+  // board-held ticket was as reachable as an orphan one. Both shapes now deny
+  // on every write kind.
+  it.each([
+    ["comment", "an unassigned", { assigneeAgentId: null, assigneeUserId: null }],
+    ["update", "an unassigned", { assigneeAgentId: null, assigneeUserId: null }],
+    ["interaction_resolution", "an unassigned", { assigneeAgentId: null, assigneeUserId: null }],
+    ["comment", "a human-held", { assigneeAgentId: null, assigneeUserId: "user-9" }],
+    ["update", "a human-held", { assigneeAgentId: null, assigneeUserId: "user-9" }],
+    ["interaction_resolution", "a human-held", { assigneeAgentId: null, assigneeUserId: "user-9" }],
+  ] as const)("refuses a %s write to %s unrelated target", async (kind, _shape, targetOverrides) => {
+    const fake = counterDb(0, {}, {
+      issues: [issueRow({ id: SOURCE_ISSUE_ID }), issueRow({ id: TARGET_ISSUE_ID, ...targetOverrides })],
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...base,
+      kind,
+      now: AFTER,
+      enforceGrantAt: ENFORCE_AT,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_write_grant_required" },
+    });
+    expect(fake.observedCount).toBe(0);
+  });
+
+  it("keeps the human-held assignee in the shadow audit so the cutover dataset can see it", async () => {
+    const fake = counterDb(0, {}, {
+      issues: [
+        issueRow({ id: SOURCE_ISSUE_ID }),
+        issueRow({ id: TARGET_ISSUE_ID, assigneeUserId: "user-9" }),
+      ],
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, { ...base, now: AFTER, enforceGrantAt: null }))
+      .resolves.toMatchObject({ allowed: true });
+    expect(fake.inserted[0]).toMatchObject({
+      action: "issue.cross_issue_write_grant_would_deny",
+      details: expect.objectContaining({ targetAssigneeUserId: "user-9" }),
+    });
+  });
+
   it("allows the sibling and same-routine-origin shapes the monitor traffic relies on", async () => {
     const sibling = counterDb(0, {}, {
       issues: [
@@ -385,6 +436,33 @@ describe("cross-issue write grant (FAI-10132)", () => {
     expect((routine.inserted[0]!.details as { basis: string }).basis).toBe("same_routine_origin");
   });
 
+  // The other half of finding 2: a correlation is enough to say something on a
+  // related ticket and not enough to change its state or resolve its
+  // interactions.
+  it.each([
+    ["update"],
+    ["interaction_resolution"],
+  ] as const)("refuses a %s on a comment-only basis and says which one it was", async (kind) => {
+    const fake = counterDb(0, {}, {
+      issues: [
+        issueRow({ id: SOURCE_ISSUE_ID, parentId: "parent-1" }),
+        issueRow({ id: TARGET_ISSUE_ID, parentId: "parent-1", assigneeAgentId: OTHER_AGENT_ID }),
+      ],
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...base,
+      kind,
+      now: AFTER,
+      enforceGrantAt: ENFORCE_AT,
+    })).rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
+    expect(fake.inserted[0]).toMatchObject({
+      action: "issue.cross_issue_write_grant_denied",
+      details: expect.objectContaining({ basis: null }),
+    });
+    expect(fake.observedCount).toBe(0);
+  });
+
   it("honours a scoped issues:cross-write grant and refuses an unscoped one", async () => {
     const scoped = counterDb(0, {}, { ...unrelated, grantScope: { projectId: "project-a" } });
     await expect(observeCrossIssueInfluence(scoped.db as never, { ...base, now: AFTER, enforceGrantAt: ENFORCE_AT }))
@@ -403,11 +481,52 @@ describe("cross-issue write grant (FAI-10132)", () => {
       .rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
   });
 
-  it("stays in observe mode when the cutover env var is unset or unparseable", () => {
+  // FAI-10134 blocking finding 3: `requireStructuredScope` rejected only
+  // null/empty, so any *non-empty* scope the evaluator did not understand fell
+  // through the constraint checks and returned an unconstrained allow — the
+  // company-wide permit, wearing a scope.
+  it.each([
+    ["null", null],
+    ["empty", {}],
+    ["unknown-key-only", { note: "scoped to the sweep" }],
+    ["no-op allow rule", { allow: true, description: "cross-team routing" }],
+    ["misspelled project key", { projectID: "project-a" }],
+    ["empty-string project", { projectId: "" }],
+    ["empty project list", { projectIds: [] }],
+    ["wildcard agent prefix", { "agent:*": true }],
+  ] as const)("refuses an issues:cross-write grant whose scope is %s", async (_label, grantScope) => {
+    const fake = counterDb(0, {}, { ...unrelated, grantScope });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, { ...base, now: AFTER, enforceGrantAt: ENFORCE_AT }))
+      .rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
+    expect(fake.observedCount).toBe(0);
+  });
+
+  it("refuses the same malformed scopes at grant-write time", () => {
+    for (const scope of [null, {}, { note: "scoped" }, { allow: true }, { projectId: "" }, { projectIds: [] }]) {
+      expect(crossIssueWriteGrantScopeError("issues:cross-write", scope)).toBeTruthy();
+    }
+    expect(crossIssueWriteGrantScopeError("issues:cross-write", { projectId: "project-a" })).toBeNull();
+    expect(crossIssueWriteGrantScopeError("issues:cross-write", { "agent:66666666": true })).toBeNull();
+    // Every other permission key keeps its existing, looser scope contract.
+    expect(crossIssueWriteGrantScopeError("tasks:assign", null)).toBeNull();
+  });
+
+  it("observes when the cutover env var is unset and refuses to start when it is invalid", () => {
     expect(crossIssueWriteGrantEnforceAt({} as NodeJS.ProcessEnv)).toBeNull();
-    expect(crossIssueWriteGrantEnforceAt(
+    // An *invalid* value means an operator meant to arm enforcement and typed it
+    // wrong. Reading that as observe is a silent fail-open (finding 4).
+    expect(() => crossIssueWriteGrantEnforceAt(
       { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "not-a-date" } as NodeJS.ProcessEnv,
-    )).toBeNull();
+    )).toThrow(CrossIssueWriteGrantConfigError);
+    expect(() => assertCrossIssueWriteGrantEnforceAtConfig(
+      { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "2026-13-45" } as NodeJS.ProcessEnv,
+    )).toThrow(/ISO-8601/);
+    // Absent and blank stay observe; only a present-but-unparseable value throws.
+    expect(() => assertCrossIssueWriteGrantEnforceAtConfig({} as NodeJS.ProcessEnv)).not.toThrow();
+    expect(() => assertCrossIssueWriteGrantEnforceAtConfig(
+      { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "   " } as NodeJS.ProcessEnv,
+    )).not.toThrow();
     expect(crossIssueWriteGrantEnforceAt(
       { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT: "2026-09-01T00:00:00.000Z" } as NodeJS.ProcessEnv,
     )?.toISOString()).toBe("2026-09-01T00:00:00.000Z");

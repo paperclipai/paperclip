@@ -376,7 +376,7 @@ export async function scopeAllows(
   companyId: string,
   grantScope: Record<string, unknown> | null,
   requestedScope: Record<string, unknown> | null | undefined,
-  options: { requireStructuredScope?: boolean } = {},
+  options: { requireStructuredScope?: boolean; requireRecognizedConstraint?: boolean } = {},
 ) {
   if (!grantScope || Object.keys(grantScope).length === 0) return !options.requireStructuredScope;
   if (!requestedScope) return false;
@@ -452,7 +452,12 @@ export async function scopeAllows(
 
   // Unknown metadata keys do not constrain the grant. Recognized constraints
   // return false above when they fail to match the requested assignment scope.
-  return !constrained ? true : constrained;
+  // For grants whose whole point is that they must be narrow — `issues:cross-write`
+  // — the caller passes `requireRecognizedConstraint` and a scope made only of
+  // keys this evaluator does not understand (`{"note":"scoped"}`) is refused
+  // rather than read as an unconstrained allow.
+  if (!constrained) return !options.requireRecognizedConstraint;
+  return true;
 }
 
 function allow(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecision {

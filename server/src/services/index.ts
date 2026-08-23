@@ -108,7 +108,7 @@ export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
 export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
-export { accessService } from "./access.js";
+export { accessService, assertGrantScopesAreSaveable } from "./access.js";
 export {
   backfillPrincipalAccessCompatibility,
   ensureHumanRoleDefaultGrants,
