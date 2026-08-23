@@ -502,24 +502,29 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
     expect(await continuationRunsOf(run!.id)).toEqual([]);
     expect(await continuationWakesOf(agentId)).toEqual([]);
 
-    // LOUD comment, but deliberately NOT blocked on a recovery owner.
+    // 2026-08-23 (operator directive: circuit-break the ISSUE, not the LANE):
+    // at the continuation cap the issue is BLOCKED with a board unblockDescriptor
+    // (louder + better-scoped than an error lane, and it stops the re-offer loop
+    // now that the lane stays idle). It is NOT blocked on a recovery-owner chain.
     const issue = await db
       .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
-    expect(issue?.unblockDescriptor ?? null).toBeNull();
+    expect(issue?.status).toBe("blocked");
+    expect((issue?.unblockDescriptor as { owner?: string } | null)?.owner).toBe("board");
 
-    // At the cap no continuation was scheduled, so the ordinary failure
-    // disposition stands: the agent DOES land in 'error' (the idle carve-out
-    // only applies when a continuation is actually scheduled).
+    // 2026-08-23 (operator directive: a lane must never go dark for one issue's
+    // problem): a governor stop — even at the 24h continuation cap with NO
+    // continuation scheduled — keeps the LANE idle. The stuck issue is signalled
+    // by the loud cap comment and its own state; flipping the shared lane to
+    // 'error' blackholed all its other work (the "claude goes dark" class).
     await expect
       .poll(() => agentStatusOf(agentId).then((row) => row?.status), {
         timeout: 10_000,
         interval: 50,
       })
-      .toBe("error");
+      .toBe("idle");
   });
 
   it("never auto-continues an operator-requested run", async () => {
@@ -629,7 +634,10 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
       issueId,
       provider: "test",
       model: "test-model",
-      inputTokens: 990_000,
+      // 900_000 leaves a 100_000 residual — above MIN_USEFUL_RUN_INPUT_TOKENS (40K)
+      // so the ordinary run is admitted and clamped, then schedules a FRESH-budget
+      // continuation. (A <40K residual is denied outright as aggregate_input_ceiling.)
+      inputTokens: 900_000,
       cachedInputTokens: 0,
       outputTokens: 0,
       costCents: 0,
@@ -641,10 +649,10 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
     const finished = await waitForRunToFinish(heartbeat, run!.id);
     expect(finished).toMatchObject({ status: "failed", errorCode: "token_budget_exhausted" });
 
-    // The ordinary run was clamped to the 10k residual (ceiling backstop intact).
+    // The ordinary run was clamped to the 100k residual (ceiling backstop intact).
     const firstCaptures = hermesConfigCaptures.filter((capture) => capture.agentId === agentId);
     expect(firstCaptures).toHaveLength(1);
-    expect(firstCaptures[0].maxTokensPerRun).toBe(10_000);
+    expect(firstCaptures[0].maxTokensPerRun).toBe(100_000);
 
     await expect
       .poll(() => continuationRunsOf(run!.id).then((rows) => rows.length), {

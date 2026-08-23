@@ -165,7 +165,8 @@ init_receipt() {
     "plist_lint",
     "uq_fixture",
     "source_gate",
-    "server_typecheck"
+    "server_typecheck",
+    "candidate_tests"
   ],
   "deployPointerMutated": false,
   "liveCutover": false
@@ -395,6 +396,28 @@ cmd_server_typecheck() {
   fi
 }
 
+# 2026-08-23: vitest gate. Adapter/server unit tests were NOT gated (only server
+# typecheck), so weight/disposition test staleness reached production silently
+# (CACHED_INPUT_BUDGET_WEIGHT change, ca99a9ced 40K floor). This runs the fast,
+# high-signal suites that cover the per-run budget governor, disposition
+# extraction, and the resource-ceiling / rewake paths in the CANDIDATE tree.
+cmd_candidate_tests() {
+  if [ "$SKIP_HEAVY" = "1" ]; then
+    receipt_set_gate "candidate_tests" "pass" "skipped heavy (test mode)"
+    return 0
+  fi
+  local root="${PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT:-$CANDIDATE_ROOT}"
+  [ -d "$root" ] || fail "candidate root missing for candidate_tests: $root"
+  if (cd "$root" && npx vitest run         packages/adapter-utils/src/token-budget.test.ts         packages/adapter-utils/src/acpx-engine/execute.test.ts         packages/adapters/claude-local/src/server/parse.test.ts         packages/adapters/claude-local/src/server/execute.acp-fallback.test.ts         packages/adapters/hermes/src/server/execute.test.ts         server/src/__tests__/resource-ceiling-continuation.test.ts         server/src/__tests__/heartbeat-issue-rewake-throttle.test.ts         server/src/__tests__/heartbeat-high-input-token-guard.test.ts         > /tmp/candidate-tests.$$.log 2>&1); then
+    receipt_set_gate "candidate_tests" "pass" "adapter + budget/ceiling vitest suites green"
+    rm -f "/tmp/candidate-tests.$$.log"
+  else
+    tail -30 "/tmp/candidate-tests.$$.log" >&2 || true
+    receipt_set_gate "candidate_tests" "fail" "candidate vitest suites failed (see stderr)"
+    fail "candidate_tests failed"
+  fi
+}
+
 cmd_run_gates() {
   require_deployment_lease
   [ -f "$(working_receipt_path)" ] || fail "no working receipt"
@@ -403,6 +426,7 @@ cmd_run_gates() {
   cmd_uq_fixture
   cmd_source_gate
   cmd_server_typecheck
+  cmd_candidate_tests
   if assert_gates_green "$(working_receipt_path)"; then
     log "all mandatory gates green"
     finalize_receipt_copy >/dev/null
@@ -734,7 +758,7 @@ cmd_rollback_drill() {
   "candidateSha": "bad",
   "gates": {"committed_sha":{"status":"fail"}},
   "failedGateCount": 1,
-  "mandatoryGates": ["committed_sha","worktree_env","candidate_deps","plist_lint","uq_fixture","source_gate","server_typecheck"],
+  "mandatoryGates": ["committed_sha","worktree_env","candidate_deps","plist_lint","uq_fixture","source_gate","server_typecheck","candidate_tests"],
   "deployPointerMutated": false
 }
 JSON

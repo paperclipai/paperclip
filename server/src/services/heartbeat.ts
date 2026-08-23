@@ -11273,6 +11273,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issue: issueUiLink(issue),
         },
       });
+      // 2026-08-23 (operator directive: circuit-break the ISSUE, not the LANE):
+      // at the continuation cap the lane stays idle (see the completion-path
+      // keepIdleOnFailure), so the capped issue must leave the dispatch set or it
+      // is re-offered into the same governor stop next sweep. Block it with a
+      // board unblockDescriptor — louder and better-scoped than an error lane,
+      // and it stops the loop. Idempotent: skip if already blocked.
+      if (issue.status !== "blocked") {
+        await issuesSvc.update(issue.id, {
+          status: "blocked",
+          unblockDescriptor: {
+            owner: "board",
+            action:
+              `Resource-ceiling continuation cap reached (${roundsConsumed}/${RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW} rounds in 24h). ` +
+              "Board must split/re-scope the work or supersede with a fresh card, then explicitly resume. " +
+              "Auto-continuation is stopped; the lane stays available for other work.",
+          },
+          actorAgentId: agent.id,
+        }).catch((blockErr) => {
+          logger.error({ err: blockErr, issueId }, "failed to block issue at resource-ceiling continuation cap");
+        });
+      }
       return { outcome: "cap_exhausted" as const, roundsConsumed };
     }
 
@@ -21665,7 +21686,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               // 2026-08-19/20). Same logic as the ceiling path: a scheduled
               // retry requires an invokable lane.
               adapterResult.errorCode === "hermes_transient_silent_exit" ||
-              adapterResult.errorCode === "antigravity_transient_silent_exit"),
+              adapterResult.errorCode === "antigravity_transient_silent_exit" ||
+              // A bare governor stop (per-run token budget / max turns) with NO
+              // continuation scheduled — e.g. an issue-residual clamp near the 1M
+              // aggregate ceiling — is a bounded stop of ONE run, not a lane
+              // fault. The lane must stay idle so it can pick up other work; the
+              // capped ISSUE needs a fresh-card supersede, not a dead lane.
+              // (This is the path a clean SIGTERM budget stop actually takes;
+              // 2026-08-23 TSB/Forge flipped to error here on a 114941 residual.)
+              runErrorCode === "token_budget_exhausted" ||
+              runErrorCode === "max_turns_exhausted" ||
+              adapterResult.errorCode === "token_budget_exhausted" ||
+              adapterResult.errorCode === "max_turns_exhausted"),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );
