@@ -1,16 +1,23 @@
 /**
  * Weighted per-run token-budget accounting.
  *
- * Cache READS bill at roughly a tenth of fresh input on every provider this
- * fleet runs (Anthropic 0.1x; OpenAI/xAI cached discounts comparable) and do
- * not drain subscription quota the way fresh input does. Counting them at
- * full weight made `maxTokensPerRun` charge turns x resident-context: a
- * healthy 25-turn run with a ~30K instruction/skill context measured ~360K
- * "observed" while consuming ~30K fresh input, so leadership lanes walled at
- * 100K/200K/400K mid-report (TSMC-20840, 2026-08-14). Cache WRITES stay at
- * full weight (they bill at or above fresh input).
+ * Cache READS are the SAME resident context (instructions, skills, prior turns)
+ * re-read on every turn; they are bounded by the run's turn cap, not by new work,
+ * and barely drain subscription quota. The per-run governor exists to stop ONE
+ * run generating a large amount of NEW work — fresh input + cache CREATION +
+ * output — so cache reads carry a near-zero weight here.
+ *
+ * History: full weight charged turns x resident-context (TMSC-20840, 2026-08-14);
+ * 0.1x helped but a deep, efficient run still walled — measured 2026-08-23:
+ * a 34-turn claude verdict consumed 58 fresh input + 26K output + 92K cache
+ * creation (~118K real) yet read 2.93M from cache, so 0.1x = 293K tipped the
+ * 400K cap and killed a run that cost almost nothing. 0.02x keeps a bound on
+ * pathological re-read loops (turn cap x resident stays well under budget) while
+ * letting deep cached work complete. Cache WRITES stay at full weight (real cost),
+ * so context CHURN still trips the budget. The 1M aggregate-input ceiling
+ * (raw, cache included) remains the issue-level runaway backstop.
  */
-export const CACHED_INPUT_BUDGET_WEIGHT = 0.1;
+export const CACHED_INPUT_BUDGET_WEIGHT = 0.02;
 
 export function weightedBudgetTokens(parts: {
   inputTokens?: number | null;
