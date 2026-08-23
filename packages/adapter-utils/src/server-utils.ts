@@ -2080,6 +2080,7 @@ export function buildPaperclipEnv(agent: {
   companyId: string;
   adapterType?: string | null;
 }): Record<string, string> {
+  const localChildProcessAdapterTypes = new Set(["cursor", "process"]);
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -2095,8 +2096,10 @@ export function buildPaperclipEnv(agent: {
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const prefersRuntimeControlPlaneUrl =
-    agent.adapterType === "process"
-    || (typeof agent.adapterType === "string" && agent.adapterType.endsWith("_local"));
+    (typeof agent.adapterType === "string" && (
+      localChildProcessAdapterTypes.has(agent.adapterType)
+      || agent.adapterType.endsWith("_local")
+    ));
   // Local child-process adapters need the runtime control-plane origin when the
   // server exports one: their `PAPERCLIP_API_URL` must route to the live
   // control plane from the agent's actual execution surface, not merely to the

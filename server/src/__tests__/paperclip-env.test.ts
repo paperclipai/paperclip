@@ -51,6 +51,17 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://10.42.0.42:8000");
   });
 
+  it("treats the cursor adapter as local when exporting PAPERCLIP_API_URL", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://10.42.0.42:8000";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "8000";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1", adapterType: "cursor" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://10.42.0.42:8000");
+  });
+
   it("falls back to PAPERCLIP_RUNTIME_API_URL when no explicit override is set", () => {
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://203.0.113.42:3102";
     delete process.env.PAPERCLIP_API_URL;
