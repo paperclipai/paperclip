@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_write_grant_required",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -260,6 +261,27 @@ export function describeIssueWriteDenial(
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
           `and retry.`,
 
+      };
+
+    case "cross_issue_write_grant_required":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Cross-issue write authority",
+        title: "This run has no standing to write to that task",
+        description:
+          `Writing to ${issue} from a run checked out on a different task needs a named ` +
+          `basis — ${issue} being the run task's parent or child, ${actor} already owning or ` +
+          `having created it, ${issue} having no agent assignee, or an explicit ` +
+          `\`issues:cross-write\` grant. None of those held, so the write was refused ` +
+          `rather than allowed on visibility alone.`,
+        whoCanAct:
+          `${assignee} on ${issue} directly, or ${actor} from a run checked out on ${issue}.`,
+        sanctionedPath:
+          `Re-run the work from ${issue} itself, or ${CHILD_ISSUE_PATH}. For a standing ` +
+          `sweep or routing duty, ask an admin for an \`issues:cross-write\` grant scoped ` +
+          `to the projects or assignees it covers.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

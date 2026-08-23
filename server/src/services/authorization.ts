@@ -365,7 +365,13 @@ async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, 
   );
 }
 
-async function scopeAllows(
+/**
+ * Exported so the cross-issue write basis resolver scores an
+ * `issues:cross-write` grant with the same scope vocabulary every other grant
+ * uses — `project:`/`agent:` prefixes, id lists, manager subtrees. A second
+ * hand-rolled matcher would drift from this one and quietly widen a grant.
+ */
+export async function scopeAllows(
   db: Db,
   companyId: string,
   grantScope: Record<string, unknown> | null,
