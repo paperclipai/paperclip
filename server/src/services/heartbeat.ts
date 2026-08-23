@@ -17067,8 +17067,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
+      // A per-run governor stop (token budget / max turns) is a bounded stop of
+      // ONE run, not a lane fault — keep the lane idle so the next wake runs.
+      // This is the run-COMPLETION finalizer (the path a token_budget_exhausted
+      // adapter exit actually takes); the outer setup-catch has the same guard.
+      // 2026-08-23: claude Daedalus flipped to error here on a 400K budget stop.
+      const completionGovernorStop =
+        readNonEmptyString(finalizedRun?.errorCode) === "token_budget_exhausted" ||
+        readNonEmptyString(finalizedRun?.errorCode) === "max_turns_exhausted" ||
+        isTokenBudgetExhaustedRun(finalizedRun);
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        keepIdleOnFailure: completionGovernorStop,
       });
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
