@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
+      standalone_plugins_changed: ${{ steps.standalone_plugins.outputs.changed }}
 
     steps:
       - name: Checkout repository
@@ -72,6 +73,9 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test standalone plugin suite runner
+        run: node --test ./scripts/__tests__/standalone-plugin-tests.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -80,6 +84,21 @@ jobs:
           mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
+
+      # The sandbox-provider plugins sit outside the pnpm workspace, so their
+      # suites are not part of any workspace test run and need their own lane.
+      # That lane installs each package standalone, which is too slow to spend
+      # on every PR, so gate it on the paths that can actually break it.
+      - name: Detect standalone plugin package changes
+        id: standalone_plugins
+        run: |
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          standalone_pattern='^packages/plugins/sandbox-providers/|^packages/plugins/sdk/|^scripts/(test-standalone-plugin-packages|build-standalone-public-packages|link-plugin-dev-sdk)\.mjs$|^pnpm-workspace\.yaml$|^\.github/workflows/pr\.yml$'
+          if printf '%s\n' "$changed" | grep -Eq "$standalone_pattern"; then
+            echo "changed=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=0" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Validate dependency resolution when manifests change
         id: regen_lockfile
@@ -230,11 +249,49 @@ jobs:
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
 
+  standalone_plugin_tests:
+    name: Standalone plugin suites
+    needs: [policy]
+    if: needs.policy.outputs.standalone_plugins_changed == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # The workspace install is what makes the in-repo @paperclipai/plugin-sdk
+      # buildable; each plugin package still installs its own third-party deps
+      # standalone, exactly the way it is released.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run standalone plugin test suites
+        run: node ./scripts/test-standalone-plugin-packages.mjs
+
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [typecheck_release_registry, general_tests, build]
+    needs: [typecheck_release_registry, general_tests, build, standalone_plugin_tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -244,10 +301,15 @@ jobs:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          STANDALONE_PLUGIN_TESTS_RESULT: ${{ needs.standalone_plugin_tests.result }}
         run: |
           test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
           test "$GENERAL_TESTS_RESULT" = "success"
           test "$BUILD_RESULT" = "success"
+          # The standalone plugin lane is path-gated, so "skipped" means this PR
+          # cannot have touched those packages. Any other non-success is a fail.
+          test "$STANDALONE_PLUGIN_TESTS_RESULT" = "success" \
+            || test "$STANDALONE_PLUGIN_TESTS_RESULT" = "skipped"
 
   build:
     name: Build
