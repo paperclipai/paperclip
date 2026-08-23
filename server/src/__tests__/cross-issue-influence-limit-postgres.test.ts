@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issues,
@@ -20,6 +21,7 @@ import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
+import { grantRowsPreservingExpiry } from "../services/access.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -36,6 +38,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
@@ -612,6 +615,129 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       await reparent;
 
       expect(await countMutations(companyId)).toBe(1);
+    });
+  });
+
+  /**
+   * `grantRowsPreservingExpiry` carries an omitted expiry forward so that a
+   * client round-tripping the grant list without the field cannot un-time-box a
+   * grant. Locking the grant rows alone does not make that safe, because a
+   * replacement deletes and reinserts them instead of updating in place: under
+   * READ COMMITTED a `SELECT ... FOR UPDATE` that blocks on a row the winner
+   * deletes resumes with that row skipped, and the winner's reinserted row is
+   * not in the waiter's statement snapshot either. The preservation map comes
+   * back empty, the omitted expiry falls through to null, and the bound the
+   * winner just set is silently cleared — omission widening authority.
+   *
+   * The serializing lock therefore sits on the principal's membership row,
+   * which a replacement never deletes, so the grant read that follows it is a
+   * new statement with a new snapshot.
+   */
+  describe("two grant replacements racing (FAI-10144)", () => {
+    const PERMISSION_KEY = "issues:cross-write" as const;
+    const NOW = new Date("2026-08-23T00:00:00.000Z");
+
+    /** The three statements every `grantRowsPreservingExpiry` caller runs. */
+    async function replaceGrants(
+      tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+      input: { companyId: string; principalId: string; expiresAt?: Date | null },
+    ) {
+      const rows = await grantRowsPreservingExpiry(tx, {
+        companyId: input.companyId,
+        principalType: "agent",
+        principalId: input.principalId,
+        grants: [{
+          permissionKey: PERMISSION_KEY,
+          scope: { projectId: "p" },
+          // Absent means "keep the existing bound". Passing the key through
+          // without it is exactly what an older client does.
+          ...("expiresAt" in input ? { expiresAt: input.expiresAt } : {}),
+        }],
+        grantedByUserId: null,
+        now: new Date(),
+      });
+      await tx
+        .delete(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, input.companyId),
+            eq(principalPermissionGrants.principalType, "agent"),
+            eq(principalPermissionGrants.principalId, input.principalId),
+          ),
+        );
+      if (rows.length > 0) await tx.insert(principalPermissionGrants).values(rows);
+    }
+
+    it("preserves the winner's shortened bound instead of clearing it", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        defaultResponsibleUserId: "board-user",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Two Week Sweeper",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        membershipRole: "member",
+        status: "active",
+      });
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: PERMISSION_KEY,
+        scope: { projectId: "p" },
+        expiresAt: new Date(NOW.getTime() + 14 * 24 * 60 * 60 * 1000),
+      });
+
+      // The operator shortens the bound to one day.
+      const shortened = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
+
+      let releaseLock!: () => void;
+      const lockTaken = new Promise<void>((resolve) => { releaseLock = resolve; });
+
+      const winner = db.transaction(async (tx) => {
+        await replaceGrants(tx, { companyId, principalId: agentId, expiresAt: shortened });
+        releaseLock();
+        // Hold the transaction open so the waiter is genuinely blocked on the
+        // lock rather than merely running after it.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+
+      await lockTaken;
+      // An older client flips some unrelated permission and writes the list
+      // back with no `expiresAt` field at all.
+      const waiter = db.transaction(async (tx) => {
+        await replaceGrants(tx, { companyId, principalId: agentId });
+      });
+
+      await winner;
+      await waiter;
+
+      const rows = await db
+        .select({ expiresAt: principalPermissionGrants.expiresAt })
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.companyId, companyId));
+
+      expect(rows).toHaveLength(1);
+      // Without the membership lock this is null: the bound is gone and the
+      // grant is indefinite again.
+      expect(rows[0]!.expiresAt).not.toBeNull();
+      expect(rows[0]!.expiresAt!.getTime()).toBe(shortened.getTime());
     });
   });
 });

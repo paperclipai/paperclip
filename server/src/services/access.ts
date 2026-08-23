@@ -49,13 +49,32 @@ function normalizeExpiresAt(value: Date | string | null): Date | null {
  * `tx` must be the replacing transaction, and this must run before the delete,
  * so the bound being carried forward is the one being replaced.
  *
- * The read takes `FOR UPDATE`, which is what makes the carry-forward safe under
- * concurrency. Without it this is a read-then-write: a replacement that shortens
- * an expiry could commit between another replacement's read and its insert, and
- * the second one would write back the *old*, longer bound it had already read —
- * silently undoing the shortening and keeping authority past its intended end.
- * Holding the row lock from the read through commit serializes the two, so
- * whichever runs second sees the other's committed bound.
+ * Concurrency. This is a read-then-write, so two replacements racing have to be
+ * serialized, or the second writes back a bound the first already superseded.
+ *
+ * Locking the *grant* rows is not sufficient on its own, because a replacement
+ * deletes and reinserts them rather than updating in place. Under READ
+ * COMMITTED a `SELECT ... FOR UPDATE` that blocks on a row the winner then
+ * deletes resumes with that row **skipped**, and the winner's freshly inserted
+ * replacement is not in the waiter's statement snapshot either. The waiter's
+ * preservation map would come back empty, an omitted expiry would fall through
+ * to null, and the bound the winner had just set would be silently cleared —
+ * omission widening authority, which is the one thing this function exists to
+ * prevent.
+ *
+ * So the serializing lock is taken on the principal's `company_memberships`
+ * row, which a grant replacement never deletes. Blocking there and *then*
+ * reading the grants makes the read a new statement with a new snapshot, so the
+ * waiter observes the winner's committed rows. This lock has to live here
+ * rather than in the callers: two of the four call sites invoke this as the
+ * first statement in their transaction and hold no other lock.
+ *
+ * A principal with no membership row has no grants to preserve, so there is
+ * nothing to serialize and the empty lock read is correct.
+ *
+ * `FOR UPDATE` stays on the grant read too. It is redundant against another
+ * replacement, but `setPrincipalPermission` updates these rows in place without
+ * touching the membership row, and that writer still has to be ordered.
  */
 export async function grantRowsPreservingExpiry(
   tx: Pick<Db, "select">,
@@ -68,6 +87,18 @@ export async function grantRowsPreservingExpiry(
     now: Date;
   },
 ) {
+  await tx
+    .select({ id: companyMemberships.id })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, input.companyId),
+        eq(companyMemberships.principalType, input.principalType),
+        eq(companyMemberships.principalId, input.principalId),
+      ),
+    )
+    .for("update");
+
   const existing = await tx
     .select({
       permissionKey: principalPermissionGrants.permissionKey,
