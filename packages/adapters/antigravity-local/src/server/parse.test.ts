@@ -131,3 +131,47 @@ describe("agy CLI `event`-shaped stream (2026-08-23 regression)", () => {
     expect(parseAntigravityOutput(bare).disposition?.status).toBe("done");
   });
 });
+
+describe("the shape production actually emits (TSMC-21352)", () => {
+  // Verbatim from run a3dfa0b6-7d17-40ca-abb1-aa3e1830985f, 2026-08-23 13:15Z.
+  // The quota rejection arrives on STDOUT inside the result envelope; stderr
+  // carries only Paperclip's own generic notice, which matches no quota
+  // pattern. The pre-existing unit test fed the quota string on stderr and so
+  // stayed green while 164 of 176 classifiable failures in 24h went undetected
+  // and were retried immediately against an exhausted quota.
+  const STDOUT = [
+    '{"event":"init","conversation_id":"5860f8ec-10c0-4e6d-bccd-498b125fd54e","init":{"model":"Gemini 3.1 Pro (High)"}}',
+    '{"event":"step_update","step_update":{"step_index":0,"state":"DONE","step_type":"user_input"}}',
+    '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"error_message"}}',
+    '{"event":"result","result":{"conversation_id":"5860f8ec-10c0-4e6d-bccd-498b125fd54e","status":"ERROR",'
+      + '"response":"","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 14m32s.",'
+      + '"duration_seconds":0,"num_turns":1,"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}',
+  ].join("\n");
+  const STDERR = "[paperclip] Antigravity reported turn status ERROR with an EMPTY response.\n";
+
+  it("lifts the CLI's own error text off stdout", () => {
+    const parsed = parseAntigravityOutput(STDOUT, STDERR);
+    expect(parsed.resultStatus).toBe("ERROR");
+    expect(parsed.errorMessage).toContain("Individual quota reached");
+    expect(parsed.sessionId).toBe("5860f8ec-10c0-4e6d-bccd-498b125fd54e");
+  });
+
+  it("detects quota exhaustion and dates the retry from the stdout message", () => {
+    const now = new Date("2026-08-23T13:15:18.000Z");
+    const parsed = parseAntigravityOutput(STDOUT, STDERR);
+    const result = detectAntigravityQuotaExhausted({ stderr: STDERR, cliError: parsed.errorMessage, now });
+    expect(result.exhausted).toBe(true);
+    // 14m32s after the observation, so the retry lands after the quota resets
+    expect(result.resetAt?.toISOString()).toBe("2026-08-23T13:29:50.000Z");
+  });
+
+  it("stays blind when only stderr is offered, which is the defect being fixed", () => {
+    expect(detectAntigravityQuotaExhausted({ stderr: STDERR }).exhausted).toBe(false);
+  });
+
+  it("does not misread a quota rejection as a nameless silent exit", () => {
+    // stderr is non-empty, so the silent-exit heuristic already declines; the
+    // run must be classified by its named cause, not by an absence.
+    expect(isAntigravityTransientSilentExit({ exitCode: 1, stderr: STDERR })).toBe(false);
+  });
+});

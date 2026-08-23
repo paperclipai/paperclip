@@ -174,6 +174,12 @@ export function inspectAntigravityStream(stdout: string) {
   // so a CANCELED turn with an empty response was stored as a successful run:
   // 68 of 91 "succeeded" antigravity runs in 24h were CANCELED and 9 were ERROR.
   let resultStatus: string | null = null;
+  // The agy CLI reports WHY a turn ended inside the result envelope
+  // ({"event":"result","result":{"status":"ERROR","error":"Individual quota
+  // reached ... Resets in 14m32s."}}). Paperclip discarded it and reported the
+  // generic "Antigravity exited with code 1", so the quota detector -- which
+  // only ever read stderr -- never saw the one line that identifies the cause.
+  let errorText: string | null = null;
   const usage: TokenUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
   let sawJsonEvent = false;
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -199,8 +205,14 @@ export function inspectAntigravityStream(stdout: string) {
     if (typeof statusCandidate === "string" && statusCandidate.trim()) {
       resultStatus = statusCandidate.trim().toUpperCase();
     }
+    for (const candidate of [asRecord(event.result).error, event.error, asRecord(event.error).message]) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        errorText = candidate.trim();
+        break;
+      }
+    }
   }
-  return { sessionId, summary, usage, sawJsonEvent, resultStatus };
+  return { sessionId, summary, usage, sawJsonEvent, resultStatus, errorText };
 }
 
 export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntigravityOutput {
@@ -215,7 +227,7 @@ export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntig
   return {
     sessionId,
     summary: cleanedText,
-    errorMessage: null,
+    errorMessage: stream.errorText,
     usage: stream.usage,
     disposition,
     resultStatus: stream.resultStatus,
@@ -246,9 +258,18 @@ function parseResetAtFromQuotaLine(line: string, now: Date): Date | null {
 
 export function detectAntigravityQuotaExhausted(input: {
   stderr: string;
+  /**
+   * The agy CLI's own error text, which arrives on STDOUT inside the result
+   * envelope. Reading stderr alone missed 164 of 176 classifiable antigravity
+   * failures in 24h: stderr held only Paperclip's own generic "turn status
+   * ERROR with an EMPTY response" line, which matches no quota pattern, so
+   * every quota rejection was retried immediately against an exhausted quota.
+   */
+  cliError?: string | null;
   now?: Date;
 }): AntigravityQuotaExhaustedMatch {
-  const messages = input.stderr
+  const messages = [input.stderr, input.cliError ?? ""]
+    .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);

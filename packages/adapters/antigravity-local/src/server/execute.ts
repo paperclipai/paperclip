@@ -516,6 +516,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ): AdapterExecutionResult => {
       const quotaMeta = detectAntigravityQuotaExhausted({
         stderr: attempt.proc.stderr,
+        cliError: attempt.parsed.errorMessage,
       });
       if (attempt.proc.timedOut) {
         return {
@@ -529,8 +530,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const failed = (attempt.proc.exitCode ?? 0) !== 0;
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-      const fallbackErrorMessage = stderrLine || `Antigravity exited with code ${attempt.proc.exitCode ?? -1}`;
-      const transientSilentExit = failed && isAntigravityTransientSilentExit({
+      // Prefer the CLI's own account of the failure. stderr usually carries only
+      // Paperclip's generic "turn status ERROR with an EMPTY response" notice,
+      // which told an operator nothing about the actual cause.
+      const fallbackErrorMessage =
+        attempt.parsed.errorMessage
+        || stderrLine
+        || `Antigravity exited with code ${attempt.proc.exitCode ?? -1}`;
+      const transientSilentExit = failed && !quotaMeta.exhausted && isAntigravityTransientSilentExit({
         exitCode: attempt.proc.exitCode,
         stderr: attempt.proc.stderr,
       });
