@@ -4487,8 +4487,11 @@ registry.registerPath({
   path: "/api/issues/{issueId}/active-run",
   tags: ["runs"],
   summary: "Get active run for an issue",
+  description:
+    "Returns 200 with the run object when the issue has an active run, 204 with an empty body "
+    + "when the issue exists but has no active run, and 404 when the issue does not exist.",
   request: { params: z.object({ issueId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 204: r.noContent, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
