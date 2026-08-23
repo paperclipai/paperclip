@@ -117,20 +117,23 @@ function readAdapterWorkspace(input: unknown) {
 /**
  * Seed the exact shape from the upstream report: a project whose execution workspace policy asks
  * for isolated git worktrees, an agent that already carries a fixed `adapterConfig.cwd` from an
- * unrelated earlier task, and an issue in that project assigned to that agent.
+ * unrelated earlier task, and `issueCount` issues in that project assigned to that agent. The
+ * report dispatches two or more issues, which is what makes a shared checkout observable.
  */
 async function seedPolicyProjectRun(input: {
   db: Db;
   repoRoot: string;
   agentFixedCwd: string;
   isolatedWorkspacesEnabled: boolean;
+  issueCount?: number;
 }) {
   const { db } = input;
+  const issueCount = input.issueCount ?? 1;
   const companyId = randomUUID();
   const projectId = randomUUID();
   const projectWorkspaceId = randomUUID();
   const agentId = randomUUID();
-  const issueId = randomUUID();
+  const issueIds = Array.from({ length: issueCount }, () => randomUUID());
   const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
   await instanceSettingsService(db).updateExperimental({
@@ -184,22 +187,24 @@ async function seedPolicyProjectRun(input: {
     },
     permissions: {},
   });
-  await db.insert(issues).values({
-    id: issueId,
-    companyId,
-    projectId,
-    projectWorkspaceId,
-    title: "Policy-governed task",
-    status: "todo",
-    workMode: "standard",
-    priority: "medium",
-    assigneeAgentId: agentId,
-    responsibleUserId: "responsible-user",
-    issueNumber: 1,
-    identifier: `${issuePrefix}-1`,
-  });
+  await db.insert(issues).values(
+    issueIds.map((id, index) => ({
+      id,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: `Policy-governed task ${index + 1}`,
+      status: "todo" as const,
+      workMode: "standard" as const,
+      priority: "medium" as const,
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: index + 1,
+      identifier: `${issuePrefix}-${index + 1}`,
+    })),
+  );
 
-  return { companyId, projectId, agentId, issueId };
+  return { companyId, projectId, agentId, issueId: issueIds[0]!, issueIds };
 }
 
 describeEmbeddedPostgres("project execution workspace policy suppressed by the instance flag", () => {
@@ -308,22 +313,28 @@ describeEmbeddedPostgres("project execution workspace policy suppressed by the i
     expect(finishedRun?.stdoutExcerpt ?? "").toContain("Isolated Workspaces");
   }, 60_000);
 
-  it("stays silent and honors the policy once isolated workspaces are enabled", async () => {
+  // The counterpart to the case above, and the one that decides where the bug actually lives. The
+  // upstream report blames the agent's fixed `adapterConfig.cwd` for overriding the policy. With the
+  // instance flag on, the very same seed — same stale agent cwd, same project policy — puts every
+  // issue in its own worktree, so the stale cwd is not what bypasses the policy. The instance flag
+  // is, which is why the fix names that discard rather than changing workspace resolution.
+  it("gives each issue its own worktree despite the agent's fixed cwd once isolated workspaces are enabled", async () => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
     const agentFixedCwd = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-agent-fixed-cwd-")));
     tempRoots.push(agentFixedCwd);
 
-    const { agentId, issueId } = await seedPolicyProjectRun({
+    const { agentId, issueIds } = await seedPolicyProjectRun({
       db,
       repoRoot,
       agentFixedCwd,
       isolatedWorkspacesEnabled: true,
+      issueCount: 2,
     });
 
-    let adapterWorkspace: ReturnType<typeof readAdapterWorkspace> | null = null;
-    adapterExecute.mockImplementationOnce(async (adapterInput: unknown) => {
-      adapterWorkspace = readAdapterWorkspace(adapterInput);
+    const adapterWorkspaces: ReturnType<typeof readAdapterWorkspace>[] = [];
+    adapterExecute.mockImplementation(async (adapterInput: unknown) => {
+      adapterWorkspaces.push(readAdapterWorkspace(adapterInput));
       return {
         exitCode: 0,
         signal: null,
@@ -335,21 +346,36 @@ describeEmbeddedPostgres("project execution workspace policy suppressed by the i
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: { issueId },
-      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
-    });
-    expect(run).not.toBeNull();
-    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(finishedRun?.status).toBe("succeeded");
+    // The agent caps itself at one concurrent run, so dispatch is sequential — which is also the
+    // ordering the report describes, where a later task inherits the earlier task's checkout.
+    for (const issueId of issueIds) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+      expect(run).not.toBeNull();
+      const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+      expect(finishedRun?.status).toBe("succeeded");
+      expect(finishedRun?.stdoutExcerpt ?? "").not.toContain(
+        "This project configures an execution workspace policy",
+      );
+    }
 
-    expect(adapterWorkspace).toMatchObject({ strategy: "git_worktree" });
-    expect(adapterWorkspace?.cwd).not.toBe(repoRoot);
-    expect(finishedRun?.stdoutExcerpt ?? "").not.toContain(
-      "This project configures an execution workspace policy",
-    );
-  }, 60_000);
+    expect(adapterWorkspaces).toHaveLength(2);
+    for (const workspace of adapterWorkspaces) {
+      expect(workspace.strategy).toBe("git_worktree");
+      // Neither the shared project checkout nor the agent's stale fixed cwd.
+      expect(workspace.cwd).not.toBe(repoRoot);
+      expect(workspace.cwd).not.toBe(agentFixedCwd);
+    }
+    expect(adapterWorkspaces[0]!.cwd).not.toBe(adapterWorkspaces[1]!.cwd);
+
+    // The reporter's step 4: `git worktree list` shows one worktree per issue, not one shared
+    // checkout. The main checkout is the first line, so two issues means three lines.
+    const worktreeList = await readGit(repoRoot, ["worktree", "list"]);
+    expect(worktreeList.split("\n")).toHaveLength(3);
+  }, 90_000);
 });
