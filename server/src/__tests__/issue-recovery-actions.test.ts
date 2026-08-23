@@ -561,7 +561,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it.each([
-    ["process_lost", undefined],
+    // process_lost is deliberately absent: it now resolves to the
+    // infra_terminated cause and takes the wait-and-redispatch path instead of
+    // this board-escalation playbook. The infra-termination cases below cover it.
     ["adapter_failed", "successful_run_missing_state"],
     ["codex_output_inactivity_monitor", undefined],
     ["workspace_validation_failed", "workspace_validation_failed"],
@@ -612,6 +614,101 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         }),
       });
       expect(enqueueWakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  // A host restart, a graceful server shutdown, and a reaped orphan run are all
+  // platform faults. They must schedule a re-dispatch of the original
+  // assignee and must never produce an agent-owned (blaming) recovery action.
+  it.each([
+    ["process_lost", { errorCode: "process_lost", resultJson: null }],
+    ["server_shutdown_interrupted", { errorCode: "server_shutdown_interrupted", resultJson: null }],
+    ["orphaned_running_run", { errorCode: "orphaned_running_run", resultJson: null }],
+    // The predicate also reads the stop reason out of result_json, which is how
+    // the reaper records a shutdown when the error code is a generic one.
+    ["stopReason result_json", { errorCode: "adapter_failed", resultJson: { stopReason: "server_shutdown_interrupted" } }],
+  ] as const)(
+    "treats %s as an infra termination and never opens an assignee-directed action",
+    async (_label, runShape) => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "Run terminated before it could report.",
+        errorCode: runShape.errorCode,
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+        resultJson: runShape.resultJson,
+      } as const;
+      // The scheduled re-dispatch references this run, so it has to be a real row.
+      await db.insert(heartbeatRuns).values({
+        id: latestRun.id,
+        companyId,
+        agentId: coderId,
+        invocationSource: "automation",
+        status: latestRun.status,
+        error: latestRun.error,
+        errorCode: latestRun.errorCode,
+        resultJson: latestRun.resultJson,
+        livenessState: latestRun.livenessState,
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssue.id, retryReason: "issue_continuation_needed" },
+      });
+
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+      });
+
+      const [action] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+      expect(action).toMatchObject({
+        cause: "infra_terminated",
+        // System-owned wait, not an agent takeover: nobody is on the hook.
+        ownerType: "system",
+        ownerAgentId: null,
+        returnOwnerAgentId: coderId,
+      });
+      // No takeover owner is woken; the only scheduled work is the re-dispatch.
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+
+      const [wakeup] = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeup).toMatchObject({
+        agentId: coderId,
+        reason: "infra_termination_recovery",
+        status: "queued",
+      });
+
+      const monitorRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ));
+      expect(monitorRuns).toHaveLength(1);
+      expect(monitorRuns[0]).toMatchObject({
+        agentId: coderId,
+        scheduledRetryReason: "infra_termination_recovery",
+        retryOfRunId: latestRun.id,
+      });
+
+      // Nothing on the issue thread accuses the agent of stalling.
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, sourceIssue.id));
+      expect(comments.map((row) => row.body).join("\n")).not.toMatch(/recovery owner|took over|failed to/i);
     },
   );
 

@@ -106,6 +106,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import { INFRA_REDISPATCH_BACKOFF_NOTICE_TITLE } from "../services/recovery/infra-redispatch-backoff.ts";
 import {
   readHotRestartIntent,
   resolveLegacyHotRestartIntentPath,
@@ -1006,6 +1007,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
   }) {
+    // Platform faults (host restart, graceful shutdown, reaped orphan) take the
+    // environmental wait-and-redispatch path instead of an
+    // assignee-directed one. The action is system-owned, nobody is woken to take
+    // over, and the re-dispatch arrives as a scheduled retry of the original
+    // assignee rather than as a cheap-model recovery run.
+    const infraTerminated = input.cause === "infra_terminated";
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
         and(
@@ -1022,7 +1029,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       recoveryIssueId: null,
       kind: input.kind ?? "stranded_assigned_issue",
       status: "active",
-      ownerType: "board",
+      ownerType: infraTerminated ? "system" : "board",
       ownerAgentId: null,
       previousOwnerAgentId: input.previousOwnerAgentId ?? input.agentId,
       returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
@@ -1035,12 +1042,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: input.previousStatus,
       latestRunId: input.runId,
       retryReason: input.retryReason ?? null,
-      routingPolicy: "board_escalation_no_takeover_v1",
+      // Infra terminations do not escalate to the board, so they carry no
+      // board-escalation routing policy.
+      ...(infraTerminated ? {} : { routingPolicy: "board_escalation_no_takeover_v1" }),
     });
-    if (input.cause === "execution_review_participant_recovery") {
+    if (infraTerminated) {
+      expect(action.nextAction).toContain("Wait for the scheduled re-dispatch of the original assignee");
+      expect(action.nextAction).toContain("not by an agent fault");
+    } else if (input.cause === "execution_review_participant_recovery") {
       expect(action.nextAction).toContain("failed review participant path");
-    } else if (input.cause === "process_lost") {
-      expect(action.nextAction).toContain("explicitly retry the original owner");
     } else {
       expect(action.nextAction).toContain(
         input.kind === "missing_disposition" ? "valid issue disposition" : "Board operator",
@@ -1057,10 +1067,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ));
     expect(recoveryIssues).toHaveLength(0);
 
-    const recoveryWakeups = await db.select().from(agentWakeupRequests).where(
-      sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${action.id}`,
-    );
-    expect(recoveryWakeups).toHaveLength(0);
+    if (infraTerminated) {
+      // The only scheduled work is the re-dispatch of the original assignee, on
+      // the short infra backoff. No takeover owner is woken.
+      const redispatch = await waitForValue(async () =>
+        db
+          .select()
+          .from(agentWakeupRequests)
+          .where(and(
+            eq(agentWakeupRequests.companyId, input.companyId),
+            eq(agentWakeupRequests.reason, "infra_termination_recovery"),
+          ))
+          .then((rows) => rows[0] ?? null),
+      );
+      expect(redispatch).toMatchObject({
+        agentId: input.agentId,
+        status: "queued",
+        requestedByActorType: "system",
+        payload: expect.objectContaining({
+          issueId: input.issueId,
+          retryOfRunId: input.runId,
+          retryReason: "infra_termination_recovery",
+        }),
+      });
+
+      const scheduled = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ));
+      expect(scheduled).toHaveLength(1);
+      expect(scheduled[0]).toMatchObject({
+        agentId: input.agentId,
+        scheduledRetryReason: "infra_termination_recovery",
+        retryOfRunId: input.runId,
+      });
+
+    } else {
+      const recoveryWakeups = await db.select().from(agentWakeupRequests).where(
+        sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${action.id}`,
+      );
+      expect(recoveryWakeups).toHaveLength(0);
+    }
     await waitForHeartbeatIdle(db);
     const sourceIssue = await db
       .select()
@@ -1405,7 +1455,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId: secondAttempt.runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
-      cause: "process_lost",
+      cause: "infra_terminated",
     });
   });
 
@@ -4277,6 +4327,174 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).not.toContain("issue_continuation_waiting_on_review");
   });
 
+  // Startup re-dispatch used to re-queue every `in_progress` issue
+  // unconditionally, so a host that kept restarting kept getting handed the same
+  // issues to kill. These cover the back-off that closes that loop.
+  describe("infra re-dispatch back-off", () => {
+    // Builds an explicit run history for one stranded issue. The fixture's own
+    // run is pushed to the back of the timeline and marked as an ordinary
+    // agent-side failure, so `count` is exactly the length of the infra streak
+    // the back-off should see — and the cooldown is measured against a real
+    // clock rather than the fixture's frozen 2026-03-19 timestamps.
+    async function seedInfraStreak(input: {
+      count: number;
+      finishedMinutesAgo: number;
+      // An optional newer, non-infra run on top of the streak.
+      trailingErrorCode?: string;
+    }) {
+      const fixture = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        retryReason: "issue_continuation_needed",
+        runErrorCode: "adapter_failed",
+      });
+
+      const oldest = new Date(
+        Date.now() - (input.finishedMinutesAgo + input.count + 10) * 60_000,
+      );
+      await db
+        .update(heartbeatRuns)
+        .set({ createdAt: oldest, startedAt: oldest, finishedAt: oldest, updatedAt: oldest })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+
+      const runIds: string[] = [];
+      const total = input.count + (input.trailingErrorCode ? 1 : 0);
+      for (let i = 0; i < total; i += 1) {
+        const id = randomUUID();
+        const finishedAt = new Date(
+          Date.now() - (input.finishedMinutesAgo + (total - 1 - i)) * 60_000,
+        );
+        const trailing = Boolean(input.trailingErrorCode) && i === total - 1;
+        await db.insert(heartbeatRuns).values({
+          id,
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "failed",
+          // Startup dispatch does not tag its runs with a continuation retry
+          // reason — which is precisely why the existing retry ladders never
+          // saw this loop.
+          contextSnapshot: {
+            issueId: fixture.issueId,
+            taskId: fixture.issueId,
+            wakeReason: "issue_assigned",
+          },
+          createdAt: finishedAt,
+          startedAt: finishedAt,
+          finishedAt,
+          updatedAt: finishedAt,
+          errorCode: trailing ? input.trailingErrorCode : "process_lost",
+          error: trailing
+            ? "the agent's adapter failed"
+            : "server restarted while the run was in flight",
+        });
+        runIds.push(id);
+      }
+      return { ...fixture, runIds };
+    }
+
+    async function backoffNotices(issueId: string) {
+      const rows = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      return rows.filter((row) => (
+        (row.presentation as Record<string, unknown> | null)?.title ===
+          INFRA_REDISPATCH_BACKOFF_NOTICE_TITLE
+      ));
+    }
+
+    // A single infra kill is noise: recovery must not be delayed at all.
+    it("re-dispatches immediately after one infra-killed run", async () => {
+      const { issueId } = await seedInfraStreak({ count: 1, finishedMinutesAgo: 1 });
+
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(result.infraBackoffDeferred).toBe(0);
+      expect(result.continuationRequeued).toBe(1);
+      await expect(backoffNotices(issueId)).resolves.toEqual([]);
+    });
+
+    // The restart loop itself: repeated sweeps must stop producing fresh dispatches.
+    it("stops re-dispatching once consecutive infra kills reach the threshold", async () => {
+      const { companyId, issueId } = await seedInfraStreak({ count: 2, finishedMinutesAgo: 1 });
+
+      const heartbeat = heartbeatService(db);
+      const first = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(first.infraBackoffDeferred).toBe(1);
+      expect(first.continuationRequeued).toBe(0);
+      expect(first.dispatchRequeued).toBe(0);
+      expect(first.escalated).toBe(0);
+
+      // Re-running the sweep — the boot-storm shape — must not accumulate
+      // dispatches, and must not spam the thread either.
+      const second = await heartbeat.reconcileStrandedAssignedIssues();
+      const third = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(second.continuationRequeued).toBe(0);
+      expect(third.continuationRequeued).toBe(0);
+
+      const queuedWakes = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "queued"),
+        ));
+      expect(queuedWakes).toEqual([]);
+
+      await expect(backoffNotices(issueId)).resolves.toHaveLength(1);
+    });
+
+    // "The issue surfaces a legible reason rather than looking like a stuck or
+    // failing agent" — it stays in_progress, it does not get escalated.
+    it("explains the hold without blocking the issue or blaming the agent", async () => {
+      const { agentId, issueId } = await seedInfraStreak({ count: 2, finishedMinutesAgo: 1 });
+
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      const sourceIssue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(sourceIssue).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+
+      const [notice] = await backoffNotices(issueId);
+      expect(notice?.authorType).toBe("system");
+      expect(notice?.body).toContain("terminated by the platform");
+      expect(notice?.body).toContain("needs no manual action");
+    });
+
+    // Recovery has to come back on its own once the cooldown expires.
+    it("resumes automatically after the cooldown, with no manual unpark", async () => {
+      // Default cooldown is 30m at the threshold; these kills are well past it.
+      await seedInfraStreak({ count: 2, finishedMinutesAgo: 24 * 60 });
+
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(result.infraBackoffDeferred).toBe(0);
+      expect(result.continuationRequeued).toBe(1);
+    });
+
+    // One normal terminal run clears the streak — no separate counter to reset.
+    it("clears the hold as soon as a run reaches a normal terminal state", async () => {
+      // Three infra kills — well past the threshold — but the newest run is an
+      // ordinary agent-side failure, so the streak restarts at zero.
+      const { issueId } = await seedInfraStreak({
+        count: 3,
+        finishedMinutesAgo: 1,
+        trailingErrorCode: "adapter_failed",
+      });
+
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      expect(result.infraBackoffDeferred).toBe(0);
+      await expect(backoffNotices(issueId)).resolves.toEqual([]);
+    });
+  });
+
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -6451,7 +6669,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "todo",
       runStatus: "failed",
       retryReason: "assignment_recovery",
-      runErrorCode: "process_lost",
+      // An agent-side failure on purpose: this case is about the dispatch retry
+      // cap, and the cap escalates to an agent-owned action. Infra kills take
+      // the wait-and-redispatch path instead and are covered by the infra
+      // re-dispatch back-off tests below.
+      runErrorCode: "adapter_exit_code",
       runError: "Authorization: Bearer sk-test-recovery-secret",
     });
     const longRecoveryOwnerName = "R".repeat(161);
@@ -6473,7 +6695,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
-      cause: "process_lost",
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-recovery-secret");
 
@@ -6871,6 +7092,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "in_progress",
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
+      // An agent-side failure on purpose: this case is about the continuation
+      // retry cap, and the cap escalates to an agent-owned action. Infra kills
+      // take the wait-and-redispatch path instead and are covered by the infra
+      // re-dispatch back-off tests below.
+      runErrorCode: "adapter_exit_code",
     });
     const heartbeat = heartbeatService(db);
 
@@ -6889,7 +7115,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
-      cause: "process_lost",
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
