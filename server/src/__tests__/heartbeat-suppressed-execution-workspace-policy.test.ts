@@ -374,7 +374,7 @@ describeEmbeddedPostgres("project execution workspace policy suppressed by the i
     expect(finishedRun?.stdoutExcerpt ?? "").toContain(
       "This project configures an execution workspace policy",
     );
-    expect(finishedRun?.stdoutExcerpt ?? "").toContain("the agent's own configured workspace");
+    expect(finishedRun?.stdoutExcerpt ?? "").toContain("the agent's own workspace");
     expect(finishedRun?.stdoutExcerpt ?? "").not.toContain("shared project workspace");
   }, 60_000);
 

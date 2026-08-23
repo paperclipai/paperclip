@@ -539,12 +539,17 @@ describe("execution workspace policy helpers", () => {
     ) {
       return describeSuppressedProjectExecutionWorkspacePolicy({
         projectPolicy: null,
-        issueSettings: null,
         legacyUseProjectWorkspace: null,
         agentConfig: {},
         lowTrustReview: false,
         isolatedWorkspacesEnabled: false,
         ...overrides,
+        resolvedWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+          ...overrides.resolvedWorkspace,
+        },
       });
     }
 
@@ -638,9 +643,32 @@ describe("execution workspace policy helpers", () => {
       const warning = describeSuppressed({
         projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
         legacyUseProjectWorkspace: false,
+        resolvedWorkspace: { mode: "agent_default", source: "agent_home", baseCwdFallback: false },
       });
-      expect(warning).toContain("the agent's own configured workspace");
+      expect(warning).toContain("the agent's own workspace");
       expect(warning).not.toContain("shared project workspace");
+    });
+
+    // A run can request the shared project workspace and still not get it: when project workspaces
+    // exist but none can be materialized, the anchor falls back to agent home while `source` stays
+    // "project_primary". Naming the shared checkout there sends the operator to a directory the
+    // adapter never opened.
+    it("names the fallback directory when no project workspace could be used", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: { mode: "shared_workspace", source: "project_primary", baseCwdFallback: true },
+      });
+      expect(warning).toContain("the agent home fallback directory");
+      expect(warning).not.toContain("the shared project workspace");
+    });
+
+    it("names the carried-over workspace when the run resumed an earlier session's directory", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: { mode: "shared_workspace", source: "task_session", baseCwdFallback: false },
+      });
+      expect(warning).toContain("a workspace carried over from an earlier session");
+      expect(warning).not.toContain("the shared project workspace");
     });
 
     // A low-trust review run is isolated whatever the flag says, so calling this run's workspace
@@ -654,6 +682,13 @@ describe("execution workspace policy helpers", () => {
           workspaceStrategy: { type: "git_worktree" },
         },
         lowTrustReview: true,
+        // The anchor it isolates from is still the project workspace, so `source` stays
+        // "project_primary" and only the mode distinguishes it.
+        resolvedWorkspace: {
+          mode: "isolated_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+        },
       });
       expect(warning).toContain("an isolated workspace");
       expect(warning).not.toContain("shared project workspace");
@@ -673,14 +708,17 @@ describe("execution workspace policy helpers", () => {
       ).toBeNull();
     });
 
-    // Issue-level settings ride the same gate as the project policy, so the counterfactual has to
-    // drop both — otherwise a pinned issue mode makes the two worlds look identical.
-    it("names the fallback workspace when the gate drops pinned issue settings too", () => {
-      const warning = describeSuppressed({
-        projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
-        issueSettings: { mode: "isolated_workspace" },
-      });
-      expect(warning).toContain("the shared project workspace");
+    // Issue-level settings ride the same gate as the project policy, but this warning speaks for
+    // the project policy alone. A default-looking policy paired with an issue that asked for
+    // isolation must not report the project policy as the cause: the isolation request came from
+    // the issue, and blaming the project would send the operator to edit the wrong configuration.
+    // Holding the issue settings dropped on both sides of the comparison is what keeps that honest.
+    it("does not blame the project policy for an isolation request that came from the issue", () => {
+      expect(
+        describeSuppressed({
+          projectPolicy: { enabled: true, defaultMode: "shared_workspace", allowIssueOverride: true },
+        }),
+      ).toBeNull();
     });
 
     // The suppressed warning has to survive the exact round trip the dispatch path takes:

@@ -14366,37 +14366,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resolvedExecutionWorkspaceMode,
       lowTrustReview,
     );
-    // The gate returns null for a discarded policy exactly as it does for a project that never
-    // configured one, so without this the run is indistinguishable from an unconfigured project
-    // while the project API keeps echoing the policy back. Name the discard on the run instead.
-    // Resolved here rather than at the gate so the warning can name the workspace this run
-    // actually resolved to instead of assuming the shared project checkout.
-    const suppressedProjectExecutionWorkspacePolicyWarning =
-      describeSuppressedProjectExecutionWorkspacePolicy({
-        projectPolicy: parsedProjectExecutionWorkspacePolicy,
-        issueSettings: parsedIssueExecutionWorkspaceSettings,
-        legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
-        agentConfig: config,
-        lowTrustReview,
-        isolatedWorkspacesEnabled,
-      });
-    if (suppressedProjectExecutionWorkspacePolicyWarning) {
-      logger.warn(
-        {
-          event: "project_execution_workspace_policy_suppressed",
-          companyId: agent.companyId,
-          agentId: agent.id,
-          runId: run.id,
-          issueId,
-          projectId: projectContext?.id ?? null,
-          projectDefaultMode: parsedProjectExecutionWorkspacePolicy?.defaultMode ?? null,
-          projectWorkspaceStrategyType:
-            parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
-          resolvedExecutionWorkspaceMode: requestedExecutionWorkspaceMode,
-        },
-        "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
-      );
-    }
     const issueRef = issueContext
       ? {
           id: issueContext.id,
@@ -14956,6 +14925,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         ),
     });
+    // The gate returns null for a discarded policy exactly as it does for a project that never
+    // configured one, so without this the run is indistinguishable from an unconfigured project
+    // while the project API keeps echoing the policy back. Name the discard on the run instead.
+    // Resolved here, after `resolvedWorkspace`, so the warning names the workspace this run
+    // actually landed in — a requested `shared_workspace` can still fall back to agent home.
+    const suppressedProjectExecutionWorkspacePolicyWarning =
+      describeSuppressedProjectExecutionWorkspacePolicy({
+        projectPolicy: parsedProjectExecutionWorkspacePolicy,
+        legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        agentConfig: config,
+        lowTrustReview,
+        isolatedWorkspacesEnabled,
+        resolvedWorkspace: {
+          mode: requestedExecutionWorkspaceMode,
+          source: resolvedWorkspace.source,
+          baseCwdFallback: resolvedWorkspace.baseCwdFallback,
+        },
+      });
+    if (suppressedProjectExecutionWorkspacePolicyWarning) {
+      logger.warn(
+        {
+          event: "project_execution_workspace_policy_suppressed",
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId,
+          projectId: projectContext?.id ?? null,
+          projectDefaultMode: parsedProjectExecutionWorkspacePolicy?.defaultMode ?? null,
+          projectWorkspaceStrategyType:
+            parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
+          requestedExecutionWorkspaceMode,
+          resolvedWorkspaceSource: resolvedWorkspace.source,
+          resolvedWorkspaceBaseCwdFallback: resolvedWorkspace.baseCwdFallback,
+        },
+        "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
+      );
+    }
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
       config: mergedConfig,
       trustPreset,
