@@ -40,8 +40,11 @@ function parseArgs(argv) {
     if (a.startsWith("--")) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (!next || next.startsWith("--")) out[key] = true;
-      else { out[key] = next; i += 1; }
+      const value = !next || next.startsWith("--") ? true : (i += 1, next);
+      // --results may be repeated: a sharded run produces one results file per
+      // package, and the ratchet verdict is over their union.
+      if (key in out) out[key] = [].concat(out[key], value);
+      else out[key] = value;
     } else out._.push(a);
   }
   return out;
@@ -55,16 +58,20 @@ function testId(fileName, fullName) {
   return `${rel} :: ${fullName}`;
 }
 
-function readResults(file) {
-  if (!file || file === true) usage("--results <vitest-json> is required");
-  if (!fs.existsSync(file)) usage(`results file not found: ${file}`);
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (err) {
-    usage(`results file is not valid JSON (${err.message})`);
+function readResults(fileOrFiles) {
+  if (!fileOrFiles || fileOrFiles === true) usage("--results <vitest-json> is required");
+  const files = [].concat(fileOrFiles);
+  const suites = [];
+  for (const file of files) {
+    if (!fs.existsSync(file)) usage(`results file not found: ${file}`);
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (err) {
+      usage(`results file is not valid JSON (${file}: ${err.message})`);
+    }
+    if (Array.isArray(parsed.testResults)) suites.push(...parsed.testResults);
   }
-  const suites = Array.isArray(parsed.testResults) ? parsed.testResults : [];
   const failing = [];
   let total = 0;
   for (const suite of suites) {
@@ -81,7 +88,14 @@ function readResults(file) {
       if (a.status === "failed") failing.push(testId(suite.name, a.fullName));
     }
   }
-  return { failing: [...new Set(failing)].sort(), total, suiteCount: suites.length };
+  // Which files this run actually covered. A sharded run only measures part of
+  // the tree, and a baselined test whose file never ran is UNMEASURED, not
+  // fixed — treating absence as green would silently drop entries (and, with
+  // --update-on-shrink, permanently).
+  const coveredFiles = new Set(
+    suites.map((s) => path.relative(process.cwd(), s.name).replaceAll(path.sep, "/")),
+  );
+  return { failing: [...new Set(failing)].sort(), total, suiteCount: suites.length, coveredFiles };
 }
 
 function readBaseline(file) {
@@ -97,7 +111,7 @@ function readBaseline(file) {
 
 function cmdCheck(args) {
   const baselinePath = typeof args.baseline === "string" ? args.baseline : DEFAULT_BASELINE;
-  const { failing, total, suiteCount } = readResults(args.results);
+  const { failing, total, suiteCount, coveredFiles } = readResults(args.results);
   const { known, malformed, missing } = readBaseline(baselinePath);
 
   if (missing) {
@@ -111,10 +125,17 @@ function cmdCheck(args) {
   }
 
   const knownIds = new Set(known.map((e) => e.id));
+  const failingSet = new Set(failing);
+  const fileOf = (id) => id.split(" :: ")[0];
   const regressions = failing.filter((id) => !knownIds.has(id));
-  const fixed = [...knownIds].filter((id) => !failing.includes(id)).sort();
+  const measured = [...knownIds].filter((id) => coveredFiles.has(fileOf(id)));
+  const unmeasured = [...knownIds].filter((id) => !coveredFiles.has(fileOf(id))).sort();
+  const fixed = measured.filter((id) => !failingSet.has(id)).sort();
 
   console.log(`test-ratchet: ${total} tests across ${suiteCount} suites; ${failing.length} failing; baseline holds ${knownIds.size}`);
+  if (unmeasured.length > 0) {
+    console.log(`test-ratchet: ${unmeasured.length} baselined test${unmeasured.length === 1 ? "" : "s"} NOT covered by this run (partial/sharded) — left untouched`);
+  }
 
   if (fixed.length > 0) {
     console.log(`test-ratchet: ${fixed.length} baselined test${fixed.length === 1 ? "" : "s"} now GREEN — remove from ${baselinePath}:`);
@@ -131,7 +152,8 @@ function cmdCheck(args) {
 
   if (args["update-on-shrink"] && fixed.length > 0) {
     const { raw } = readBaseline(baselinePath);
-    raw.known = known.filter((e) => failing.includes(e.id));
+    // Keep anything still failing AND anything this run did not measure.
+    raw.known = known.filter((e) => failingSet.has(e.id) || !coveredFiles.has(fileOf(e.id)));
     raw.updatedAt = new Date().toISOString().slice(0, 10);
     fs.writeFileSync(baselinePath, `${JSON.stringify(raw, null, 2)}\n`);
     console.log(`test-ratchet: tightened ${baselinePath} to ${raw.known.length} entries`);
