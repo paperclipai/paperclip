@@ -17,6 +17,12 @@
  * keeps one bad frame from crashing the read loop.
  */
 
+import {
+  DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
+  type DuplexAggregateByteLedger,
+  type ReservationToken,
+} from "./duplex-aggregate-byte-ledger.js";
+
 /** The wire version this codec reads and writes. */
 export const DUPLEX_FRAME_VERSION = 1;
 
@@ -134,7 +140,8 @@ export type DuplexProtocolErrorCode =
   | "unknown_type"
   | "version_mismatch"
   | "frame_too_large"
-  | "id_too_large";
+  | "id_too_large"
+  | "aggregate_bytes_exceeded";
 
 /** A decode-time protocol error. The read path returns it; it never throws. */
 export interface DuplexProtocolError {
@@ -344,6 +351,18 @@ function validateError(frame: Record<string, unknown>): DuplexDecodeResult {
 export interface DuplexFrameDecoderOptions {
   /** The maximum size of one frame, in bytes. Defaults to {@link DEFAULT_MAX_DUPLEX_FRAME_BYTES}. */
   maxFrameBytes?: number;
+  /**
+   * The process-owned aggregate byte ledger. When present, the decoder reserves
+   * the exact bytes of the raw partial frame it retains between chunks, and the
+   * peak replacement buffer it allocates on concat, against this ledger under the
+   * `decoder_buffer` owner. The host injects the same ledger object it injects at
+   * every other retention site, so one gauge bounds the aggregate retained bytes.
+   * When absent the decoder charges nothing and behaves as before.
+   *
+   * The generated sandbox decoder runs in a separate operating-system process. It
+   * cannot share this host ledger. It receives its own separate cap instead.
+   */
+  aggregateByteLedger?: DuplexAggregateByteLedger;
 }
 
 /**
@@ -364,15 +383,41 @@ export class DuplexFrameDecoder {
   private buffer: Buffer = EMPTY;
   private discarding = false;
   private readonly maxFrameBytes: number;
+  private readonly ledger: DuplexAggregateByteLedger | null;
+  /**
+   * The token for the bytes currently retained in `this.buffer`. Its byte amount
+   * equals `this.buffer.length` at the end of every `push`. It is `null` when the
+   * buffer is empty or the decoder has no ledger.
+   */
+  private retainedToken: ReservationToken | null = null;
 
   constructor(options: DuplexFrameDecoderOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_DUPLEX_FRAME_BYTES;
+    this.ledger = options.aggregateByteLedger ?? null;
   }
 
   /** Feed one chunk. Return the frames and protocol errors that complete on it. */
   push(chunk: Buffer | Uint8Array | string): DuplexDecodeResult[] {
     const incoming =
       typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
+
+    // Reserve the incoming bytes before the concat allocates the replacement
+    // buffer. The retained token already covers the current buffer, so the two
+    // tokens together cover the peak `old + incoming` allocation. A rejected
+    // reservation fails closed: the decoder drops the incoming chunk, releases
+    // the retained buffer, resynchronizes at the next newline, and reports the
+    // fixed aggregate rejection marker. It retains nothing uncharged.
+    let incomingToken: ReservationToken | null = null;
+    if (this.ledger && incoming.length > 0) {
+      incomingToken = this.ledger.reserve("decoder_buffer", incoming.length);
+      if (incomingToken === null) {
+        this.releaseRetained();
+        this.buffer = EMPTY;
+        this.discarding = true;
+        return [fail("aggregate_bytes_exceeded", DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED)];
+      }
+    }
+
     this.buffer =
       this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming]);
 
@@ -411,6 +456,54 @@ export class DuplexFrameDecoder {
       }
       results.push(decodeDuplexLine(line));
     }
+
+    // Reconcile the ledger to the bytes still retained in `this.buffer`. Release
+    // the old retained token and the incoming token, then reserve one token for
+    // the remainder. The remainder is a subset of the just-released
+    // `old + incoming` bytes, so this reserve always fits.
+    this.reconcileRetained(incomingToken);
     return results;
+  }
+
+  /**
+   * Release the retained-buffer token and drop the buffer. The host calls this at
+   * channel teardown, so the decoder never leaks a `decoder_buffer` token after
+   * the channel ends. A second call is a no-op, because the field is already
+   * `null`.
+   */
+  dispose(): void {
+    this.releaseRetained();
+    this.buffer = EMPTY;
+    this.discarding = false;
+  }
+
+  /** Release the retained-buffer token one time and clear the field. */
+  private releaseRetained(): void {
+    if (this.ledger && this.retainedToken) {
+      this.ledger.release(this.retainedToken);
+    }
+    this.retainedToken = null;
+  }
+
+  /**
+   * Move the ledger charge to the bytes still in `this.buffer`. Release the old
+   * retained token and the `incoming` token, then reserve one token for the
+   * remaining bytes. A `null` reserve here is an accounting defect, because the
+   * remainder never passes the just-released bytes; the decoder fails closed and
+   * drops the buffer so it retains nothing uncharged.
+   */
+  private reconcileRetained(incomingToken: ReservationToken | null): void {
+    if (!this.ledger) return;
+    this.releaseRetained();
+    if (incomingToken) {
+      this.ledger.release(incomingToken);
+    }
+    if (this.buffer.length > 0) {
+      this.retainedToken = this.ledger.reserve("decoder_buffer", this.buffer.length);
+      if (this.retainedToken === null) {
+        this.buffer = EMPTY;
+        this.discarding = true;
+      }
+    }
   }
 }

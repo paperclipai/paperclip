@@ -23,6 +23,18 @@
 //     and never lets the exit crowd a data frame out of the pre-open hold.
 //   - `echoInput`: when true, the fixture echoes each `duplexChannelWrite` back as
 //     one data notification for the bound session.
+//   - `writeReplyDelayMs`: when a positive number, the fixture delays each
+//     `duplexChannelWrite` reply by that many milliseconds, so a test proves the
+//     host holds the pending-write reservation until the RPC settles.
+//   - `stopReadingStdinAfterOpen`: when true, the fixture stops reading its stdin
+//     right after it sends the open reply. The host writes then stay in the host
+//     stdin write buffer, so a test proves the host meters the transport buffer and
+//     never releases the transport token on the write-RPC timeout.
+//   - `exitAfterStopMs`: when a positive number, and the fixture stopped reading
+//     stdin, the fixture exits after that many milliseconds. The worker exit
+//     discards the stdin buffer, so a test proves the host releases every held
+//     transport token on the worker exit. It gives a fast exit for a worker that no
+//     longer reads its stdin and never sees the shutdown request.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
@@ -134,6 +146,8 @@ rl.on("line", (line) => {
       closeMode,
       echoInput: directive.echoInput === true,
       noWriteReply: mode === "no-write-reply",
+      writeReplyDelayMs:
+        typeof directive.writeReplyDelayMs === "number" ? directive.writeReplyDelayMs : 0,
       emitAfterCloseChunk:
         typeof directive.emitAfterCloseChunk === "string" ? directive.emitAfterCloseChunk : null,
     });
@@ -168,6 +182,20 @@ rl.on("line", (line) => {
     if (mode === "duplicate-open-reply") {
       // Send a second open reply for the same request id. The host drops it.
       reply();
+    }
+
+    if (directive.stopReadingStdinAfterOpen === true) {
+      // Stop reading stdin, so every later host write stays in the host stdin
+      // write buffer. The host meters the transport buffer and holds the transport
+      // token until the stream flush, the stream error, or the worker exit.
+      rl.pause();
+      process.stdin.pause();
+      if (typeof directive.exitAfterStopMs === "number" && directive.exitAfterStopMs >= 0) {
+        // Exit after the delay, so a test observes the worker exit release the held
+        // transport tokens without a slow shutdown drain on an unread stdin.
+        setTimeout(() => process.exit(0), directive.exitAfterStopMs);
+      }
+      return;
     }
 
     // Emit the scripted data and the exit after the open reply, so the host
@@ -205,7 +233,14 @@ rl.on("line", (line) => {
         },
       });
     }
-    send({ jsonrpc: "2.0", id: message.id, result: null });
+    const replyWrite = () => send({ jsonrpc: "2.0", id: message.id, result: null });
+    if (entry.writeReplyDelayMs > 0) {
+      // Delay the write reply, so the host holds the pending-write reservation for
+      // a measurable time before the RPC settles.
+      setTimeout(replyWrite, entry.writeReplyDelayMs);
+    } else {
+      replyWrite();
+    }
     return;
   }
 

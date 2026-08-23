@@ -83,6 +83,13 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import {
+  createDuplexAggregateByteLedgerTelemetry,
+  DuplexAggregateByteLedger,
+  type DuplexAggregateByteLedgerMetricSink,
+} from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
+import { resolveDuplexAggregateCeilingBytesFromEnv } from "./duplex-aggregate-ceiling-env.js";
+import { DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL } from "@paperclipai/adapter-utils/duplex-telemetry";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -754,9 +761,57 @@ export async function startServer(): Promise<StartedServer> {
       databaseBackupInFlight = false;
     }
   };
-  const pluginWorkerManager = createPluginWorkerManager();
+  // The process-owned aggregate byte ledger for the sandbox duplex channel. One
+  // ledger per host process bounds the aggregate bytes that all live duplex routes
+  // retain. The route-count controller bounds only the route count, so without this
+  // ledger the per-route byte bounds multiply to many gigabytes at the maximum
+  // route count. The manager injects this same object into every worker handle, so
+  // one shared gauge bounds every host-side retention site.
+  //
+  // The optional operator override reads PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES.
+  // An absent variable uses the documented default. A present invalid, blank,
+  // whitespace-only, non-finite, zero, negative, non-integer, unsafe, or
+  // over-maximum value does not fail startup. The host process is multi-tenant, so
+  // one invalid environment value must not brick the whole host. The helper sends
+  // the raw string to the resolver, so a present blank value is invalid, not
+  // absent. The resolver rejects the invalid override and returns the safe default.
+  // The reporter logs the rejection loudly at error, so the misconfiguration stays
+  // visible while the host stays up. The log line carries only the rejected numeric
+  // value, never the raw string.
+  const duplexAggregateCeilingBytes = resolveDuplexAggregateCeilingBytesFromEnv(
+    process.env.PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
+    (rejectedValue) => {
+      logger.error(
+        { rejectedValue },
+        "duplex aggregate byte ceiling override rejected; using the safe default",
+      );
+    },
+  );
+  // The server has no process metric pipeline yet, so the ledger telemetry maps to
+  // the structured logger. The gauge logs at debug. A reservation rejection logs at
+  // warn, because it marks an availability limit hit. An accounting-underflow defect
+  // logs at error, because it marks a real cleanup bug. Each record carries only the
+  // fixed metric name and the numeric value; no route, company, run, or payload
+  // value reaches a log line.
+  const duplexAggregateByteLedgerMetricSink: DuplexAggregateByteLedgerMetricSink = {
+    setGauge(name, value) {
+      logger.debug({ metric: name, value }, "duplex aggregate byte ledger gauge");
+    },
+    incrementCounter(name) {
+      if (name === DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL) {
+        logger.error({ metric: name }, "duplex aggregate byte ledger accounting underflow");
+        return;
+      }
+      logger.warn({ metric: name }, "duplex aggregate byte ledger reservation rejected");
+    },
+  };
+  const duplexAggregateByteLedger = new DuplexAggregateByteLedger({
+    ceilingBytes: duplexAggregateCeilingBytes,
+    telemetry: createDuplexAggregateByteLedgerTelemetry(duplexAggregateByteLedgerMetricSink),
+  });
+  const pluginWorkerManager = createPluginWorkerManager({ duplexAggregateByteLedger });
   const heartbeat = config.heartbeatSchedulerEnabled
-    ? heartbeatService(db as any, { pluginWorkerManager })
+    ? heartbeatService(db as any, { pluginWorkerManager, duplexAggregateByteLedger })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),

@@ -43,6 +43,11 @@
 
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 import {
+  DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
+  type DuplexAggregateByteLedger,
+  type ReservationToken,
+} from "./duplex-aggregate-byte-ledger.js";
+import {
   DEFAULT_MAX_DUPLEX_FRAME_BYTES,
   DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES,
   DUPLEX_FRAME_VERSION,
@@ -169,6 +174,17 @@ export const DEFAULT_DUPLEX_BROKER_MAX_IN_FLIGHT_REQUESTS = 64;
  */
 export const DEFAULT_DUPLEX_BROKER_MAX_LIFETIME_REQUESTS = 50_000;
 
+/**
+ * The fixed, documented per-entry allocation the broker charges the aggregate byte
+ * ledger for one no-replay request-id set entry. The type and the cardinality of
+ * `seenRequestIds` are bounded: the codec caps each id at
+ * {@link DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES}, and the lifetime limit caps the
+ * entry count. The broker charges the exact raw id bytes plus this fixed entry
+ * overhead, so the retained set never grows uncharged. This constant models the
+ * fixed per-entry cost of the string key and the Set slot, not the id bytes.
+ */
+export const DUPLEX_SEEN_REQUEST_ID_SET_ENTRY_BYTES = 64;
+
 /** The result of one forward call. The broker turns it into one response frame. */
 export interface DuplexBrokerForwardResult {
   status: number;
@@ -250,6 +266,17 @@ export interface DuplexBrokerOptions {
    * raw error rides a span or a counter. The default records nothing.
    */
   telemetry?: DuplexTelemetry;
+  /**
+   * The process-owned aggregate byte ledger. The broker reserves the exact retained
+   * bytes of each dispatched request against it before it retains the frame: the
+   * raw request frame, the normalized request payload, and the no-replay set entry.
+   * A reservation that would pass the ceiling makes the broker retain nothing and
+   * refuse the request with the fixed marker
+   * {@link DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED}. When the ledger is absent the
+   * broker charges nothing and behaves as before, so a non-duplex or a legacy path
+   * stays unchanged.
+   */
+  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }
 
 /** The broker handle the factory returns. */
@@ -358,6 +385,27 @@ interface PendingRequest {
   responseTimer: ReturnType<typeof setTimeout>;
   /** The point the broker started to dispatch the request. It sets the span latency. */
   dispatchStartMs: number;
+  /** True once the forward promise settled. The finally owner sets it one time. */
+  forwardSettled: boolean;
+  /**
+   * Release the request-frame token and the request-payload token exactly one time.
+   * The single forward-promise finally owner calls it after the forward settles.
+   * A second call is a no-op, so no token releases twice.
+   */
+  releaseForwardTokens: () => void;
+}
+
+/**
+ * One orphaned forward. The broker answered the gateway and removed the request
+ * from `pending`, but the forward promise or its response-body reader had not
+ * settled. The orphan keeps the request tokens charged and the controller live
+ * until the forward finally releases them, so the ledger reports nonzero ownership
+ * until the async work settles.
+ */
+interface OrphanedForward {
+  controller: AbortController;
+  /** Release the request-frame and request-payload tokens exactly one time. */
+  releaseForwardTokens: () => void;
 }
 
 /**
@@ -382,12 +430,42 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_DUPLEX_BROKER_HEARTBEAT_INTERVAL_MS;
   const closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_DUPLEX_BROKER_CLOSE_TIMEOUT_MS;
   const now = options.now ?? (() => Date.now());
+
+  // The process-owned aggregate byte ledger, or `null` when the caller injected
+  // none. When `null` the broker charges nothing and behaves as before.
+  const ledger = options.duplexAggregateByteLedger ?? null;
   // The one frame size bound the broker enforces on both sides. The decoder
   // rejects an inbound frame over this bound, and the encode guard refuses to
   // write an outbound frame over it. Encode and decode share one value, so a
   // frame the broker writes always decodes on the peer.
   const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_DUPLEX_FRAME_BYTES;
-  const decoder = new DuplexFrameDecoder({ maxFrameBytes });
+  // The decoder charges its retained partial-frame bytes against the same host
+  // ledger. It receives the ledger object directly, so one gauge bounds the
+  // decoder buffer with every other host retention site.
+  const decoder = new DuplexFrameDecoder({
+    maxFrameBytes,
+    ...(ledger ? { aggregateByteLedger: ledger } : {}),
+  });
+  // Release one token exactly one time. A `null` token or an absent ledger is a
+  // no-op, so the broker never records a false accounting defect.
+  const releaseToken = (token: ReservationToken | null): void => {
+    if (ledger && token) ledger.release(token);
+  };
+  // The byte size of the normalized request payload the broker retains across the
+  // forward. It counts the exact retained scalar and header bytes, so the charge
+  // matches the retained bytes and never a parsed object graph.
+  const requestPayloadBytes = (frame: DuplexRequestFrame): number => {
+    let bytes =
+      Buffer.byteLength(frame.id, "utf8") +
+      Buffer.byteLength(frame.method, "utf8") +
+      Buffer.byteLength(frame.path, "utf8") +
+      Buffer.byteLength(frame.query, "utf8") +
+      Buffer.byteLength(frame.body, "utf8");
+    for (const [key, value] of Object.entries(frame.headers)) {
+      bytes += Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8");
+    }
+    return bytes;
+  };
 
   let state: DuplexBrokerState = "opening";
   let stopped = false;
@@ -432,7 +510,24 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   // The ids the broker already dispatched. The broker forwards one id one time,
   // so a repeated frame never reaches the API twice.
   const seenRequestIds = new Set<string>();
+  // The aggregate-ledger tokens for the no-replay set entries. The broker holds
+  // one token per live set entry and releases every token one time at terminal
+  // teardown, so the retained set never leaves bytes charged after the channel
+  // ends.
+  const seenRequestIdTokens = new Set<ReservationToken>();
   const pending = new Map<string, PendingRequest>();
+  // The forwards that answered the gateway but whose async work has not settled.
+  // The broker keeps their tokens charged and their controller live until each
+  // forward finally releases its tokens, so the ledger reports the real ownership.
+  const orphanedForwards = new Map<string, OrphanedForward>();
+
+  // Release every no-replay set-entry token one time and clear the set. The
+  // ledger release is one way, and the cleared set stops any second release, so
+  // this helper is safe to call more than one time at terminal teardown.
+  const releaseSeenRequestIdTokens = (): void => {
+    for (const token of seenRequestIdTokens) releaseToken(token);
+    seenRequestIdTokens.clear();
+  };
 
   const setState = (next: DuplexBrokerState): void => {
     if (state === next) return;
@@ -448,12 +543,27 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
   };
 
   const clearPending = (): void => {
-    for (const entry of pending.values()) {
+    for (const [id, entry] of pending) {
       clearTimeout(entry.forwardTimer);
       clearTimeout(entry.responseTimer);
       entry.controller.abort(new Error("Duplex broker stopped."));
+      // A forward that has not settled still owns its request tokens. Transfer it
+      // to the orphan registry, so its tokens stay charged until the forward
+      // finally releases them. The abort only asks the forward to stop; it never
+      // releases a token by itself.
+      if (!entry.forwardSettled) {
+        orphanedForwards.set(id, {
+          controller: entry.controller,
+          releaseForwardTokens: entry.releaseForwardTokens,
+        });
+      }
     }
     pending.clear();
+    // Ask every already-orphaned forward to stop as well. The forward-promise
+    // finally owner releases each orphan token when the forward settles.
+    for (const orphan of orphanedForwards.values()) {
+      orphan.controller.abort(new Error("Duplex broker stopped."));
+    }
   };
 
   const recordLoss = (reason: DuplexBrokerLossReason, message: string): void => {
@@ -470,6 +580,8 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       stopped = true;
       clearHeartbeat();
       clearPending();
+      releaseSeenRequestIdTokens();
+      decoder.dispose();
       if (state !== "closing") setState("closed");
       return;
     }
@@ -493,6 +605,8 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     }
     clearHeartbeat();
     clearPending();
+    releaseSeenRequestIdTokens();
+    decoder.dispose();
     lossRecord = { reason, message, atMs: now() };
     setState("lost");
     // Log the internal reason only. The broker never writes the raw provider
@@ -600,6 +714,17 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     clearTimeout(entry.forwardTimer);
     clearTimeout(entry.responseTimer);
     pending.delete(id);
+    // The response timer, an abort, or a broker loss can answer the gateway before
+    // the forward promise settles. When the forward has not settled, transfer it to
+    // the orphan registry so its request tokens stay charged until the forward
+    // finally releases them. A settled forward already released or will release
+    // through its finally owner, so it needs no orphan record.
+    if (!entry.forwardSettled) {
+      orphanedForwards.set(id, {
+        controller: entry.controller,
+        releaseForwardTokens: entry.releaseForwardTokens,
+      });
+    }
     // Do not write on a lost or closed channel. The gateway answers its own
     // outstanding request on loss, so a late write would go to a dead channel.
     if (state !== "open") return;
@@ -662,6 +787,34 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
     writeFrame(frame);
   };
 
+  const respondAggregateExceeded = (id: string): void => {
+    // Answer a request the aggregate byte ledger refused with a bounded terminal
+    // response. The broker reserved nothing, added no id to the seen set, and made
+    // no controller, timer, or forward, so the host API stays untouched. The
+    // response carries the fixed marker only; it holds no route, query, body, or
+    // token. The `unavailable` outcome tells the gateway this is not a delivered
+    // host response. The refusal is retryable, because the broker did not retain
+    // the id: the aggregate pressure can ease, and a resend can then get through.
+    if (state !== "open") return;
+    const frame: DuplexResponseFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "response",
+      id,
+      status: 503,
+      headers: {
+        "content-type": "application/json",
+        "x-paperclip-bridge-outcome": "unavailable",
+      },
+      body: JSON.stringify({
+        error: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
+        outcome: "unavailable",
+        retryable: true,
+      }),
+      outcome: "unavailable",
+    };
+    writeFrame(frame);
+  };
+
   const dispatch = (frame: DuplexRequestFrame): void => {
     // Dispatch only while open. After loss or close the broker forwards nothing.
     if (state !== "open") return;
@@ -699,7 +852,54 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       respondSaturated(frame.id, true);
       return;
     }
+    // Reserve the exact retained bytes against the aggregate ledger before the
+    // broker retains anything. It reserves three tokens in order: the raw request
+    // frame, the normalized request payload, and the no-replay set entry. A
+    // reservation that would pass the ceiling makes the broker retain nothing,
+    // release the tokens it already took, and refuse the request with the fixed
+    // marker. The broker adds no id to the seen set and makes no controller, timer,
+    // or forward, so the host API stays untouched. When the ledger is absent all
+    // tokens stay `null` and the broker behaves as before.
+    let requestFrameToken: ReservationToken | null = null;
+    let requestPayloadToken: ReservationToken | null = null;
+    let seenRequestIdToken: ReservationToken | null = null;
+    if (ledger) {
+      const rawFrameBytes = Buffer.byteLength(encodeDuplexFrame(frame), "utf8");
+      requestFrameToken = ledger.reserve("request_frame", rawFrameBytes);
+      if (!requestFrameToken) {
+        respondAggregateExceeded(frame.id);
+        return;
+      }
+      requestPayloadToken = ledger.reserve("request_payload", requestPayloadBytes(frame));
+      if (!requestPayloadToken) {
+        ledger.release(requestFrameToken);
+        respondAggregateExceeded(frame.id);
+        return;
+      }
+      const seenEntryBytes =
+        Buffer.byteLength(frame.id, "utf8") + DUPLEX_SEEN_REQUEST_ID_SET_ENTRY_BYTES;
+      seenRequestIdToken = ledger.reserve("seen_request_id", seenEntryBytes);
+      if (!seenRequestIdToken) {
+        ledger.release(requestFrameToken);
+        ledger.release(requestPayloadToken);
+        respondAggregateExceeded(frame.id);
+        return;
+      }
+    }
     seenRequestIds.add(frame.id);
+    if (seenRequestIdToken) seenRequestIdTokens.add(seenRequestIdToken);
+
+    // Release the request-frame and the request-payload tokens exactly one time.
+    // The single forward-promise finally owner calls it after the forward settles.
+    // The seen-id token stays charged for the channel lifetime, so it is not part
+    // of this release; the terminal teardown releases it.
+    let forwardTokensReleased = false;
+    const releaseForwardTokens = (): void => {
+      if (forwardTokensReleased) return;
+      forwardTokensReleased = true;
+      releaseToken(requestFrameToken);
+      releaseToken(requestPayloadToken);
+    };
 
     const record: DuplexBrokerRequestRecord = {
       id: frame.id,
@@ -770,23 +970,53 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       forwardTimer,
       responseTimer,
       dispatchStartMs: record.dispatchStartMs,
+      forwardSettled: false,
+      releaseForwardTokens,
     });
 
-    forwardRequest(frame, { signal: controller.signal }).then(
-      (result) => {
-        // Keep the outcome classification consistent with the file path. A
-        // possibly-committed mutation carries the indeterminate marker header, so
-        // map it to the indeterminate outcome. Any other result is completed.
-        const outcome: DuplexResponseOutcome =
-          result.headers?.["x-paperclip-bridge-outcome"] === "indeterminate"
-            ? "indeterminate"
-            : "completed";
-        // The host delivered a real response, so the request span outcome is `ok`.
-        // A host application status (200, a 4xx, a 5xx) is still a delivered
-        // response; only a broker-synthesized failure below is `error`.
-        respond(frame.id, result, outcome, "ok");
-      },
-      (error) => {
+    // The forward promise has one cleanup owner. The two settle handlers mark the
+    // forward settled and answer the gateway. The `finally` then releases the
+    // request tokens exactly one time and removes the request from both the pending
+    // map and the orphan map. The forward resolves only after the forward and its
+    // response-body reader both settle, so this owner waits for both.
+    const markForwardSettled = (): void => {
+      // Mark the pending entry settled before `respond` runs, so `respond` never
+      // moves a just-settled forward to the orphan registry. An already-orphaned
+      // forward needs no flag; its finally owner releases and drains it.
+      const entry = pending.get(frame.id);
+      if (entry) entry.forwardSettled = true;
+    };
+    forwardRequest(frame, { signal: controller.signal })
+      .then(
+        (result) => {
+          markForwardSettled();
+          // Keep the outcome classification consistent with the file path. A
+          // possibly-committed mutation carries the indeterminate marker header, so
+          // map it to the indeterminate outcome. Any other result is completed.
+          const outcome: DuplexResponseOutcome =
+            result.headers?.["x-paperclip-bridge-outcome"] === "indeterminate"
+              ? "indeterminate"
+              : "completed";
+          // The host delivered a real response, so the request span outcome is `ok`.
+          // A host application status (200, a 4xx, a 5xx) is still a delivered
+          // response; only a broker-synthesized failure below is `error`.
+          respond(frame.id, result, outcome, "ok");
+        },
+        (error) => {
+          markForwardSettled();
+          return handleForwardRejection(error);
+        },
+      )
+      .finally(() => {
+        pending.delete(frame.id);
+        orphanedForwards.delete(frame.id);
+        releaseForwardTokens();
+      });
+
+    // The forward rejection handler. It classifies the rejection by method safety
+    // and answers the gateway. The `markForwardSettled` call above runs first, so
+    // the response never re-orphans a settled forward.
+    function handleForwardRejection(error: unknown): void {
         if (controller.signal.aborted) {
           // The forward budget aborted the call. A safe method never changes
           // host state, so a forward timeout stays retryable for it. Return a
@@ -873,8 +1103,7 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
           "indeterminate",
           "error",
         );
-      },
-    );
+    }
   };
 
   const handleFrame = (frame: DuplexFrame): void => {
@@ -947,6 +1176,8 @@ export function createDuplexBridgeBroker(options: DuplexBrokerOptions): DuplexBr
       setState("closing");
       clearHeartbeat();
       clearPending();
+      releaseSeenRequestIdTokens();
+      decoder.dispose();
       // Send an orderly close frame. Ignore a write failure here; the broker is
       // already closing, so a dead channel needs no loss record.
       try {
