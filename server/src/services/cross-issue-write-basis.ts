@@ -410,6 +410,18 @@ export async function resolveCrossIssueWriteBasis(
     // fence and the write moved the assignee out of the authorized subtree after
     // the allow. Lock the company's agent rows before the walk. This is bounded
     // (agents per company are few) and only runs for a subtree-scoped grant.
+    //
+    // Lock ordering, stated because it is the one hazard this adds: the fence
+    // takes issue rows first and agent rows here, while `deleteAgent`
+    // (`services/agents.ts`) locks the agent, rewrites `reports_to`, then
+    // rewrites `issues`. Those are opposite orders, so the two can deadlock —
+    // PostgreSQL detects it and aborts one, which surfaces as a 500 on a write
+    // whose authority was being destroyed anyway. It is an availability edge on
+    // a rare admin action, not a bypass: nothing commits on either side. Making
+    // the lock unconditional and first would remove the hazard at the cost of a
+    // company-wide `FOR SHARE` on `agents` for every fenced write, which is the
+    // worse trade while agent rows are also written by budget and heartbeat
+    // bookkeeping. Revisit if agent deletion ever stops being rare.
     if (lock && crossIssueWriteScopeUsesSubtree(grantScope)) {
       await db.execute(sql`
         SELECT id FROM agents WHERE company_id = ${input.companyId} FOR SHARE
