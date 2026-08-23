@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -144,14 +145,35 @@ function spawnAliveProcess() {
   });
 }
 
+function readLinuxProcessState(pid: number) {
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd < 0) return null;
+    return stat.slice(commandEnd + 1).trim().split(/\s+/)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// `kill(pid, 0)` still succeeds for a terminated process whose parent has not
+// reaped it. Orphaned descendants are reparented to init, and an init that does
+// not reap leaves them as zombies indefinitely, so signal delivery alone cannot
+// distinguish "still running" from "killed and unreaped". Read the state from
+// /proc instead, matching how isProcessGroupAlive() judges group liveness in
+// services/local-service-supervisor.ts.
 function isPidAlive(pid: number | null | undefined) {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  if (process.platform === "linux") {
+    const state = readLinuxProcessState(pid);
+    if (state === "Z" || state === "X") return false;
+  }
+  return true;
 }
 
 async function waitForPidExit(pid: number, timeoutMs = 2_000) {
