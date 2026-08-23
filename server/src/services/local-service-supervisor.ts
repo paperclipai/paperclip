@@ -242,6 +242,11 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   return candidate;
 }
 
+// Signal-delivery liveness only: this returns true for an unreaped zombie.
+// Prefer isProcessPidAlive() below, which also fails a pid that has terminated
+// but has not been reaped. This variant is kept for the service-registry and
+// recovery callers, whose behaviour under a zombie pid has not been covered by
+// a test yet; they should move over as that coverage lands.
 export function isPidAlive(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
