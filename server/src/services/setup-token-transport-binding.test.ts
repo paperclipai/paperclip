@@ -5,7 +5,7 @@ import {
   buildSetupTokenLoginTransport,
   createProductionSetupTokenSandboxProvider,
   createSetupTokenSecretWriter,
-  createWorkerBoundSetupTokenPtyOpener,
+  createWorkerBoundLoginPtyOpener,
   type SetupTokenSandboxProvider,
 } from "./setup-token-transport-binding.js";
 import {
@@ -18,7 +18,7 @@ import {
   type SetupTokenSessionScope,
   type SetupTokenSessionState,
 } from "./setup-token-session.js";
-import type { SetupTokenPtySessionOpener } from "@paperclipai/adapter-utils/setup-token-transport";
+import type { LoginPtySessionOpener } from "@paperclipai/adapter-utils/login-pty-transport";
 import {
   CLAUDE_SETUP_TOKEN_COMMAND,
   SETUP_TOKEN_AFTER_ANCHOR,
@@ -54,7 +54,7 @@ function createFakeSandbox() {
     resolveExit = resolve;
   });
 
-  const openPtySession: SetupTokenPtySessionOpener = async (command) => {
+  const openPtySession: LoginPtySessionOpener = async (command) => {
     openedCommands.push(command);
     return {
       onData(): void {},
@@ -410,7 +410,7 @@ describe("production sandbox provider", () => {
   });
 
   it("acquires a lease and binds the live opener when it is present", async () => {
-    const openPtySession: SetupTokenPtySessionOpener = async () => ({
+    const openPtySession: LoginPtySessionOpener = async () => ({
       onData(): void {},
       write(): void {},
       wait: async () => ({ exitCode: 0 }),
@@ -446,7 +446,7 @@ describe("production sandbox provider", () => {
   });
 
   it("forwards the session deadline and records a lease expiry at or before it", async () => {
-    const openPtySession: SetupTokenPtySessionOpener = async () => ({
+    const openPtySession: LoginPtySessionOpener = async () => ({
       onData(): void {},
       write(): void {},
       wait: async () => ({ exitCode: 0 }),
@@ -569,14 +569,14 @@ describe("worker-bound live pseudo-terminal opener", () => {
       kill: () => {},
       close: async () => {},
     };
-    const openSetupTokenPtySession = vi.fn(async () => session);
+    const openLoginPtySession = vi.fn(async () => session);
     const getLeaseById = vi.fn(async () => ({
       providerLeaseId: "provider-lease-9",
       metadata: { pluginId: "paperclip.daytona", provider: "daytona" },
     }));
 
-    const openLivePtySession = createWorkerBoundSetupTokenPtyOpener({
-      workerManager: { openSetupTokenPtySession },
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
+      workerManager: { openLoginPtySession },
       environments: { getLeaseById },
     });
 
@@ -592,7 +592,7 @@ describe("worker-bound live pseudo-terminal opener", () => {
     // The opener drove the manager route gate with the resolved worker target and
     // the fixed command. The manager mints the host route id, so the opener passes
     // none.
-    expect(openSetupTokenPtySession).toHaveBeenCalledWith("paperclip.daytona", {
+    expect(openLoginPtySession).toHaveBeenCalledWith("paperclip.daytona", {
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -603,9 +603,9 @@ describe("worker-bound live pseudo-terminal opener", () => {
   });
 
   it("fails closed when the lease carries no sandbox worker binding", async () => {
-    const openSetupTokenPtySession = vi.fn();
-    const openLivePtySession = createWorkerBoundSetupTokenPtyOpener({
-      workerManager: { openSetupTokenPtySession },
+    const openLoginPtySession = vi.fn();
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
+      workerManager: { openLoginPtySession },
       // The lease resolves but carries no provider lease id or plugin id.
       environments: {
         getLeaseById: async () => ({ providerLeaseId: null, metadata: {} }),
@@ -616,12 +616,12 @@ describe("worker-bound live pseudo-terminal opener", () => {
       openLivePtySession({ scope: SCOPE, environmentId: "env-1", leaseId: "lease-42" }),
     ).rejects.toMatchObject({ status: 503 });
     // The opener never reached the worker manager.
-    expect(openSetupTokenPtySession).not.toHaveBeenCalled();
+    expect(openLoginPtySession).not.toHaveBeenCalled();
   });
 
   it("fails closed when the lease is missing", async () => {
-    const openLivePtySession = createWorkerBoundSetupTokenPtyOpener({
-      workerManager: { openSetupTokenPtySession: vi.fn() },
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
+      workerManager: { openLoginPtySession: vi.fn() },
       environments: { getLeaseById: async () => null },
     });
 
@@ -706,7 +706,7 @@ function createStreamingSandbox() {
   });
   const writes: string[] = [];
 
-  const openPtySession: SetupTokenPtySessionOpener = async () => ({
+  const openPtySession: LoginPtySessionOpener = async () => ({
     onData(next): void {
       listener = next;
     },

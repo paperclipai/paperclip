@@ -774,14 +774,14 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
     let killed = 0;
     let closed = 0;
 
-    // The worker emits output and exit through `ctx.setupTokenPty`, bound to the
+    // The worker emits output and exit through `ctx.loginPty`, bound to the
     // worker session id. The test drives them through the captured emitters.
     const controllablePlugin = definePlugin({
       async setup(ctx) {
-        emitOutput = (chunk: string) => ctx.setupTokenPty.output("ws-1", chunk);
-        resolveWait = (value) => ctx.setupTokenPty.exit("ws-1", value.exitCode);
+        emitOutput = (chunk: string) => ctx.loginPty.output("ws-1", chunk);
+        resolveWait = (value) => ctx.loginPty.exit("ws-1", value.exitCode);
       },
-      async onSetupTokenPtyOpen(params) {
+      async onLoginPtyOpen(params) {
         // The open carries the host route id and the fixed command. The worker
         // returns a worker session id for the output binding only.
         expect(params.hostRouteId).toBe("route-1");
@@ -789,13 +789,13 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
         expect(params.providerLeaseId).toBe("lease-1");
         return { workerSessionId: "ws-1" };
       },
-      async onSetupTokenPtyInput(params) {
+      async onLoginPtyInput(params) {
         inputs.push(params.data);
       },
-      async onSetupTokenPtyStop() {
+      async onLoginPtyStop() {
         killed += 1;
       },
-      async onSetupTokenPtyClose(params) {
+      async onLoginPtyClose(params) {
         // The close keys on the host route id and returns a bound acknowledgement.
         closed += 1;
         return { hostRouteId: params.hostRouteId };
@@ -839,10 +839,10 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
       await expect(
         callWorker("initialize", {
           manifest: {
-            id: "paperclip.setup-token-pty",
+            id: "paperclip.login-pty",
             apiVersion: 1,
             version: "1.0.0",
-            displayName: "Setup Token PTY Test",
+            displayName: "Login PTY Test",
             description: "Test plugin",
             author: "Paperclip",
             categories: ["automation"],
@@ -855,15 +855,15 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
       ).resolves.toMatchObject({
         ok: true,
         supportedMethods: expect.arrayContaining([
-          "setupTokenPtyOpen",
-          "setupTokenPtyInput",
-          "setupTokenPtyStop",
-          "setupTokenPtyClose",
+          "loginPtyOpen",
+          "loginPtyInput",
+          "loginPtyStop",
+          "loginPtyClose",
         ]),
       });
 
       await expect(
-        callWorker("setupTokenPtyOpen", {
+        callWorker("loginPtyOpen", {
           hostRouteId: "route-1",
           driverKey: "daytona",
           companyId: "company-1",
@@ -875,11 +875,11 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
 
       // The worker streams output as a notification bound to the worker session id.
       emitOutput?.("prompt output");
-      await callWorker("setupTokenPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
-      await callWorker("setupTokenPtyStop", { workerSessionId: "ws-1" });
+      await callWorker("loginPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
+      await callWorker("loginPtyStop", { workerSessionId: "ws-1" });
       resolveWait?.({ exitCode: 0 });
       await expect(
-        callWorker("setupTokenPtyClose", { hostRouteId: "route-1" }),
+        callWorker("loginPtyClose", { hostRouteId: "route-1" }),
       ).resolves.toEqual({ hostRouteId: "route-1" });
 
       await new Promise((resolve) => setImmediate(resolve));
@@ -888,13 +888,13 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
       expect(killed).toBe(1);
       expect(closed).toBe(1);
       const outputNotes = notifications.filter(
-        (note) => note.method === "setupTokenPty.output",
+        (note) => note.method === "loginPty.output",
       );
       expect(outputNotes.map((note) => note.params)).toEqual([
         { workerSessionId: "ws-1", chunk: "prompt output" },
       ]);
       const exitNotes = notifications.filter(
-        (note) => note.method === "setupTokenPty.exit",
+        (note) => note.method === "loginPty.exit",
       );
       expect(exitNotes.map((note) => note.params)).toEqual([
         { workerSessionId: "ws-1", exitCode: 0 },

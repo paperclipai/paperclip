@@ -27,7 +27,7 @@
 // Dependency boundary: this provider plugin ships standalone (the workspace
 // excludes `packages/plugins/sandbox-providers/**`). So the module imports no
 // workspace package. It reuses the narrow Daytona PTY surface that
-// `setup-token-pty.ts` declares (`DaytonaPtyProcess`, `DaytonaPtyHandle`,
+// `login-pty.ts` declares (`DaytonaPtyProcess`, `DaytonaPtyHandle`,
 // `DaytonaPtyCreateOptions`), so a caller passes `sandbox.process` with no
 // adapter. The narrow surface keeps the module unit-testable with a fake PTY.
 
@@ -37,13 +37,13 @@ import type {
   DaytonaPtyCreateOptions,
   DaytonaPtyHandle,
   DaytonaPtyProcess,
-} from "./setup-token-pty.js";
+} from "./login-pty.js";
 
 export type {
   DaytonaPtyCreateOptions,
   DaytonaPtyHandle,
   DaytonaPtyProcess,
-} from "./setup-token-pty.js";
+} from "./login-pty.js";
 
 import { sendPtyInputInChunks } from "./pty-chunked-input.js";
 

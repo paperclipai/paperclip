@@ -1,16 +1,16 @@
 // The Daytona pseudo-terminal (PTY) session for the Claude `setup-token` login.
 // The login command needs a real pseudo-terminal: pipe stdio emits no login
 // prompt. The Daytona SDK opens a PTY through `process.createPty`. This module
-// binds that PTY to a small session that the setup-token transport consumes, so
+// binds that PTY to a small session that the login PTY transport consumes, so
 // the login runner runs the command on a real terminal, streams the terminal
 // output, and delivers the delayed browser code plus the Enter byte.
 //
 // Dependency boundary: this provider plugin ships standalone (the workspace
 // excludes `packages/plugins/sandbox-providers/**`). So the module imports no
 // workspace package. It declares the small session shape locally through
-// {@link SetupTokenPtySession}. The shape matches the `SetupTokenPtySession`
+// {@link LoginPtySession}. The shape matches the `LoginPtySession`
 // interface in `@paperclipai/adapter-utils`, so the transport factory
-// `createSetupTokenPtyTransport` accepts the session opener from this module with
+// `createLoginPtyTransport` accepts the session opener from this module with
 // no adapter. The runner drives the transport; the transport drives this session.
 //
 // SDK boundary: the module holds no Daytona SDK type import. It declares the
@@ -33,10 +33,10 @@ import { sendPtyInputInChunks } from "./pty-chunked-input.js";
  * A live pseudo-terminal session for one setup-token login command. The session
  * allocates a real pseudo-terminal, streams the raw terminal output, accepts
  * delayed input, and stops the child. The shape matches the
- * `SetupTokenPtySession` interface in `@paperclipai/adapter-utils`, so the
+ * `LoginPtySession` interface in `@paperclipai/adapter-utils`, so the
  * transport factory there accepts a session opener that returns this session.
  */
-export interface SetupTokenPtySession {
+export interface LoginPtySession {
   /** Registers the one output listener. The session streams each raw chunk in order. */
   onData(listener: (chunk: string) => void): void;
   /** Writes raw input bytes to the pseudo-terminal. */
@@ -49,8 +49,8 @@ export interface SetupTokenPtySession {
   close(): Promise<void>;
 }
 
-/** Opens a {@link SetupTokenPtySession} for `command`. The transport calls it one time. */
-export type SetupTokenPtySessionOpener = (command: string) => Promise<SetupTokenPtySession>;
+/** Opens a {@link LoginPtySession} for `command`. The transport calls it one time. */
+export type LoginPtySessionOpener = (command: string) => Promise<LoginPtySession>;
 
 /**
  * The subset of the Daytona SDK `PtyHandle` that the session uses. The SDK
@@ -91,16 +91,16 @@ export interface DaytonaPtyProcess {
   createPty(options: DaytonaPtyCreateOptions): Promise<DaytonaPtyHandle>;
 }
 
-/** The options for the Daytona setup-token PTY session. */
-export interface DaytonaSetupTokenPtyOptions {
+/** The options for the Daytona login PTY session. */
+export interface DaytonaLoginPtyOptions {
   /** The working directory for the login PTY. Defaults to the sandbox default. */
   cwd?: string;
 }
 
 // The terminal size for the login PTY. The login UI prints a short prompt, so a
 // standard terminal size is enough. A fixed size keeps the output stable.
-const SETUP_TOKEN_PTY_COLS = 120;
-const SETUP_TOKEN_PTY_ROWS = 30;
+const LOGIN_PTY_COLS = 120;
+const LOGIN_PTY_ROWS = 30;
 
 /**
  * The input terminator that replaces the interactive shell with the login
@@ -113,7 +113,7 @@ const PTY_COMMAND_TERMINATOR = "\r";
 
 /**
  * Opens a Daytona PTY session for `command` and returns it as a
- * {@link SetupTokenPtySession}. The session allocates a real pseudo-terminal,
+ * {@link LoginPtySession}. The session allocates a real pseudo-terminal,
  * streams the raw terminal output, delivers delayed input, and stops the child.
  *
  * The function starts the login command with `exec`, so the pseudo-terminal runs
@@ -122,20 +122,20 @@ const PTY_COMMAND_TERMINATOR = "\r";
  * character that splits across two output chunks stays whole. It buffers the
  * output until the transport registers the listener, so no early chunk is lost.
  */
-export async function openDaytonaSetupTokenPtySession(
+export async function openDaytonaLoginPtySession(
   process: DaytonaPtyProcess,
   command: string,
-  options?: DaytonaSetupTokenPtyOptions,
-): Promise<SetupTokenPtySession> {
+  options?: DaytonaLoginPtyOptions,
+): Promise<LoginPtySession> {
   const decoder = new TextDecoder("utf-8");
   let listener: ((chunk: string) => void) | null = null;
   let buffered = "";
 
   const handle = await process.createPty({
-    id: `paperclip-setup-token-${randomUUID()}`,
+    id: `paperclip-login-pty-${randomUUID()}`,
     ...(options?.cwd ? { cwd: options.cwd } : {}),
-    cols: SETUP_TOKEN_PTY_COLS,
-    rows: SETUP_TOKEN_PTY_ROWS,
+    cols: LOGIN_PTY_COLS,
+    rows: LOGIN_PTY_ROWS,
     onData: (data: Uint8Array): void => {
       // Decode the terminal bytes as a stream, so a split multibyte character
       // stays whole across two chunks. Forward the raw text; the parser owns the
@@ -192,16 +192,16 @@ export async function openDaytonaSetupTokenPtySession(
 }
 
 /**
- * Creates a {@link SetupTokenPtySessionOpener} bound to a Daytona `process`. Pass
+ * Creates a {@link LoginPtySessionOpener} bound to a Daytona `process`. Pass
  * `sandbox.process` from the Daytona SDK. A later phase wraps the opener with the
- * `createSetupTokenPtyTransport` factory from `@paperclipai/adapter-utils` and
+ * `createLoginPtyTransport` factory from `@paperclipai/adapter-utils` and
  * hands the transport to the login runner. The opener runs the login command on
  * a real pseudo-terminal, streams the terminal output, delivers the delayed
  * browser code plus the Enter byte, and stops the child for a terminal state.
  */
-export function createDaytonaSetupTokenPtySessionOpener(
+export function createDaytonaLoginPtySessionOpener(
   process: DaytonaPtyProcess,
-  options?: DaytonaSetupTokenPtyOptions,
-): SetupTokenPtySessionOpener {
-  return (command: string) => openDaytonaSetupTokenPtySession(process, command, options);
+  options?: DaytonaLoginPtyOptions,
+): LoginPtySessionOpener {
+  return (command: string) => openDaytonaLoginPtySession(process, command, options);
 }

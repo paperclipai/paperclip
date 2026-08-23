@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  createDaytonaSetupTokenPtySessionOpener,
-  openDaytonaSetupTokenPtySession,
+  createDaytonaLoginPtySessionOpener,
+  openDaytonaLoginPtySession,
   type DaytonaPtyCreateOptions,
   type DaytonaPtyHandle,
   type DaytonaPtyProcess,
-} from "./setup-token-pty.js";
+} from "./login-pty.js";
 
 // The Enter byte the terminal login UI reads to submit the browser code.
 const ENTER = "\r";
@@ -95,11 +95,11 @@ function createFakeProcess(): DaytonaPtyProcess & {
   };
 }
 
-describe("openDaytonaSetupTokenPtySession", () => {
+describe("openDaytonaLoginPtySession", () => {
   it("starts the login command on a pseudo-terminal with a fixed size", async () => {
     const process = createFakeProcess();
 
-    await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    await openDaytonaLoginPtySession(process, "claude setup-token");
 
     expect(process.createOptions?.cols).toBe(120);
     expect(process.createOptions?.rows).toBe(30);
@@ -113,7 +113,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
     const process = createFakeProcess();
     const received: string[] = [];
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     session.onData((chunk) => received.push(chunk));
 
     process.handle?.emitText("the url below to sign in\n");
@@ -126,7 +126,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
     const process = createFakeProcess();
     const received: string[] = [];
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     // Output arrives before the transport registers the listener.
     process.handle?.emitText("early output ");
     process.handle?.emitText("more output");
@@ -140,7 +140,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
   it("delivers the browser code plus the Enter byte to the command", async () => {
     const process = createFakeProcess();
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     session.write("BROWSERCODE" + ENTER);
 
     // The first input is the command start; the second input is the delayed
@@ -153,7 +153,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
     const process = createFakeProcess();
     const received: string[] = [];
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     session.onData((chunk) => received.push(chunk));
 
     // The euro sign is three UTF-8 bytes. Split it across two chunks, so the
@@ -168,7 +168,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
   it("resolves wait with the command exit code", async () => {
     const process = createFakeProcess();
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     process.handle?.finish(9);
 
     await expect(session.wait()).resolves.toEqual({ exitCode: 9 });
@@ -177,7 +177,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
   it("maps an absent exit code to null", async () => {
     const process = createFakeProcess();
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     process.handle?.finish(undefined);
 
     await expect(session.wait()).resolves.toEqual({ exitCode: null });
@@ -186,7 +186,7 @@ describe("openDaytonaSetupTokenPtySession", () => {
   it("kills the child and closes the session", async () => {
     const process = createFakeProcess();
 
-    const session = await openDaytonaSetupTokenPtySession(process, "claude setup-token");
+    const session = await openDaytonaLoginPtySession(process, "claude setup-token");
     session.kill();
     expect(process.handle?.killed).toBe(1);
 
@@ -197,16 +197,16 @@ describe("openDaytonaSetupTokenPtySession", () => {
   it("passes the working directory to the pseudo-terminal", async () => {
     const process = createFakeProcess();
 
-    await openDaytonaSetupTokenPtySession(process, "claude setup-token", { cwd: "/workspace" });
+    await openDaytonaLoginPtySession(process, "claude setup-token", { cwd: "/workspace" });
 
     expect(process.createOptions?.cwd).toBe("/workspace");
   });
 });
 
-describe("createDaytonaSetupTokenPtySessionOpener", () => {
+describe("createDaytonaLoginPtySessionOpener", () => {
   it("opens a session for the command on each call", async () => {
     const process = createFakeProcess();
-    const opener = createDaytonaSetupTokenPtySessionOpener(process, { cwd: "/workspace" });
+    const opener = createDaytonaLoginPtySessionOpener(process, { cwd: "/workspace" });
 
     const session = await opener("claude setup-token");
 

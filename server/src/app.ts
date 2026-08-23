@@ -36,7 +36,7 @@ import {
   createProductionSetupTokenSandboxProvider,
   createProductionSetupTokenCleanupStore,
   createSetupTokenSecretWriter,
-  createWorkerBoundSetupTokenPtyOpener,
+  createWorkerBoundLoginPtyOpener,
 } from "./services/setup-token-transport-binding.js";
 import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
@@ -464,7 +464,7 @@ export async function createApp(
     sandbox: createProductionSetupTokenSandboxProvider({
       environments: environmentService(db),
       environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
-      openLivePtySession: createWorkerBoundSetupTokenPtyOpener({
+      openLivePtySession: createWorkerBoundLoginPtyOpener({
         workerManager,
         environments: environmentService(db),
         log: (line) => logger.info(line),

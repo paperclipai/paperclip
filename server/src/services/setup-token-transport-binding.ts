@@ -39,10 +39,10 @@ import type { environmentRuntimeService } from "./environment-runtime.js";
 import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import type { Db } from "@paperclipai/db";
 import {
-  createSetupTokenPtyTransport,
-  type SetupTokenPtySession,
-  type SetupTokenPtySessionOpener,
-} from "@paperclipai/adapter-utils/setup-token-transport";
+  createLoginPtyTransport,
+  type LoginPtySession,
+  type LoginPtySessionOpener,
+} from "@paperclipai/adapter-utils/login-pty-transport";
 import {
   runSetupTokenLogin,
   CLAUDE_SETUP_TOKEN_COMMAND,
@@ -64,7 +64,7 @@ export interface SetupTokenSandboxProvider {
   acquire(input: {
     scope: SetupTokenSessionScope;
     deadline: number;
-  }): Promise<{ leaseId: string; openPtySession: SetupTokenPtySessionOpener }>;
+  }): Promise<{ leaseId: string; openPtySession: LoginPtySessionOpener }>;
   /** Releases the lease by id. The service and the startup reaper call it. */
   release(leaseId: string): Promise<void>;
 }
@@ -246,7 +246,7 @@ export function buildSetupTokenLoginTransport(
   // The service calls `leases.acquire` and then `factory` in sequence for one
   // session, so a per-scope handoff correlates them. The per-owner session cap is
   // one, so one scope holds at most one live acquire.
-  const pendingOpeners = new Map<string, { leaseId: string; openPtySession: SetupTokenPtySessionOpener }>();
+  const pendingOpeners = new Map<string, { leaseId: string; openPtySession: LoginPtySessionOpener }>();
   // The reverse map releases a handoff by lease id when the factory never
   // consumes it (a factory error path).
   const leaseScopeKeys = new Map<string, string>();
@@ -288,7 +288,7 @@ export function buildSetupTokenLoginTransport(
     pendingOpeners.delete(key);
     leaseScopeKeys.delete(pending.leaseId);
 
-    const transport = createSetupTokenPtyTransport(pending.openPtySession);
+    const transport = createLoginPtyTransport(pending.openPtySession);
 
     // Bridge the browser code. The service calls `submitCode` one time after the
     // single `awaiting_code` transition wins. The runner calls `provideCode` one
@@ -358,7 +358,7 @@ export interface ProductionSetupTokenSandboxProviderDeps {
     scope: SetupTokenSessionScope;
     environmentId: string;
     leaseId: string;
-  }) => Promise<SetupTokenPtySessionOpener>;
+  }) => Promise<LoginPtySessionOpener>;
   /** A non-leaking status sink. It receives only fixed status lines. */
   log?: (line: string) => void;
 }
@@ -535,8 +535,8 @@ export function createProductionSetupTokenCleanupStore(db: Db): SetupTokenCleanu
  * reserves one route per worker, drives the open, binds the worker session
  * identifier one time, routes output, and terminalizes the route.
  */
-export interface SetupTokenPtyWorkerManagerLike {
-  openSetupTokenPtySession(
+export interface LoginPtyWorkerManagerLike {
+  openLoginPtySession(
     pluginId: string,
     input: {
       driverKey: string;
@@ -545,11 +545,11 @@ export interface SetupTokenPtyWorkerManagerLike {
       providerLeaseId: string;
       command: string;
     },
-  ): Promise<SetupTokenPtySession>;
+  ): Promise<LoginPtySession>;
 }
 
 /** The narrow lease-lookup surface the live opener needs. */
-export interface SetupTokenPtyLeaseLookup {
+export interface LoginPtyLeaseLookup {
   getLeaseById(leaseId: string): Promise<
     | {
         providerLeaseId: string | null;
@@ -560,11 +560,11 @@ export interface SetupTokenPtyLeaseLookup {
 }
 
 /** The dependencies the worker-bound live pseudo-terminal opener needs. */
-export interface WorkerBoundSetupTokenPtyOpenerDeps {
+export interface WorkerBoundLoginPtyOpenerDeps {
   /** The plugin worker manager that owns the host route gate. */
-  workerManager: SetupTokenPtyWorkerManagerLike;
+  workerManager: LoginPtyWorkerManagerLike;
   /** The environment lease lookup that resolves the worker target for a lease. */
-  environments: SetupTokenPtyLeaseLookup;
+  environments: LoginPtyLeaseLookup;
   /** A non-leaking status sink. It receives only fixed status lines. */
   log?: (line: string) => void;
 }
@@ -580,8 +580,8 @@ function readLeaseMetaString(value: unknown): string | null {
  * route identifier and owns the route lifecycle. The opener fails closed when the
  * lease carries no sandbox worker binding.
  */
-export function createWorkerBoundSetupTokenPtyOpener(
-  deps: WorkerBoundSetupTokenPtyOpenerDeps,
+export function createWorkerBoundLoginPtyOpener(
+  deps: WorkerBoundLoginPtyOpenerDeps,
 ): NonNullable<ProductionSetupTokenSandboxProviderDeps["openLivePtySession"]> {
   const log = deps.log ?? (() => {});
   return async ({ scope, environmentId, leaseId }) => {
@@ -602,7 +602,7 @@ export function createWorkerBoundSetupTokenPtyOpener(
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
     }
     return (command: string) =>
-      deps.workerManager.openSetupTokenPtySession(pluginId, {
+      deps.workerManager.openLoginPtySession(pluginId, {
         driverKey,
         companyId: scope.companyId,
         environmentId,
