@@ -114,18 +114,28 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   };
 });
 
-async function createApp() {
+// Drizzle stamps the SQL table name on this symbol; the route module is re-imported per test
+// via vi.resetModules(), so table objects cannot be matched by identity — match by name.
+const drizzleTableName = (table: unknown): string | undefined =>
+  (table as Record<symbol, unknown> | null)?.[Symbol.for("drizzle:Name")] as string | undefined;
+
+async function createApp(rowsByTable?: Record<string, unknown[]>) {
   const emptyRows: unknown[] = [];
-  const whereResult = {
-    limit: vi.fn(async () => emptyRows),
-    then: async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows),
+  const buildQuery = (table: unknown) => {
+    const tableName = drizzleTableName(table);
+    const rows = (tableName ? rowsByTable?.[tableName] : undefined) ?? emptyRows;
+    const whereResult = {
+      limit: vi.fn(async () => rows),
+      then: async (resolve: (queried: unknown[]) => unknown) => resolve(rows),
+    };
+    const query: Record<string, unknown> = {};
+    query.innerJoin = vi.fn(() => query);
+    query.where = vi.fn(() => whereResult);
+    return query;
   };
-  const query: Record<string, unknown> = {};
-  query.innerJoin = vi.fn(() => query);
-  query.where = vi.fn(() => whereResult);
   const routeDb = {
     select: vi.fn(() => ({
-      from: vi.fn(() => query),
+      from: vi.fn((table: unknown) => buildQuery(table)),
     })),
     transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
   };
@@ -399,6 +409,178 @@ describe("issue dependency wakeups in issue routes", () => {
             ]),
           }),
         }),
+      );
+    });
+  });
+
+  describe("clearing the last blocker on an already-blocked issue", () => {
+    const blockedIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const blockerIssueId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+    const blockedIssue = (overrides: Record<string, unknown> = {}) => ({
+      id: blockedIssueId,
+      companyId: "company-1",
+      identifier: "PAP-300",
+      title: "Waiting on nothing",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-7",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      unblockDescriptor: null,
+      labels: [],
+      labelIds: [],
+      ...overrides,
+    });
+
+    const blockerRelation = {
+      id: blockerIssueId,
+      identifier: "PAP-301",
+      title: "The blocker",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    };
+
+    const statusSentToUpdate = () =>
+      (mockIssueService.update.mock.calls[0]?.[1] as { status?: string } | undefined)?.status;
+
+    // Wakes are emitted from a fire-and-forget post-commit IIFE, so asserting that NO wake was
+    // emitted needs the event loop drained first — otherwise the assertion passes vacuously.
+    const drainPostCommitWakeups = async () => {
+      for (let turn = 0; turn < 5; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    };
+
+    it("releases the issue to todo and wakes the assignee when the last blocker edge is removed", async () => {
+      mockIssueService.getById.mockResolvedValue(blockedIssue());
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [blockerRelation], blocks: [] });
+      mockIssueService.update.mockResolvedValue(blockedIssue({ status: "todo" }));
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ blockedByIssueIds: [] });
+
+      expect(res.status).toBe(200);
+      expect(statusSentToUpdate()).toBe("todo");
+      await vi.waitFor(() => {
+        expect(mockWakeup).toHaveBeenCalledWith(
+          "agent-7",
+          expect.objectContaining({
+            reason: "issue_blockers_resolved",
+            payload: expect.objectContaining({
+              issueId: blockedIssueId,
+              resolvedBlockerIssueId: blockerIssueId,
+              blockerIssueIds: [blockerIssueId],
+              mutation: "blockers_cleared",
+            }),
+            contextSnapshot: expect.objectContaining({
+              source: "issue.blockers_cleared",
+            }),
+          }),
+        );
+      });
+    });
+
+    it("releases an already naked-blocked issue to todo without emitting a wake", async () => {
+      mockIssueService.getById.mockResolvedValue(blockedIssue());
+      // Already naked-blocked: status "blocked" with zero blocker edges, no interaction,
+      // no approval, no unblockDescriptor.
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+      mockIssueService.update.mockResolvedValue(blockedIssue({ status: "todo" }));
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ blockedByIssueIds: [] });
+
+      expect(res.status).toBe(200);
+      expect(statusSentToUpdate()).toBe("todo");
+
+      await drainPostCommitWakeups();
+      expect(mockFindExistingIssueBlockersResolvedWake).not.toHaveBeenCalled();
+      expect(mockWakeup).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reason: "issue_blockers_resolved" }),
+      );
+      expect(mockWakeup).not.toHaveBeenCalled();
+    });
+
+    it("keeps the issue blocked when a pending thread interaction remains", async () => {
+      mockIssueService.getById.mockResolvedValue(blockedIssue());
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [blockerRelation], blocks: [] });
+      mockIssueService.update.mockResolvedValue(blockedIssue());
+
+      const res = await request(
+        await createApp({ issue_thread_interactions: [{ id: "interaction-1" }] }),
+      )
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ blockedByIssueIds: [] });
+
+      expect(res.status).toBe(200);
+      expect(statusSentToUpdate()).toBeUndefined();
+    });
+
+    it("keeps the issue blocked when a pending linked approval remains", async () => {
+      mockIssueService.getById.mockResolvedValue(blockedIssue());
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [blockerRelation], blocks: [] });
+      mockIssueService.update.mockResolvedValue(blockedIssue());
+
+      const res = await request(await createApp({ issue_approvals: [{ id: "approval-1" }] }))
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ blockedByIssueIds: [] });
+
+      expect(res.status).toBe(200);
+      expect(statusSentToUpdate()).toBeUndefined();
+    });
+
+    it("keeps the issue blocked when an unblockDescriptor remains", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        blockedIssue({ unblockDescriptor: { owner: "board", action: "Decide on the vendor" } }),
+      );
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [blockerRelation], blocks: [] });
+      mockIssueService.update.mockResolvedValue(
+        blockedIssue({ unblockDescriptor: { owner: "board", action: "Decide on the vendor" } }),
+      );
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ blockedByIssueIds: [] });
+
+      expect(res.status).toBe(200);
+      expect(statusSentToUpdate()).toBeUndefined();
+    });
+
+    it("keeps the issue blocked when blockers are replaced with a still-open blocker", async () => {
+      mockIssueService.getById.mockResolvedValue(blockedIssue());
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+      mockIssueService.update.mockResolvedValue(blockedIssue());
+
+      const res = await request(await createApp({ issues: [{ id: blockerIssueId }] }))
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ blockedByIssueIds: [blockerIssueId] });
+
+      expect(res.status).toBe(200);
+      expect(statusSentToUpdate()).toBeUndefined();
+    });
+
+    it("still rejects entering blocked without any wait surface", async () => {
+      mockIssueService.getById.mockResolvedValue(blockedIssue({ status: "todo" }));
+      mockIssueService.update.mockResolvedValue(blockedIssue());
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${blockedIssueId}`)
+        .send({ status: "blocked" });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toBe(
+        "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor",
       );
     });
   });
