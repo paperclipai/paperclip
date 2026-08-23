@@ -7032,6 +7032,13 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/expire-stale",
+  tags: ["issues"],
+  summary: "Expire a stale issue interaction for its assignee agent",
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
   summary: "Withdraw a pending issue thread interaction",
