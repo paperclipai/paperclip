@@ -435,8 +435,10 @@ export async function openDaytonaLoginPtySession(
 
 /**
  * The inspection helper source. The provider reads it from its own script file and
- * runs it on the sandbox as `node -e <script> <path>`. The sandbox already runs
- * node for the Paperclip bridge, so the helper needs no extra runtime. The helper
+ * runs it on the sandbox as `<login-profile-preamble> && node -e <script> <path>`.
+ * The preamble sources the login profiles first, so `node` resolves on an image
+ * that exposes node only through a login profile. The sandbox already runs node
+ * for the Paperclip bridge, so the helper needs no extra runtime. The helper
  * source lives in `scripts/login-home-inspect.cjs`, so no large script stays as a
  * string literal in this module. The helper opens the filesystem root, then walks
  * each ancestor of the final path component with a no-follow, directory-only open,
@@ -456,8 +458,11 @@ const LOGIN_HOME_INSPECT_SCRIPT = readFileSync(
 
 /**
  * The creation helper source. The provider reads it from its own script file and
- * runs it on the sandbox as `node -e <script> <path> <octal-mode>`. The helper
- * source lives in `scripts/login-home-create.cjs`. The helper opens the filesystem
+ * runs it on the sandbox as
+ * `<login-profile-preamble> && node -e <script> <path> <octal-mode>`. The preamble
+ * sources the login profiles first, so `node` resolves on an image that exposes
+ * node only through a login profile. The helper source lives in
+ * `scripts/login-home-create.cjs`. The helper opens the filesystem
  * root, then walks each ancestor above the login root with a no-follow,
  * directory-only open. It creates the login root (the second-to-last component) if
  * the root is absent, then opens the root with a no-follow open, so a symlink at
@@ -473,6 +478,37 @@ const LOGIN_HOME_CREATE_SCRIPT = readFileSync(
   fileURLToPath(new URL("./scripts/login-home-create.cjs", import.meta.url)),
   "utf8",
 );
+
+/**
+ * The login-profile preamble for a node helper command. Daytona's
+ * `executeCommand` runs the command in a non-login shell, so the shell does not
+ * source `/etc/profile` on its own. The Daytona reference image puts `node` on
+ * the PATH through `/etc/profile.d`, which only a login profile sources. The
+ * login pseudo-terminal resolves the login command through the same profiles, so
+ * the helper sources the login profiles first and a non-login shell then resolves
+ * `node`. This keeps the helper runtime and the login PTY capability consistent:
+ * an image that exposes `node` only through a login profile runs the helper. The
+ * main exec path uses the same profile chain (see `buildLoginShellScript` in
+ * `plugin.ts`). Each source line fails open (`|| true`), so a missing profile
+ * does not fail the helper.
+ */
+const LOGIN_PROFILE_PREAMBLE = [
+  "if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi",
+  'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+  'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+  'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+].join(" && ");
+
+/**
+ * Composes a `node` helper command that runs after the login-profile preamble.
+ * The preamble puts `node` on the PATH, then the `&&` chain runs `node -e` with
+ * the already shell-encoded argument list. The `node` exit code becomes the
+ * command exit code, and `2>/dev/null` suppresses only the node stderr. The
+ * caller passes an argument string that is already shell-encoded.
+ */
+function composeNodeHelperCommand(encodedArgs: string): string {
+  return `${LOGIN_PROFILE_PREAMBLE} && node -e ${encodedArgs} 2>/dev/null`;
+}
 
 /**
  * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs a
@@ -502,7 +538,7 @@ export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLogin
       // does not exist yet, which is the safe precondition for a create.
       const script = encodePosixShellArg(LOGIN_HOME_INSPECT_SCRIPT);
       const encodedPath = encodePosixShellArg(path);
-      const out = await exec.executeCommand(`node -e ${script} ${encodedPath} 2>/dev/null`);
+      const out = await exec.executeCommand(composeNodeHelperCommand(`${script} ${encodedPath}`));
       if ((out.exitCode ?? 0) !== 0) {
         throw new Error(LOGIN_PTY_HOME_REJECTED);
       }
@@ -525,7 +561,7 @@ export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLogin
       const encodedPath = encodePosixShellArg(path);
       const encodedMode = encodePosixShellArg(mode);
       const out = await exec.executeCommand(
-        `node -e ${script} ${encodedPath} ${encodedMode} 2>/dev/null`,
+        composeNodeHelperCommand(`${script} ${encodedPath} ${encodedMode}`),
       );
       if ((out.exitCode ?? 0) !== 0) {
         throw new Error(LOGIN_PTY_HOME_REJECTED);

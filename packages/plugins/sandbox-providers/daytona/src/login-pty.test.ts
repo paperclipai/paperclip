@@ -492,6 +492,55 @@ describe("openDaytonaLoginPtySession — ancestor symlink", () => {
   });
 });
 
+describe("createDaytonaLoginHomeFs — login-profile preamble", () => {
+  // A capturing exec surface. It records each command and returns a fixed result,
+  // so a test reads the exact command string the helper runs.
+  function createCapturingExec(result: DaytonaExecResult): DaytonaSandboxExec & {
+    commands: string[];
+  } {
+    const commands: string[] = [];
+    return {
+      commands,
+      async executeCommand(command: string): Promise<DaytonaExecResult> {
+        commands.push(command);
+        // `id -u` resolves the login user id. Return a fixed uid so the caller
+        // continues to the node helper command under test.
+        if (command.startsWith("id -u")) {
+          return { exitCode: 0, result: "1000" };
+        }
+        return result;
+      },
+    };
+  }
+
+  // The command sources /etc/profile before it runs node. The Daytona image may
+  // expose node only through a login profile, so node must run after the profile
+  // source. This assertion proves the helper runtime and the login PTY capability
+  // stay consistent.
+  function expectProfileBeforeNode(command: string | undefined): void {
+    expect(command).toBeDefined();
+    const profileIndex = command!.indexOf("/etc/profile");
+    const nodeIndex = command!.indexOf("node -e");
+    expect(profileIndex).toBeGreaterThanOrEqual(0);
+    expect(nodeIndex).toBeGreaterThanOrEqual(0);
+    expect(profileIndex).toBeLessThan(nodeIndex);
+  }
+
+  it("sources the login profiles before it runs the node inspect helper", async () => {
+    const exec = createCapturingExec({ exitCode: 0, result: "ABSENT" });
+    const fs = createDaytonaLoginHomeFs(exec);
+    await fs.inspect(HOME);
+    expectProfileBeforeNode(exec.commands.find((command) => command.includes("node -e")));
+  });
+
+  it("sources the login profiles before it runs the node create helper", async () => {
+    const exec = createCapturingExec({ exitCode: 0, result: "" });
+    const fs = createDaytonaLoginHomeFs(exec);
+    await fs.createDirectory(HOME, "700");
+    expectProfileBeforeNode(exec.commands.find((command) => command.includes("node -e")));
+  });
+});
+
 // The real login-home filesystem runs a node helper on the sandbox. The helper
 // walks the path with `/proc/self/fd`, which is Linux only. A non-Linux host skips
 // these tests. The fake exec runs the helper locally, so the descriptor-relative
