@@ -14,6 +14,7 @@ import {
   type DuplexRequestFrame,
   type DuplexResponseFrame,
 } from "./duplex-frame-codec.js";
+import { splitBodyIntoChunkFrames } from "./duplex-body-spool.js";
 import {
   createDuplexTelemetry,
   DUPLEX_COUNTER_LOSS_TOTAL,
@@ -42,13 +43,27 @@ interface PendingForward {
   settled: boolean;
 }
 
+/**
+ * One reassembled response the broker wrote back. The broker writes a response as
+ * one envelope frame that carries `bodyByteCount`, then the `body_chunk` frames
+ * that carry the body. The harness reassembles the body and exposes it as `body`,
+ * so a test asserts the response the same way it did with the one-frame model.
+ */
+type ReassembledResponse = DuplexResponseFrame & { body: string };
+
+/** One request the harness feeds: the envelope frame plus its raw body text. */
+interface RequestInput {
+  frame: DuplexRequestFrame;
+  bodyText: string;
+}
+
 /** The in-memory channel plus the levers a test uses to drive the broker. */
 interface FakeChannelHarness {
   channel: CommandManagedDuplexChannel;
-  /** Push one request frame into the broker read path. */
-  feed: (frame: DuplexRequestFrame) => void;
-  /** The response frames the broker wrote back, in order. */
-  responses: DuplexResponseFrame[];
+  /** Push one request (its envelope frame and its body_chunk frames) into the broker read path. */
+  feed: (input: RequestInput) => void;
+  /** The reassembled responses the broker wrote back, in order. */
+  responses: ReassembledResponse[];
   /** Every forward call the broker made, in order. */
   forwards: PendingForward[];
   /** Resolve the newest unsettled forward for one id with a 200 result. */
@@ -57,36 +72,71 @@ interface FakeChannelHarness {
   resolveAll: () => void;
 }
 
-/** Build one valid request frame with distinctive, secret-looking fields. */
-function requestFrame(id: string, method = "POST"): DuplexRequestFrame {
+/**
+ * Build one valid request with distinctive, secret-looking fields. The envelope
+ * carries `bodyByteCount`, and the harness rides the body on `body_chunk` frames.
+ */
+function requestFrame(
+  id: string,
+  method = "POST",
+  bodyText: string = JSON.stringify({ secret: "secret-request-body" }),
+): RequestInput {
   return {
-    version: DUPLEX_FRAME_VERSION,
-    type: "request",
-    id,
-    method,
-    path: `/api/issues/${id}`,
-    query: "?secret-query=leak",
-    headers: { authorization: "Bearer super-secret-provider-token" },
-    body: JSON.stringify({ secret: "secret-request-body" }),
+    frame: {
+      version: DUPLEX_FRAME_VERSION,
+      type: "request",
+      id,
+      method,
+      path: `/api/issues/${id}`,
+      query: "?secret-query=leak",
+      headers: { authorization: "Bearer super-secret-provider-token" },
+      bodyByteCount: Buffer.byteLength(bodyText, "utf8"),
+    },
+    bodyText,
   };
 }
 
 /**
  * Build the in-memory channel harness. The channel keeps the broker read
- * listener, so `feed` pushes an encoded frame into the broker. The channel
- * decodes each written frame, so `responses` holds the response frames only.
+ * listener, so `feed` pushes the encoded envelope and its body_chunk frames into
+ * the broker. The channel decodes each written frame and reassembles a response
+ * body, so `responses` holds one reassembled response per delivered request.
  */
 function createFakeChannelHarness(): FakeChannelHarness {
-  const responses: DuplexResponseFrame[] = [];
+  const responses: ReassembledResponse[] = [];
   const forwards: PendingForward[] = [];
   const writtenDecoder = new DuplexFrameDecoder();
+  // The in-flight response reassembly, keyed by request id.
+  const responseAssembly = new Map<
+    string,
+    { frame: DuplexResponseFrame; received: number; chunks: Buffer[] }
+  >();
   let dataListener: ((chunk: string) => void) | null = null;
 
   const channel: CommandManagedDuplexChannel = {
     write: (data) => {
       for (const result of writtenDecoder.push(data)) {
-        if (result.ok && result.frame.type === "response") {
-          responses.push(result.frame);
+        if (!result.ok) continue;
+        const frame = result.frame;
+        if (frame.type === "response") {
+          if (frame.bodyByteCount === 0) {
+            responses.push({ ...frame, body: "" });
+          } else {
+            responseAssembly.set(frame.id, { frame, received: 0, chunks: [] });
+          }
+        } else if (frame.type === "body_chunk") {
+          const assembly = responseAssembly.get(frame.id);
+          if (!assembly) continue;
+          const decoded = Buffer.from(frame.data, "base64");
+          assembly.received += decoded.length;
+          assembly.chunks.push(decoded);
+          if (assembly.received >= assembly.frame.bodyByteCount) {
+            responseAssembly.delete(frame.id);
+            responses.push({
+              ...assembly.frame,
+              body: Buffer.concat(assembly.chunks).toString("utf8"),
+            });
+          }
         }
       }
     },
@@ -100,9 +150,17 @@ function createFakeChannelHarness(): FakeChannelHarness {
 
   return {
     channel,
-    feed: (frame) => {
+    feed: ({ frame, bodyText }) => {
       if (!dataListener) throw new Error("The broker did not bind the data listener.");
       dataListener(encodeDuplexFrame(frame));
+      if (bodyText.length > 0) {
+        const chunks = splitBodyIntoChunkFrames(
+          frame.id,
+          Buffer.from(bodyText, "utf8"),
+          DUPLEX_FRAME_VERSION,
+        );
+        for (const chunk of chunks) dataListener(encodeDuplexFrame(chunk));
+      }
     },
     responses,
     forwards,
@@ -132,6 +190,11 @@ function controllableForward(harness: FakeChannelHarness) {
     new Promise<DuplexBrokerForwardResult>((resolve, reject) => {
       harness.forwards.push({ id: request.id, resolve, reject, settled: false });
     });
+}
+
+/** Flush the microtasks and one macrotask, so the broker dispatches its reassembled forwards. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /** The telemetry sink capture. It proves the broker records nothing for a refusal. */
@@ -175,11 +238,11 @@ describe("duplex bridge broker request limits", () => {
     expect(() => assertDuplexBrokerLimits({ maxInFlightRequests: 8, maxLifetimeRequests: 16 })).not.toThrow();
   });
 
-  it("bounds the in-flight forwards and refuses the excess with a retryable terminal response", () => {
+  it("bounds the in-flight forwards and refuses the excess with a retryable terminal response", async () => {
     const harness = createFakeChannelHarness();
     const { telemetry, capture } = createTelemetryCapture();
     const maxInFlightRequests = 4;
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       telemetry,
@@ -189,10 +252,13 @@ describe("duplex bridge broker request limits", () => {
     broker.start();
 
     // Inject more than the limit of unique valid frames. Every forward hangs, so
-    // the broker holds the maximum number of in-flight forwards.
+    // the broker holds the maximum number of in-flight forwards. The broker gates
+    // the in-flight limit at the request envelope, so it refuses the excess at
+    // once; it dispatches each accepted forward after it reassembles the body.
     const total = 10;
     const ids = Array.from({ length: total }, (_unused, index) => `flight-${index}`);
     for (const id of ids) harness.feed(requestFrame(id));
+    await flush();
 
     // The broker forwarded only up to the limit. It refused the rest.
     expect(harness.forwards).toHaveLength(maxInFlightRequests);
@@ -226,7 +292,7 @@ describe("duplex bridge broker request limits", () => {
   it("frees capacity after a delivered request and forwards a resent refused id (no-replay preserved)", async () => {
     const harness = createFakeChannelHarness();
     const maxInFlightRequests = 2;
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       maxInFlightRequests,
@@ -234,30 +300,36 @@ describe("duplex bridge broker request limits", () => {
     brokers.push(broker);
     broker.start();
 
-    // Saturate the in-flight limit with two hung forwards.
+    // Saturate the in-flight limit with two hung forwards. The broker reserves the
+    // in-flight slot at the request envelope, then dispatches the forward after it
+    // reassembles the body.
     harness.feed(requestFrame("keep-0"));
     harness.feed(requestFrame("keep-1"));
+    await flush();
     expect(harness.forwards).toHaveLength(2);
 
     // A third unique id is refused, retryable. The broker did not forward it and
     // did not retain its id.
     harness.feed(requestFrame("resend-me"));
+    await flush();
     expect(harness.forwards).toHaveLength(2);
     expect(harness.responses).toHaveLength(1);
     expect(JSON.parse(harness.responses[0].body).retryable).toBe(true);
 
     // Free one in-flight slot. The delivered request drains the pending record.
     harness.resolveForward("keep-0");
-    await Promise.resolve();
+    await flush();
 
     // The gateway resends the refused id. Capacity is free now, so the broker
     // forwards it exactly one time. This proves the refusal did not poison the id.
     harness.feed(requestFrame("resend-me"));
+    await flush();
     expect(harness.forwards.filter((forward) => forward.id === "resend-me")).toHaveLength(1);
 
     // A resend of an already-forwarded id never reaches the forward twice.
     const forwardedKeep1 = harness.forwards.filter((forward) => forward.id === "keep-1").length;
     harness.feed(requestFrame("keep-1"));
+    await flush();
     expect(harness.forwards.filter((forward) => forward.id === "keep-1")).toHaveLength(forwardedKeep1);
 
     harness.resolveAll();
@@ -267,7 +339,7 @@ describe("duplex bridge broker request limits", () => {
     const harness = createFakeChannelHarness();
     const { telemetry, capture } = createTelemetryCapture();
     const maxLifetimeRequests = 3;
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       // Resolve every forward at once, so each dispatched id leaves the in-flight
       // count but stays in the retained-id set.
@@ -285,7 +357,7 @@ describe("duplex bridge broker request limits", () => {
     const total = 9;
     for (let index = 0; index < total; index += 1) {
       harness.feed(requestFrame(`life-${index}`));
-      await Promise.resolve();
+      await flush();
     }
 
     // The broker forwarded only up to the lifetime limit. The retained-id set
@@ -304,7 +376,7 @@ describe("duplex bridge broker request limits", () => {
 
     // A resend of a refused id stays refused, so the set never grows.
     harness.feed(requestFrame("life-8"));
-    await Promise.resolve();
+    await flush();
     expect(harness.forwards).toHaveLength(maxLifetimeRequests);
 
     // The telemetry surface stayed on the fixed request span for the delivered
@@ -320,9 +392,9 @@ describe("duplex bridge broker request limits", () => {
     expect(broker.state).toBe("open");
   });
 
-  it("forwards nothing and fails the channel closed under a flood of over-limit ids", () => {
+  it("forwards nothing and fails the channel closed under a flood of over-limit ids", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
     });
@@ -347,9 +419,9 @@ describe("duplex bridge broker request limits", () => {
     expect(broker.lossRecord?.reason).toBe("protocol_failure");
   });
 
-  it("forwards a maximal-size id exactly once and does not forward a resend (no-replay preserved)", () => {
+  it("forwards a maximal-size id exactly once and does not forward a resend (no-replay preserved)", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
     });
@@ -359,19 +431,21 @@ describe("duplex bridge broker request limits", () => {
     // An id at the maximum byte size is allowed. The broker forwards it one time.
     const maxId = "a".repeat(DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES);
     harness.feed(requestFrame(maxId));
+    await flush();
     expect(harness.forwards.filter((forward) => forward.id === maxId)).toHaveLength(1);
 
     // Deliver the response, then resend the same id. The broker retained the id,
     // so the resend never reaches the forward a second time.
     harness.resolveForward(maxId);
     harness.feed(requestFrame(maxId));
+    await flush();
     expect(harness.forwards.filter((forward) => forward.id === maxId)).toHaveLength(1);
     expect(broker.state).toBe("open");
   });
 
   it("maps a forward that resolves with the indeterminate marker to a non-retryable response and retains the id", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
     });
@@ -384,6 +458,7 @@ describe("duplex bridge broker request limits", () => {
     // non-retryable body, so the gateway maps it to a non-retryable status and a
     // caller never repeats a possibly-committed mutation.
     harness.feed(requestFrame("commit-1"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "commit-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
     forward.settled = true;
@@ -423,7 +498,7 @@ describe("duplex bridge broker request limits", () => {
 
   it("maps a forward rejection for a mutating method to a non-retryable indeterminate response and retains the id", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
     });
@@ -436,6 +511,7 @@ describe("duplex bridge broker request limits", () => {
     // forward, so a POST must return a non-retryable indeterminate response.
     // A retryable status would let a caller repeat a committed mutation.
     harness.feed(requestFrame("mutate-1", "POST"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "mutate-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
     forward.settled = true;
@@ -465,7 +541,7 @@ describe("duplex bridge broker request limits", () => {
   it("substitutes a bounded terminal response for an oversized response and keeps the channel open", async () => {
     const harness = createFakeChannelHarness();
     const { telemetry, capture } = createTelemetryCapture();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       telemetry,
@@ -482,6 +558,7 @@ describe("duplex bridge broker request limits", () => {
     // host.
     harness.feed(requestFrame("small-1", "POST"));
     harness.feed(requestFrame("big-1", "POST"));
+    await flush();
 
     const smallForward = harness.forwards.find((entry) => entry.id === "small-1" && !entry.settled);
     if (!smallForward) throw new Error("The broker did not forward the small request.");
@@ -542,30 +619,35 @@ describe("duplex bridge broker request limits", () => {
   it("sends a minimal terminal response when the frame bound rejects the full replacement", async () => {
     const harness = createFakeChannelHarness();
     const { telemetry, capture } = createTelemetryCapture();
-    // The bound accepts a compact request (130 bytes) and the minimal terminal
-    // response (106 bytes), but rejects the full replacement response (288 bytes).
-    // This proves the broker never drops the channel or strands the request when
-    // the configured bound is smaller than the full replacement response.
-    const broker = createDuplexBridgeBroker({
+    // The bound accepts a compact request envelope (128 bytes) and the minimal
+    // terminal response envelope (114 bytes), but rejects the full replacement
+    // response envelope (193 bytes). This proves the broker never drops the channel
+    // or strands the request when the bound is smaller than the full replacement.
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       telemetry,
-      maxFrameBytes: 200,
+      maxFrameBytes: 150,
     });
     brokers.push(broker);
     broker.start();
 
-    // A compact request frame fits the bound, so the broker forwards it.
+    // A compact request envelope with an empty body fits the bound, so the broker
+    // forwards it.
     harness.feed({
-      version: DUPLEX_FRAME_VERSION,
-      type: "request",
-      id: "big-1",
-      method: "POST",
-      path: "/api/issues/big-1",
-      query: "",
-      headers: {},
-      body: JSON.stringify({ go: 1 }),
+      frame: {
+        version: DUPLEX_FRAME_VERSION,
+        type: "request",
+        id: "big-1",
+        method: "POST",
+        path: "/api/issues/big-1",
+        query: "",
+        headers: {},
+        bodyByteCount: 0,
+      },
+      bodyText: "",
     });
+    await flush();
 
     const forward = harness.forwards.find((entry) => entry.id === "big-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
@@ -608,29 +690,34 @@ describe("duplex bridge broker request limits", () => {
     const harness = createFakeChannelHarness();
     const { telemetry, capture } = createTelemetryCapture();
     const logs: string[] = [];
-    // The bound accepts a tiny request (99 bytes) but rejects even the minimal
-    // terminal response (102 bytes). The broker cannot send any frame for this
-    // request, so it must keep the channel open and log a clear local error.
-    const broker = createDuplexBridgeBroker({
+    // The bound accepts a tiny request envelope (107 bytes) but rejects even the
+    // minimal terminal response envelope (110 bytes). The broker cannot send any
+    // frame for this request, so it must keep the channel open and log a clear
+    // local error.
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       telemetry,
-      maxFrameBytes: 100,
+      maxFrameBytes: 109,
       logger: (message) => logs.push(message),
     });
     brokers.push(broker);
     broker.start();
 
     harness.feed({
-      version: DUPLEX_FRAME_VERSION,
-      type: "request",
-      id: "x",
-      method: "GET",
-      path: "/",
-      query: "",
-      headers: {},
-      body: "",
+      frame: {
+        version: DUPLEX_FRAME_VERSION,
+        type: "request",
+        id: "x",
+        method: "GET",
+        path: "/",
+        query: "",
+        headers: {},
+        bodyByteCount: 0,
+      },
+      bodyText: "",
     });
+    await flush();
 
     const forward = harness.forwards.find((entry) => entry.id === "x" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
@@ -657,7 +744,7 @@ describe("duplex bridge broker request limits", () => {
   it("completes a request within the bound and delivers the real response", async () => {
     const harness = createFakeChannelHarness();
     const { telemetry, capture } = createTelemetryCapture();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       telemetry,
@@ -667,6 +754,7 @@ describe("duplex bridge broker request limits", () => {
     broker.start();
 
     harness.feed(requestFrame("ok-1", "POST"));
+    await flush();
     harness.resolveForward("ok-1", JSON.stringify({ ok: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -690,7 +778,7 @@ describe("duplex bridge broker request limits", () => {
 
   it("maps a forward rejection for a safe method to a retryable response", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
     });
@@ -701,6 +789,7 @@ describe("duplex bridge broker request limits", () => {
     // mutation. A forward rejection for a GET stays retryable: the broker
     // returns a 502 with the completed outcome, so the gateway passes it through.
     harness.feed(requestFrame("read-1", "GET"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "read-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
     forward.settled = true;
@@ -719,7 +808,7 @@ describe("duplex bridge broker request limits", () => {
 
   it("maps a forward-budget timeout for a safe method to a retryable response", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       // A tiny forward budget aborts the controller before the manual rejection.
@@ -732,6 +821,7 @@ describe("duplex bridge broker request limits", () => {
     // stay retryable: the broker returns a 504 with the completed outcome and no
     // indeterminate marker, so the gateway does not map it to a terminal 409.
     harness.feed(requestFrame("read-timeout-1", "GET"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "read-timeout-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
 
@@ -755,7 +845,7 @@ describe("duplex bridge broker request limits", () => {
 
   it("maps a forward-budget timeout for a mutating method to a non-retryable indeterminate response", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       budgets: { forwardTimeoutMs: 5 },
@@ -767,6 +857,7 @@ describe("duplex bridge broker request limits", () => {
     // must keep the terminal contract: a 504 with the indeterminate outcome, so
     // the gateway maps it to a non-retryable 409 and no caller double-applies it.
     harness.feed(requestFrame("mutate-timeout-1", "POST"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "mutate-timeout-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
 
@@ -789,7 +880,7 @@ describe("duplex bridge broker request limits", () => {
 
   it("maps a response-budget backstop for a safe method to a retryable response", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       // The forward budget aborts the call, but the forward promise stays
@@ -806,6 +897,7 @@ describe("duplex bridge broker request limits", () => {
     // retryable: a 504 with the completed outcome and no indeterminate marker,
     // so the gateway does not map it to a terminal 409.
     harness.feed(requestFrame("read-stall-1", "GET"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "read-stall-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
 
@@ -826,7 +918,7 @@ describe("duplex bridge broker request limits", () => {
 
   it("maps a response-budget backstop for a mutating method to a non-retryable indeterminate response", async () => {
     const harness = createFakeChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: controllableForward(harness),
       budgets: { forwardTimeoutMs: 5, responseBudgetMs: 15, gatewayWaitMs: 40 },
@@ -839,6 +931,7 @@ describe("duplex bridge broker request limits", () => {
     // contract: a 504 with the indeterminate outcome, so the gateway maps it to a
     // non-retryable 409 and no caller double-applies it.
     harness.feed(requestFrame("mutate-stall-1", "POST"));
+    await flush();
     const forward = harness.forwards.find((entry) => entry.id === "mutate-stall-1" && !entry.settled);
     if (!forward) throw new Error("The broker did not forward the request.");
 
@@ -897,10 +990,10 @@ describe("duplex bridge broker exit taxonomy", () => {
     }
   });
 
-  it("records a transport close as a distinct loss, not a process exit", () => {
+  it("records a transport close as a distinct loss, not a process exit", async () => {
     const { telemetry, capture } = createTelemetryCapture();
     const harness = createExitChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: () =>
         Promise.resolve({ status: 200, headers: {}, body: "" }),
@@ -920,10 +1013,10 @@ describe("duplex bridge broker exit taxonomy", () => {
     expect(lossCounter?.dimensions.loss_reason).toBe("transport_closed");
   });
 
-  it("records a numeric exit as a process exit", () => {
+  it("records a numeric exit as a process exit", async () => {
     const { telemetry, capture } = createTelemetryCapture();
     const harness = createExitChannelHarness();
-    const broker = createDuplexBridgeBroker({
+    const broker = await createDuplexBridgeBroker({
       channel: harness.channel,
       forwardRequest: () =>
         Promise.resolve({ status: 200, headers: {}, body: "" }),

@@ -10623,18 +10623,21 @@ export function issueRoutes(
         dependentIssueId: string;
         resolvedBlockerIssueId: string;
         blockerIssueIds: string[];
+        blockedTransitionAt?: Date | string | null;
         source: string;
         mutation: string;
       }) => {
         const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.dependentIssueId,
           blockerIssueIds: input.blockerIssueIds,
+          blockedTransitionAt: input.blockedTransitionAt,
         });
         try {
           const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId: issue.companyId,
             dependentIssueId: input.dependentIssueId,
             blockerIssueIds: input.blockerIssueIds,
+            blockedTransitionAt: input.blockedTransitionAt,
           });
           if (existingWake) return;
         } catch (err) {
@@ -10819,6 +10822,7 @@ export function issueRoutes(
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: issue.id,
             blockerIssueIds: dependent.blockerIssueIds,
+            blockedTransitionAt: dependent.blockedTransitionAt,
             source: "issue.blockers_resolved",
             mutation: "blocker_done",
           });
@@ -10846,6 +10850,7 @@ export function issueRoutes(
             dependentIssueId: issue.id,
             resolvedBlockerIssueId,
             blockerIssueIds: readiness.blockerIssueIds,
+            blockedTransitionAt: issue.blockedTransitionAt,
             source: "issue.blockers_restored",
             mutation: "blocked_dependency_restored",
           });
@@ -12678,16 +12683,19 @@ export function issueRoutes(
         dependentIssueId: string;
         resolvedBlockerIssueId: string;
         blockerIssueIds: string[];
+        blockedTransitionAt?: Date | string | null;
       }) => {
         const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.dependentIssueId,
           blockerIssueIds: input.blockerIssueIds,
+          blockedTransitionAt: input.blockedTransitionAt,
         });
         try {
           const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId: currentIssue.companyId,
             dependentIssueId: input.dependentIssueId,
             blockerIssueIds: input.blockerIssueIds,
+            blockedTransitionAt: input.blockedTransitionAt,
           });
           if (existingWake) return;
         } catch (err) {
@@ -12851,6 +12859,7 @@ export function issueRoutes(
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: currentIssue.id,
             blockerIssueIds: dependent.blockerIssueIds,
+            blockedTransitionAt: dependent.blockedTransitionAt,
           });
         }
       }

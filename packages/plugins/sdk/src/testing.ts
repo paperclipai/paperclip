@@ -2478,7 +2478,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         // No-op in test harness — the host runner log sink is not wired here.
       },
     },
-    setupTokenPty: {
+    loginPty: {
       output(_workerSessionId: string, _chunk: string) {
         // No-op in test harness — the host login route is not wired here.
       },

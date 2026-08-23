@@ -46,25 +46,32 @@ import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js"
 // The session runs the login command on a real pseudo-terminal, streams the
 // terminal output, and delivers the delayed browser code plus the Enter byte. A
 // later phase binds the opener to `sandbox.process` and wraps it with the
-// `createSetupTokenPtyTransport` factory from `@paperclipai/adapter-utils` to
+// `createLoginPtyTransport` factory from `@paperclipai/adapter-utils` to
 // build the transport the login runner drives.
 export {
-  createDaytonaSetupTokenPtySessionOpener,
-  openDaytonaSetupTokenPtySession,
-} from "./setup-token-pty.js";
+  createDaytonaLoginPtySessionOpener,
+  openDaytonaLoginPtySession,
+  createDaytonaLoginHomeFs,
+} from "./login-pty.js";
 export type {
-  SetupTokenPtySession,
-  SetupTokenPtySessionOpener,
+  LoginPtySession,
+  LoginPtySessionOpener,
+  LoginPtyLaunchDescriptor,
   DaytonaPtyHandle,
   DaytonaPtyProcess,
   DaytonaPtyCreateOptions,
-  DaytonaSetupTokenPtyOptions,
-} from "./setup-token-pty.js";
-import { openDaytonaSetupTokenPtySession as openSetupTokenPtySession } from "./setup-token-pty.js";
+  DaytonaLoginPtyOptions,
+  DaytonaLoginHomeFs,
+} from "./login-pty.js";
+import {
+  openDaytonaLoginPtySession as openLoginPtySession,
+  createDaytonaLoginHomeFs,
+} from "./login-pty.js";
 import type {
-  SetupTokenPtySession as SetupTokenPtyWorkerSession,
+  LoginPtySession as LoginPtyWorkerSession,
   DaytonaPtyProcess,
-} from "./setup-token-pty.js";
+  DaytonaSandboxExec,
+} from "./login-pty.js";
 
 // The Daytona duplex command stream for the sandbox callback bridge. The channel
 // runs the gateway command on a raw pseudo-terminal, streams the frames, and
@@ -1904,17 +1911,17 @@ async function executeInSession(
 // create time, so the host closes the exact terminal by that identifier even
 // when the open reply was lost. It also indexes by the worker session identifier
 // for input and stop. The `onShutdown` hook closes every open session here.
-interface DaytonaSetupTokenPtyEntry {
+interface DaytonaLoginPtyEntry {
   hostRouteId: string;
   workerSessionId: string;
-  session: SetupTokenPtyWorkerSession;
+  session: LoginPtyWorkerSession;
 }
-const daytonaSetupTokenPtyByRoute = new Map<string, DaytonaSetupTokenPtyEntry>();
-const daytonaSetupTokenPtyBySession = new Map<string, DaytonaSetupTokenPtyEntry>();
+const daytonaLoginPtyByRoute = new Map<string, DaytonaLoginPtyEntry>();
+const daytonaLoginPtyBySession = new Map<string, DaytonaLoginPtyEntry>();
 
-function forgetDaytonaSetupTokenPty(entry: DaytonaSetupTokenPtyEntry): void {
-  daytonaSetupTokenPtyByRoute.delete(entry.hostRouteId);
-  daytonaSetupTokenPtyBySession.delete(entry.workerSessionId);
+function forgetDaytonaLoginPty(entry: DaytonaLoginPtyEntry): void {
+  daytonaLoginPtyByRoute.delete(entry.hostRouteId);
+  daytonaLoginPtyBySession.delete(entry.workerSessionId);
 }
 
 // The worker-side registry of live duplex channels. The worker registers each
@@ -2731,55 +2738,60 @@ const plugin = definePlugin({
     });
   },
 
-  // Open one live Claude `setup-token` login pseudo-terminal. Resolve
-  // the cached sandbox by the provider lease id, run the fixed login command on a
+  // Open one live login pseudo-terminal. Resolve the cached sandbox by the
+  // provider lease id, revalidate the host launch descriptor and the session
+  // home, create and validate the session home, run the fixed login command on a
   // real pseudo-terminal, and register the session under the host route id. Stream
-  // the raw output and the exit through `ctx.setupTokenPty`, bound to the returned
+  // the raw output and the exit through `ctx.loginPty`, bound to the returned
   // worker session id. Fail closed when no cached sandbox matches the lease.
-  async onSetupTokenPtyOpen(params) {
+  async onLoginPtyOpen(params) {
     const sandbox = await sandboxHandleCache.findByProviderLeaseId(params.providerLeaseId);
     if (!sandbox) {
       throw new Error(
-        "Daytona setup-token login: no cached sandbox resolves the provider lease.",
+        "Daytona login pseudo-terminal: no cached sandbox resolves the provider lease.",
       );
     }
-    const session = await openSetupTokenPtySession(
+    const homeFs = createDaytonaLoginHomeFs(
+      sandbox.process as unknown as DaytonaSandboxExec,
+    );
+    const session = await openLoginPtySession(
       sandbox.process as unknown as DaytonaPtyProcess,
-      params.command,
+      homeFs,
+      { loginCommandKey: params.loginCommandKey, sessionHome: params.sessionHome },
     );
     const workerSessionId = `pty-${randomUUID()}`;
-    const entry: DaytonaSetupTokenPtyEntry = {
+    const entry: DaytonaLoginPtyEntry = {
       hostRouteId: params.hostRouteId,
       workerSessionId,
       session,
     };
-    daytonaSetupTokenPtyByRoute.set(params.hostRouteId, entry);
-    daytonaSetupTokenPtyBySession.set(workerSessionId, entry);
+    daytonaLoginPtyByRoute.set(params.hostRouteId, entry);
+    daytonaLoginPtyBySession.set(workerSessionId, entry);
     // Register the output listener before the first input, so no early output
     // chunk is lost. The client stamps the worker session id, so the host binds
     // the output to the open route.
     session.onData((chunk) => {
-      pluginContext?.setupTokenPty.output(workerSessionId, chunk);
+      pluginContext?.loginPty.output(workerSessionId, chunk);
     });
     // Forward the child exit one time. The host resolves the login run on it.
     void session.wait().then(
-      (result) => pluginContext?.setupTokenPty.exit(workerSessionId, result.exitCode),
-      () => pluginContext?.setupTokenPty.exit(workerSessionId, null),
+      (result) => pluginContext?.loginPty.exit(workerSessionId, result.exitCode),
+      () => pluginContext?.loginPty.exit(workerSessionId, null),
     );
     return { workerSessionId };
   },
 
   // Write delayed input to an open login pseudo-terminal, keyed by the worker
   // session id. Drop the input for an unknown session.
-  async onSetupTokenPtyInput(params) {
-    const entry = daytonaSetupTokenPtyBySession.get(params.workerSessionId);
+  async onLoginPtyInput(params) {
+    const entry = daytonaLoginPtyBySession.get(params.workerSessionId);
     if (!entry) return;
     entry.session.write(params.data);
   },
 
   // Stop an open login pseudo-terminal child, keyed by the worker session id.
-  async onSetupTokenPtyStop(params) {
-    const entry = daytonaSetupTokenPtyBySession.get(params.workerSessionId);
+  async onLoginPtyStop(params) {
+    const entry = daytonaLoginPtyBySession.get(params.workerSessionId);
     if (!entry) return;
     entry.session.kill();
   },
@@ -2788,10 +2800,10 @@ const plugin = definePlugin({
   // close with the same identifier. The close is idempotent: it returns the
   // acknowledgement even when the entry is already gone, so the host confirms the
   // terminal is closed. The worker never keys the close on the worker session id.
-  async onSetupTokenPtyClose(params) {
-    const entry = daytonaSetupTokenPtyByRoute.get(params.hostRouteId);
+  async onLoginPtyClose(params) {
+    const entry = daytonaLoginPtyByRoute.get(params.hostRouteId);
     if (entry) {
-      forgetDaytonaSetupTokenPty(entry);
+      forgetDaytonaLoginPty(entry);
       await entry.session.close().catch(() => undefined);
     }
     return { hostRouteId: params.hostRouteId };
@@ -2884,9 +2896,9 @@ const plugin = definePlugin({
   // orderly shutdown, then drain the sandbox handle cache, so a graceful shutdown
   // holds no live terminal and no live channel.
   async onShutdown() {
-    const openSessions = [...daytonaSetupTokenPtyByRoute.values()];
-    daytonaSetupTokenPtyByRoute.clear();
-    daytonaSetupTokenPtyBySession.clear();
+    const openSessions = [...daytonaLoginPtyByRoute.values()];
+    daytonaLoginPtyByRoute.clear();
+    daytonaLoginPtyBySession.clear();
     for (const entry of openSessions) {
       await entry.session.close().catch(() => undefined);
     }

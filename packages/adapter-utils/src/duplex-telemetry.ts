@@ -36,6 +36,40 @@ export const DUPLEX_COUNTER_LOSS_TOTAL = "sandbox_duplex_loss_total";
 export const DUPLEX_COUNTER_SESSION_LEAK_TOTAL = "sandbox_duplex_session_leak_total";
 
 /**
+ * The process-scoped gauge for the aggregate retained bytes across every live
+ * duplex route. The host aggregate byte ledger sets it on each reserve and each
+ * release. The record carries no dynamic dimension.
+ */
+export const DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE = "sandbox_duplex_aggregate_bytes_in_use";
+/**
+ * The counter for one rejected aggregate byte reservation. The host ledger
+ * increments it when a reservation would pass the aggregate ceiling. The record
+ * carries no dynamic dimension.
+ */
+export const DUPLEX_COUNTER_AGGREGATE_BYTE_RESERVATION_REJECTIONS_TOTAL =
+  "sandbox_duplex_aggregate_byte_reservation_rejections_total";
+/**
+ * The counter for one aggregate byte accounting defect. The host ledger
+ * increments it on a double release or a transfer of a token it does not hold.
+ * The record carries no dynamic dimension.
+ */
+export const DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL =
+  "sandbox_duplex_aggregate_byte_accounting_underflow_total";
+
+/**
+ * The closed set of aggregate byte ledger metric names. A test pins this exact
+ * set, so a new ledger metric name needs an explicit review. Each record uses
+ * only closed constant dimensions and no dynamic label. The telemetry contract
+ * documents these metrics under "Aggregate byte ledger metrics" in
+ * `packages/shared/src/telemetry/README.md`.
+ */
+export const DUPLEX_AGGREGATE_BYTE_LEDGER_METRIC_NAMES = [
+  DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE,
+  DUPLEX_COUNTER_AGGREGATE_BYTE_RESERVATION_REJECTIONS_TOTAL,
+  DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL,
+] as const;
+
+/**
  * The closed dimension-key set. Every span attribute, counter label, and event
  * field uses only these keys. A test asserts the exact set, so a new key never
  * reaches a sink by accident.
@@ -64,6 +98,9 @@ export type DuplexOutcomeValue = "ok" | "error";
  * stage: the process-scoped route ceiling was full (`route_busy`), the entrypoint
  * sync failed (`entrypoint_sync_failed`), the broker construction failed
  * (`broker_construction_failed`), or the channel open failed (`channel_open_failed`).
+ * The `aggregate_bytes_exceeded` reason names a readiness handshake the host fell
+ * back because the process aggregate byte ceiling had no room for the readiness
+ * buffer.
  */
 export type DuplexFallbackReason =
   | "gate_off"
@@ -75,7 +112,8 @@ export type DuplexFallbackReason =
   | "ready_invalid"
   | "ready_nonce_mismatch"
   | "ready_timeout"
-  | "contaminated";
+  | "contaminated"
+  | "aggregate_bytes_exceeded";
 
 /** The class of a terminal loss, relative to the first request dispatch. */
 export type DuplexLossClass = "pre_dispatch" | "post_dispatch";

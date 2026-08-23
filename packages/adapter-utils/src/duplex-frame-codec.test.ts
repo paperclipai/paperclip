@@ -12,6 +12,7 @@ import {
   type DuplexDecodeResult,
   type DuplexFrame,
 } from "./duplex-frame-codec.js";
+import { DuplexAggregateByteLedger } from "./duplex-aggregate-byte-ledger.js";
 
 // One expected decode result in the fixture: either a decoded frame or the code
 // of a protocol error. The codec must never throw on the read path.
@@ -125,7 +126,7 @@ describe("round-trip", () => {
         ),
       ),
     );
-    for (const type of ["request", "response", "ready", "heartbeat", "close", "error"]) {
+    for (const type of ["request", "response", "body_chunk", "ready", "heartbeat", "close", "error"]) {
       expect(types).toContain(type);
     }
   });
@@ -211,8 +212,8 @@ describe("streaming decoder behavior", () => {
       method: "POST",
       path: "/x",
       query: "",
-      headers: {},
-      body: "😀",
+      headers: { "x-note": "😀" },
+      bodyByteCount: 0,
     };
     const bytes = Buffer.from(encodeDuplexFrame(frame), "utf8");
     // Split inside the four-byte emoji, right before a continuation byte.
@@ -274,7 +275,7 @@ describe("request id byte bound", () => {
       path: "/",
       query: "",
       headers: {},
-      body: "",
+      bodyByteCount: 0,
     });
   }
 
@@ -313,12 +314,123 @@ describe("request id byte bound", () => {
         id,
         status: 200,
         headers: {},
-        body: "",
+        bodyByteCount: 0,
         outcome: "completed",
       }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("id_too_large");
+  });
+});
+
+describe("decoder aggregate byte ledger charging", () => {
+  // The host injects the process-owned ledger into the decoder. The decoder
+  // charges the raw partial-frame bytes it retains between chunks, plus the peak
+  // replacement buffer it allocates on concat. It never retains an uncharged
+  // buffer, and it fails closed when a reservation would pass the ceiling.
+  function makeLedger(ceilingBytes = 1024): DuplexAggregateByteLedger {
+    return new DuplexAggregateByteLedger({ ceilingBytes });
+  }
+
+  it("charges the retained partial frame, then releases it when the frame completes", () => {
+    const ledger = makeLedger();
+    const decoder = new DuplexFrameDecoder({ aggregateByteLedger: ledger });
+    const line = encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
+    const bytes = Buffer.from(line, "utf8");
+
+    // A partial frame with no newline stays retained and stays charged.
+    const first = decoder.push(bytes.subarray(0, 3));
+    expect(first).toHaveLength(0);
+    expect(ledger.bytesInUse).toBe(3);
+    expect(ledger.liveTokenCount).toBe(1);
+
+    // The completing chunk delivers the frame and releases the retained bytes.
+    const second = decoder.push(bytes.subarray(3));
+    expect(second).toHaveLength(1);
+    expect(second[0].ok).toBe(true);
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+  });
+
+  it("covers the peak concat buffer and settles on the remaining bytes", () => {
+    const ledger = makeLedger();
+    const decoder = new DuplexFrameDecoder({ aggregateByteLedger: ledger });
+    const first = encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
+    const partial = '{"version":1,"type":"hea';
+    // One full frame plus a partial second frame arrive in one chunk. The full
+    // frame decodes and releases; the partial tail stays charged at its exact size.
+    const results = decoder.push(Buffer.from(first + partial, "utf8"));
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(true);
+    expect(ledger.bytesInUse).toBe(Buffer.byteLength(partial, "utf8"));
+    expect(ledger.liveTokenCount).toBe(1);
+  });
+
+  it("fails closed when a chunk would pass the ceiling and retains nothing", () => {
+    const ledger = makeLedger(16);
+    const decoder = new DuplexFrameDecoder({ aggregateByteLedger: ledger });
+    const results = decoder.push(Buffer.from("z".repeat(64), "utf8"));
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(false);
+    if (!results[0].ok) {
+      expect(results[0].error.code).toBe("aggregate_bytes_exceeded");
+    }
+    // The decoder retained nothing, so the ledger stays at zero.
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+  });
+
+  it("resynchronizes on the next newline after an aggregate rejection", () => {
+    const ledger = makeLedger(64);
+    const decoder = new DuplexFrameDecoder({ aggregateByteLedger: ledger });
+    // A first chunk over the ceiling fails closed.
+    const rejected = decoder.push(Buffer.from("z".repeat(128), "utf8"));
+    expect(rejected[0].ok).toBe(false);
+
+    // The next chunk starts with a newline, so the decoder drops the stale tail
+    // and decodes the good frame that follows.
+    const good = encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
+    const results = decoder.push(Buffer.from(`\n${good}`, "utf8"));
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(true);
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+  });
+
+  it("releases the retained token when an oversized frame is discarded", () => {
+    const ledger = makeLedger();
+    const decoder = new DuplexFrameDecoder({ maxFrameBytes: 16, aggregateByteLedger: ledger });
+    // An oversized frame with no newline is discarded and its bytes are released.
+    const results = decoder.push(Buffer.from("z".repeat(64), "utf8"));
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(false);
+    if (!results[0].ok) expect(results[0].error.code).toBe("frame_too_large");
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+  });
+
+  it("releases the retained partial frame on dispose", () => {
+    const ledger = makeLedger();
+    const decoder = new DuplexFrameDecoder({ aggregateByteLedger: ledger });
+    decoder.push(Buffer.from('{"version":1', "utf8"));
+    expect(ledger.bytesInUse).toBeGreaterThan(0);
+    decoder.dispose();
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+    // A second dispose is a no-op and records no accounting defect.
+    decoder.dispose();
+    expect(ledger.bytesInUse).toBe(0);
+  });
+
+  it("charges nothing when the caller injects no ledger", () => {
+    const decoder = new DuplexFrameDecoder();
+    const results = decoder.push(Buffer.from('{"version":1', "utf8"));
+    expect(results).toHaveLength(0);
+    // No ledger means no charge; the decoder still buffers and decodes as before.
+    const line = encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
+    const done = decoder.push(Buffer.from(`}\n${line}`, "utf8"));
+    // The stitched first frame is malformed JSON; the second is a valid heartbeat.
+    expect(done.some((result) => result.ok)).toBe(true);
   });
 });
 
@@ -349,8 +461,8 @@ describe("size-checked encode", () => {
       type: "response",
       id: "big",
       status: 200,
-      headers: {},
-      body: "x".repeat(2_000),
+      headers: { "x-pad": "x".repeat(2_000) },
+      bodyByteCount: 0,
       outcome: "completed",
     };
     expect(() => encodeDuplexFrameChecked(frame, 1_000)).not.toThrow();
@@ -363,22 +475,25 @@ describe("size-checked encode", () => {
     // Build a frame whose encoded JSON is exactly N bytes. The guard measures the
     // JSON without the newline, so N bytes encodes and N+1 bytes fails. This is the
     // same boundary the decoder applies, so encode and decode agree exactly.
-    const base: DuplexFrame = {
+    // Pad a header value to grow the encoded JSON by an exact byte count. The
+    // "x-pad" value adds one byte per character, so the frame lands on an exact
+    // size the guard measures without the trailing newline.
+    const pad = (n: number): DuplexFrame => ({
       version: DUPLEX_FRAME_VERSION,
       type: "response",
       id: "boundary",
       status: 200,
-      headers: {},
-      body: "",
+      headers: { "x-pad": "x".repeat(n) },
+      bodyByteCount: 0,
       outcome: "completed",
-    };
-    const baseBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
+    });
+    const baseBytes = Buffer.byteLength(JSON.stringify(pad(0)), "utf8");
     const limit = baseBytes + 10;
-    const atLimit: DuplexFrame = { ...base, body: "x".repeat(10) };
+    const atLimit = pad(10);
     expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(limit);
     const okResult = encodeDuplexFrameChecked(atLimit, limit);
     expect(okResult.ok).toBe(true);
-    const overResult = encodeDuplexFrameChecked({ ...base, body: "x".repeat(11) }, limit);
+    const overResult = encodeDuplexFrameChecked(pad(11), limit);
     expect(overResult.ok).toBe(false);
     if (!overResult.ok) expect(overResult.error.code).toBe("frame_too_large");
   });
