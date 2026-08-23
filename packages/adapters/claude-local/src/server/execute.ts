@@ -1132,7 +1132,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] disposition re-ask: captured ${asString((reaskDisposition as Record<string, unknown>).status, "unknown")}\n`,
     );
-    const mergedResultJson = { ...(attempt.parsedStream.resultJson ?? {}), disposition: reaskDisposition };
+    // Merge onto `attempt.parsed` — the object toAdapterResult actually reads
+    // (parsedStream.resultJson ?? parseJson(stdout)). Merging onto
+    // parsedStream.resultJson would drop subtype/session_id on a run whose
+    // final result only parsed out of raw stdout.
+    const mergedResultJson = { ...attempt.parsed, disposition: reaskDisposition };
     return {
       ...attempt,
       parsedStream: { ...attempt.parsedStream, resultJson: mergedResultJson },

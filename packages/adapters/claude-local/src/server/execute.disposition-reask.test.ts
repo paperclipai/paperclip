@@ -136,6 +136,46 @@ describe("claude_local in-run disposition re-ask", () => {
     expect(result.resultJson.disposition).toMatchObject({ status: "done" });
   });
 
+  it("preserves the result object when it only parsed out of raw stdout", async () => {
+    const pretty = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify(
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          terminal_reason: "completed",
+          session_id: "pretty-session-9",
+          result: "Left a comment, no marker.",
+          usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+        },
+        null,
+        2,
+      ),
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    };
+    runAdapterExecutionTargetProcess
+      .mockResolvedValueOnce(pretty)
+      .mockResolvedValueOnce(
+        streamJson('PAPERCLIP_DISPOSITION: {"status":"done","hasBlocker":false}', "pretty-session-9"),
+      );
+
+    const result: any = await execute(buildContext(ISSUE_CONTEXT) as any);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+    const reaskArgs = runAdapterExecutionTargetProcess.mock.calls[1][3] as string[];
+    expect(reaskArgs[reaskArgs.indexOf("--resume") + 1]).toBe("pretty-session-9");
+    expect(result.resultJson.disposition).toMatchObject({ status: "done" });
+    // the original result object survives the merge
+    expect(result.resultJson.subtype).toBe("success");
+    expect(result.resultJson.session_id).toBe("pretty-session-9");
+    expect(result.sessionId).toBe("pretty-session-9");
+  });
+
   it("keeps the run clean when the re-ask itself states nothing", async () => {
     runAdapterExecutionTargetProcess
       .mockResolvedValueOnce(streamJson("Left a comment."))
