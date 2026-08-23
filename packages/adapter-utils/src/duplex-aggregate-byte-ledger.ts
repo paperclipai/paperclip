@@ -77,6 +77,11 @@ export const MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX = 2 * 1024 * 1024 * 1024;
  *     the READY frame completes, before the broker binds and the decoder takes over.
  *   - `pending_write`: the raw host-to-worker write payload a pending duplex write
  *     RPC retains, from the enqueue seam until the RPC settles.
+ *   - `stdin_write`: the serialized host-to-worker frame the child-stdin transport
+ *     buffer retains, from the write until the stream flushes the chunk, the stream
+ *     errors, the stream closes, or the worker exits. This is a separate retention
+ *     from `pending_write`: the RPC holds the raw payload while the transport buffer
+ *     holds the larger serialized frame, so the two tokens cover the peak of both.
  */
 export const DUPLEX_AGGREGATE_TOKEN_OWNERS = [
   "pre_bind_event",
@@ -89,6 +94,7 @@ export const DUPLEX_AGGREGATE_TOKEN_OWNERS = [
   "decoder_buffer",
   "readiness_buffer",
   "pending_write",
+  "stdin_write",
 ] as const;
 
 /** One owner label from the closed {@link DUPLEX_AGGREGATE_TOKEN_OWNERS} set. */

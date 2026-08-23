@@ -25,15 +25,14 @@ vi.mock("../middleware/logger.js", () => {
 });
 
 import { logger } from "../middleware/logger.js";
-import {
-  createDuplexRouteSlotController,
-  createPluginWorkerHandle,
-} from "../services/plugin-worker-manager.js";
+import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
 
-// This suite proves the plugin worker manager charges every host→worker pending
-// write against the injected aggregate byte ledger, and releases each token one
-// time when the write RPC settles. The tests drive a real worker fixture process,
-// so they exercise the true enqueue and settlement order.
+// This suite proves the plugin worker manager charges every host→worker write raw
+// payload against the injected aggregate byte ledger under the `pending_write`
+// owner, and releases each token one time when the write RPC settles. The child
+// reads its stdin here, so the separate `stdin_write` transport token flushes and
+// releases at once. Each test waits for that flush, so the assertions isolate the
+// raw-payload token. The transport token has its own suite.
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DUPLEX_CHANNEL_WORKER_ENTRYPOINT = path.join(
@@ -119,60 +118,36 @@ function loggedWarnReasons(): string[] {
 }
 
 describe("plugin worker manager duplex pending-write byte ledger", () => {
-  it("charges each held host→worker write, ends an over-ceiling write with the aggregate marker, and returns to zero after worker exit", async () => {
-    vi.mocked(logger.warn).mockClear();
+  it("charges each held raw payload and returns to zero after worker exit", async () => {
     const telemetry = peakTrackingTelemetry();
-    // Each write reserves eight bytes. The ceiling holds exactly three writes.
-    const writeBytes = 8;
+    // The ceiling has ample room, so a transient transport reservation never
+    // rejects. Each write holds its raw payload until the RPC settles.
+    const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1 << 20, telemetry });
+    const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
+    const writeBytes = 1000;
     const writeData = "x".repeat(writeBytes);
-    const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 3 * writeBytes, telemetry });
-    // The route-count controller has ample room, so the byte ledger binds first and
-    // a rejection is never the route-busy marker.
-    const routeSlots = createDuplexRouteSlotController(100);
-    const handleA = makeDuplexHandle({
-      duplexAggregateByteLedger: ledger,
-      duplexRouteSlots: routeSlots,
-    });
-    const handleB = makeDuplexHandle({
-      duplexAggregateByteLedger: ledger,
-      duplexRouteSlots: routeSlots,
-    });
     try {
-      await handleA.start();
-      await handleB.start();
-      // Two routes on two workers. Neither worker replies to a write, so each write
-      // RPC stays pending and holds its reserved bytes.
-      const routeA = await handleA.openDuplexChannel(
+      await handle.start();
+      // The worker reads its stdin but never replies to a write, so each write RPC
+      // stays pending and holds its raw payload.
+      const route = await handle.openDuplexChannel(
         duplexOpenInput({ workerSessionId: "ws-a", mode: "no-write-reply" }),
       );
-      const routeB = await handleB.openDuplexChannel(
-        duplexOpenInput({ workerSessionId: "ws-b", mode: "no-write-reply" }),
-      );
-      // Three held writes fill the ceiling. The reserve runs synchronously in
-      // `write`, so the gauge reflects each write at once.
-      routeA.write(writeData);
-      routeA.write(writeData);
-      routeB.write(writeData);
-      expect(ledger.bytesInUse).toBe(3 * writeBytes);
-      expect(ledger.liveTokenCount).toBe(3);
-      expect(telemetry.peak).toBe(3 * writeBytes);
-
-      // One more write passes the ceiling. The reservation fails, the manager
-      // retains nothing, and it ends the route fail-closed with the aggregate
-      // marker. The three held writes stay charged, because route terminalization
-      // never releases a pending-write token.
-      routeB.write(writeData);
-      expect(telemetry.rejections).toBe(1);
-      expect(ledger.bytesInUse).toBe(3 * writeBytes);
-      expect(telemetry.peak).toBe(3 * writeBytes);
-      const reasons = loggedWarnReasons();
-      expect(reasons).toContain(DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED);
-      expect(reasons).not.toContain("DUPLEX_CHANNEL_ROUTE_BUSY");
+      route.write(writeData);
+      route.write(writeData);
+      route.write(writeData);
+      // The worker reads its stdin, so each transport token flushes and releases.
+      // Only the three held raw payloads remain, so the gauge settles at three
+      // times the payload byte count with three live tokens.
+      await vi.waitFor(() => {
+        expect(ledger.liveTokenCount).toBe(3);
+        expect(ledger.bytesInUse).toBe(3 * writeBytes);
+      });
+      expect(telemetry.peak).toBeLessThanOrEqual(ledger.ceilingBytes);
     } finally {
-      await handleA.stop().catch(() => undefined);
-      await handleB.stop().catch(() => undefined);
+      await handle.stop().catch(() => undefined);
     }
-    // Every worker exit settles its pending writes, so each token releases one time
+    // The worker exit settles each pending write, so each token releases one time
     // and the ledger ends at zero with no accounting defect.
     await vi.waitFor(() => {
       expect(ledger.bytesInUse).toBe(0);
@@ -181,23 +156,25 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
     expect(telemetry.underflows).toBe(0);
   });
 
-  it("releases the pending-write token after a delayed write RPC settles, with no worker exit", async () => {
+  it("releases the raw-payload token after a delayed write RPC settles, with no worker exit", async () => {
     const telemetry = peakTrackingTelemetry();
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1 << 20, telemetry });
     const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
     try {
       await handle.start();
-      // The worker delays its write reply, so the host holds the reservation for a
-      // measurable time before the RPC settles.
+      // The worker reads its stdin and delays its write reply, so the host holds the
+      // raw-payload reservation for a measurable time before the RPC settles.
       const route = await handle.openDuplexChannel(
-        duplexOpenInput({ workerSessionId: "ws-d", writeReplyDelayMs: 100 }),
+        duplexOpenInput({ workerSessionId: "ws-d", writeReplyDelayMs: 150 }),
       );
-      const writeBytes = 8;
+      const writeBytes = 1000;
       route.write("x".repeat(writeBytes));
-      // The reserve runs synchronously, so the gauge holds the reserved bytes while
-      // the RPC is in flight.
-      expect(ledger.bytesInUse).toBe(writeBytes);
-      expect(ledger.liveTokenCount).toBe(1);
+      // The transport token flushes at once, so one raw-payload token stays held for
+      // the full write byte count while the RPC is in flight.
+      await vi.waitFor(() => {
+        expect(ledger.liveTokenCount).toBe(1);
+        expect(ledger.bytesInUse).toBe(writeBytes);
+      });
       // The delayed reply settles the RPC, and the `finally` releases the token.
       await vi.waitFor(() => {
         expect(ledger.bytesInUse).toBe(0);
@@ -210,7 +187,7 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
     expect(telemetry.underflows).toBe(0);
   });
 
-  it("reserves the exact UTF-8 byte count of a write, not the character length", async () => {
+  it("reserves the exact UTF-8 byte count of the raw payload, not the character length", async () => {
     const telemetry = peakTrackingTelemetry();
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1 << 20, telemetry });
     const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
@@ -219,14 +196,49 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
       const route = await handle.openDuplexChannel(
         duplexOpenInput({ workerSessionId: "ws-u", mode: "no-write-reply" }),
       );
-      // "a€" is two characters but four UTF-8 bytes (one plus three). The reserve
-      // must charge four bytes, so it uses the UTF-8 byte count, not the length.
+      // "a€" is two characters but four UTF-8 bytes (one plus three). The raw-payload
+      // reservation must charge four bytes, so it uses the UTF-8 byte count.
       const data = "a€";
       expect(data.length).toBe(2);
       expect(Buffer.byteLength(data, "utf8")).toBe(4);
       route.write(data);
-      expect(ledger.bytesInUse).toBe(4);
-      expect(ledger.liveTokenCount).toBe(1);
+      // The transport token flushes, so one raw-payload token of four bytes remains.
+      await vi.waitFor(() => {
+        expect(ledger.liveTokenCount).toBe(1);
+        expect(ledger.bytesInUse).toBe(4);
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+    await vi.waitFor(() => {
+      expect(ledger.bytesInUse).toBe(0);
+      expect(ledger.liveTokenCount).toBe(0);
+    });
+    expect(telemetry.underflows).toBe(0);
+  });
+
+  it("ends an over-ceiling single write fail-closed with the aggregate marker, not the route-busy marker", async () => {
+    vi.mocked(logger.warn).mockClear();
+    const telemetry = peakTrackingTelemetry();
+    // The ceiling is smaller than one raw payload, so the raw-payload reservation
+    // fails before the frame reaches the transport. The manager retains nothing.
+    const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 100, telemetry });
+    const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
+    try {
+      await handle.start();
+      const route = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-o", mode: "no-write-reply" }),
+      );
+      // The single write is larger than the ceiling. The raw-payload reservation
+      // fails, so the manager ends the route with the aggregate marker, never the
+      // route-busy marker, and never writes the frame.
+      route.write("x".repeat(200));
+      expect(telemetry.rejections).toBeGreaterThanOrEqual(1);
+      expect(ledger.bytesInUse).toBe(0);
+      expect(telemetry.peak).toBeLessThanOrEqual(ledger.ceilingBytes);
+      const reasons = loggedWarnReasons();
+      expect(reasons).toContain(DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED);
+      expect(reasons).not.toContain("DUPLEX_CHANNEL_ROUTE_BUSY");
     } finally {
       await handle.stop().catch(() => undefined);
     }

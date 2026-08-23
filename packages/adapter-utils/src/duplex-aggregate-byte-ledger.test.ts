@@ -163,6 +163,7 @@ describe("DuplexAggregateByteLedger", () => {
       "decoder_buffer",
       "readiness_buffer",
       "pending_write",
+      "stdin_write",
     ]);
   });
 });

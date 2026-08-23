@@ -67,6 +67,21 @@ import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/se
 import { logger } from "../middleware/logger.js";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
+/**
+ * The host raises this error when the child-stdin transport reservation for a
+ * duplex write fails against the aggregate byte ledger. The host does not write
+ * the frame. The write path throws it, `callInternal` rejects the RPC with it
+ * unwrapped, and the duplex write caller ends the route fail-closed with the
+ * {@link DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED} marker. Only a duplex write
+ * meters the transport, so this error never reaches a non-duplex control message.
+ */
+class DuplexAggregateBytesExceededError extends Error {
+  constructor() {
+    super(DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED);
+    this.name = "DuplexAggregateBytesExceededError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -975,11 +990,42 @@ export function createPluginWorkerHandle(
   // JSON-RPC message sending
   // -----------------------------------------------------------------------
 
-  function sendMessage(message: unknown): void {
+  function sendMessage(message: unknown, meterDuplexWrite = false): void {
     if (!childProcess?.stdin?.writable) {
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
     const serialized = serializeMessage(message as any);
+    const ledger = duplexAggregateByteLedger;
+    if (meterDuplexWrite && ledger) {
+      // Charge the child-stdin transport buffer for a duplex write. The host writes
+      // the serialized frame to the child stdin without backpressure. When the child
+      // stops reading its stdin, the frame stays in the host stdin write buffer.
+      // Reserve the exact serialized-frame byte count. That count includes the JSON
+      // escaping and the newline framing, so the ledger covers the retained transport
+      // bytes, not only the raw payload. The RPC separately holds the raw payload
+      // under a `pending_write` token, so the two tokens cover the peak of both
+      // retentions at the same time.
+      const bytes = Buffer.byteLength(serialized);
+      const token = ledger.reserve("stdin_write", bytes);
+      if (!token) {
+        // The reservation would pass the aggregate ceiling. Fail closed before the
+        // enqueue: do not write the frame. The duplex write caller ends the route.
+        throw new DuplexAggregateBytesExceededError();
+      }
+      // Hold the token until the stream flushes the chunk. The write callback fires
+      // when the stream hands the chunk to the operating system, so the bytes then
+      // leave the host stream buffer. The RPC settle and the RPC timeout never
+      // release this token. Only the flush, the stream error, the stream close, or
+      // the worker exit releases it. Release through the outstanding-token set, so a
+      // later stream-error or worker-exit sweep never double-releases the same token.
+      pendingStdinWriteTokens.add(token);
+      childProcess.stdin.write(serialized, () => {
+        if (pendingStdinWriteTokens.delete(token)) {
+          ledger.release(token);
+        }
+      });
+      return;
+    }
     childProcess.stdin.write(serialized);
   }
 
@@ -1644,6 +1690,24 @@ export function createPluginWorkerHandle(
   // is absent, the worker retains duplex bytes unbounded (a unit test constructs it
   // this way).
   const duplexAggregateByteLedger = options.duplexAggregateByteLedger ?? null;
+  // The outstanding child-stdin transport tokens for duplex writes. Each token
+  // covers one serialized frame the host stdin write buffer still retains. The
+  // write callback releases a token on the flush; a stream error, a stream close,
+  // or a worker exit releases every remaining token, because each of those
+  // discards the stdin write buffer. The set is the release guard, so a token
+  // releases one time across the two paths.
+  const pendingStdinWriteTokens = new Set<ReservationToken>();
+  // Release every outstanding child-stdin transport token. A stream error, a
+  // stream close, or a worker exit calls this, because each discards the stdin
+  // write buffer. The `delete` guard drops each token one time, so a later flush
+  // callback or a second sweep releases nothing again.
+  function releaseAllPendingStdinWriteTokens(): void {
+    if (!duplexAggregateByteLedger) return;
+    for (const token of pendingStdinWriteTokens) {
+      duplexAggregateByteLedger.release(token);
+    }
+    pendingStdinWriteTokens.clear();
+  }
   // The terminalized routes that still hold buffered bytes for a late listener
   // drain. A terminalized route leaves the opening and live maps, so this registry
   // keeps the worker-exit sweep able to release its still-charged buffered tokens.
@@ -2340,14 +2404,32 @@ export function createPluginWorkerHandle(
         }
       }
       route.pendingRequests += 1;
-      void callInternal(method, params, duplexChannelOpenTimeoutMs)
-        .catch(() => {})
+      // Meter the child-stdin transport buffer only for a duplex write. A stop
+      // request carries a tiny fixed frame that the host never lets grow, so it
+      // does not meter or reject. The write path reserves the serialized frame in
+      // `sendMessage` right before the stdin write.
+      const meterDuplexWrite = method === "duplexChannelWrite";
+      void callInternal(method, params, duplexChannelOpenTimeoutMs, undefined, meterDuplexWrite)
+        .catch((err: unknown) => {
+          if (err instanceof DuplexAggregateBytesExceededError) {
+            // The transport reservation failed. The host did not write the frame.
+            // End the route fail-closed with the aggregate marker, not the
+            // route-busy marker.
+            log.warn(
+              { pluginId, reason: DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED },
+              "duplex stdin write reservation rejected",
+            );
+            void terminalizeDuplexChannelRoute(route);
+          }
+        })
         .finally(() => {
           route.pendingRequests -= 1;
           // Release the pending-write token one time, after the RPC settles on any
           // path: success, error, timeout, worker exit, or shutdown. The token is
           // not in `route.retainedTokens`, so route terminalization never releases
-          // it; only this settlement releases it.
+          // it; only this settlement releases it. The separate `stdin_write` token
+          // covers the serialized frame and releases on the stream flush, the
+          // stream error, the stream close, or the worker exit, never here.
           if (pendingWriteToken) {
             duplexAggregateByteLedger?.release(pendingWriteToken);
           }
@@ -2673,6 +2755,18 @@ export function createPluginWorkerHandle(
       readline.on("line", handleLine);
     }
 
+    // Release the outstanding child-stdin transport tokens when the stdin stream
+    // errors or closes, because each discards the stdin write buffer. The `error`
+    // listener also stops an unhandled EPIPE from a child that closed its stdin.
+    if (child.stdin) {
+      child.stdin.on("error", () => {
+        releaseAllPendingStdinWriteTokens();
+      });
+      child.stdin.on("close", () => {
+        releaseAllPendingStdinWriteTokens();
+      });
+    }
+
     // Capture stderr for logging
     if (child.stderr) {
       stderrReadline = createInterface({ input: child.stderr });
@@ -2722,6 +2816,12 @@ export function createPluginWorkerHandle(
     }
     childProcess = null;
     startedAt = null;
+
+    // The worker exit discards the child-stdin write buffer, so release every
+    // outstanding transport token. The RPC rejections below never release these
+    // tokens; only this sweep, a stream flush, a stream error, or a stream close
+    // releases them.
+    releaseAllPendingStdinWriteTokens();
 
     // Reject all pending requests
     rejectAllPending(
@@ -3058,6 +3158,7 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    meterDuplexWrite = false,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
@@ -3131,19 +3232,26 @@ export function createPluginWorkerHandle(
           ...createRequest(method, params, id),
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         };
-        sendMessage(request);
+        sendMessage(request, meterDuplexWrite);
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
         clearExecuteRoute(invocation?.id);
-        reject(
-          new Error(
-            `Failed to send "${method}" to worker: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          ),
-        );
+        if (err instanceof DuplexAggregateBytesExceededError) {
+          // The transport reservation failed before the write. Reject with the
+          // typed error unwrapped, so the duplex write caller ends the route
+          // fail-closed with the aggregate marker.
+          reject(err);
+        } else {
+          reject(
+            new Error(
+              `Failed to send "${method}" to worker: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            ),
+          );
+        }
       }
     });
 
