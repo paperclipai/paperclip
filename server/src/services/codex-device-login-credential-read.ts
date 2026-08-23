@@ -20,13 +20,17 @@
 //
 // The provider exposes no descriptor application programming interface (API), so
 // this module runs a fixed helper program in the sandbox through the environment
-// runtime `execute` seam. The helper never re-opens the pathname after the check:
-// the `fstat` and the read bind to the one opened descriptor.
+// runtime `execute` seam. The helper is node, because the sandbox already runs
+// node for the Paperclip bridge. The helper never re-opens the pathname after the
+// check: the `fstat` and the read bind to the one opened descriptor.
 //
 // Security: the helper prints only the base64 of the credential bytes on the
 // fully validated success path. It prints one fixed error token on every failed
 // path. It never prints the pathname, the raw bytes, or any other detail. This
 // module converts any failure to one fixed, non-secret error and reads no bytes.
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
@@ -50,101 +54,26 @@ export const DEVICE_LOGIN_AUTH_READ_ERROR =
   "device login failed: the sandbox credential read errored.";
 
 /**
- * The fixed helper program. The server runs it in the sandbox as
- * `python3 -c <script> <sessionHome> [expectedUid]`. The Python runtime is
- * present in the login sandbox image. The script:
+ * The fixed helper program. The server reads the helper from its own script file
+ * and runs it in the sandbox as `node -e <script> <sessionHome> <maxBytes>
+ * [<expectedUid>]`. The sandbox already runs node for the Paperclip bridge, so the
+ * helper needs no extra runtime. The helper source lives in
+ * `scripts/codex-auth-read.cjs`, so no large script stays as a string literal in
+ * this module.
  *
- * - opens the filesystem root, then opens each session-home path component in turn
- *   with `O_NOFOLLOW` and `O_DIRECTORY`, relative to the previous directory
- *   descriptor, so a symlink at any component (the final home or any ancestor)
- *   fails;
- * - opens `auth.json` relative to the final directory descriptor with
- *   `O_NOFOLLOW`, so a symlink credential fails and a missing credential fails;
- * - runs `fstat` on the opened descriptor and requires a regular file, the
- *   expected owner, exact mode `0600`, and a size at or below the bound;
- * - reads only from that same descriptor and stops if the byte count passes the
- *   bound.
- *
- * A per-component no-follow walk closes the intermediate-path symlink hole:
- * `O_NOFOLLOW` on one open protects only the final component, so a single
- * composite-path open follows a symlink at an ancestor. The walk opens every
- * ancestor with its own no-follow open, so the read never leaves the trusted tree.
- *
- * The `expectedUid` argument is optional. The server omits it, so the helper uses
- * the login user's own id (the helper runs as the login user in the sandbox). A
- * test passes an explicit id to force a wrong-owner path. The script prints the
- * base64 of the bytes on success and one fixed token on every failure.
+ * The helper opens the filesystem root, then opens each session-home path
+ * component in turn with a no-follow, directory-only open, relative to the
+ * previous directory descriptor, so a symlink at any component fails. It opens
+ * `auth.json` relative to the final directory descriptor with `O_NOFOLLOW`, runs
+ * `fstat` on the opened descriptor, and requires a regular file, the expected
+ * owner, exact mode `0600`, and a size at or below the bound. It reads only from
+ * that same descriptor. The `expectedUid` argument is optional; the server omits
+ * it, so the helper uses the login user's own id.
  */
-export const DEVICE_LOGIN_AUTH_READ_SCRIPT = `import base64, os, stat, sys
-
-MAX = ${MAX_AUTH_JSON_BYTES}
-home = sys.argv[1]
-name = ${JSON.stringify(AUTH_JSON_FILE_NAME)}
-expected_uid = int(sys.argv[2]) if len(sys.argv) > 2 else os.getuid()
-
-def fail():
-    sys.stderr.write("AUTH_READ_FAILED\\n")
-    raise SystemExit(1)
-
-if not home.startswith("/"):
-    fail()
-parts = [c for c in home.split("/") if c]
-if not parts:
-    fail()
-
-fds = []
-ffd = -1
-try:
-    try:
-        dfd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    except OSError:
-        fail()
-    fds.append(dfd)
-    for part in parts:
-        try:
-            ndfd = os.open(
-                part,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=dfd,
-            )
-        except OSError:
-            fail()
-        fds.append(ndfd)
-        dfd = ndfd
-    try:
-        ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dfd)
-    except OSError:
-        fail()
-    st = os.fstat(ffd)
-    if not stat.S_ISREG(st.st_mode):
-        fail()
-    if st.st_uid != expected_uid:
-        fail()
-    if stat.S_IMODE(st.st_mode) != 0o600:
-        fail()
-    if st.st_size > MAX:
-        fail()
-    data = b""
-    while True:
-        chunk = os.read(ffd, 65536)
-        if not chunk:
-            break
-        data += chunk
-        if len(data) > MAX:
-            fail()
-    sys.stdout.write(base64.b64encode(data).decode("ascii"))
-finally:
-    if ffd >= 0:
-        try:
-            os.close(ffd)
-        except OSError:
-            pass
-    for fd in fds:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-`;
+export const DEVICE_LOGIN_AUTH_READ_SCRIPT = readFileSync(
+  fileURLToPath(new URL("./scripts/codex-auth-read.cjs", import.meta.url)),
+  "utf8",
+);
 
 /** A strict base64 token: standard alphabet, correct padding, length a multiple
  *  of four. The read rejects any other stdout, so malformed helper output never
@@ -197,8 +126,8 @@ export async function runDescriptorBoundAuthRead(
     result = await deps.environmentRuntime.execute({
       environment: deps.environment,
       lease: deps.lease,
-      command: "python3",
-      args: ["-c", DEVICE_LOGIN_AUTH_READ_SCRIPT, deps.sessionHome],
+      command: "node",
+      args: ["-e", DEVICE_LOGIN_AUTH_READ_SCRIPT, deps.sessionHome, String(MAX_AUTH_JSON_BYTES)],
       timeoutMs: deps.timeoutMs,
       // The read is one fixed, non-session operation. It must not open or reuse
       // the login session.

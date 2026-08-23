@@ -51,7 +51,6 @@ function createFakeHomeFs(config?: {
   seed?: FakeEntry;
   createAs?: FakeEntry;
   createShouldFail?: boolean;
-  pythonMissing?: boolean;
 }): DaytonaLoginHomeFs & {
   created: Array<{ path: string; mode: string }>;
   inspectCount: number;
@@ -74,11 +73,6 @@ function createFakeHomeFs(config?: {
     },
     setEntry(next: FakeEntry | null): void {
       entry = next;
-    },
-    async assertPythonAvailable(): Promise<void> {
-      if (config?.pythonMissing) {
-        throw new Error("LOGIN_PTY_PYTHON_MISSING");
-      }
     },
     async loginUserId(): Promise<number> {
       return loginUid;
@@ -478,7 +472,6 @@ describe("openDaytonaLoginPtySession — ancestor symlink", () => {
     const process = createFakeProcess();
     let created = false;
     const fs: DaytonaLoginHomeFs = {
-      async assertPythonAvailable(): Promise<void> {},
       async loginUserId(): Promise<number> {
         return LOGIN_UID;
       },
@@ -497,68 +490,15 @@ describe("openDaytonaLoginPtySession — ancestor symlink", () => {
     expect(created).toBe(false);
     expect(process.createCount).toBe(0);
   });
-
-  it("fails the login closed when python3 is absent, before any session home side effect", async () => {
-    // The session home helpers and the credential reader run python3. When the
-    // sandbox has no python3, the opener rejects with a legible reason before it
-    // inspects or creates the session home and before it opens the terminal.
-    const process = createFakeProcess();
-    const fs = createFakeHomeFs({ pythonMissing: true });
-
-    await expect(openDaytonaLoginPtySession(process, fs, CODEX)).rejects.toThrow(
-      "LOGIN_PTY_PYTHON_MISSING",
-    );
-    // The opener never inspected the home, never created a directory, and never
-    // opened the terminal.
-    expect(fs.inspectCount).toBe(0);
-    expect(fs.created).toHaveLength(0);
-    expect(process.createCount).toBe(0);
-  });
 });
 
-describe("createDaytonaLoginHomeFs — python3 prerequisite", () => {
-  // A scripted exec surface. It records each command and returns a fixed exit
-  // code, so the test drives the python3 probe with no real runtime.
-  function createScriptedExec(exitCode: number): DaytonaSandboxExec & { commands: string[] } {
-    const commands: string[] = [];
-    return {
-      commands,
-      async executeCommand(command: string): Promise<DaytonaExecResult> {
-        commands.push(command);
-        return { exitCode, result: "" };
-      },
-    };
-  }
+// The real login-home filesystem runs a node helper on the sandbox. The helper
+// walks the path with `/proc/self/fd`, which is Linux only. A non-Linux host skips
+// these tests. The fake exec runs the helper locally, so the descriptor-relative
+// walk is tested against a real filesystem. The login sandbox is Linux.
+const describeLinux = process.platform === "linux" ? describe : describe.skip;
 
-  it("resolves when the python3 probe exits zero", async () => {
-    const exec = createScriptedExec(0);
-    const fs = createDaytonaLoginHomeFs(exec);
-    await expect(fs.assertPythonAvailable()).resolves.toBeUndefined();
-    // The probe runs a no-op python3 program.
-    expect(exec.commands).toHaveLength(1);
-    expect(exec.commands[0]).toContain("python3 -c");
-  });
-
-  it("fails closed when the python3 probe exits non-zero", async () => {
-    // A shell reports exit 127 for a missing command. The probe fails closed with
-    // the fixed non-secret error.
-    const exec = createScriptedExec(127);
-    const fs = createDaytonaLoginHomeFs(exec);
-    await expect(fs.assertPythonAvailable()).rejects.toThrow("LOGIN_PTY_PYTHON_MISSING");
-  });
-});
-
-// The real login-home filesystem runs a Python helper on the sandbox. A host with
-// no python3 skips these tests. The fake exec runs the helper locally, so the
-// descriptor-relative walk is tested against a real filesystem.
-function hasPython3(): boolean {
-  const probe = spawnSync("python3", ["--version"], { encoding: "utf8" });
-  return probe.status === 0;
-}
-
-const describePython = hasPython3() ? describe : describe.skip;
-
-describePython("createDaytonaLoginHomeFs — descriptor-relative walk", () => {
+describeLinux("createDaytonaLoginHomeFs — descriptor-relative walk", () => {
   let root: string;
 
   beforeAll(() => {
@@ -569,7 +509,7 @@ describePython("createDaytonaLoginHomeFs — descriptor-relative walk", () => {
   });
 
   // A local exec surface. It runs the composed command with `/bin/sh -c`, so the
-  // real Python helper runs against the local filesystem.
+  // real node helper runs against the local filesystem.
   function createLocalExec(): DaytonaSandboxExec {
     return {
       async executeCommand(command: string): Promise<DaytonaExecResult> {

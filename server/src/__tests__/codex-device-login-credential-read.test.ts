@@ -12,18 +12,16 @@ import {
   runDescriptorBoundAuthRead,
 } from "../services/codex-device-login-credential-read.ts";
 
-// The helper runs `python3`. The login sandbox image ships python3. A host with
-// no python3 skips the script tests and keeps the pure-decode tests.
-function hasPython3(): boolean {
-  const probe = spawnSync("python3", ["--version"], { encoding: "utf8" });
-  return probe.status === 0;
-}
+// The helper runs on node and walks the path with `/proc/self/fd`, which is
+// Linux only. A non-Linux host skips the script tests and keeps the pure-decode
+// tests. The login sandbox is Linux, so the walk runs there.
+const scriptRunnable = process.platform === "linux";
+const describeLinux = scriptRunnable ? describe : describe.skip;
 
-const python3Available = hasPython3();
-const describePython = python3Available ? describe : describe.skip;
-
-if (!python3Available) {
-  console.warn("Skipping descriptor-bound read script tests on this host: python3 is not available.");
+if (!scriptRunnable) {
+  console.warn(
+    "Skipping descriptor-bound read script tests on this host: the /proc walk needs Linux.",
+  );
 }
 
 describe("decodeAuthReadOutput", () => {
@@ -58,7 +56,7 @@ describe("decodeAuthReadOutput", () => {
   });
 });
 
-describePython("the descriptor-bound read helper script", () => {
+describeLinux("the descriptor-bound read helper script", () => {
   let root: string;
 
   beforeAll(() => {
@@ -71,9 +69,9 @@ describePython("the descriptor-bound read helper script", () => {
   // Run the helper against `home`. An explicit `expectedUid` forces the owner
   // check; the production caller omits it and the helper uses its own uid.
   function runScript(home: string, expectedUid?: number): { status: number | null; stdout: string } {
-    const args = ["-c", DEVICE_LOGIN_AUTH_READ_SCRIPT, home];
+    const args = ["-e", DEVICE_LOGIN_AUTH_READ_SCRIPT, home, String(MAX_AUTH_JSON_BYTES)];
     if (expectedUid !== undefined) args.push(String(expectedUid));
-    const result = spawnSync("python3", args, { encoding: "utf8" });
+    const result = spawnSync("node", args, { encoding: "utf8" });
     return { status: result.status, stdout: result.stdout ?? "" };
   }
 
@@ -224,7 +222,7 @@ describePython("the descriptor-bound read helper script", () => {
   });
 });
 
-describePython("runDescriptorBoundAuthRead", () => {
+describeLinux("runDescriptorBoundAuthRead", () => {
   let root: string;
 
   beforeAll(() => {
@@ -242,12 +240,14 @@ describePython("runDescriptorBoundAuthRead", () => {
   function createLocalRuntime(localHome: string) {
     return {
       async execute(input: { command: string; args?: string[]; bypassSession?: boolean }) {
-        expect(input.command).toBe("python3");
+        expect(input.command).toBe("node");
         expect(input.bypassSession).toBe(true);
         const args = [...(input.args ?? [])];
-        // Replace the validated session-home argument with the local directory.
-        args[args.length - 1] = localHome;
-        const result = spawnSync("python3", args, { encoding: "utf8" });
+        // Replace the validated session-home argument with the local directory. The
+        // wrapper composes `["-e", <script>, <sessionHome>, <maxBytes>]`, so the
+        // session home is the third argument.
+        args[2] = localHome;
+        const result = spawnSync("node", args, { encoding: "utf8" });
         return { exitCode: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
       },
     };

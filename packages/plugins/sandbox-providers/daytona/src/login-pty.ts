@@ -49,6 +49,8 @@
 // or OSC 8 handling; the login parser owns that handling.
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { sendPtyInputInChunks } from "./pty-chunked-input.js";
 
@@ -102,8 +104,6 @@ const SESSION_HOME_PATTERN =
 export const LOGIN_PTY_DESCRIPTOR_REJECTED = "LOGIN_PTY_DESCRIPTOR_REJECTED";
 /** The fixed non-secret error a rejected session home directory returns. */
 export const LOGIN_PTY_HOME_REJECTED = "LOGIN_PTY_HOME_REJECTED";
-/** The fixed non-secret error an absent `python3` runtime returns. */
-export const LOGIN_PTY_PYTHON_MISSING = "LOGIN_PTY_PYTHON_MISSING";
 
 /**
  * Encodes one value as a single POSIX shell argument. It wraps the value in
@@ -241,13 +241,6 @@ export interface LoginHomeInspection {
  * any ancestor fails closed and a symlink at the target reports the link.
  */
 export interface DaytonaLoginHomeFs {
-  /**
-   * Verifies that the sandbox has an executable `python3`. The session home
-   * helpers and the credential reader run `python3`, so the login needs it. It
-   * throws {@link LOGIN_PTY_PYTHON_MISSING} when `python3` is absent, so the
-   * login fails closed with a legible reason before any session home side effect.
-   */
-  assertPythonAvailable(): Promise<void>;
   /** Resolves the user id of the login user that runs the pseudo-terminal. */
   loginUserId(): Promise<number>;
   /**
@@ -368,11 +361,6 @@ export async function openDaytonaLoginPtySession(
   options?: DaytonaLoginPtyOptions,
 ): Promise<LoginPtySession> {
   assertDescriptor(descriptor);
-  // Verify the `python3` runtime before any session home side effect. The
-  // session home helpers and the credential reader run `python3`, so an absent
-  // runtime fails the login. The check fails closed here with a legible reason,
-  // instead of a generic home or credential-read failure deep in the flow.
-  await fs.assertPythonAvailable();
   // Create and validate the session home before the terminal opens.
   await prepareSessionHome(fs, descriptor.sessionHome);
   // Re-check the directory with a no-symlink check before `createPty`.
@@ -446,142 +434,49 @@ export async function openDaytonaLoginPtySession(
 }
 
 /**
- * The Python inspection helper. The provider runs it on the sandbox as
- * `python3 -c <script> <path>`. The Python runtime is present in the login sandbox
- * image. The script opens the filesystem root, then walks each ancestor of the
- * final path component with a no-follow, directory-only open. A single composite
- * `stat` follows a symlink at an ancestor, so the walk opens every ancestor with
- * its own no-follow open. The script then reads the final component with `lstat`,
- * so a symlink at the final component reports the link, not the target.
+ * The inspection helper source. The provider reads it from its own script file and
+ * runs it on the sandbox as `node -e <script> <path>`. The sandbox already runs
+ * node for the Paperclip bridge, so the helper needs no extra runtime. The helper
+ * source lives in `scripts/login-home-inspect.cjs`, so no large script stays as a
+ * string literal in this module. The helper opens the filesystem root, then walks
+ * each ancestor of the final path component with a no-follow, directory-only open,
+ * and reads the final component with `lstat`.
  *
- * The script prints one line and sets one exit code:
+ * The helper prints one line and sets one exit code:
  * - a missing ancestor or a missing final component prints `ABSENT` and exits 0;
  * - an existing final component prints `<type>|<octal-mode>|<uid>` and exits 0,
  *   where `<type>` is `symlink`, `directory`, or `other`;
  * - a symlink or a non-directory at any ancestor prints nothing and exits 3, so
  *   the caller fails closed on an ancestor symlink.
  */
-const LOGIN_HOME_INSPECT_SCRIPT = `import os, stat, sys
-
-path = sys.argv[1]
-if not path.startswith("/"):
-    raise SystemExit(3)
-parts = [c for c in path.split("/") if c]
-if not parts:
-    raise SystemExit(3)
-
-fds = []
-try:
-    dfd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    fds.append(dfd)
-    for part in parts[:-1]:
-        try:
-            ndfd = os.open(
-                part,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=dfd,
-            )
-        except FileNotFoundError:
-            sys.stdout.write("ABSENT")
-            raise SystemExit(0)
-        except OSError:
-            raise SystemExit(3)
-        fds.append(ndfd)
-        dfd = ndfd
-    try:
-        st = os.lstat(parts[-1], dir_fd=dfd)
-    except FileNotFoundError:
-        sys.stdout.write("ABSENT")
-        raise SystemExit(0)
-    except OSError:
-        raise SystemExit(3)
-    if stat.S_ISLNK(st.st_mode):
-        ftype = "symlink"
-    elif stat.S_ISDIR(st.st_mode):
-        ftype = "directory"
-    else:
-        ftype = "other"
-    sys.stdout.write("%s|%o|%d" % (ftype, stat.S_IMODE(st.st_mode), st.st_uid))
-    raise SystemExit(0)
-finally:
-    for fd in fds:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-`;
+const LOGIN_HOME_INSPECT_SCRIPT = readFileSync(
+  fileURLToPath(new URL("./scripts/login-home-inspect.cjs", import.meta.url)),
+  "utf8",
+);
 
 /**
- * The Python creation helper. The provider runs it on the sandbox as
- * `python3 -c <script> <path> <octal-mode>`. The script opens the filesystem root,
- * then walks each ancestor above the login root with a no-follow, directory-only
- * open. It creates the login root (the second-to-last component) if the root is
- * absent, then opens the root with a no-follow open, so a symlink at the root
- * fails closed. It creates the final component as a NEW directory relative to the
- * root descriptor, so a pre-existing target fails and the create never follows a
- * symlink. It exits 0 on success and non-zero on every failure.
+ * The creation helper source. The provider reads it from its own script file and
+ * runs it on the sandbox as `node -e <script> <path> <octal-mode>`. The helper
+ * source lives in `scripts/login-home-create.cjs`. The helper opens the filesystem
+ * root, then walks each ancestor above the login root with a no-follow,
+ * directory-only open. It creates the login root (the second-to-last component) if
+ * the root is absent, then opens the root with a no-follow open, so a symlink at
+ * the root fails closed. It creates the final component as a NEW directory relative
+ * to the root descriptor, so a pre-existing target fails and the create never
+ * follows a symlink. It exits 0 on success and non-zero on every failure.
  *
  * The no-follow open of the root after the create closes the swap window: an
  * attacker that replaces the root with a symlink between the create and the open
  * fails the open.
  */
-const LOGIN_HOME_CREATE_SCRIPT = `import os, sys
-
-path = sys.argv[1]
-mode = int(sys.argv[2], 8)
-if not path.startswith("/"):
-    raise SystemExit(1)
-parts = [c for c in path.split("/") if c]
-if len(parts) < 2:
-    raise SystemExit(1)
-
-fds = []
-try:
-    dfd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    fds.append(dfd)
-    for part in parts[:-2]:
-        try:
-            ndfd = os.open(
-                part,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=dfd,
-            )
-        except OSError:
-            raise SystemExit(1)
-        fds.append(ndfd)
-        dfd = ndfd
-    root = parts[-2]
-    try:
-        os.mkdir(root, 0o700, dir_fd=dfd)
-    except FileExistsError:
-        pass
-    except OSError:
-        raise SystemExit(1)
-    try:
-        rfd = os.open(
-            root,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=dfd,
-        )
-    except OSError:
-        raise SystemExit(1)
-    fds.append(rfd)
-    try:
-        os.mkdir(parts[-1], mode, dir_fd=rfd)
-    except OSError:
-        raise SystemExit(1)
-    raise SystemExit(0)
-finally:
-    for fd in fds:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-`;
+const LOGIN_HOME_CREATE_SCRIPT = readFileSync(
+  fileURLToPath(new URL("./scripts/login-home-create.cjs", import.meta.url)),
+  "utf8",
+);
 
 /**
  * Creates a {@link DaytonaLoginHomeFs} bound to a Daytona `process`. It runs a
- * fixed Python helper on the sandbox to inspect and create the session home. Each
+ * fixed node helper on the sandbox to inspect and create the session home. Each
  * helper opens the filesystem root, then walks each path component with a
  * no-follow, directory-only open, so a symlink at any ancestor fails closed. The
  * inspection reads the final component with `lstat`, so a symlink at the target
@@ -592,16 +487,6 @@ finally:
  */
 export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLoginHomeFs {
   return {
-    async assertPythonAvailable(): Promise<void> {
-      // Run a no-op `python3` program. A present runtime exits 0. An absent
-      // runtime exits non-zero (a shell reports 127 for a missing command), so
-      // the login fails closed with a legible reason before the session home
-      // helpers run. The helpers and the credential reader both need `python3`.
-      const out = await exec.executeCommand("python3 -c '' 2>/dev/null");
-      if ((out.exitCode ?? 0) !== 0) {
-        throw new Error(LOGIN_PTY_PYTHON_MISSING);
-      }
-    },
     async loginUserId(): Promise<number> {
       const out = await exec.executeCommand("id -u");
       const uid = Number.parseInt((out.result ?? "").trim(), 10);
@@ -617,7 +502,7 @@ export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLogin
       // does not exist yet, which is the safe precondition for a create.
       const script = encodePosixShellArg(LOGIN_HOME_INSPECT_SCRIPT);
       const encodedPath = encodePosixShellArg(path);
-      const out = await exec.executeCommand(`python3 -c ${script} ${encodedPath} 2>/dev/null`);
+      const out = await exec.executeCommand(`node -e ${script} ${encodedPath} 2>/dev/null`);
       if ((out.exitCode ?? 0) !== 0) {
         throw new Error(LOGIN_PTY_HOME_REJECTED);
       }
@@ -640,7 +525,7 @@ export function createDaytonaLoginHomeFs(exec: DaytonaSandboxExec): DaytonaLogin
       const encodedPath = encodePosixShellArg(path);
       const encodedMode = encodePosixShellArg(mode);
       const out = await exec.executeCommand(
-        `python3 -c ${script} ${encodedPath} ${encodedMode} 2>/dev/null`,
+        `node -e ${script} ${encodedPath} ${encodedMode} 2>/dev/null`,
       );
       if ((out.exitCode ?? 0) !== 0) {
         throw new Error(LOGIN_PTY_HOME_REJECTED);

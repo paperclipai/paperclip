@@ -930,11 +930,11 @@ describe("codex device login service", () => {
     expect(authBytes.toString("utf8")).toBe(credential);
     expect(execCalls.length).toBe(1);
     // The read runs the fixed no-follow helper as a one-shot, non-session command.
-    expect(execCalls[0].command).toBe("python3");
+    expect(execCalls[0].command).toBe("node");
     expect(execCalls[0].bypassSession).toBe(true);
-    expect(execCalls[0].args?.[0]).toBe("-c");
-    // The last argument is the verified session home the helper opens no-follow.
-    expect(execCalls[0].args?.[execCalls[0].args.length - 1]).toBe(sessionHome);
+    expect(execCalls[0].args?.[0]).toBe("-e");
+    // The third argument is the verified session home the helper opens no-follow.
+    expect(execCalls[0].args?.[2]).toBe(sessionHome);
 
     await driver.dispose();
     expect(closed).toBe(true);
