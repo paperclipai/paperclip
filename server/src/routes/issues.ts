@@ -213,11 +213,16 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
+import {
+  buildInteractionWaitMonitorPolicy,
+  INTERACTION_WAIT_MONITOR_SERVICE_NAME,
+} from "../services/issue-interaction-wait-monitor.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -11316,8 +11321,76 @@ export function issueRoutes(
       }, "failed to wake addressee on issue interaction creation"));
     }
 
+    // Best effort: the interaction is already committed, so a failure to arm the
+    // wait monitor must not turn a created gate into a 5xx the agent retries.
+    await armInteractionWaitMonitor(issue, interaction, actor).catch((err) => {
+      logger.warn(
+        { err, issueId: issue.id, interactionId: interaction.id },
+        "interaction wait monitor arming failed",
+      );
+    });
+
     res.status(201).json(interaction);
   });
+
+  /**
+   * A wake-on-response interaction parks the issue on an answer that may never
+   * come. Give the wait a server-owned floor: if the issue carries no monitor yet,
+   * arm a default one so the assignee is re-woken instead of aging out silently.
+   * An agent that arms its own monitor keeps it — this never overwrites.
+   */
+  async function armInteractionWaitMonitor(
+    issue: Awaited<ReturnType<typeof svc.getById>>,
+    interaction: { id: string; kind: string; continuationPolicy: string },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    if (!issue) return;
+    const policy = buildInteractionWaitMonitorPolicy({
+      issue,
+      interaction,
+      now: new Date(),
+    });
+    if (!policy) return;
+
+    const transition = applyIssueMonitorPolicyTransition({
+      issue,
+      policy,
+      previousPolicy: normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
+      requestedStatus: issue.status,
+      requestedAssigneePatch: {},
+      actor: { agentId: actor.agentId ?? null, userId: null },
+      monitorExplicitlyUpdated: true,
+    });
+    const updated = await svc.update(issue.id, {
+      ...transition.patch,
+      // The jsonb column takes a plain record; IssueExecutionPolicy has no index signature.
+      executionPolicy: policy as unknown as Record<string, unknown>,
+    });
+    if (!updated) return;
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.monitor_scheduled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        source: "interaction.wait_monitor_default",
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        continuationPolicy: interaction.continuationPolicy,
+        nextCheckAt: policy.monitor?.nextCheckAt ?? null,
+        serviceName: INTERACTION_WAIT_MONITOR_SERVICE_NAME,
+        timeoutAt: policy.monitor?.timeoutAt ?? null,
+        maxAttempts: policy.monitor?.maxAttempts ?? null,
+      },
+    });
+  }
 
   router.post(
     "/issues/:id/interactions/:interactionId/accept",

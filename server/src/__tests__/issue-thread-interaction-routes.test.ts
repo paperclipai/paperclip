@@ -25,6 +25,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   listReviewAttention: vi.fn(),
   addComment: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
@@ -295,6 +296,7 @@ describe.sequential("issue thread interaction routes", () => {
       explanation: "Allowed by test grant.",
     }));
     mockIssueService.getById.mockResolvedValue(createIssue());
+    mockIssueService.update.mockResolvedValue(createIssue());
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
@@ -2917,5 +2919,94 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
     expect(mockDbTransaction).not.toHaveBeenCalled();
     expect(mockCrossIssueInfluence.inserted).toEqual([]);
+  });
+  it("arms a default wait monitor when a wake-on-response gate lands on an unmonitored issue", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        monitorNextCheckAt: expect.any(Date),
+        executionPolicy: expect.objectContaining({
+          monitor: expect.objectContaining({
+            serviceName: "pending issue interaction",
+            nextCheckAt: expect.any(String),
+          }),
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.monitor_scheduled",
+        details: expect.objectContaining({
+          source: "interaction.wait_monitor_default",
+          interactionId: "interaction-1",
+        }),
+      }),
+    );
+  });
+
+  it("leaves a monitor the agent already armed alone", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      createIssue({ monitorNextCheckAt: new Date("2026-01-09T10:00:00.000Z") }),
+    );
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not arm for an interaction that never wakes the assignee", async () => {
+    mockInteractionService.create.mockResolvedValue({
+      id: "interaction-quiet",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        continuationPolicy: "none",
+        payload: { version: 1, prompt: "Ship it?" },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("still returns the created gate when arming the wait monitor fails", async () => {
+    mockIssueService.update.mockRejectedValue(new Error("db down"));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalled();
   });
 });
