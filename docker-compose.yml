@@ -23,7 +23,7 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     profiles: [postgres]
-    image: postgres:18-alpine
+    image: postgres:17-alpine
     container_name: paperclip-postgres
     restart: unless-stopped
     environment:
@@ -31,8 +31,8 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-}"
       POSTGRES_DB: paperclip
     volumes:
-      # PostgreSQL 18 stores clusters in a major-version subdirectory.
-      - ${POSTGRES_DATA_DIR:-postgres-data}:/var/lib/postgresql
+      # PostgreSQL 17 stores clusters in a major-version subdirectory.
+      - ${POSTGRES_DATA_DIR:-postgres-data}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
       interval: 5s
