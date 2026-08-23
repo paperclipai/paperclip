@@ -245,3 +245,98 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   }
   return { blocked: false, noProgressStreak };
 }
+
+/* ---------------------------------------------------------------------------
+ * Externally-blocked re-poll suppression (2026-08-23)
+ *
+ * The ladder above is shaped for TIGHT LOOPS: it needs 3 no-progress runs
+ * inside a 90-minute lookback and then holds for 90s..6min. Measured on the
+ * live fleet, the dominant remaining churn has the opposite shape — a slow
+ * drip. 187 issues burned 1,010 completed codex runs in 24h (5.4 each, worst
+ * 32) re-deriving a blocker that had not changed, at roughly one run every
+ * 4.4 hours. That never accumulates a streak inside a 90-minute window, and a
+ * 6-minute cooldown is meaningless at a 4-hour cadence, so the sample is
+ * usually EMPTY and the throttle returns "not blocked" immediately.
+ *
+ * These runs are not wrong — 92.5% name a real external owner (board
+ * ratification, a host-side executor, another lane's prerequisite). They are
+ * simply re-stating, in fresh prose each time, something nobody has acted on.
+ *
+ * So: once a run has confirmed an issue is blocked, hold further ASSERTION
+ * wakes for hours, escalating while the answer keeps coming back the same.
+ * This is deliberately narrow — it only applies to wakes that are already
+ * throttle candidates, so every event-shaped wake still passes straight
+ * through: blockers resolved, human comments, interactions, approvals,
+ * monitors. New issue input also clears it. The issue therefore wakes the
+ * instant anything actually changes; what stops is only the re-asking.
+ */
+
+/** First hold after a run confirms the issue is blocked. */
+export const ISSUE_BLOCKED_REPOLL_BASE_COOLDOWN_MS = 60 * 60_000;
+
+/** Ceiling for the escalating hold — a blocked card is still re-checked daily. */
+export const ISSUE_BLOCKED_REPOLL_MAX_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/** How many recent terminal runs to sample when counting the blocked streak. */
+export const ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT = 8;
+
+export function computeBlockedRepollCooldownMs(blockedStreak: number): number {
+  const doublings = Math.max(0, blockedStreak - 1);
+  const factor = 2 ** Math.min(doublings, 16);
+  return Math.min(ISSUE_BLOCKED_REPOLL_BASE_COOLDOWN_MS * factor, ISSUE_BLOCKED_REPOLL_MAX_COOLDOWN_MS);
+}
+
+export interface BlockedRepollRunSample {
+  id: string;
+  status: string;
+  finishedAt: Date | null;
+  /** True when this run's recorded disposition was `blocked`. */
+  reportedBlocked: boolean;
+}
+
+export interface BlockedRepollInput {
+  now: Date;
+  /** Current issue status; the suppressor only engages while it is `blocked`. */
+  issueStatus: string | null;
+  /** Terminal runs for the same (agent, issue), newest finish first. */
+  recentTerminalRuns: BlockedRepollRunSample[];
+  /** New issue input landed after the newest run finished. */
+  hasNewIssueInputSinceLastRun: boolean;
+}
+
+export type BlockedRepollDecision =
+  | { blocked: false; blockedStreak: number }
+  | {
+      blocked: true;
+      blockedStreak: number;
+      cooldownMs: number;
+      lastRunFinishedAt: Date;
+      nextAllowedAt: Date;
+    };
+
+export function evaluateBlockedRepollThrottle(input: BlockedRepollInput): BlockedRepollDecision {
+  if (input.issueStatus !== "blocked") return { blocked: false, blockedStreak: 0 };
+  // Anything new on the issue is exactly the signal worth waking for.
+  if (input.hasNewIssueInputSinceLastRun) return { blocked: false, blockedStreak: 0 };
+
+  const runs = input.recentTerminalRuns;
+  const latest = runs[0];
+  // Only a clean run that actually reported `blocked` earns a hold. A failed or
+  // cancelled run is a recovery path and must never be delayed.
+  if (!latest || latest.status !== "succeeded" || !latest.finishedAt || !latest.reportedBlocked) {
+    return { blocked: false, blockedStreak: 0 };
+  }
+
+  let blockedStreak = 0;
+  for (const run of runs) {
+    if (run.status !== "succeeded" || !run.finishedAt || !run.reportedBlocked) break;
+    blockedStreak += 1;
+  }
+
+  const cooldownMs = computeBlockedRepollCooldownMs(blockedStreak);
+  const nextAllowedAt = new Date(latest.finishedAt.getTime() + cooldownMs);
+  if (input.now.getTime() < nextAllowedAt.getTime()) {
+    return { blocked: true, blockedStreak, cooldownMs, lastRunFinishedAt: latest.finishedAt, nextAllowedAt };
+  }
+  return { blocked: false, blockedStreak };
+}

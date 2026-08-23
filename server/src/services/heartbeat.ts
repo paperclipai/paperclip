@@ -170,9 +170,11 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  evaluateBlockedRepollThrottle,
   evaluateIssueRewakeThrottle,
   isImmediateNoopLifecycleIssueRewake,
   isThrottleCandidateIssueRewake,
+  ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT,
   shouldSuppressImmediateNoopLifecycleRewake,
 } from "./issue-rewake-throttle.js";
 import {
@@ -24554,6 +24556,100 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         if (isThrottleCandidateIssueRewake(rewakeInput) || immediateNoopLifecycleWake) {
           const throttleNow = new Date();
+
+          // Externally-blocked re-poll suppression (2026-08-23). The ladder
+          // below samples only the last 90 minutes, so a card that is re-polled
+          // every ~4 hours presents an EMPTY sample and is never damped — the
+          // measured shape of the remaining churn (187 issues, 1,010 completed
+          // codex runs in 24h, re-stating blockers nobody had acted on). This
+          // gate has its own unbounded-window sample and an hours-scale hold.
+          // It sits inside the throttle-candidate branch on purpose: every
+          // event-shaped wake (blockers resolved, human comment, interaction,
+          // approval) has already bypassed this whole block.
+          if (issue.status === "blocked") {
+            const blockedSample = await tx
+              .select({
+                id: heartbeatRuns.id,
+                status: heartbeatRuns.status,
+                finishedAt: heartbeatRuns.finishedAt,
+                resultJson: heartbeatRuns.resultJson,
+              })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, agent.companyId),
+                  eq(heartbeatRuns.agentId, agentId),
+                  sql`${heartbeatRuns.finishedAt} is not null`,
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.finishedAt))
+              .limit(ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT);
+
+            const blockedLastFinishedAt = blockedSample[0]?.finishedAt ?? null;
+            const blockedNewInput = blockedLastFinishedAt
+              ? await tx
+                .select({ id: activityLog.id })
+                .from(activityLog)
+                .where(
+                  and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, blockedLastFinishedAt),
+                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                  ),
+                )
+                .limit(1)
+              : [];
+
+            const blockedDecision = evaluateBlockedRepollThrottle({
+              now: throttleNow,
+              issueStatus: issue.status,
+              hasNewIssueInputSinceLastRun: blockedNewInput.length > 0,
+              recentTerminalRuns: blockedSample.map((sampleRun) => ({
+                id: sampleRun.id,
+                status: sampleRun.status,
+                finishedAt: sampleRun.finishedAt,
+                reportedBlocked:
+                  readNonEmptyString(
+                    parseObject(parseObject(sampleRun.resultJson).disposition).status,
+                  ) === "blocked",
+              })),
+            });
+
+            if (blockedDecision.blocked) {
+              await tx.insert(agentWakeupRequests).values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_blocked_repoll_throttled",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  heartbeatSkip: {
+                    reason: "issue_blocked_repoll_throttled",
+                    requestedReason: reason,
+                    blockedStreak: blockedDecision.blockedStreak,
+                    cooldownMs: blockedDecision.cooldownMs,
+                    lastRunFinishedAt: blockedDecision.lastRunFinishedAt.toISOString(),
+                    nextAllowedAt: blockedDecision.nextAllowedAt.toISOString(),
+                    remediation:
+                      "The issue is blocked and nothing changed since the last run confirmed it. "
+                      + "Resolving a blocker, commenting, or any issue update wakes it immediately.",
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: throttleNow,
+              });
+              return { kind: "skipped" as const };
+            }
+          }
+
           const recentTerminalRuns = await tx
             .select({
               id: heartbeatRuns.id,
